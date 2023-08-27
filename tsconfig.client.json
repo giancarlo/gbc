@@ -1,0 +1,9 @@
+{
+	"extends": "../cxl/tsconfig.client.json",
+	"compilerOptions": {
+		"paths": {
+			"@cxl/*": ["../cxl/*"]
+		}
+	},
+	"files": []
+}

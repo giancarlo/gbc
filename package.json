@@ -1,0 +1,21 @@
+{
+	"name": "@cxl/",
+	"private": true,
+	"version": "0.0.0",
+	"devDependencies": {
+		"@cxl/amd": "file:../cxl/dist/amd",
+		"@cxl/build": "file:../cxl/dist/build",
+		"@cxl/compiler": "file:../cxl/dist/compiler",
+		"@cxl/program": "file:../cxl/dist/program",
+		"@cxl/source": "file:../cxl/dist/source",
+		"@cxl/spec": "file:../cxl/dist/spec",
+		"@cxl/tester": "file:../cxl/dist/tester",
+		"@typescript-eslint/eslint-plugin": "^5.15.0"
+	},
+	"scripts": {
+		"build": "npm run build --prefix debug",
+		"start:dev": "cd test/dev && NODE_OPTIONS=--enable-source-maps STACK_NAME=dev MULTIUSER=1 sudo -E $NVM_BIN/node ../../dist/server",
+		"provision": "STACK_NAME=dev stack/provision.sh",
+		"deploy:workspace": "cd workspace && STACK_NAME=dev ./publish.sh"
+	}
+}

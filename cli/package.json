@@ -1,0 +1,16 @@
+{
+	"name": "@cxl/gbc.cli",
+	"version": "0.0.1",
+	"bugs": "undefined",
+	"homepage": "undefined/cli",
+	"description": "GB Language CLI",
+	"license": "UNLICENSED",
+	"bin": {
+		"gbc": "gbc.js"
+	},
+	"scripts": {
+		"build": "node build",
+		"test": "npm run test"
+	},
+	"dependencies": {}
+}

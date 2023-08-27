@@ -1,0 +1,16 @@
+{
+	"name": "@cxl/gbx",
+	"version": "0.0.1",
+	"bugs": "undefined",
+	"homepage": "undefined/gbx",
+	"description": "GB interpreter",
+	"license": "UNLICENSED",
+	"bin": {
+		"gbc": "gbc.js"
+	},
+	"scripts": {
+		"build": "node build",
+		"test": "npm run build && cd ../dist/gbx && node cxl-tester"
+	},
+	"dependencies": {}
+}

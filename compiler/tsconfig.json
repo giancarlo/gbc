@@ -1,0 +1,8 @@
+{
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		"outDir": "../dist/compiler"
+	},
+	"files": ["index.ts"],
+	"references": [{ "path": "../../cxl/compiler" }]
+}

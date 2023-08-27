@@ -1,0 +1,21 @@
+{
+	"core": {
+		"filesExclude": ["./docs/"]
+	},
+	"watch": {
+		"rules": {
+			"compiler": {
+				"files": ["compiler/*"],
+				"tasks": "npm run build --prefix compiler"
+			},
+			"cli": {
+				"files": ["cli/*"],
+				"tasks": "npm run build --prefix cli"
+			},
+			"gbx": {
+				"files": ["gbx/*"],
+				"tasks": "npm run build --prefix gbx"
+			}
+		}
+	}
+}

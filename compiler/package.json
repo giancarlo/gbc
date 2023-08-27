@@ -1,0 +1,13 @@
+{
+	"name": "@cxl/gbc",
+	"version": "0.0.1",
+	"bugs": "https://github.com/cxlio/cxl/issues",
+	"homepage": "https://cxlio.github.io/cxl/reflex",
+	"description": "GB Compiler",
+	"license": "UNLICENSED",
+	"scripts": {
+		"build": "cxl-build",
+		"test": "npm run build && cd ../dist/compiler && cxl-tester"
+	},
+	"dependencies": {}
+}
