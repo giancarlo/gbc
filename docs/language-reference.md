@@ -1,8 +1,18 @@
-# GC Programming Language
+# GB Programming Language
 
-A language designed for the web.
+## Design Principles
+
+The language will abide by the following rules:
+
+-   There should be one, and preferably only one, ~~obvious~~ way to do it. ( Borrowed from [Python](https://peps.python.org/pep-0020/) with a slight modification)
+-   Errors should be clear, never pass silently, and should contain enough information to quickly determine where the issue is.
+-   Convention over Configuration
+-   No hidden magic, or excessive syntactic sugar.
+-   No unnecessary features.
 
 ## Hello World
+
+This is a sample of a simple "Hello World" program. The _main_ block is our entry point. No code is allowed outside of it other than type and function definitions. The standard library is always available through the _std_ namespace. The pipe `>>` operator will call the `std.out` function passing its left value as an argument.
 
 ```
 main { "Hello World" >> std.out }
@@ -12,7 +22,7 @@ main { "Hello World" >> std.out }
 
 ### Comments
 
-Comments starts with `#` and end at the end of line. Multiline comments are not supported.
+Comments start with the `#` character and end at the end of line. Multiline comments are not supported.
 
 ### Identifiers
 
@@ -28,6 +38,7 @@ next - Emit the next value from a function
 return - Emit value and complete.
 type - Define a type alias or structure
 use - Bring symbols into scope (import)
+main - Source File entry point
 export - Export module symbol
 var -
 
@@ -35,7 +46,8 @@ var -
 
 | Symbol | Function             | Description                      |
 | ------ | -------------------- | -------------------------------- |
-| !      | _not_                | Bitwise OR                       |
+| !      | _not_                | Boolean NOT                      |
+| ~      | _bitNot_             | Bitwise NOT                      |
 | &      | _bitAnd_             | Bitwise AND                      |
 | &&     | _and_                | Short-circuiting logical AND     |
 | \*     | _multiply_           | Arithmetic multiplication        |
@@ -51,7 +63,7 @@ var -
 | >      | _greaterThan_        | Greater than Ccmparison          |
 | >=     | _greaterThanOrEqual_ | Greater than or equal comparison |
 | >>     | _next_               |
-| \|     | _bitOr_              | Bitwise Or                       |
+| \|     | _bitOr_              | Bitwise OR                       |
 | \|\|   | _or_                 | Short-circuiting logical OR      |
 | ?      | _if_                 | conditional statement            |
 | :      | _else_               | conditional statement            |
@@ -162,7 +174,7 @@ All data structures are iterable:
 
 ### Variable Definition
 
-A variable is a storage location for holding a value. Variables are defined with the '=' operator. By default their value is constant, unless defined with the `var` keyword. If the variable type is omitted, it is inferred by the compiler.
+A variable is a storage location for holding a value. Variables are defined with the '=' operator. By default their value is constant, unless defined with the `var` keyword. If the variable type is omitted, it is inferred by the compiler. All variables must be defined with a value.
 
 ```
 # Define a constant with name 'constant', type 'string', and value 'value'
@@ -210,7 +222,7 @@ var variable = 10.0;
 ### Function Types
 
     type Fn = (number): void;
-    type Fn2 = (named: type): void;
+    type Fn2 = (name: type): void;
 
 ### Type Parameters
 
