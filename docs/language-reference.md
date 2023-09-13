@@ -44,35 +44,35 @@ var -
 
 ### Operators
 
-| Symbol | Function             | Description                      |
-| ------ | -------------------- | -------------------------------- |
-| !      | _not_                | Boolean NOT                      |
-| ~      | _bitNot_             | Bitwise NOT                      |
-| &      | _bitAnd_             | Bitwise AND                      |
-| &&     | _and_                | Short-circuiting logical AND     |
-| \*     | _multiply_           | Arithmetic multiplication        |
-| +      | _add_                | Addition                         |
-| -      | _neg_                | Arithmetic Negation              |
-| -      | _substract_          | Arithmetic Substraction          |
-| .      | _get_                | Member Access                    |
-| /      | _divide_             | Arithmetic Division              |
-| <      | _lessThan_           | Less than comparison             |
-| <=     | _lessThanOrEqual_    | Less than or Equal               |
-| =      | _set_                | Assignment                       |
-| ==     | _equal_              | Equality Comparison              |
-| >      | _greaterThan_        | Greater than Ccmparison          |
-| >=     | _greaterThanOrEqual_ | Greater than or equal comparison |
-| >>     | _next_               |
-| \|     | _bitOr_              | Bitwise OR                       |
-| \|\|   | _or_                 | Short-circuiting logical OR      |
-| ?      | _if_                 | conditional statement            |
-| :      | _else_               | conditional statement            |
+| Symbol | Description                      |
+| ------ | -------------------------------- |
+| !      | Boolean NOT                      |
+| ~      | Bitwise NOT                      |
+| &      | Bitwise AND                      |
+| &&     | Short-circuiting logical AND     |
+| \*     | Arithmetic multiplication        |
+| +      | Addition                         |
+| -      | Arithmetic Negation              |
+| -      | Arithmetic Substraction          |
+| .      | Member Access                    |
+| /      | Arithmetic Division              |
+| <      | Less than comparison             |
+| <=     | Less than or Equal               |
+| =      | Assignment                       |
+| ==     | Equality Comparison              |
+| >      | Greater than Ccmparison          |
+| >=     | Greater than or equal comparison |
+| >>     | Pipe Operator                    |
+| \|     | Bitwise OR                       |
+| \|\|   | Short-circuiting logical OR      |
+| ?      | conditional statement            |
+| :      | conditional statement            |
 
 ### Number Literals
 
     decimal_lit    = "0" | ( "1" ... "9" ) [ [ "_" ] decimal_digits ]
-    binary_lit     = "0" ( "b" | "B" ) [ "_" ] binary_digits .
-    hex_lit        = "0" ( "x" | "X" ) [ "_" ] hex_digits .
+    binary_lit     = "0" ( "b" ) [ "_" ] binary_digits .
+    hex_lit        = "0" ( "x" ) [ "_" ] hex_digits .
 
     decimal_float_lit = decimal_digits "." [ decimal_digits ] [ decimal_exponent ] |
                         decimal_digits decimal_exponent |
@@ -234,17 +234,19 @@ var variable = 10.0;
 
 ## Code Blocks
 
+```ts
     # Code Block with Parameters
-    add = (a: int, b: int) { next(a + b) }
+    add = { (a: int, b: int) next(a + b) }
 
     # Anonymous parameters
-    add = (:int, :int) { => $0 + $1 }
+    add =  { (:int, :int) => $0 + $1 }
 
     [1, 2] >> add # returns 3
 
     # Named arguments
     add(b=1, a=2)
     [ b=1, a=2 ] >> add
+```
 
 ### Emitting Values
 
@@ -293,12 +295,13 @@ The switch operator can be used for pattern matching, the difference between _sw
 
 ### while
 
-```
-    while = (condition: fn => boolean) {
-        loop >> { fn() ? next : done }
-    }
-    var x = 0;
-    while { x < 2 } >> { x++ } >> { x==1 ? done }
+```ts
+while = { (condition: { :boolean })
+	loop >> condition() ? next : done
+}
+var x = 0;
+
+while { x < 2 } >> { x++ } >> std.out # Prints 1
 ```
 
 ### each

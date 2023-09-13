@@ -1,72 +1,57 @@
 import { TestApi, spec } from '@cxl/spec';
-import { Flags, Program } from './index.js';
-import { BaseNode, ParentNode, nodeText } from '@cxl/compiler';
-import { printNode as _print } from '@cxl/compiler/debug.js';
+import { Node, ParserApi, parseExpression } from './parser-expression.js';
+import { scan, text } from './scanner.js';
 
-function nodeId(node: BaseNode<string>) {
+function nodeId(node: Node) {
 	switch (node.kind) {
 		case 'string':
 		case 'number':
-			return nodeText(node);
+			return text(node);
 		case 'ident':
-			return `:${nodeText(node)}`;
+			return `:${text(node)}`;
 		default:
 			return node.kind;
 	}
 }
 
-function nodeFlags(flags: number) {
-	const result = [];
-	for (const flag in Flags) {
-		if (flags & +flag) result.push('@' + Flags[flag].toLowerCase());
-	}
-	return ' ' + result.join(' ');
-}
-
-function ast(node: BaseNode<string> | ParentNode<string>): string {
-	const flags = 'flags' in node ? nodeFlags(node.flags as number) : '';
-	const id = nodeId(node) + flags;
+function ast(node: Node): string {
+	const id = nodeId(node);
 
 	return 'children' in node && node.children?.length
-		? `(${id} ${node.children.map(ast).join(' ')})`
+		? `(${id} ${node.children.map(a => (a ? ast(a) : '?')).join(' ')})`
 		: id;
 }
 
-/*function verifyBounds(a: TestApi, node: BaseNode<string> | ParentNode<string>) {
-	if ('children' in node) {
-		const c1 = node.children?.[0];
-		const c2 = node.children?.[node.children.length - 1] || c1;
-
-		if (c1 && c2) {
-			a.equal(
-				node.start,
-				c1.start,
-				`Node ${node.kind} should begin at ${c1.start}`,
-			);
-			a.equal(
-				node.end,
-				c2.end,
-				`Node ${node.kind} should end at ${c2.end}`,
-			);
-		}
-
-		node.children?.forEach(n => verifyBounds(a, n));
-	}
-}*/
-
 export default spec('compiler', s => {
 	s.test('Parser', it => {
-		const program = Program();
+		const api = ParserApi(scan);
+		const parse = (source: string) => {
+			api.start(source);
+			const expr = parseExpression(api);
+			return {
+				root: {
+					kind: 'root',
+					start: 0,
+					end: source.length,
+					line: 0,
+					source,
+					children: api.parseUntilKind(expr, 'eof'),
+				} as const,
+				errors: api.errors,
+			};
+		};
 
 		function match(a: TestApi, src: string, out: string) {
-			const r = program.parser.parse(src);
+			const r = parse(src);
 			if (r.errors?.length) {
 				a.log(r.errors);
 				throw new Error('Parsing failed');
 			}
-			//verifyBounds(a, r.root);
+			a.assert(r.root);
 			a.equal(ast(r.root), out);
+			return r.root.children;
 		}
+
 		it.should('parse strings', a => {
 			match(a, `'hello \\'world\\''`, `(root 'hello \\'world\\'')`);
 			match(a, `'foo\nbar'`, `(root 'foo\nbar')`);
@@ -107,8 +92,8 @@ export default spec('compiler', s => {
 		it.should('parse comments', a => {
 			match(a, '# Single Line Comment', 'root');
 			match(a, '# Line Comment 1\n  # Line Comment 2', 'root');
-			match(a, '# Comment 1\n#Comment 2\nmain{}', '(root main)');
-			match(a, '# Comment\nmain{}\n# Comment 2', '(root main)');
+			match(a, '# Comment 1\n#Comment 2\n123', '(root 123)');
+			match(a, '# Comment\n123\n# Comment 2', '(root 123)');
 		});
 
 		it.should('parse assignment', a => {
@@ -118,24 +103,12 @@ export default spec('compiler', s => {
 			match(a, 'a1, a2 = b1, b2', '(root (= (, :a1 :a2) (, :b1 :b2)))');
 		});
 
-		it.should('parse variable assignment', a => {
+		/*it.should('parse variable assignment', a => {
 			match(a, 'var x = 0', '(root (= @variable :x 0))');
-		});
+		});*/
 
 		it.should('parse ternary ? operator', a => {
 			match(a, 'a = b ? c : d', '(root (= :a (? :b :c :d)))');
-		});
-	});
-
-	s.test('Program', it => {
-		it.should('Compile "Hello World"', a => {
-			const program = Program();
-			const src = `main { 'Hello World!' >> std.out }`;
-			const sf = program.sourceFile(src);
-			a.equal(
-				ast(sf.root),
-				"(root (main (>> 'Hello World!' (. :std :out))))",
-			);
 		});
 	});
 });

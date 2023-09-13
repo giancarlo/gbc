@@ -1,9 +1,14 @@
 ///<amd-module name="@cxl/gbc.compiler/scanner.js"/>
-import { CompilerError, Position } from './error.js';
+import { CompilerError } from '@cxl/compiler/error.js';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>>;
-export type Kind = ScannerToken['kind'];
-export type ScanFn = typeof scan;
+
+export interface Position {
+	start: number;
+	end: number;
+	line: number;
+	source: string;
+}
 
 export interface Token<Kind> extends Position {
 	kind: Kind;
@@ -15,10 +20,6 @@ const digit = /[\d_]/,
 	notIdent = /[^\w_]/,
 	identFirst = /[a-zA-Z_]/,
 	ident = /[\w_]/;
-
-export function text({ source, start, end }: Position) {
-	return source.slice(start, end);
-}
 
 export function each(scanner: ReturnType<typeof scan>) {
 	return {
@@ -116,9 +117,8 @@ export function scan(source: string) {
 					? tk('>>', 2)
 					: tk('>', 1);
 			case '<':
-				return la === '=' ? tk('<=', 2) : tk('<', 1);
-			case '!':
-				return la === '=' ? tk('!=', 2) : tk('!', 1);
+				return source[index + 1] === '=' ? tk('>=', 2) : tk('<', 1);
+
 			// 1-char operators
 			case '{':
 			case '}':
@@ -129,11 +129,12 @@ export function scan(source: string) {
 			case '*':
 			case '/':
 			case '~':
+			case '!':
 			case '(':
 			case ')':
 			case '+':
 			case '-':
-			case '^':
+			case '$':
 				return tk(ch, 1);
 			case "'": {
 				let n = 1;
@@ -200,6 +201,10 @@ export function scan(source: string) {
 			}
 
 			// Keywords
+			case 'd':
+				if (matchString('one', notIdent, 1)) return tk('done', 4);
+			case 'e':
+				if (matchString('xport', notIdent, 1)) return tk('export', 6);
 			case 'm':
 				if (matchString('ain', notIdent, 1)) return tk('main', 4);
 			case 't':

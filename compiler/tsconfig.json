@@ -3,6 +3,5 @@
 	"compilerOptions": {
 		"outDir": "../dist/compiler"
 	},
-	"files": ["index.ts"],
-	"references": [{ "path": "../../cxl/compiler" }]
+	"files": ["error.ts", "scanner.ts", "parser-expression.ts"]
 }

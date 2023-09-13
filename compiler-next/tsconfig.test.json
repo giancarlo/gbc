@@ -1,0 +1,9 @@
+{
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		"outDir": "../dist/compiler-next",
+		"types": ["node"]
+	},
+	"files": ["test.ts"],
+	"references": [{ "path": "." }, { "path": "../../cxl/spec" }]
+}

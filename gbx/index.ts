@@ -11,8 +11,6 @@ export interface Project {
 export default program('gbx', () => {
 	const options = parseParameters({}, process.argv.slice(2).join(' '));
 
-	//log(pkg.version);
-
 	if (options.$) {
 		const program = Program();
 		for (const srcFile of options.$) {
