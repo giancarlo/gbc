@@ -11,5 +11,5 @@
 		"parser-type.ts",
 		"symbol-table.ts"
 	],
-	"references": [{ "path": "../../cxl/compiler" }]
+	"references": [{ "path": "../sdk" }]
 }

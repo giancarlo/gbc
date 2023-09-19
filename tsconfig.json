@@ -1,10 +1,21 @@
 {
-	"extends": "../cxl/tsconfig.json",
 	"compilerOptions": {
-		"typeRoots": ["node_modules/@types"],
+		"incremental": true,
+		"strict": true,
+		"target": "esnext",
+		"module": "commonjs",
+		"lib": ["ESNext"],
+		"experimentalDecorators": true,
+		"sourceMap": false,
+		"moduleResolution": "Node",
+		"removeComments": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"composite": true,
+		"skipLibCheck": true,
+		"typeRoots": [],
 		"paths": {
-			"@cxl/gbc.*": ["./*"],
-			"@cxl/*": ["../cxl/*"]
+			"@cxl/gbc.*": ["./*"]
 		}
 	},
 	"files": []

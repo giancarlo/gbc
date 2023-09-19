@@ -1,13 +1,8 @@
 ///<amd-module name="@cxl/gbc.compiler/scanner.js"/>
-import { CompilerError, Position } from './error.js';
+import { CompilerError, Token } from '@cxl/gbc.sdk';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>>;
 export type Kind = ScannerToken['kind'];
-export type ScanFn = typeof scan;
-
-export interface Token<Kind> extends Position {
-	kind: Kind;
-}
 
 const digit = /[\d_]/,
 	hexDigit = /[\da-fA-F_]/,
@@ -15,23 +10,6 @@ const digit = /[\d_]/,
 	notIdent = /[^\w_]/,
 	identFirst = /[a-zA-Z_]/,
 	ident = /[\w_]/;
-
-export function text({ source, start, end }: Position) {
-	return source.slice(start, end);
-}
-
-export function each(scanner: ReturnType<typeof scan>) {
-	return {
-		[Symbol.iterator]() {
-			return {
-				next() {
-					const value = scanner();
-					return value.kind === 'eof' ? { done: true } : { value };
-				},
-			};
-		},
-	};
-}
 
 export function scan(source: string) {
 	const length = source.length;
@@ -116,7 +94,11 @@ export function scan(source: string) {
 					? tk('>>', 2)
 					: tk('>', 1);
 			case '<':
-				return la === '=' ? tk('<=', 2) : tk('<', 1);
+				return la === '='
+					? tk('<=', 2)
+					: la === '<'
+					? tk('<<', 2)
+					: tk('<', 1);
 			case '!':
 				return la === '=' ? tk('!=', 2) : tk('!', 1);
 			// 1-char operators
@@ -134,6 +116,9 @@ export function scan(source: string) {
 			case '+':
 			case '-':
 			case '^':
+			case '$':
+			case '[':
+			case ']':
 				return tk(ch, 1);
 			case "'": {
 				let n = 1;
@@ -200,6 +185,10 @@ export function scan(source: string) {
 			}
 
 			// Keywords
+			case 'd':
+				if (matchString('one', notIdent, 1)) return tk('done', 4);
+			case 'e':
+				if (matchString('xport', notIdent, 1)) return tk('export', 6);
 			case 'm':
 				if (matchString('ain', notIdent, 1)) return tk('main', 4);
 			case 't':

@@ -1,0 +1,13 @@
+{
+	"name": "@cxl/gbc.sdk",
+	"version": "0.0.1",
+	"bugs": "undefined",
+	"homepage": "undefined/sdk",
+	"description": "GB Compiler SDK",
+	"license": "UNLICENSED",
+	"scripts": {
+		"build": "cxl-build",
+		"test": "npm run build && cd ../dist/sdk && cxl-tester"
+	},
+	"dependencies": {}
+}

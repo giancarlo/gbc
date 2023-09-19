@@ -3,5 +3,16 @@
 	"compilerOptions": {
 		"outDir": "../dist/compiler"
 	},
-	"files": ["error.ts", "scanner.ts", "parser-expression.ts"]
+	"files": [
+		"compiler.ts",
+		"error.ts",
+		"index.ts",
+		"scanner.ts",
+		"parser-expression.ts",
+		"parser.ts",
+		"parser-type.ts",
+		"program.ts",
+		"symbol-table.ts"
+	],
+	"references": [{ "path": "../sdk" }]
 }

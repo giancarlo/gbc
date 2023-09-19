@@ -8,6 +8,10 @@
 				"files": ["compiler/*"],
 				"tasks": "npm run build --prefix compiler"
 			},
+			"compiler-next": {
+				"files": ["compiler-next/*"],
+				"tasks": "npm run build --prefix compiler-next"
+			},
 			"cli": {
 				"files": ["cli/*"],
 				"tasks": "npm run build --prefix cli"
@@ -15,6 +19,10 @@
 			"gbx": {
 				"files": ["gbx/*"],
 				"tasks": "npm run build --prefix gbx"
+			},
+			"sdk": {
+				"files": ["sdk/*"],
+				"tasks": "npm run build --prefix sdk"
 			}
 		}
 	}

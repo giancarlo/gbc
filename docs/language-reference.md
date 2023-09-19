@@ -158,7 +158,7 @@ c = [
 c[0] = 'string';
 c.field = false;
 
-# Will result in compiler error
+# Results in compiler error
 c.field = 10;
 c[1] = 3
 
@@ -193,15 +193,17 @@ var variable = 10.0;
     uint32      the set of all unsigned 32-bit integers (0 to 4294967295)
     uint64      the set of all unsigned 64-bit integers (0 to 18446744073709551615)
 
+    uint = uint8 | uint16 | uint32 | uint64
+
     int8        the set of all signed  8-bit integers (-128 to 127)
     int16       the set of all signed 16-bit integers (-32768 to 32767)
     int32       the set of all signed 32-bit integers (-2147483648 to 2147483647)
     int64       the set of all signed 64-bit integers (-9223372036854775808 to 9223372036854775807)
 
+    int = int8 | int16 | int32 | int64
+
     float32     the set of all IEEE-754 32-bit floating-point numbers
     float64     the set of all IEEE-754 64-bit floating-point numbers
-
-    byte        alias for uint8
 
 ### String Types
 
@@ -215,14 +217,18 @@ var variable = 10.0;
 
     a: [ byte, string ] = [ 10, 'foo' ]
     b: [ age: number, name: string ] = [ 20, 'foo' ]
+    # b.name contains 'foo'
+
     c: [ [int,int,int],[int,int,float],[int,int,int] ]
 
-    # b.name contains 'foo'
+    type Expr = [ p1: number, p2: string ]
+    a: Expr = [ 10, 'ten' ]
 
 ### Function Types
 
-    type Fn = (number): void;
-    type Fn2 = (name: type): void;
+    type Fn = |number|: void;
+    type Fn2 = |name: type|: void;
+    type A = |number|: void;
 
 ### Type Parameters
 
@@ -236,24 +242,32 @@ var variable = 10.0;
 
 ```ts
     # Code Block with Parameters
-    add = { (a: int, b: int) next(a + b) }
+    add = {
+		|:int, b: int|: int
+		next $.0 + $.b
+	}
+
+	add = { <T> |a: T, b: T| a + b }
+	add = { <T> |:T,:T| (a + b) }
+	add = { <T> |:[T, T]| ($.0 + $.1) }
 
     # Anonymous parameters
-    add =  { (:int, :int) => $0 + $1 }
-
-    [1, 2] >> add # returns 3
+    add =  { |:int, :int| $0 + $1 }
 
     # Named arguments
     add(b=1, a=2)
-    [ b=1, a=2 ] >> add
+    b=1, a=2 >> add
 ```
 
 ### Emitting Values
 
 Code blocks can emit multiple values. The block automatically completes once it reaches the end of the function.
 
+```ts
     { next 1 next 2 } >> std.out # Will print 1 and 2
+	{ 1, 2 } >> std.out # Same as above
     { next(1) done next(2) } >> std.out # Unreachable code compiler error.
+```
 
 ## Built In Functions
 
@@ -262,36 +276,6 @@ Code blocks can emit multiple values. The block automatically completes once it 
 Emits void indefinetely.
 
     var i=0; loop >> { i++ } >> std.out;
-
-### time
-
-The `time` emitter, emits the current time indefinetely.
-
-```
-std.time >> std.out; # print the current time infinite times.
-x = await std.time[0]; # Current time
-
-fn std.now() => await std.time[0];
-```
-
-## Operators
-
-### is
-
-    10 >> is(2, 3, 4) # false
-    'foo' >> is(/f../) # true
-
-### switch
-
-The switch operator can be used for pattern matching, the difference between _switch_ and _is_ is that the former requires all values to be matched.
-
-```
-    x = expr >> switch {
-        is(3) => 2;
-        is(4) => 3;
-        else => 4;
-    }
-```
 
 ### while
 
@@ -306,8 +290,10 @@ while { x < 2 } >> { x++ } >> std.out # Prints 1
 
 ### each
 
-```
-    each = <T>(iterable: T[]): T {
+```ts
+    each =  {
+		<T>|iterable: T[]|: T
+
         len = length(iterable);
         var i = 0;
         while { i < len } >> next
@@ -316,15 +302,11 @@ while { x < 2 } >> { x++ } >> std.out # Prints 1
     [ 1, 2, 3, 4 ] >> each >> { $==2 ? done }
 ```
 
-### for
-
-    for(10, 5) >> std.out # Prints 10 9 8 7 6 5
-    for(0, 5) >> std.out # Prints 0 1 2 3 4 5
-
 ## Errors
 
 Errors are data and are part of the function return type. Errors must implement the Error type. The _Error_ function can be used to create errors at runtime.
 
+```ts
     open = (filename: string) {
     	try { f = std.file(filename); } # f type is File | Error
     }
@@ -332,3 +314,4 @@ Errors are data and are part of the function return type. Errors must implement 
     open('file') >> catch { = open('file2') } >> {
     	# $ can be File or 'Error!'
     }
+```

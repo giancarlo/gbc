@@ -1,18 +1,7 @@
 ///<amd-module name="@cxl/gbc.compiler/scanner.js"/>
-import { CompilerError } from '@cxl/compiler/error.js';
+import { CompilerError, Token } from '@cxl/gbc.sdk';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>>;
-
-export interface Position {
-	start: number;
-	end: number;
-	line: number;
-	source: string;
-}
-
-export interface Token<Kind> extends Position {
-	kind: Kind;
-}
 
 const digit = /[\d_]/,
 	hexDigit = /[\da-fA-F_]/,
@@ -20,19 +9,6 @@ const digit = /[\d_]/,
 	notIdent = /[^\w_]/,
 	identFirst = /[a-zA-Z_]/,
 	ident = /[\w_]/;
-
-export function each(scanner: ReturnType<typeof scan>) {
-	return {
-		[Symbol.iterator]() {
-			return {
-				next() {
-					const value = scanner();
-					return value.kind === 'eof' ? { done: true } : { value };
-				},
-			};
-		},
-	};
-}
 
 export function scan(source: string) {
 	const length = source.length;
@@ -117,7 +93,7 @@ export function scan(source: string) {
 					? tk('>>', 2)
 					: tk('>', 1);
 			case '<':
-				return source[index + 1] === '=' ? tk('>=', 2) : tk('<', 1);
+				return source[index + 1] === '=' ? tk('<=', 2) : tk('<', 1);
 
 			// 1-char operators
 			case '{':

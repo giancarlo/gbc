@@ -1,4 +1,4 @@
-///<amd-module name="@cxl/gbc.compiler/parser-expression.js"/>
+///<amd-module name="@cxl/gbc.compiler-next/parser-expression.js"/>
 import { parserTable } from '@cxl/compiler/parser-table.js';
 import { ParserApi, text } from '@cxl/compiler';
 import { parseType } from './parser-type.js';
