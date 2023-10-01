@@ -10,6 +10,12 @@ The language will abide by the following rules:
 -   No hidden magic, or excessive syntactic sugar.
 -   No unnecessary features.
 
+## Rules
+
+-   Variable shadowing is not allowed.
+-   Unused variables are not allowed.
+-   Variables must be defined with a value.
+
 ## Hello World
 
 This is a sample of a simple "Hello World" program. The _main_ block is our entry point. No code is allowed outside of it other than type and function definitions. The standard library is always available through the _std_ namespace. The pipe `>>` operator will call the `std.out` function passing its left value as an argument.

@@ -50,9 +50,9 @@ export type BaseNodeMap = {
 	call: { children: [Node, Node | undefined] };
 	data: { children: Node[] };
 	'.': { children: [Node, Node]; symbol?: Symbol };
+	',': { children: Node[] };
 } & MakeInfix<
 	| '>>'
-	| ','
 	| '||'
 	| '&&'
 	| '+'

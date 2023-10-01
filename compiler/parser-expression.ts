@@ -165,7 +165,20 @@ export function parseExpression(
 					};
 				},
 			},
-			',': infixOperator(3),
+			',': {
+				precedence: 3,
+				infix(tk, left) {
+					const node = tk as NodeMap[','];
+					node.start = left.start;
+					const right = expectNode(expr(3), 'Expected expression');
+					node.children =
+						left.kind === ','
+							? [...left.children, right]
+							: [left, right];
+					node.end = right.end;
+					return node;
+				},
+			},
 			'=': infixOperator(2, 0),
 
 			'(': {

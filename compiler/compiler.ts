@@ -34,6 +34,8 @@ export function compile(node: Node): string {
 			return node.children[1]
 				? infix(node)
 				: `${node.kind}${compile(node.children[0])}`;
+		case ',':
+			return node.children.map(compile).join(',');
 		case '+':
 		case '.':
 		case '==':
@@ -50,7 +52,6 @@ export function compile(node: Node): string {
 		case '>=':
 		case '<=':
 		case '<<':
-		case ',':
 		case '^':
 			return infix(node);
 		case '>>': {
