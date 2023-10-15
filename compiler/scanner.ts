@@ -185,17 +185,15 @@ export function scan(source: string) {
 			}
 
 			// Keywords
-			case 'd':
-				if (matchString('one', notIdent, 1)) return tk('done', 4);
-			case 'e':
-				if (matchString('xport', notIdent, 1)) return tk('export', 6);
-			case 'm':
-				if (matchString('ain', notIdent, 1)) return tk('main', 4);
-			case 't':
-				if (matchString('ype', notIdent, 1)) return tk('type', 4);
-			case 'v':
-				if (matchString('ar', notIdent, 1)) return tk('var', 3);
+
 			default:
+				if (matchString('done', notIdent)) return tk('done', 4);
+				if (matchString('export', notIdent)) return tk('export', 6);
+				if (matchString('main', notIdent)) return tk('main', 4);
+				if (matchString('type', notIdent)) return tk('type', 4);
+				if (ch === 'f' && la === 'n') return tk('fn', 2);
+				if (matchString('var', notIdent)) return tk('var', 3);
+
 				// Identifiers
 				if (identFirst.test(ch))
 					return tk('ident', matchWhile(ident, 1));
