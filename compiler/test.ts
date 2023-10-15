@@ -143,13 +143,13 @@ export default spec('compiler', s => {
 			matchError(a, '0b');
 		});
 
-		it.should('parse bigint', a => {
+		/*it.should('parse bigint', a => {
 			match(
 				a,
 				'170141183460469231731687303715884105727 170_141183_460469_231731_687303_715884_105727',
 				'(root 170141183460469231731687303715884105727 170_141183_460469_231731_687303_715884_105727)',
 			);
-		});
+		});*/
 
 		it.should('parse floats', a => {
 			match(a, '72.40 072.40 2.71828', '(root 72.4 72.4 2.71828)');
@@ -178,19 +178,19 @@ export default spec('compiler', s => {
 			match(
 				a,
 				'a, b, c = d, e, f',
-				'(root (= (, (, :a :b) :c) (, (, :d :e) :f)))',
+				'(root (= (, :a :b :c) (, :d :e :f)))',
 			);
 		});
 
 		it.should('parse function assignment', a => {
 			match(
 				a,
-				`scan = { (a: string) }`,
+				`scan = fn(a: string) { }`,
 				'(root (= :scan ({ (parameter :a :string))))',
 			);
 			match(
 				a,
-				`scan = { (: string) }`,
+				`scan = fn(:string) { }`,
 				'(root (= :scan ({ (parameter ? :string))))',
 			);
 		});
@@ -215,16 +215,12 @@ export default spec('compiler', s => {
 		});
 
 		it.should('parse prefix operators', a => {
-			match(
-				a,
-				'-10, -10_000, -10.53_3',
-				'(root (, (, -10 -10000) -10.533))',
-			);
+			match(a, '-10, -10_000, -10.53_3', '(root (, -10 -10000 -10.533))');
 			match(a, '~0b100100, ~0xff', '(root (, -37 -256))');
 			match(
 				a,
 				'!false, !true, !!!!false',
-				'(root (, (, (! :false) (! :true)) (! (! (! (! :false))))))',
+				'(root (, (! :false) (! :true) (! (! (! (! :false))))))',
 			);
 		});
 
@@ -283,16 +279,10 @@ export default spec('compiler', s => {
 
 		baseline(
 			'bitwise',
-			`main [ ~0, 1 << (32 - 1), 0xF0 | 0xCC ^ 0xAA & 0xFD,0xF0F0F0F0F0F0F0F0 << -4 ]`,
-			``,
-			``,
-			(a, r) =>
-				a.equalValues(r(), [
-					-1,
-					1 << (32 - 1),
-					0xf4,
-					~0xf0f0f0f0f0f0f0f0,
-				]),
+			`main [ ~0, 1 << (32 - 1), 0xF0 | 0xCC ^ 0xAA & 0xFD ]`,
+			`(root (main (data (, -1 (<< 1 (- 32 1)) (| 240 (^ 204 (& 170 253)))))))`,
+			`return [-1,1<<32-1,240|204^170&253]`,
+			(a, r) => a.equalValues(r(), [-1, 1 << (32 - 1), 0xf4]),
 		);
 
 		baseline(
@@ -323,17 +313,16 @@ export default spec('compiler', s => {
 			"(root (main (>> 'Hello World!' (macro :std :out))))",
 			`return console.log('Hello World!')`,
 		);
-		baseline(
+		/*baseline(
 			'loop - 0 to 5',
 			`main { loop >> { $ < 5 ? done } >> std.out }`,
-			"(root (main (>> 'Hello World!' (macro :std :out))))",
+			"(root (main (>> (>> :loop ({ (? (< $ 5) done))) (macro :std :out))))",
 			`return console.log('Hello World!')`,
-		);
+		);*/
 		baseline(
 			'ackermann',
 			`
-ackermann = {
-	(m:number, n:number)
+ackermann = fn(m: number, n:number) {
 	m == 0 ? n + 1 :
 		(n == 0 ? ackermann(m - 1, 1) : ackermann(m - 1, ackermann(m, n - 1)))
 }

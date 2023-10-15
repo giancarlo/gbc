@@ -4,7 +4,7 @@
 
 The language will abide by the following rules:
 
--   There should be one, and preferably only one, ~~obvious~~ way to do it. ( Borrowed from [Python](https://peps.python.org/pep-0020/) with a slight modification)
+-   There should be one, and preferably only one, obvious way to do it. ( Borrowed from [Python](https://peps.python.org/pep-0020/) )
 -   Errors should be clear, never pass silently, and should contain enough information to quickly determine where the issue is.
 -   Convention over Configuration
 -   No hidden magic, or excessive syntactic sugar.
@@ -15,13 +15,14 @@ The language will abide by the following rules:
 -   Variable shadowing is not allowed.
 -   Unused variables are not allowed.
 -   Variables must be defined with a value.
+-   Variables are constant by default
 
 ## Hello World
 
 This is a sample of a simple "Hello World" program. The _main_ block is our entry point. No code is allowed outside of it other than type and function definitions. The standard library is always available through the _std_ namespace. The pipe `>>` operator will call the `std.out` function passing its left value as an argument.
 
 ```
-main { "Hello World" >> std.out }
+main { 'Hello World' >> std.out }
 ```
 
 ## Lexical Elements
@@ -137,6 +138,7 @@ String literals are immutable. All strings are utf8 encoded.
 | \r | Carriage Report |
 | \t | Tab |
 | \' | Single Quote |
+| \0 | Null Character |
 | \u{NNNNNN} | Hexadecimal Unicode code point |
 
 ### Boolean literals
@@ -192,6 +194,8 @@ var variable = 10.0;
 
 ## Types
 
+Types must start with a capital letter.
+
 ### Numeric Types
 
     uint8       the set of all unsigned  8-bit integers (0 to 255)
@@ -244,25 +248,27 @@ var variable = 10.0;
 
     Boolean, True, False, Void, Error
 
+## Modules
+
+-   Code is only allowed inside the `main` statement.
+
 ## Code Blocks
+
+-   Blocks can only have one parameter. If more than one parameter is specified, the parameter is converted into a data structure.
+-   The `$` constant points to the current block parameter.
 
 ```ts
     # Code Block with Parameters
-    add = {
-		|:int, b: int|: int
-		next $.0 + $.b
-	}
+    add = fn(a:int, b:int):int { a + b }
 
-	add = { <T> |a: T, b: T| a + b }
-	add = { <T> |:T,:T| (a + b) }
-	add = { <T> |:[T, T]| ($.0 + $.1) }
+	add(1, 2)
+    add(b=1, a=2) # Named arguments
 
     # Anonymous parameters
-    add =  { |:int, :int| $0 + $1 }
+    add = fn(:int, :int) { $.0 + $.1 }
 
-    # Named arguments
-    add(b=1, a=2)
-    b=1, a=2 >> add
+	# Generics
+	add = fn<T extends int>(:T,:T) { ($.0 + $.1) }
 ```
 
 ### Emitting Values
@@ -270,7 +276,7 @@ var variable = 10.0;
 Code blocks can emit multiple values. The block automatically completes once it reaches the end of the function.
 
 ```ts
-    { next 1 next 2 } >> std.out # Will print 1 and 2
+    { next 1 next 2 } >> std.out # Prints 1 and 2
 	{ 1, 2 } >> std.out # Same as above
     { next(1) done next(2) } >> std.out # Unreachable code compiler error.
 ```
@@ -287,7 +293,7 @@ Emits void indefinetely.
 
 ```ts
 while = { (condition: { :boolean })
-	loop >> condition() ? next : done
+	loop >> { condition() ? next : done }
 }
 var x = 0;
 
@@ -297,13 +303,13 @@ while { x < 2 } >> { x++ } >> std.out # Prints 1
 ### each
 
 ```ts
-    each =  {
-		<T>|iterable: T[]|: T
-
+    each = fn<T>(iterable: T[]): T  {
         len = length(iterable);
         var i = 0;
-        while { i < len } >> next
+        while { i < len } >> next iterable[i++]
     }
+
+	a = each(1, 2) # a contains 2
 
     [ 1, 2, 3, 4 ] >> each >> { $==2 ? done }
 ```

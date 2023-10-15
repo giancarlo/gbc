@@ -1,4 +1,34 @@
-# Data Pointers
+# Potential Features
+
+## Modules
+
+### Modules as Functions
+
+-   Modules are functions that return exports.
+
+```
+module = {
+	a = { }...
+	export [ a, b c ]
+}
+```
+
+### Main Block
+
+The main block is only executed for the entry module. Imported module's main blocks are ignored.
+
+### Object Destructuring
+
+The `use` operator after the data block allows member autocomplete.
+
+```
+# Add symbols to current scope
+module use a, b, c.d
+
+[ 10, a=20 ] >> { $.a == $.1 } >> std.out;
+```
+
+## Data Pointers
 
 ```ts
 a = [ 1, 2, 3, 4, 5, 6, 7, 8 ];
@@ -21,16 +51,13 @@ each = {
 Global Common Denominator
 
 ```ts
-while = {
-	(fn: (): boolean)
-	loop >> { fn() ? next : done }
-}
+while = fn(pred: { :boolean }) { loop >> { pred() ? next : done } }
+until = fn(pred: { :boolean }) { pred() ? done : next $ }
 
-gcd = {
-	(a:number, b:number)
+gcd = fn(a: int, b:int) {
 	while { b != 0 } >> { a, b = b, a % b }
 	loop >> { a, b = b, a % b } >> until { b == 0 }
-	return a;
+	return a
 }
 ```
 
@@ -145,8 +172,8 @@ tag'string ${hello}'
 
 ## JSX
 
-    a = li['List Item'];
-    b = ul[a];
+    a = li(children=['List Item']);
+    b = ul(children=[a]);
 
     ul(className = 'cls', children = [a]);
 
@@ -162,14 +189,13 @@ import './a11y' [ role ]
 [ a, slot ] = std.dom
 
 ##
-## Bindable Link Component.
-##
+# Bindable Link Component.
+#
 @tagName('cxl-a')
 type A {
 	extends($, Component)
 	bind($, {
-		el = a(children=[slot()])
-		el.style.color = 'inherit'
+		el = a(style=[color='inherit'] children=[slot()])
 
 		return [
 			el,
@@ -181,7 +207,7 @@ type A {
 	setAttribute('role', 'link');
 
 	@attribute()
-	var target: '_blank' | '' = ''
+	target: '_blank' | '' = ''
 
 	@attribute()
 	var href = ''

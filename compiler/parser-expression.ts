@@ -60,6 +60,23 @@ export function parseExpression(
 		};
 	}
 
+	function parseBlock(tk: ScannerToken, cb: (node: NodeMap['{']) => void) {
+		const node = tk as NodeMap['{'];
+		node.kind = '{';
+		node.children = [];
+		symbolTable.withScope(scope => {
+			node.scope = scope;
+			symbolTable.set('$', {
+				name: '$',
+				kind: 'variable',
+			});
+			cb(node);
+			node.children.push(...node.statements);
+			node.end = expect('}').end;
+		});
+		return node;
+	}
+
 	const parser = parserTable<NodeMap, ScannerToken>(
 		({
 			parseUntilKind,
@@ -71,24 +88,21 @@ export function parseExpression(
 			current,
 		}) => ({
 			'>>': infixOperator(2),
-			'{': {
-				prefix(node: NodeMap['{']) {
-					const tk = current();
-					node.children = [];
-					symbolTable.withScope(scope => {
-						node.scope = scope;
+			fn: {
+				prefix(tk) {
+					return parseBlock(tk, node => {
+						let tk = current();
 						if (tk.kind === '(') blockParameters(node);
-						else
-							symbolTable.set('$', {
-								name: '$',
-								kind: 'variable',
-							});
+						expect('{');
 						node.statements = parseUntilKind(expr, '}');
-						node.children.push(...node.statements);
-						node.end = expect('}').end;
 					});
-					return node;
 				},
+			},
+			'{': {
+				prefix: tk =>
+					parseBlock(tk, node => {
+						node.statements = parseUntilKind(expr, '}');
+					}),
 			},
 			'||': infixOperator(3),
 			'&&': infixOperator(4),
