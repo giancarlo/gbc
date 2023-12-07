@@ -5,6 +5,7 @@
 	},
 	"files": [
 		"compiler.ts",
+		"debug.ts",
 		"error.ts",
 		"index.ts",
 		"scanner.ts",
@@ -12,7 +13,9 @@
 		"parser.ts",
 		"parser-type.ts",
 		"program.ts",
-		"symbol-table.ts"
+		"symbol-table.ts",
+		"target-wasm.ts",
+		"node.ts"
 	],
 	"references": [{ "path": "../sdk" }]
 }

@@ -5,6 +5,8 @@ import { parse } from './parser.js';
 import { scan } from './scanner.js';
 import { compiler } from './compiler.js';
 
+//import { compileWasm } from './target-wasm.js';
+
 export interface System {
 	readFile(): string;
 }
@@ -27,7 +29,11 @@ export function Program(options?: ProgramOptions) {
 
 	function compile(src: string) {
 		const parsed = parser(src);
-		return compiler(parsed.root);
+		return {
+			output: compiler(parsed.root),
+			ast: parsed.root,
+			errors: parsed.errors,
+		};
 	}
 
 	function compileAst(root: ReturnType<typeof parse>) {

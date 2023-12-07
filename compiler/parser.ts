@@ -1,84 +1,17 @@
 ///<amd-module name="@cxl/gbc.compiler/parser.js"/>
-import { MakeNodeMap, ParserApi, text } from '@cxl/gbc.sdk';
+import { ParserApi } from '@cxl/gbc.sdk';
 
 import { parseExpression } from './parser-expression.js';
+import { Flags, SymbolTable } from './symbol-table.js';
 
 import type { ScannerToken } from './scanner.js';
-import type { Scope, Symbol, SymbolTable } from './symbol-table.js';
+import type { Node } from './node.js';
 
-export enum Flags {
-	Variable = 1,
-	Export = 2,
-}
-
-type Infix = { children: [Node, Node] };
-type MakeInfix<T extends string> = { [K in T]: Infix };
-
-/* eslint @typescript-eslint/ban-types:off */
-export type BaseNodeMap = {
-	root: { children: Node[] };
-	main: { children: Node[]; statements: Node[] };
-	type: { children: [Node] };
-	var: {};
-	done: {};
-	ident: { symbol?: Symbol };
-	string: {};
-	number: { value: number };
-	next: {};
-	comment: {};
-	$: {};
-	parameter: {
-		children: [Node, Node | undefined] | [undefined, Node];
-		symbol?: Symbol;
-	};
-	macro: { value: string };
-	def: { children: [Node, Node]; flags: Flags };
-	'=': { children: [Node, Node] };
-	'?': { children: [Node, Node, Node | undefined] };
-	'~': { children: [Node] };
-	'!': { children: [Node] };
-	'+': { children: [Node] };
-	'-': { children: [Node] };
-	'{': {
-		parameters: NodeMap['parameter'][] | undefined;
-		statements: Node[];
-		scope: Scope;
-		children: Node[];
-	};
-	'(': { children: [Node] };
-	':': { children: [Node, Node] };
-	call: { children: [Node, Node | undefined] };
-	data: { children: Node[] };
-	'.': { children: [Node, Node]; symbol?: Symbol };
-	',': { children: Node[] };
-} & MakeInfix<
-	| '>>'
-	| '||'
-	| '&&'
-	| '+'
-	| '-'
-	| '*'
-	| '/'
-	| '|'
-	| '&'
-	| '=='
-	| '!='
-	| '<'
-	| '>'
-	| '<='
-	| '>='
-	| '<<'
-	| '^'
->;
-export type NodeMap = MakeNodeMap<BaseNodeMap>;
-export type Node = NodeMap[keyof NodeMap];
-export type NodeKind = keyof NodeMap;
 export type RootNode = ReturnType<typeof parse>;
 
 export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
 	const {
 		current,
-		expect,
 		expectNode,
 		expectNodeKind,
 		optional,
@@ -88,23 +21,21 @@ export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
 	} = api;
 	const expression = parseExpression(api, symbolTable);
 
+	function markExported(n: Node) {
+		if (n.kind === 'ident' && n.symbol) n.symbol.flags |= Flags.Export;
+		else throw 'Invalid Symbol';
+	}
+
 	function definition() {
 		const isExport = optional('export');
-		const isVar = optional('var');
-		const ident = expect('ident');
-		expect('=');
-		const name = text(ident);
-		const symbol = symbolTable.set(name, { name, kind: 'variable' });
-		const expr = expectNode(expression(), 'Expected assignment expression');
-		return (symbol.definition = {
-			kind: 'def',
-			children: [ident, expr],
-			flags: (isVar ? Flags.Variable : 0) | (isExport ? Flags.Export : 0),
-			start: (isExport || isVar || ident).start,
-			line: (isExport || isVar || ident).line,
-			end: expr.end,
-			source: ident.source,
-		} as NodeMap['def']);
+		const expr = expectNodeKind(expression(), 'def', 'Expected definition');
+
+		if (isExport) {
+			if (expr.children[0].kind === ',') {
+				for (const child of expr.children) markExported(child);
+			} else markExported(expr.children[0]);
+		}
+		return expr;
 	}
 
 	function topStatement() {
@@ -112,7 +43,7 @@ export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
 		if (token.kind === 'main') {
 			next();
 			const child = expectNode(
-				statement(),
+				expression(),
 				'Expected statement or expression',
 			);
 			const children = child.kind === '{' ? child.children : [child];
@@ -125,22 +56,6 @@ export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
 		}
 
 		return definition();
-	}
-
-	function statement() {
-		const token = current();
-		if (token.kind === 'var') {
-			next();
-			const eq = expectNodeKind(expression(), '=', 'Expected assignment');
-			return {
-				...eq,
-				kind: 'def',
-				flags: Flags.Variable,
-				start: token.start,
-			} as NodeMap['def'];
-		}
-
-		return expression();
 	}
 
 	const root = {

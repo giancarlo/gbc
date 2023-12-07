@@ -1,10 +1,10 @@
 ///<amd-module name="@cxl/gbc.compiler/parser-expression.js"/>
 import { ParserApi, UnaryNode, text, parserTable } from '@cxl/gbc.sdk';
 import { parseType } from './parser-type.js';
+import { Flags, SymbolTable } from './symbol-table.js';
 
-import type { NodeMap, Node } from './parser.js';
+import type { Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
-import type { SymbolTable } from './symbol-table.js';
 
 export function parseExpression(
 	api: ParserApi<ScannerToken>,
@@ -21,7 +21,11 @@ export function parseExpression(
 
 		if (ident) {
 			const name = text(ident);
-			symbol = symbolTable.set(name, { name, kind: 'parameter' });
+			symbol = symbolTable.set(name, {
+				name,
+				kind: 'parameter',
+				flags: 0,
+			});
 			if (optional(':')) type = expectNode(typeParser(), 'Expected type');
 			children = [ident, type];
 		} else {
@@ -69,12 +73,38 @@ export function parseExpression(
 			symbolTable.set('$', {
 				name: '$',
 				kind: 'variable',
+				flags: 0,
 			});
 			cb(node);
 			node.children.push(...node.statements);
 			node.end = expect('}').end;
 		});
 		return node;
+	}
+
+	function define(n: Node, isDef = false) {
+		if (n.kind !== 'ident') throw error('Expected identifier', n);
+		const name = text(n);
+		const existing = symbolTable.getRef(name, n);
+		const symbol =
+			existing ||
+			symbolTable.set(name, {
+				name,
+				kind: 'variable',
+				flags: n.flags || 0,
+			});
+		n.symbol = symbol;
+		if (isDef && existing)
+			throw error('Cannot mix assignment and defitions', n);
+		return !existing;
+	}
+
+	function unexpected() {
+		return {
+			prefix(tk: ScannerToken) {
+				throw error('Unexpected token', tk);
+			},
+		};
 	}
 
 	const parser = parserTable<NodeMap, ScannerToken>(
@@ -87,7 +117,7 @@ export function parseExpression(
 			prefix,
 			current,
 		}) => ({
-			'>>': infixOperator(2),
+			'>>': infixOperator(1, 0),
 			fn: {
 				prefix(tk) {
 					return parseBlock(tk, node => {
@@ -96,6 +126,24 @@ export function parseExpression(
 						expect('{');
 						node.statements = parseUntilKind(expr, '}');
 					});
+				},
+			},
+			return: {
+				prefix(tk) {
+					const result = tk as NodeMap['return'];
+					const child = expr();
+					if (child) {
+						result.children = [child];
+						result.end = child.end;
+					}
+					return result;
+				},
+			},
+			var: {
+				prefix() {
+					const ident = expect('ident') as NodeMap['ident'];
+					ident.flags = (ident.flags || 0) | Flags.Variable;
+					return ident;
 				},
 			},
 			'{': {
@@ -115,7 +163,17 @@ export function parseExpression(
 			'>': infixOperator(9),
 			'<=': infixOperator(9),
 			'>=': infixOperator(9),
-			'<<': infixOperator(10),
+			//'<<': infixOperator(10),
+			'<:': infixOperator(10),
+			':>': infixOperator(10),
+			'++': {
+				precedence: 15,
+				infix(tk, left) {
+					const result = tk as NodeMap['++'];
+					result.children = [left];
+					return result;
+				},
+			},
 			'+': {
 				precedence: 11,
 				infix: infix(11),
@@ -193,7 +251,27 @@ export function parseExpression(
 					return node;
 				},
 			},
-			'=': infixOperator(2, 0),
+			'=': {
+				precedence: 2,
+				infix(tk, left) {
+					const node = tk as NodeMap['='];
+					let isDefinition = false;
+					node.start = left.start;
+
+					// Handle multiple assignment
+					if (left.kind === ',') {
+						for (const child of left.children)
+							isDefinition = define(child, isDefinition);
+					} else isDefinition = define(left);
+
+					const right = expectNode(expr(), 'Expected expression');
+					if (isDefinition)
+						(node as unknown as NodeMap['def']).kind = 'def';
+					node.children = [left, right];
+					node.end = right.end;
+					return node;
+				},
+			},
 
 			'(': {
 				precedence: 20,
@@ -203,20 +281,32 @@ export function parseExpression(
 					return node as NodeMap['('];
 				},
 				infix(tk, left) {
+					const cur = current();
 					return {
 						...tk,
 						kind: 'call',
-						children: [left, expr()],
+						children: [left, cur.kind === ')' ? undefined : expr()],
 						end: expect(')').end,
 					};
 				},
 			},
 			'[': {
+				precedence: 17,
 				prefix(tk) {
 					return {
 						...tk,
 						kind: 'data',
 						children: [expectNode(expr(), 'Expected expression')],
+						end: expect(']').end,
+					};
+				},
+				infix(tk, left) {
+					return {
+						...tk,
+						children: [
+							left,
+							expectNode(expr(), 'Expected expression'),
+						],
 						end: expect(']').end,
 					};
 				},
@@ -235,6 +325,27 @@ export function parseExpression(
 				},
 			},
 			done: { prefix: n => n },
+			next: {
+				prefix(tk) {
+					const result = tk as NodeMap['next'];
+					if (optional('(')) {
+						result.children = [
+							expectNode(expr(), 'Expected expression'),
+						];
+						result.end = expect(')').end;
+					}
+					return result;
+				},
+			},
+			loop: {
+				prefix(tk) {
+					const result = tk as NodeMap['loop'];
+					const child = expectNode(expr(), 'Expected expression');
+					result.children = [child];
+					result.end = child.end;
+					return result;
+				},
+			},
 			number: {
 				prefix: n => {
 					(n as NodeMap['number']).value = +text(n).replace(/_/g, '');
@@ -245,13 +356,16 @@ export function parseExpression(
 			ident: {
 				prefix(n: NodeMap['ident']) {
 					const name = text(n);
-					const symbol = symbolTable.getRef(name, n);
-					if (!symbol)
-						throw error(`Unexpected identifier "${name}"`, n);
-					n.symbol = symbol;
+					if (!n.symbol) {
+						const symbol = symbolTable.getRef(name, n);
+						//if (!symbol) throw error(`Unexpected identifier "${name}"`, n);
+						n.symbol = symbol;
+					}
 					return n;
 				},
 			},
+			')': unexpected(),
+			']': unexpected(),
 		}),
 	);
 	return parser(api);

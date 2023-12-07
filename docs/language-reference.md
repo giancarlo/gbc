@@ -4,7 +4,8 @@
 
 The language will abide by the following rules:
 
--   There should be one, and preferably only one, obvious way to do it. ( Borrowed from [Python](https://peps.python.org/pep-0020/) )
+-   Limit Choice.
+-   Enforce best practices.
 -   Errors should be clear, never pass silently, and should contain enough information to quickly determine where the issue is.
 -   Convention over Configuration
 -   No hidden magic, or excessive syntactic sugar.
@@ -16,6 +17,7 @@ The language will abide by the following rules:
 -   Unused variables are not allowed.
 -   Variables must be defined with a value.
 -   Variables are constant by default
+-   Must specify parameter names when function has more than one parameter.
 
 ## Hello World
 
@@ -61,19 +63,20 @@ var -
 | +      | Addition                         |
 | -      | Arithmetic Negation              |
 | -      | Arithmetic Substraction          |
-| .      | Member Access                    |
-| /      | Arithmetic Division              |
+| .      | Member access                    |
+| /      | Arithmetic division              |
 | <      | Less than comparison             |
-| <=     | Less than or Equal               |
+| <=     | Less than or equal               |
 | =      | Assignment                       |
-| ==     | Equality Comparison              |
-| >      | Greater than Ccmparison          |
+| ==     | Equality comparison              |
+| >      | Greater than comparison          |
 | >=     | Greater than or equal comparison |
 | >>     | Pipe Operator                    |
 | \|     | Bitwise OR                       |
 | \|\|   | Short-circuiting logical OR      |
-| ?      | conditional statement            |
-| :      | conditional statement            |
+| ?..:   | Conditional Ternary Operator     |
+| :>     | Bitwise Shift Right              |
+| <:     | Bitwise Shift Left               |
 
 ### Number Literals
 
@@ -101,6 +104,9 @@ var -
     42_         // invalid: _ must separate successive digits
     4__2        // invalid: only one _ at a time
     0_xBadFace  // invalid: _ must separate successive digits
+
+    NaN // Not a Number
+    Infinity
 
     72.40
     072.40       // == 72.40
@@ -236,9 +242,8 @@ Types must start with a capital letter.
 
 ### Function Types
 
-    type Fn = |number|: void;
-    type Fn2 = |name: type|: void;
-    type A = |number|: void;
+    type Fn = { (:number): void }
+    type Fn2 = { (name: type): void }
 
 ### Type Parameters
 
@@ -254,7 +259,7 @@ Types must start with a capital letter.
 
 ## Code Blocks
 
--   Blocks can only have one parameter. If more than one parameter is specified, the parameter is converted into a data structure.
+-   Blocks can only have one parameter. If more than one parameter is specified, parameters are converted into a data structure.
 -   The `$` constant points to the current block parameter.
 
 ```ts
@@ -281,42 +286,17 @@ Code blocks can emit multiple values. The block automatically completes once it 
     { next(1) done next(2) } >> std.out # Unreachable code compiler error.
 ```
 
-## Built In Functions
+## Statements
 
 ### loop
 
 Emits void indefinetely.
 
-    var i=0; loop >> { i++ } >> std.out;
-
-### while
-
-```ts
-while = { (condition: { :boolean })
-	loop >> { condition() ? next : done }
-}
-var x = 0;
-
-while { x < 2 } >> { x++ } >> std.out # Prints 1
-```
-
-### each
-
-```ts
-    each = fn<T>(iterable: T[]): T  {
-        len = length(iterable);
-        var i = 0;
-        while { i < len } >> next iterable[i++]
-    }
-
-	a = each(1, 2) # a contains 2
-
-    [ 1, 2, 3, 4 ] >> each >> { $==2 ? done }
-```
+    var i=0; loop { i++ } >> std.out;
 
 ## Errors
 
-Errors are data and are part of the function return type. Errors must implement the Error type. The _Error_ function can be used to create errors at runtime.
+Errors are data and are part of the function return type. Errors must implement the Error type. The _error_ function can be used to create errors at runtime.
 
 ```ts
     open = (filename: string) {

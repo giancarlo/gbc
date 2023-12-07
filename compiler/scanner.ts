@@ -98,23 +98,28 @@ export function scan(source: string) {
 					? tk('<=', 2)
 					: la === '<'
 					? tk('<<', 2)
+					: la === ':'
+					? tk('<:', 2)
 					: tk('<', 1);
 			case '!':
 				return la === '=' ? tk('!=', 2) : tk('!', 1);
+			case '+':
+				return la === '+' ? tk('++', 2) : tk('+', 1);
+			case '-':
+				return la === '-' ? tk('--', 2) : tk('-', 1);
+			case ':':
+				return la === '>' ? tk(':>', 2) : tk(':', 1);
 			// 1-char operators
 			case '{':
 			case '}':
 			case '.':
 			case ',':
 			case '?':
-			case ':':
 			case '*':
 			case '/':
 			case '~':
 			case '(':
 			case ')':
-			case '+':
-			case '-':
 			case '^':
 			case '$':
 			case '[':
@@ -183,13 +188,14 @@ export function scan(source: string) {
 
 				return tk('number', consumed);
 			}
-
-			// Keywords
-
 			default:
+				// Keywords
 				if (matchString('done', notIdent)) return tk('done', 4);
 				if (matchString('export', notIdent)) return tk('export', 6);
+				if (matchString('loop', notIdent)) return tk('loop', 4);
 				if (matchString('main', notIdent)) return tk('main', 4);
+				if (matchString('next', notIdent)) return tk('next', 4);
+				if (matchString('return', notIdent)) return tk('return', 6);
 				if (matchString('type', notIdent)) return tk('type', 4);
 				if (ch === 'f' && la === 'n') return tk('fn', 2);
 				if (matchString('var', notIdent)) return tk('var', 3);

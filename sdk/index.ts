@@ -120,7 +120,7 @@ export function formatError(
 
 	return `${error.message}
 
-${pos.line + (options?.startLine || 0)}: ${lineText}
+${pos.line + (options?.startLine ?? 1)}: ${lineText}
 ${' '.repeat(pad)}${'~'.repeat(text.length || 1)}`;
 }
 
@@ -309,11 +309,10 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		const result: C[] = [];
 		catchAndRecover(
 			() => {
-				let token = current();
 				while (token && !condition() && token.kind !== 'eof') {
 					const node = parser();
 					if (node) result.push(node);
-					else token = next();
+					else next(); //throw error('Unexpected token', current());
 				}
 			},
 			() => skipUntil(condition),
@@ -332,7 +331,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		return result;
 	}
 
-	function expectNodeKind<K extends Node['kind'], N extends Token<string>>(
+	function expectNodeKind<N extends Token<string>, K extends N['kind']>(
 		node: N | undefined,
 		kind: K,
 		msg: string,

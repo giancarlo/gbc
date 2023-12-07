@@ -1,7 +1,7 @@
 ///<amd-module name="@cxl/gbc.compiler/parser-type.js"/>
 import { ParserApi, parserTable } from '@cxl/gbc.sdk';
 
-import type { NodeMap } from './parser.js';
+import type { NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
 import type { SymbolTable } from './symbol-table.js';
 

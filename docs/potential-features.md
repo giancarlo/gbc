@@ -6,11 +6,14 @@
 
 -   Modules are functions that return exports.
 
-```
+```ts
 module = {
 	a = { }...
 	export [ a, b c ]
 }
+
+# Translates to
+module = () => { ... return {a,b,c} }
 ```
 
 ### Main Block
@@ -25,8 +28,26 @@ The `use` operator after the data block allows member autocomplete.
 # Add symbols to current scope
 module use a, b, c.d
 
-[ 10, a=20 ] >> { $.a == $.1 } >> std.out;
 ```
+
+## Default Parameters
+
+-   https://quuxplusone.github.io/blog/2020/04/18/default-function-arguments-are-the-devil/
+
+## Sequences
+
+    1,2,3 >> { $ * 2 } >> std.out # Prints 246
+    a, b = 1, 2 # a=1, b=2
+
+## Blocks that never return?
+
+    block = { }
+    block() # works
+    a = block() # Error, cannot assign void value
+
+## impure function attribute
+
+    block = impure fn() { ... }
 
 ## Data Pointers
 
@@ -160,6 +181,36 @@ concat(a,b);
         is(4) => 3;
         else => 4;
     }
+```
+
+### while
+
+```ts
+while = fn(condition: { :boolean }) {
+	loop { condition() ? next : done }
+}
+var x = 0;
+while { x < 2 } >> { x++ } >> std.out # Prints 1
+```
+
+### each
+
+```ts
+    each = fn<T>(iterable: T[]): T  {
+        len = length(iterable);
+        var i = 0;
+        loop { i < len ? next iterable[i++] : done }
+    }
+
+	a, b = each([1,2]) # a=1, b=2
+	# Equivalent to
+	a, b = 1, 2
+
+	a = each([1, 2]) # Error, all values must be used
+
+    [ 1, 2, 3, 4 ] >> each >> { $==2 ? done }
+	# Equivalent to
+	1, 2, 3, 4 >> { $==2 ? done }
 ```
 
 ### for

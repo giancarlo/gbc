@@ -1,10 +1,17 @@
 ///<amd-module name="@cxl/gbc.compiler/symbol-table.js"/>
 import { SymbolTable as BaseSymbolTable } from '@cxl/gbc.sdk';
 
-import type { Node } from './parser.js';
+import type { Node } from './node.js';
+
+export enum Flags {
+	None = 0,
+	Variable = 1,
+	Export = 2,
+}
 
 type BaseSymbol = {
 	name: string;
+	flags: Flags;
 	definition?: Node;
 	references?: Node[];
 };
@@ -25,14 +32,21 @@ export type SymbolTable = ReturnType<typeof SymbolTable>;
 export function SymbolTable() {
 	const st = BaseSymbolTable<Symbol>();
 	st.setSymbols(
-		{ name: 'true', kind: 'literal' },
-		{ name: 'false', kind: 'literal' },
-		{ name: 'loop', kind: 'function' },
+		{ name: 'true', kind: 'literal', flags: 0 },
+		{ name: 'false', kind: 'literal', flags: 0 },
+		{ name: 'NaN', kind: 'literal', flags: 0 },
+		{ name: 'Infinity', kind: 'literal', flags: 0 },
 		{
 			name: 'std',
 			kind: 'namespace',
+			flags: 0,
 			members: {
-				out: { name: 'out', kind: 'native', replace: 'console.log' },
+				out: {
+					name: 'out',
+					kind: 'native',
+					replace: 'console.log',
+					flags: 0,
+				},
 			},
 		},
 	);

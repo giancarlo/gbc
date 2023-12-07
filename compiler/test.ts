@@ -1,42 +1,12 @@
 import { TestApi, spec } from '@cxl/spec';
-import { each, Token, ParserApi, formatError, text } from '@cxl/gbc.sdk';
+import { each, Token, ParserApi, formatError } from '@cxl/gbc.sdk';
 
 import { Program } from './program.js';
 import { SymbolTable } from './symbol-table.js';
 import { scan } from './scanner.js';
-import { Flags, Node } from './parser.js';
 import { parseExpression } from './parser-expression.js';
 import { RUNTIME } from './compiler.js';
-
-function nodeId(node: Node) {
-	switch (node.kind) {
-		case 'string':
-			return text(node);
-		case 'number':
-			return node.value;
-		case 'ident':
-			return `:${text(node)}`;
-		default:
-			return node.kind;
-	}
-}
-
-function nodeFlags(flags: number) {
-	const result = [];
-	for (const flag in Flags) {
-		if (flags & +flag) result.push('@' + Flags[flag].toLowerCase());
-	}
-	return result.length ? ' ' + result.join(' ') : '';
-}
-
-function ast(node: Node): string {
-	const flags = 'flags' in node ? nodeFlags(node.flags as number) : '';
-	const id = nodeId(node) + flags;
-
-	return 'children' in node && node.children?.length
-		? `(${id} ${node.children.map(n => (n ? ast(n) : '?')).join(' ')})`
-		: id;
-}
+import { ast } from './debug.js';
 
 export default spec('compiler', s => {
 	s.test('Scanner', it => {
@@ -71,15 +41,15 @@ export default spec('compiler', s => {
 		const st = SymbolTable();
 		const api = ParserApi(scan);
 		st.setSymbols(
-			{ name: 'a', kind: 'variable' },
-			{ name: 'b', kind: 'variable' },
-			{ name: 'c', kind: 'variable' },
-			{ name: 'd', kind: 'variable' },
-			{ name: 'e', kind: 'variable' },
-			{ name: 'f', kind: 'variable' },
-			{ name: 'scan', kind: 'function' },
-			{ name: 'true', kind: 'literal' },
-			{ name: 'false', kind: 'literal' },
+			{ name: 'a', kind: 'variable', flags: 0 },
+			{ name: 'b', kind: 'variable', flags: 0 },
+			{ name: 'c', kind: 'variable', flags: 0 },
+			{ name: 'd', kind: 'variable', flags: 0 },
+			{ name: 'e', kind: 'variable', flags: 0 },
+			{ name: 'f', kind: 'variable', flags: 0 },
+			{ name: 'scan', kind: 'function', flags: 0 },
+			{ name: 'true', kind: 'literal', flags: 0 },
+			{ name: 'false', kind: 'literal', flags: 0 },
 		);
 		const parse = (src: string) => {
 			api.start(src);
@@ -227,7 +197,7 @@ export default spec('compiler', s => {
 		it.should('parse groups', a => {
 			match(
 				a,
-				'(true || false) && false)',
+				'(true || false) && false',
 				'(root (&& (|| :true :false) :false))',
 			);
 			match(
@@ -237,6 +207,25 @@ export default spec('compiler', s => {
 			);
 		});
 
+		it.test('errors', a => {
+			function testError(
+				src: string,
+				msg: string,
+				start: number,
+				end: number,
+			) {
+				a.test(src, a => {
+					const sf = parse(src);
+					a.ok(sf.errors.length, 'Expected error but none received');
+					const error = sf.errors[0];
+					a.equal(error.message, msg);
+					a.equal(error.position.start, start, 'Start position');
+					a.equal(error.position.end, end, 'End position');
+				});
+			}
+
+			testError(`(true || false) && false)`, 'Unexpected token', 24, 25);
+		});
 		/*it.should('parse type definition', a => {
 			match(
 				a,
@@ -271,11 +260,55 @@ export default spec('compiler', s => {
 				}
 				a.equal(ast(sf.root), astText);
 				const code = program.compileAst(sf.root);
-				a.equal(code, RUNTIME + output);
+				a.equal(code.slice(RUNTIME.length), output);
 				const fn = new Function(code + extra);
 				test?.(a, fn);
 			});
 		}
+
+		baseline(
+			'assignment - sequence',
+			`main a, b = 2, 1`,
+			`(root (main (def (, :a :b) (, 2 1))))`,
+			`const a=2;const b=1;`,
+		);
+
+		baseline(
+			'assignment - variable assignment',
+			`main var a, var b = 2, 1`,
+			`(root (main (def (, :a @variable :b @variable) (, 2 1))))`,
+			`let a=2;let b=1;`,
+		);
+
+		baseline(
+			'blocks',
+			'main { next(1) next(2) } >> { $ + 1 } >> std.out',
+			'',
+			'',
+		);
+
+		baseline(
+			'assignment - swap',
+			`main {
+				var a = 2
+				var b = 1
+				a, b = b, a
+				return [a,b]
+			}`,
+			`(root (main (def :a @variable 2) (def :b @variable 1) (= (, :a :b) (, :b :a)) (return (data (, :a :b)))))`,
+			`let a=2;let b=1;{const __0=b;const __1=a;a=__0;b=__1;}return [a,b]`,
+			(a, r) => a.equalValues(r(), [1, 2]),
+		);
+
+		baseline(
+			`sequence`,
+			`main {
+				var i=0
+				1, 2, 3 >> { i = i + $ }
+			}`,
+			'(root (main (def :i @variable 0) (>> (, 1 2 3) ({ (= :i (+ :i $)))) (return :i)))',
+			'',
+		);
 
 		baseline(
 			'bitwise',
@@ -313,12 +346,13 @@ export default spec('compiler', s => {
 			"(root (main (>> 'Hello World!' (macro :std :out))))",
 			`return console.log('Hello World!')`,
 		);
-		/*baseline(
+		baseline(
 			'loop - 0 to 5',
-			`main { loop >> { $ < 5 ? done } >> std.out }`,
-			"(root (main (>> (>> :loop ({ (? (< $ 5) done))) (macro :std :out))))",
-			`return console.log('Hello World!')`,
-		);*/
+			`main { var x=0 loop { x++ == 5 ? done } return x }`,
+			'(root (main (def :x @variable 0) (loop ({ (? (== (++ :x) 5) done))) (return :x)))',
+			`let x=0;while((()=>{return x++==5 ? done : undefined})()!==done){}return x`,
+			(a, r) => a.equal(r(), 6),
+		);
 		baseline(
 			'ackermann',
 			`

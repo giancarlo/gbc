@@ -8,9 +8,9 @@
 				"files": ["compiler/*"],
 				"tasks": "npm run build --prefix compiler"
 			},
-			"compiler-next": {
-				"files": ["compiler-next/*"],
-				"tasks": "npm run build --prefix compiler-next"
+			"std": {
+				"files": ["std/*"],
+				"tasks": "cd std && ./build.sh"
 			},
 			"cli": {
 				"files": ["cli/*"],
