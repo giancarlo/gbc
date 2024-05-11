@@ -12,7 +12,7 @@ export type RootNode = ReturnType<typeof parse>;
 export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
 	const {
 		current,
-		expectNode,
+		expect,
 		expectNodeKind,
 		optional,
 		node,
@@ -42,15 +42,12 @@ export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
 		const token = current();
 		if (token.kind === 'main') {
 			next();
-			const child = expectNode(
-				expression(),
-				'Expected statement or expression',
-			);
-			const children = child.kind === '{' ? child.children : [child];
+			expect('{');
+			const children = parseUntilKind(expression, '}');
 			return {
 				...token,
 				children,
-				end: child.end,
+				end: expect('}').end,
 				statements: children,
 			};
 		}

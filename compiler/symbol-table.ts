@@ -35,7 +35,7 @@ export function SymbolTable() {
 		{ name: 'true', kind: 'literal', flags: 0 },
 		{ name: 'false', kind: 'literal', flags: 0 },
 		{ name: 'NaN', kind: 'literal', flags: 0 },
-		{ name: 'Infinity', kind: 'literal', flags: 0 },
+		{ name: 'infinity', kind: 'literal', flags: 0 },
 		{
 			name: 'std',
 			kind: 'namespace',
@@ -53,6 +53,7 @@ export function SymbolTable() {
 
 	return {
 		...st,
+		context: 'normal' as 'normal' | 'data',
 		getRef(id: string, node: Node) {
 			const symbol = st.get(id);
 			if (symbol) {

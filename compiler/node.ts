@@ -1,7 +1,7 @@
 ///<amd-module name="@cxl/gbc.compiler/node.js"/>
 import { MakeNodeMap } from '@cxl/gbc.sdk';
 
-import type { Flags, Scope, Symbol } from './symbol-table.js';
+import type { Scope, Symbol } from './symbol-table.js';
 
 type Infix = { children: [Node, Node] };
 type MakeInfix<T extends string> = { [K in T]: Infix };
@@ -11,10 +11,9 @@ export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[] };
 	type: { children: [Node] };
-	return: { children?: [Node] };
-	var: {};
+	var: { ident: NodeMap['ident'] };
 	done: {};
-	ident: { symbol?: Symbol; flags?: Flags };
+	ident: { symbol?: Symbol };
 	string: {};
 	number: { value: number };
 	loop: { children: Node[] };
@@ -27,6 +26,7 @@ export type BaseNodeMap = {
 	};
 	macro: { value: string };
 	def: { children: [Node, Node] };
+	propdef: { children: [Node, Node] };
 	'=': { children: [Node, Node] };
 	'?': { children: [Node, Node, Node | undefined] };
 	'~': { children: [Node] };
@@ -40,12 +40,13 @@ export type BaseNodeMap = {
 		statements: Node[];
 		scope: Scope;
 		children: Node[];
+		lambda?: boolean;
 	};
 	'[': { children: [Node, Node] };
 	'(': { children: [Node] };
 	':': { children: [Node, Node] };
 	call: { children: [Node, Node | undefined] };
-	data: { children: Node[] };
+	data: { children: Node[]; scope: Scope };
 	'.': { children: [Node, Node]; symbol?: Symbol };
 	',': { children: Node[] };
 } & MakeInfix<
@@ -64,7 +65,6 @@ export type BaseNodeMap = {
 	| '>'
 	| '<='
 	| '>='
-	| '<<'
 	| '<:'
 	| ':>'
 	| '^'

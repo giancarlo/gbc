@@ -4,8 +4,7 @@ import { SymbolTable } from './symbol-table.js';
 import { parse } from './parser.js';
 import { scan } from './scanner.js';
 import { compiler } from './compiler.js';
-
-//import { compileWasm } from './target-wasm.js';
+import type { Node } from './node.js';
 
 export interface System {
 	readFile(): string;
@@ -36,7 +35,7 @@ export function Program(options?: ProgramOptions) {
 		};
 	}
 
-	function compileAst(root: ReturnType<typeof parse>) {
+	function compileAst(root: Node) {
 		return compiler(root);
 	}
 
@@ -44,6 +43,6 @@ export function Program(options?: ProgramOptions) {
 		compile,
 		compileAst,
 		options,
-		parser,
+		parse: parser,
 	};
 }

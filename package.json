@@ -5,7 +5,6 @@
 	"devDependencies": {
 		"@cxl/amd": "file:../cxl/dist/amd",
 		"@cxl/build": "file:../cxl/dist/build",
-		"@cxl/compiler": "file:../cxl/dist/compiler",
 		"@cxl/program": "file:../cxl/dist/program",
 		"@cxl/source": "file:../cxl/dist/source",
 		"@cxl/spec": "file:../cxl/dist/spec",

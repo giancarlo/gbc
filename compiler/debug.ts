@@ -11,7 +11,7 @@ function nodeId(node: Node) {
 		case 'number':
 			return node.value;
 		case 'ident':
-			return `:${text(node)}`;
+			return `:${node.symbol?.name || text(node)}`;
 		default:
 			return node.kind;
 	}

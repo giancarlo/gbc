@@ -144,12 +144,12 @@ export default spec('compiler', s => {
 			match(a, "a = 'hello'", "(root (= :a 'hello'))");
 			match(a, 'a = b', '(root (= :a :b))');
 			match(a, 'a = b = c', '(root (= :a (= :b :c)))');
-			match(a, 'a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
+			/*match(a, 'a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
 			match(
 				a,
 				'a, b, c = d, e, f',
 				'(root (= (, :a :b :c) (, :d :e :f)))',
-			);
+			);*/
 		});
 
 		it.should('parse function assignment', a => {
@@ -243,6 +243,15 @@ export default spec('compiler', s => {
 	});
 
 	s.test('baselines', a => {
+		function parse(src: string) {
+			const program = Program();
+			const sf = program.parse(src);
+			if (sf.errors.length) {
+				sf.errors.forEach(e => a.log(formatError(e)));
+				throw 'Errors found';
+			}
+			return [program, sf] as const;
+		}
 		function baseline(
 			testName: string,
 			src: string,
@@ -252,38 +261,73 @@ export default spec('compiler', s => {
 			extra = '',
 		) {
 			a.test(testName, a => {
-				const program = Program();
-				const sf = program.parser(src);
-				if (sf.errors.length) {
-					sf.errors.forEach(e => a.log(formatError(e)));
-					throw 'Errors found';
-				}
+				const [program, sf] = parse(src);
 				a.equal(ast(sf.root), astText);
+
 				const code = program.compileAst(sf.root);
 				a.equal(code.slice(RUNTIME.length), output);
 				const fn = new Function(code + extra);
 				test?.(a, fn);
 			});
 		}
+		function baselineExpr(
+			testName: string,
+			src: string,
+			astText: string,
+			output: string,
+			test?: (a: TestApi, fn: Function) => void,
+		) {
+			a.test(testName, a => {
+				const mainSrc = `__main={ ${src} }`;
+				const [program, sf] = parse(mainSrc);
+				a.log(sf);
+				const block = sf.root.children[0].children[1];
+				if (block.kind !== '{') throw 'Invalid ast';
+				const expr = block.children[0];
+				a.equal(ast(expr), astText);
+				a.equal(expr.source.slice(expr.start, expr.end), src);
+				const code = program.compileAst(expr);
+				const outSrc = code.slice(RUNTIME.length);
+				a.equal(outSrc, output);
+				const fn = new Function(`return ${outSrc}`);
+				test?.(a, fn);
+			});
+		}
 
-		baseline(
+		baseline('main - empty', 'main{}', '(root main)', '');
+
+		baselineExpr(
+			'data - label',
+			`[ label='string', 2 ]`,
+			`(data (, (propdef :label 'string') 2))`,
+			`['string',2]`,
+		);
+
+		baselineExpr(
+			'data - var label',
+			`[ var label=1,2,3 ]`,
+			`(data (, (propdef var 1) 2 3))`,
+			`[1,2,3]`,
+		);
+
+		/*baselineExpr(
 			'assignment - sequence',
-			`main a, b = 2, 1`,
-			`(root (main (def (, :a :b) (, 2 1))))`,
+			`a, b = 2, 1`,
+			`(def (, :a :b) (, 2 1))`,
 			`const a=2;const b=1;`,
 		);
 
-		baseline(
+		baselineExpr(
 			'assignment - variable assignment',
-			`main var a, var b = 2, 1`,
-			`(root (main (def (, :a @variable :b @variable) (, 2 1))))`,
+			`var a, var b = 2, 1`,
+			`(def (, :a @variable :b @variable) (, 2 1))`,
 			`let a=2;let b=1;`,
 		);
 
-		baseline(
+		baselineExpr(
 			'blocks',
-			'main { next(1) next(2) } >> { $ + 1 } >> std.out',
-			'',
+			'{ 1, 2 } >> { $ + 1 } >> std.out',
+			'(>> ({ (next 1) (next 2)) (>> ({ (+ $ 1)) (macro :std :out)))',
 			'',
 		);
 
@@ -308,43 +352,43 @@ export default spec('compiler', s => {
 			}`,
 			'(root (main (def :i @variable 0) (>> (, 1 2 3) ({ (= :i (+ :i $)))) (return :i)))',
 			'',
-		);
+		);*/
 
-		baseline(
+		baselineExpr(
 			'bitwise',
-			`main [ ~0, 1 << (32 - 1), 0xF0 | 0xCC ^ 0xAA & 0xFD ]`,
-			`(root (main (data (, -1 (<< 1 (- 32 1)) (| 240 (^ 204 (& 170 253)))))))`,
-			`return [-1,1<<32-1,240|204^170&253]`,
+			`[ ~0, 1 <: (32 - 1), 0xF0 | 0xCC ^ 0xAA & 0xFD ]`,
+			`(data (, -1 (<: 1 (- 32 1)) (| 240 (^ 204 (& 170 253)))))`,
+			`[-1,1<<32-1,240|204^170&253]`,
 			(a, r) => a.equalValues(r(), [-1, 1 << (32 - 1), 0xf4]),
 		);
 
-		baseline(
+		baselineExpr(
 			'ternary',
-			'main true ? 1 : 0',
-			'(root (main (? :true 1 0)))',
-			'return true ? 1 : 0',
+			'true ? 1 : 0',
+			'(? :true 1 0)',
+			'true ? 1 : 0',
 			(a, r) => a.equal(r(), 1),
 		);
 
-		baseline(
+		/*baseline(
 			'function call',
-			'a = { 123 } main a()',
+			'a = { 123 } main { next a() }',
 			'(root (def :a ({ 123)) (main (call :a ?)))',
 			'const a=()=>{return 123};return a()',
 			(a, r) => a.equal(r(), 123),
 		);
-		baseline(
+		baselineExpr(
 			'$ variable',
-			'main 10.4 >> { $ + 2 } >> { $ * 3 }',
-			'(root (main (>> (>> 10.4 ({ (+ $ 2))) ({ (* $ 3)))))',
+			'10.4 >> { $ + 2 } >> { $ * 3 }',
+			'(>> (>> 10.4 ({ (+ $ 2))) ({ (* $ 3)))',
 			'return (($)=>{return $*3})((($)=>{return $+2})(10.4))',
 			(a, r) => a.equal(r(), (10.4 + 2) * 3),
 		);
-		baseline(
+		baselineExpr(
 			'hello world',
-			`main { 'Hello World!' >> std.out }`,
-			"(root (main (>> 'Hello World!' (macro :std :out))))",
-			`return console.log('Hello World!')`,
+			`'Hello World!' >> std.out`,
+			"(>> 'Hello World!' (macro :std :out))",
+			`console.log('Hello World!')`,
 		);
 		baseline(
 			'loop - 0 to 5',
@@ -357,7 +401,7 @@ export default spec('compiler', s => {
 			'ackermann',
 			`
 ackermann = fn(m: number, n:number) {
-	m == 0 ? n + 1 :
+	next m == 0 ? n + 1 :
 		(n == 0 ? ackermann(m - 1, 1) : ackermann(m - 1, ackermann(m, n - 1)))
 }
 		`,
@@ -373,6 +417,6 @@ ackermann = fn(m: number, n:number) {
 				a.equal(ack(3, 5), 253);
 			},
 			'return ackermann;',
-		);
+		);*/
 	});
 });

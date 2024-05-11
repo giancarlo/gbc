@@ -3,15 +3,17 @@ import { InfixNode, text } from '@cxl/gbc.sdk';
 import { Flags } from './symbol-table.js';
 
 import type { Node, NodeMap } from './node.js';
-import type { RootNode } from './parser.js';
 
-export const RUNTIME = `"use strict";const done=Symbol('done');`;
+export const RUNTIME = `"use strict";`;
 
-const infix = (n: InfixNode<NodeMap>, op = n.kind) =>
+const infix = (n: InfixNode<NodeMap>, op: string = n.kind) =>
 	`${compile(n.children[0])}${op}${compile(n.children[1])}`;
 const block = (n: NodeMap['{'] | NodeMap['main']) =>
 	`${
-		n.statements.length === 1 && n.statements[0].kind !== 'def'
+		n.kind === '{' &&
+		n.lambda &&
+		n.statements.length === 1 &&
+		n.statements[0].kind !== 'def'
 			? 'return '
 			: ''
 	}${compileEach(n.statements)}`;
@@ -21,9 +23,9 @@ function assign(node: Node, value?: Node) {
 	if (node.kind !== 'ident' || !node.symbol || !value)
 		throw 'Invalid definition';
 
-	return `${node.symbol.flags & Flags.Variable ? 'let' : 'const'} ${text(
-		node,
-	)}=${compile(value)};`;
+	return `${node.symbol.flags & Flags.Variable ? 'let' : 'const'} ${
+		node.symbol.name
+	}=${compile(value)}`;
 }
 
 export function compile(node: Node): string {
@@ -31,7 +33,7 @@ export function compile(node: Node): string {
 		case 'data':
 			return `[${compileEach(node.children)}]`;
 		case 'done':
-			return 'done';
+			return 'return;';
 		case 'loop':
 			return `while((${compile(node.children[0])})()!==done){}`;
 		case 'root':
@@ -40,8 +42,6 @@ export function compile(node: Node): string {
 			return block(node);
 		case 'number':
 			return node.value.toString();
-		case 'return':
-			return `return ${node.children ? compile(node.children[0]) : ''}`;
 		case '++':
 		case '--':
 			return `${compile(node.children[0])}${node.kind}`;
@@ -105,6 +105,8 @@ export function compile(node: Node): string {
 					: `(${compile(r)})`;
 			return `${left}(${compile(l)})`;
 		}
+		case 'propdef':
+			return compile(node.children[1]);
 		case 'def': {
 			const [left, right] = node.children;
 
@@ -144,6 +146,6 @@ export function compile(node: Node): string {
 	}
 }
 
-export function compiler(root: RootNode) {
+export function compiler(root: Node) {
 	return RUNTIME + compile(root);
 }

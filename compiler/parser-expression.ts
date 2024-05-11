@@ -3,7 +3,7 @@ import { ParserApi, UnaryNode, text, parserTable } from '@cxl/gbc.sdk';
 import { parseType } from './parser-type.js';
 import { Flags, SymbolTable } from './symbol-table.js';
 
-import type { Node, NodeMap } from './node.js';
+import { Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
 
 export function parseExpression(
@@ -83,19 +83,25 @@ export function parseExpression(
 	}
 
 	function define(n: Node, isDef = false) {
-		if (n.kind !== 'ident') throw error('Expected identifier', n);
-		const name = text(n);
+		const ident =
+			n.kind === 'var' ? n.ident : n.kind === 'ident' ? n : undefined;
+
+		if (!ident) throw error('Expected identifier', n);
+		const name = text(ident);
 		const existing = symbolTable.getRef(name, n);
+
+		if (isDef && existing)
+			throw error('Cannot mix assignment and defitions', n);
+
 		const symbol =
 			existing ||
 			symbolTable.set(name, {
 				name,
 				kind: 'variable',
-				flags: n.flags || 0,
+				flags: n.kind === 'var' ? Flags.Variable : 0,
 			});
-		n.symbol = symbol;
-		if (isDef && existing)
-			throw error('Cannot mix assignment and defitions', n);
+		ident.symbol = symbol;
+
 		return !existing;
 	}
 
@@ -121,35 +127,25 @@ export function parseExpression(
 			fn: {
 				prefix(tk) {
 					return parseBlock(tk, node => {
-						let tk = current();
+						const tk = current();
 						if (tk.kind === '(') blockParameters(node);
 						expect('{');
 						node.statements = parseUntilKind(expr, '}');
 					});
 				},
 			},
-			return: {
-				prefix(tk) {
-					const result = tk as NodeMap['return'];
-					const child = expr();
-					if (child) {
-						result.children = [child];
-						result.end = child.end;
-					}
-					return result;
-				},
-			},
 			var: {
-				prefix() {
-					const ident = expect('ident') as NodeMap['ident'];
-					ident.flags = (ident.flags || 0) | Flags.Variable;
-					return ident;
+				prefix(tk: NodeMap['var']) {
+					tk.ident = expect('ident') as NodeMap['ident'];
+					tk.end = tk.ident.end;
+					return tk;
 				},
 			},
 			'{': {
 				prefix: tk =>
 					parseBlock(tk, node => {
 						node.statements = parseUntilKind(expr, '}');
+						node.lambda = true;
 					}),
 			},
 			'||': infixOperator(3),
@@ -238,11 +234,11 @@ export function parseExpression(
 				},
 			},
 			',': {
-				precedence: 3,
+				precedence: 1,
 				infix(tk, left) {
 					const node = tk as NodeMap[','];
 					node.start = left.start;
-					const right = expectNode(expr(3), 'Expected expression');
+					const right = expectNode(expr(1), 'Expected expression');
 					node.children =
 						left.kind === ','
 							? [...left.children, right]
@@ -255,20 +251,16 @@ export function parseExpression(
 				precedence: 2,
 				infix(tk, left) {
 					const node = tk as NodeMap['='];
-					let isDefinition = false;
-					node.start = left.start;
-
-					// Handle multiple assignment
-					if (left.kind === ',') {
-						for (const child of left.children)
-							isDefinition = define(child, isDefinition);
-					} else isDefinition = define(left);
-
-					const right = expectNode(expr(), 'Expected expression');
+					let isDefinition = define(left);
+					const right = expectNode(expr(1), 'Expected expression');
 					if (isDefinition)
-						(node as unknown as NodeMap['def']).kind = 'def';
+						(node as Node).kind =
+							symbolTable.context === 'data' ? 'propdef' : 'def';
+
 					node.children = [left, right];
+					node.start = left.start;
 					node.end = right.end;
+
 					return node;
 				},
 			},
@@ -293,12 +285,20 @@ export function parseExpression(
 			'[': {
 				precedence: 17,
 				prefix(tk) {
-					return {
-						...tk,
-						kind: 'data',
-						children: [expectNode(expr(), 'Expected expression')],
-						end: expect(']').end,
-					};
+					symbolTable.context = 'data';
+					return symbolTable.withScope(scope => {
+						const result: NodeMap['data'] = {
+							...tk,
+							kind: 'data',
+							scope,
+							children: [
+								expectNode(expr(), 'Expected expression'),
+							],
+							end: expect(']').end,
+						};
+						symbolTable.context = 'normal';
+						return result;
+					});
 				},
 				infix(tk, left) {
 					return {

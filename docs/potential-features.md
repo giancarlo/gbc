@@ -234,7 +234,7 @@ tag'string ${hello}'
 ## Types and Decorators
 
 ```ts
-import '@cxl/component' [ Component, augment, attribute, bind, get, tagName ]
+@cxl/component [ Component, augment, attribute, bind, get, tagName ]
 import './a11y' [ role ]
 
 [ a, slot ] = std.dom
@@ -242,11 +242,13 @@ import './a11y' [ role ]
 ##
 # Bindable Link Component.
 #
-@tagName('cxl-a')
 type A {
-	extends($, Component)
+	extends(Component)
+	tagName('cxl-a')
+	setAttribute('role', 'link');
+
 	bind($, {
-		el = a(style=[color='inherit'] children=[slot()])
+		el = @.dom.a(style=[color='inherit'] children=[slot()])
 
 		return [
 			el,
@@ -254,8 +256,6 @@ type A {
 			{ get($, 'target') >> { el.target = $ } }
 		]
 	})
-
-	setAttribute('role', 'link');
 
 	@attribute()
 	target: '_blank' | '' = ''
@@ -265,4 +265,37 @@ type A {
 }
 
 export [ A ]
+```
+
+## Function Input and Parameters
+
+```ts
+a = fn(:inputType, ...optional parameters) expr;
+
+add = fn(:int, b:int, c:int) { $ + b + c }
+add(1, b=10, c=21)
+```
+
+```ts
+fn partition<T>(a: Array<T>, pred: fn(:T): boolean) {
+    var i = 0;
+    var j = len - 1;
+
+    loop {
+        loop { pred(a[i]) ? done : i++ }
+        loop { pred(a[j]) ? j-- : done }
+        i >= j ? done : swap(a[i], a[j])
+    }
+
+    next i
+}
+
+fn quicksort<T>(a: data<T>) {
+    len < 2 ? done
+    pivot = a[len / 2];
+
+    i = a->partition({ n < pivot });
+    a->slice(0, i) >> quicksort;
+    a->slice(i + 1, len - i) >> quicksort;
+}
 ```

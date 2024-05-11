@@ -2,22 +2,25 @@
 
 ## Design Principles
 
-The language will abide by the following rules:
+The language will abide by the following principles:
 
--   Limit Choice.
--   Enforce best practices.
--   Errors should be clear, never pass silently, and should contain enough information to quickly determine where the issue is.
--   Convention over Configuration
--   No hidden magic, or excessive syntactic sugar.
--   No unnecessary features.
+1. **Limited Choice:** Minimize ways to achieve the same functionality.
+2. **Enforce Best Practices:** Integrate critical practices into syntax/type system.
+3. **Explicit Errors:** Throw errors with clear messages and suggestions.
+4. **Convention over Configuration:** Define most behaviors with minimal configuration.
+5. **No Hidden Magic:** Maintain transparency, avoid unexpected behavior.
+6. **No Unnecessary Features:** Focus on essential development features.
 
-## Rules
+### Variables
 
--   Variable shadowing is not allowed.
--   Unused variables are not allowed.
--   Variables must be defined with a value.
--   Variables are constant by default
--   Must specify parameter names when function has more than one parameter.
+7. **No Variable Shadowing:** Prevent variables within a block from masking wider scope variables with the same name.
+8. **No Unused Variables:** Flag variables declared but never used.
+9. **Mandatory Initialization:** All variables must be assigned a value during declaration.
+10. **Constant by Default:** Variables are immutable (cannot be changed) by default, but can be explicitly declared as mutable if needed.
+
+### Functions
+
+11. **Named Function Parameters:** All function parameters must have explicit names.
 
 ## Hello World
 
@@ -31,11 +34,11 @@ main { 'Hello World' >> std.out }
 
 ### Comments
 
-Comments start with the `#` character and end at the end of line. Multiline comments are not supported.
+Comments start with the `#` character and end at the end of line.
 
 ### Identifiers
 
-Identifiers must start with an alphabetic character or underscore and might be followed by any number of alphanumeric characters or underscores.
+Identifiers must start with an alphabetic character and might be followed by any number of alphanumeric characters or underscores.
 
 ### Keywords
 
@@ -188,7 +191,11 @@ All data structures are iterable:
 
 ### Variable Definition
 
-A variable is a storage location for holding a value. Variables are defined with the '=' operator. By default their value is constant, unless defined with the `var` keyword. If the variable type is omitted, it is inferred by the compiler. All variables must be defined with a value.
+Variables act as named containers for data. You define a variable by giving it a name and assigning it a value using the equals sign (`=`). By default, these variables are immutable, meaning their values cannot be changed after they are first assigned. However, if you need a variable that can be updated later, you can declare it as mutable using the `var` keyword.
+
+The language also employs type inference. This means that if you don't explicitly specify the type of data a variable will hold, the compiler will automatically determine it based on the value you assign during declaration.
+
+One important rule to remember is that all variables must be initialized with a value when they are declared. This helps to prevent errors caused by using undefined variables.
 
 ```
 # Define a constant with name 'constant', type 'string', and value 'value'
@@ -199,8 +206,6 @@ var variable = 10.0;
 ```
 
 ## Types
-
-Types must start with a capital letter.
 
 ### Numeric Types
 
@@ -251,11 +256,18 @@ Types must start with a capital letter.
 
 ### Other Types
 
-    Boolean, True, False, Void, Error
+    boolean, true, false, void, error
 
 ## Modules
 
--   Code is only allowed inside the `main` statement.
+Modules serve as the primary building blocks for code organization and reusability.
+
+A module can contain the following elements:
+
+-   **Function Definitions:** Reusable blocks of code performing specific tasks and optionally returning values.
+-   **Optional `main` Block:** The entry point for the module when executed directly.
+
+Modules can only contain function and variable definitions, along with an optional `main` block. Only functions can be exported from a module.
 
 ## Code Blocks
 
@@ -281,8 +293,7 @@ Types must start with a capital letter.
 Code blocks can emit multiple values. The block automatically completes once it reaches the end of the function.
 
 ```ts
-    { next 1 next 2 } >> std.out # Prints 1 and 2
-	{ 1, 2 } >> std.out # Same as above
+    { next 1, 2 } >> std.out # Prints 1 and 2
     { next(1) done next(2) } >> std.out # Unreachable code compiler error.
 ```
 
