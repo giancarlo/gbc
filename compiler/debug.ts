@@ -9,7 +9,7 @@ function nodeId(node: Node) {
 		case 'string':
 			return text(node);
 		case 'number':
-			return node.value;
+			return String(node.value);
 		case 'ident':
 			return `:${node.symbol?.name || text(node)}`;
 		default:
@@ -17,17 +17,17 @@ function nodeId(node: Node) {
 	}
 }
 
-function nodeFlags(flags: number) {
+export function symbolFlags(flags: number) {
 	const result = [];
 	for (const flag in Flags) {
 		if (flags & +flag) result.push('@' + Flags[flag].toLowerCase());
 	}
-	return result.length ? ' ' + result.join(' ') : '';
+	return result;
 }
 
 export function ast(node: Node): string {
-	const flags = 'flags' in node ? nodeFlags(node.flags as number) : '';
-	const id = nodeId(node) + flags;
+	//const flags = 'flags' in node ? symbolFlags(node.flags as number) : '';
+	const id = nodeId(node); // + flags;
 
 	return 'children' in node && node.children?.length
 		? `(${id} ${node.children.map(n => (n ? ast(n) : '?')).join(' ')})`

@@ -280,7 +280,6 @@ export default spec('compiler', s => {
 			a.test(testName, a => {
 				const mainSrc = `__main={ ${src} }`;
 				const [program, sf] = parse(mainSrc);
-				a.log(sf);
 				const block = sf.root.children[0].children[1];
 				if (block.kind !== '{') throw 'Invalid ast';
 				const expr = block.children[0];

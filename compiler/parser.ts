@@ -43,13 +43,16 @@ export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
 		if (token.kind === 'main') {
 			next();
 			expect('{');
-			const children = parseUntilKind(expression, '}');
-			return {
-				...token,
-				children,
-				end: expect('}').end,
-				statements: children,
-			};
+			return symbolTable.withScope(scope => {
+				const children = parseUntilKind(expression, '}');
+				return {
+					...token,
+					scope,
+					children,
+					end: expect('}').end,
+					statements: children,
+				};
+			});
 		}
 
 		return definition();

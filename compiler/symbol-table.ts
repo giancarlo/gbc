@@ -53,7 +53,6 @@ export function SymbolTable() {
 
 	return {
 		...st,
-		context: 'normal' as 'normal' | 'data',
 		getRef(id: string, node: Node) {
 			const symbol = st.get(id);
 			if (symbol) {

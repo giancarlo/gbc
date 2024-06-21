@@ -13,6 +13,7 @@ export interface Token<Kind> extends Position {
 
 export type ScanFn<Node extends Token<string>> = () => Node;
 export type Scanner<Node extends Token<string>> = (src: string) => () => Node;
+export type BaseNode = Position & { children?: BaseNode[] };
 
 export type NodeMap = {
 	[K: string]: Token<string>;
@@ -529,4 +530,13 @@ export function parserTable<
 >(tableFn: ParserTableFn<Map, ScannerToken>) {
 	return (api: ParserApi<ScannerToken>) =>
 		parseTableApi(tableFn, api).expression;
+}
+
+export function findNodeAtIndex(node: BaseNode, index: number) {
+	if (node.children) {
+		for (const child of node.children)
+			if (child.children) findNodeAtIndex(child, index);
+			else if (child.start <= index && child.end >= index) return child;
+	}
+	return node;
 }

@@ -12,6 +12,7 @@ export function parseExpression(
 ) {
 	const typeParser = parseType(api, symbolTable);
 	const { current, error, expect, expectNode, optional, parseList } = api;
+	let context: 'normal' | 'data' = 'normal';
 
 	function parameter(): NodeMap['parameter'] {
 		const ident = optional('ident');
@@ -255,7 +256,7 @@ export function parseExpression(
 					const right = expectNode(expr(1), 'Expected expression');
 					if (isDefinition)
 						(node as Node).kind =
-							symbolTable.context === 'data' ? 'propdef' : 'def';
+							context === 'data' ? 'propdef' : 'def';
 
 					node.children = [left, right];
 					node.start = left.start;
@@ -285,7 +286,7 @@ export function parseExpression(
 			'[': {
 				precedence: 17,
 				prefix(tk) {
-					symbolTable.context = 'data';
+					context = 'data';
 					return symbolTable.withScope(scope => {
 						const result: NodeMap['data'] = {
 							...tk,
@@ -296,7 +297,7 @@ export function parseExpression(
 							],
 							end: expect(']').end,
 						};
-						symbolTable.context = 'normal';
+						context = 'normal';
 						return result;
 					});
 				},

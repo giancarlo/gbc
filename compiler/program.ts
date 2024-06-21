@@ -44,5 +44,6 @@ export function Program(options?: ProgramOptions) {
 		compileAst,
 		options,
 		parse: parser,
+		symbolTable,
 	};
 }

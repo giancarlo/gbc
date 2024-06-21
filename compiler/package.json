@@ -6,7 +6,7 @@
 	"description": "GB Compiler",
 	"license": "UNLICENSED",
 	"scripts": {
-		"build": "cxl-build",
+		"build": "node build",
 		"test": "npm run build && cd ../dist/compiler && cxl-tester"
 	},
 	"dependencies": {}
