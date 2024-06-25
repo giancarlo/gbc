@@ -207,6 +207,21 @@ export default spec('compiler', s => {
 			);
 		});
 
+		it.should('parse data block', a => {
+			match(
+				a,
+				`a = [ 'string', 2, true, 4.5 ]`,
+				`(root (= :a (data (, 'string' 2 :true 4.5))))`,
+			);
+		});
+		it.should('parse data block with label', a => {
+			match(
+				a,
+				`b = [ label = 'string', 2 ]`,
+				`(root (= :b (data (, (propdef :label 'string') 2))))`,
+			);
+		});
+
 		it.test('errors', a => {
 			function testError(
 				src: string,
@@ -322,14 +337,15 @@ export default spec('compiler', s => {
 			`(def (, :a @variable :b @variable) (, 2 1))`,
 			`let a=2;let b=1;`,
 		);
+		*/
 
 		baselineExpr(
 			'blocks',
 			'{ 1, 2 } >> { $ + 1 } >> std.out',
-			'(>> ({ (next 1) (next 2)) (>> ({ (+ $ 1)) (macro :std :out)))',
+			'(>> ({ (, 1 2)) (>> ({ (+ $ 1)) (macro :std :out)))',
 			'',
 		);
-
+		/*
 		baseline(
 			'assignment - swap',
 			`main {
@@ -383,12 +399,14 @@ export default spec('compiler', s => {
 			'return (($)=>{return $*3})((($)=>{return $+2})(10.4))',
 			(a, r) => a.equal(r(), (10.4 + 2) * 3),
 		);
+		*/
 		baselineExpr(
 			'hello world',
 			`'Hello World!' >> std.out`,
 			"(>> 'Hello World!' (macro :std :out))",
 			`console.log('Hello World!')`,
 		);
+		/*
 		baseline(
 			'loop - 0 to 5',
 			`main { var x=0 loop { x++ == 5 ? done } return x }`,

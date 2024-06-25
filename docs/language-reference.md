@@ -47,12 +47,10 @@ The following keyboards are reserved.
 as - Type Casting
 done - Mark the function as complete
 next - Emit the next value from a function
-return - Emit value and complete.
 type - Define a type alias or structure
 use - Bring symbols into scope (import)
 main - Source File entry point
 export - Export module symbol
-var -
 
 ### Operators
 
@@ -178,11 +176,6 @@ c.field = false;
 # Results in compiler error
 c.field = 10;
 c[1] = 3
-
-# Is [ 10 ] equivalent to 10 ?
-[10] == 10
-a = [10];
-a + 2 == 12;
 ```
 
 All data structures are iterable:
@@ -260,30 +253,67 @@ var variable = 10.0;
 
 ## Modules
 
-Modules serve as the primary building blocks for code organization and reusability.
+Modules serve as the primary building blocks for code organization and reusability. Each module is encapsulated within a single source file.
 
-A module can contain the following elements:
-
--   **Function Definitions:** Reusable blocks of code performing specific tasks and optionally returning values.
--   **Optional `main` Block:** The entry point for the module when executed directly.
-
-Modules can only contain function and variable definitions, along with an optional `main` block. Only functions can be exported from a module.
+Modules can contain function and variable definitions, along with an optional `main` block. However, only functions are explicitly exported from a module.
 
 ## Code Blocks
 
--   Blocks can only have one parameter. If more than one parameter is specified, parameters are converted into a data structure.
--   The `$` constant points to the current block parameter.
+-   Code blocks are delimited by curly braces {}.
+-   The code block can only accept one parameter, which is referenced within the block using the $ symbol.
+-   Code blocks can contain one or more expressions separated by commas.
+-   Code blocks can be chained together using the `>>` operator.
+
+```
+# Prints 2 to the console
+1 >> { $ + $ } >> @.out
+```
+
+Code blocks can be assigned to variables, allowing you to create reusable named functions.
 
 ```ts
-    # Code Block with Parameters
-    add = fn(a:int, b:int):int { a + b }
+divide = { $ / 2 }
+# Prints 4 (8 divided by 2)
+8 >> divide >> @.out
+```
 
+### Comma Operator
+
+Within code blocks, the comma operator is used to separate expressions whose evaluated values are emitted consecutively to the next code block in the chain.
+
+```ts
+# Prints 530
+10 >> { $ / 2, $ * 3 } >> @.out
+```
+
+-   When a code block encounters a comma, it evaluates the expression before the comma.
+-   The evaluated value is passed as the parameter to the next code block in the chain (if any).
+-   The execution of the current code block continues, evaluating the expression after the comma.
+-   This process repeats for each expression separated by commas within the code block.
+
+### Completion
+
+Inline code blocks complete execution once all expressions have been evaluated and their corresponding values emitted to the next block in the chain. This means:
+
+-   The code block does not wait for any response or processing from the next block in the chain before continuing.
+-   The code block cannot access the results or modify the behavior of the next block in the chain based on its emitted values.
+-   Once all expressions are evaluated, the code block is considered finished and moves on to the next statement in your code.
+
+## Functions
+
+### Named Arguments
+
+If name arguments are used when calling a block, all arguments must include the name.
+
+```ts
+    add = fn(a:int, b:int):int { a + b }
 	add(1, 2)
     add(b=1, a=2) # Named arguments
+```
 
-    # Anonymous parameters
-    add = fn(:int, :int) { $.0 + $.1 }
+## Generics
 
+```ts
 	# Generics
 	add = fn<T extends int>(:T,:T) { ($.0 + $.1) }
 ```
@@ -297,17 +327,9 @@ Code blocks can emit multiple values. The block automatically completes once it 
     { next(1) done next(2) } >> std.out # Unreachable code compiler error.
 ```
 
-## Statements
-
-### loop
-
-Emits void indefinetely.
-
-    var i=0; loop { i++ } >> std.out;
-
 ## Errors
 
-Errors are data and are part of the function return type. Errors must implement the Error type. The _error_ function can be used to create errors at runtime.
+Errors are data and are part of the function return type. Errors implement the Error type. The _error_ function can be used to create errors at runtime.
 
 ```ts
     open = (filename: string) {
@@ -318,3 +340,11 @@ Errors are data and are part of the function return type. Errors must implement 
     	# $ can be File or 'Error!'
     }
 ```
+
+## Statements
+
+### loop
+
+Emits void indefinetely.
+
+    var i=0; loop { i++ } >> std.out;
