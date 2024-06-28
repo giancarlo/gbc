@@ -257,73 +257,247 @@ Modules serve as the primary building blocks for code organization and reusabili
 
 Modules can contain function and variable definitions, along with an optional `main` block. However, only functions are explicitly exported from a module.
 
-## Code Blocks
-
--   Code blocks are delimited by curly braces {}.
--   The code block can only accept one parameter, which is referenced within the block using the $ symbol.
--   Code blocks can contain one or more expressions separated by commas.
--   Code blocks can be chained together using the `>>` operator.
-
-```
-# Prints 2 to the console
-1 >> { $ + $ } >> @.out
-```
-
-Code blocks can be assigned to variables, allowing you to create reusable named functions.
-
-```ts
-divide = { $ / 2 }
-# Prints 4 (8 divided by 2)
-8 >> divide >> @.out
-```
-
-### Comma Operator
-
-Within code blocks, the comma operator is used to separate expressions whose evaluated values are emitted consecutively to the next code block in the chain.
-
-```ts
-# Prints 530
-10 >> { $ / 2, $ * 3 } >> @.out
-```
-
--   When a code block encounters a comma, it evaluates the expression before the comma.
--   The evaluated value is passed as the parameter to the next code block in the chain (if any).
--   The execution of the current code block continues, evaluating the expression after the comma.
--   This process repeats for each expression separated by commas within the code block.
-
-### Completion
-
-Inline code blocks complete execution once all expressions have been evaluated and their corresponding values emitted to the next block in the chain. This means:
-
--   The code block does not wait for any response or processing from the next block in the chain before continuing.
--   The code block cannot access the results or modify the behavior of the next block in the chain based on its emitted values.
--   Once all expressions are evaluated, the code block is considered finished and moves on to the next statement in your code.
-
 ## Functions
+
+Functions are like lambdas but can have multiple parameters and are defined using the `fn` keyword.
+
+-   Functions are defined using the `fn` keyword followed by the function name, parameter list, return type, and body.
+-   Functions can accept other functions as parameters or return functions.
+
+This function takes two integers `a` and `b` and returns their sum.
+
+```ts
+fn add(a: int, b: int): int { a + b }
+```
 
 ### Named Arguments
 
-If name arguments are used when calling a block, all arguments must include the name.
+Functions can be called with named arguments for clarity. If named arguments are used, all arguments must include the name.
 
 ```ts
-    add = fn(a:int, b:int):int { a + b }
-	add(1, 2)
-    add(b=1, a=2) # Named arguments
+add = fn(a: int, b: int): int { a + b }
+add(1, 2)       # Positional arguments
+add(b = 1, a = 2) # Named arguments
 ```
+
+-   Both calls to `add` return `3`, but the second call uses named arguments for clarity.
+
+### Default Parameters
+
+-   Functions can have default values for parameters, which are used if no argument is provided for that parameter.
+
+```ts
+fn greet(name: string = "World"): string {
+    return "Hello, " + name + "!";
+}
+
+greet()          # Output: "Hello, World!"
+greet("Alice")   # Output: "Hello, Alice!"
+```
+
+-   The `greet` function has a default parameter `name` with a value of `"World"`.
+
+### Closures
+
+Functions can capture variables from their surrounding scope, creating closures.
+
+```ts
+fn makeCounter(): {
+    var count = 0;
+    next { count += 1 }
+}
+
+counter = makeCounter();
+counter()    # Output: 1
+counter()    # Output: 2
+```
+
+### Recursion
+
+-   Functions can call themselves recursively.
+
+```ts
+fn factorial(n: int): int {
+    (n <= 1) ? 1 : n * factorial(n - 1);
+}
+
+factorial(5)    # Output: 120
+```
+
+-   The `factorial` function calculates the factorial of a number using recursion.
+
+### Emitting Values in Functions
+
+Functions have the ability to emit multiple values over time, using the `next` keyword. The `done` keyword is used to indicate that a function has finished emitting values.
+
+### Emitting Values with `next`
+
+-   The `next` keyword is used within a function to emit a value to the next function or code block in the chain.
+-   A function can emit multiple values by calling `next` multiple times.
+
+```ts
+fn emitValues(): void {
+    next(1);
+    next(2);
+    next(3);
+    done();
+}
+
+emitValues() >> @.out
+```
+
+-   This function emits the values `1`, `2`, and `3` before calling `done` to signal completion.
+
+### Completion
+
+Functions complete execution once all expressions have been evaluated and their corresponding values emitted to the next block in the chain. This means:
+
+-   The function does not wait for any response or processing from the next block in the chain before continuing.
+-   The function cannot access the results or modify the behavior of the next block in the chain based on its emitted values.
+-   Once all expressions are evaluated, the function is considered finished and moves on to the next statement in your code.
+-   The done keyword can be used to explicitly signal early termination if needed.
+
+### Error Handling
+
+#### `catch` Block
+
+The `catch` block is a construct used within the stream pipeline to intercept errors. It allows you to define custom behavior when errors occur.
+
+It can emit new values to replace the error and continue processing the stream.
+
+The `"done"` keyword can be used to signal completion of the stream. This prematurely terminates the stream processing due to the encountered error.
+
+The code within the `catch` block can choose to re-throw the original error. This allows subsequent parts of the stream or the caller to handle the error in their own way.
+
+The `$` variable will be available inside the catch bloand and it will contain the caught error.
+
+## Lambdas
+
+-   Lambdas are enclosed within curly braces `{}`.
+-   Each lambda accepts a single parameter, referenced using the `$` symbol.
+-   Lambdas can be chained together using the `>>` operator.
+
+```
+1 >> { $ + $ } >> @.out
+```
+
+-   This lambda adds its input to itself.
+-   Output: `2`
+
+### Sequences
+
+Sequences allow you to emit multiple values from within a single code block.
+The comma operator can be used to create sequences by separating expressions,
+each of which is evaluated and emitted as a separate value.
+This is equivalent to using the `next` keyword for each expression.
+
+#### Comma Operator
+
+-   The comma operator `,` separates expressions within a code block.
+-   Each expression separated by a comma is evaluated, and its result is emitted as a separate value.
+
+```ts
+2 >> { $ / 2, $ * 2 } >> @.out
+```
+
+-   This code emits `1` (2 divided by 2) and `4` (2 multiplied by 2).
+
+### Equivalent `next` Usage
+
+-   The above example is equivalent to using the `next` keyword for each expression:
+
+```ts
+fn operation() {
+	next $ / 2
+	next $ * 2
+}
+2 >> operation >> @.out
+```
+
+-   This also emits `1` and `4`.
 
 ## Generics
 
+-   Generics are defined using angle brackets `<>` with a type parameter.
+-   The type parameter can be constrained to a certain type or range of types using the `extends` keyword.
+
 ```ts
-	# Generics
-	add = fn<T extends int>(:T,:T) { ($.0 + $.1) }
+fn add<T extends int>(a: T, b: T): T {
+    return a + b;
+}
+
+add(1, 2)    # Output: 3
 ```
+
+-   The `add` function uses a generic type `T` that extends `int`. It can add two integers of the same type.
+
+### Generic Constraints
+
+-   Generics can be constrained to specific types or interfaces using the `extends` keyword.
+
+```ts
+fn display<T extends string | int>(value: T): void {
+    @.out(value.toString());
+}
+
+display("Hello")  # Output: "Hello"
+display(123)      # Output: "123"
+```
+
+-   The `display` function accepts a parameter `value` of a generic type `T` that extends `string` or `int`. It can display either a string or an integer.
+
+### Multiple Type Parameters
+
+-   Functions can use multiple type parameters.
+
+```ts
+fn pair<T, U>(first: T, second: U): (T, U) {
+    (first, second);
+}
+
+# Outputs 1 and 'one'
+pair(1, "one") >> @.out
+```
+
+-   The `pair` function uses two generic type parameters `T` and `U` to create a sequence from the two input values.
+
+### Type Inference
+
+-   The compiler can often infer the generic type based on the function arguments, so you may not need to explicitly specify the type.
+
+Example:
+
+```ts
+fn identity<T>(value: T): T {
+    return value;
+}
+
+identity(42)       # Output: 42
+identity("Hello")  # Output: "Hello"
+```
+
+-   The `identity` function returns the input value as-is. The compiler infers the type of `T` based on the argument provided.
+
+### Bounded Generics
+
+-   Bounded generics restrict the types that can be used as type arguments. This is useful for ensuring type safety.
+
+```ts
+fn max<T extends Comparable<T>>(a: T, b: T): T {
+    return a.compareTo(b) > 0 ? a : b;
+}
+
+max(5, 10)   # Output: 10
+```
+
+-   The `max` function uses a generic type `T` that extends `Comparable<T>`, ensuring that the type can be compared.
 
 ### Emitting Values
 
 Code blocks can emit multiple values. The block automatically completes once it reaches the end of the function.
 
 ```ts
-    { next 1, 2 } >> std.out # Prints 1 and 2
+    { 1, 2 } >> std.out # Prints 1 and 2
     { next(1) done next(2) } >> std.out # Unreachable code compiler error.
 ```
 
@@ -340,6 +514,21 @@ Errors are data and are part of the function return type. Errors implement the E
     	# $ can be File or 'Error!'
     }
 ```
+
+## Chaining
+
+-   Functions can be chained to perform multiple operations in sequence.
+
+Example:
+
+```ts
+increment = { $ + 1 }
+double = { $ * 2 }
+3 >> increment >> double >> @.out
+```
+
+-   This chain increments the input by 1 and then doubles the result.
+-   Output: `8`
 
 ## Statements
 

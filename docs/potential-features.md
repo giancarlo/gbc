@@ -299,3 +299,22 @@ fn quicksort<T>(a: data<T>) {
     a->slice(i + 1, len - i) >> quicksort;
 }
 ```
+
+### Function Overloading
+
+Functions can be overloaded, allowing multiple functions with the same name but different parameter lists.
+
+```ts
+fn print(value: int) {
+    @.out(value.toString());
+}
+
+fn print(value: string) {
+    @.out(value);
+}
+
+print(42)       # Output: "42"
+print("Hello")  # Output: "Hello"
+```
+
+-   The `print` function is overloaded to handle both integers and strings.
