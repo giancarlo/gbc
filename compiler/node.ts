@@ -40,7 +40,6 @@ export type BaseNodeMap = {
 		statements: Node[];
 		scope: Scope;
 		children: Node[];
-		lambda?: boolean;
 	};
 	'[': { children: [Node, Node] };
 	'(': { children: [Node] };

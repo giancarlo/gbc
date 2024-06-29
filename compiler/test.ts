@@ -338,12 +338,18 @@ export default spec('compiler', s => {
 			`let a=2;let b=1;`,
 		);
 		*/
+		baselineExpr(
+			'value >> fn',
+			'1 >> std.out',
+			'(>> 1 (macro :std :out))',
+			'console.log(1)',
+		);
 
 		baselineExpr(
-			'blocks',
-			'{ 1, 2 } >> { $ + 1 } >> std.out',
-			'(>> ({ (, 1 2)) (>> ({ (+ $ 1)) (macro :std :out)))',
-			'',
+			'value >> block',
+			'1 >> { $ + 1 }',
+			'(>> 1 ({ (+ $ 1)))',
+			'(((next)=>{next(1);next(2)})((next,$)=>{next($+1)}))(console.log)',
 		);
 		/*
 		baseline(

@@ -184,11 +184,11 @@ All data structures are iterable:
 
 ### Variable Definition
 
-Variables act as named containers for data. You define a variable by giving it a name and assigning it a value using the equals sign (`=`). By default, these variables are immutable, meaning their values cannot be changed after they are first assigned. However, if you need a variable that can be updated later, you can declare it as mutable using the `var` keyword.
+Variables act as named containers for data. You define a variable by giving it a name and assigning it a value using the equals sign (`=`). By default, these variables are immutable, meaning their values cannot be changed after they are first assigned. However, you can declare it as mutable using the `var` keyword.
 
-The language also employs type inference. This means that if you don't explicitly specify the type of data a variable will hold, the compiler will automatically determine it based on the value you assign during declaration.
+The language also employs type inference. If you don't explicitly specify the type of data a variable will hold, the compiler will automatically determine it based on the value you assign during declaration.
 
-One important rule to remember is that all variables must be initialized with a value when they are declared. This helps to prevent errors caused by using undefined variables.
+All variables must be initialized with a value when they are declared. This helps to prevent errors caused by using undefined variables.
 
 ```
 # Define a constant with name 'constant', type 'string', and value 'value'

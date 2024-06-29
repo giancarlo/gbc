@@ -146,7 +146,6 @@ export function parseExpression(
 				prefix: tk =>
 					parseBlock(tk, node => {
 						node.statements = parseUntilKind(expr, '}');
-						node.lambda = true;
 					}),
 			},
 			'||': infixOperator(3),

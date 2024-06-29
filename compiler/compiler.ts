@@ -8,15 +8,16 @@ export const RUNTIME = `"use strict";`;
 
 const infix = (n: InfixNode<NodeMap>, op: string = n.kind) =>
 	`${compile(n.children[0])}${op}${compile(n.children[1])}`;
-const block = (n: NodeMap['{'] | NodeMap['main']) =>
-	`${
+const block = (n: NodeMap['{'] | NodeMap['main']) => {
+	const code = compileEach(n.statements);
+	return `${
 		n.kind === '{' &&
-		n.lambda &&
 		n.statements.length === 1 &&
 		n.statements[0].kind !== 'def'
-			? 'return '
-			: ''
-	}${compileEach(n.statements)}`;
+			? `next(${code})`
+			: code
+	}`;
+};
 const compileEach = (nodes: Node[], sep = '') => nodes.map(compile).join(sep);
 
 function assign(node: Node, value?: Node) {
@@ -122,8 +123,8 @@ export function compile(node: Node): string {
 			return assign(left, right);
 		}
 		case '{': {
-			const defaultParam = node.scope.$?.references?.length ? '$' : '';
-			return `(${
+			const defaultParam = '$'; //node.scope.$?.references?.length ? '$' : '';
+			return `(next,${
 				node.parameters
 					? compileEach(node.parameters, ',')
 					: defaultParam
