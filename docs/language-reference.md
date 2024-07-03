@@ -16,7 +16,7 @@ The language will abide by the following principles:
 7. **No Variable Shadowing:** Prevent variables within a block from masking wider scope variables with the same name.
 8. **No Unused Variables:** Flag variables declared but never used.
 9. **Mandatory Initialization:** All variables must be assigned a value during declaration.
-10. **Constant by Default:** Variables are immutable (cannot be changed) by default, but can be explicitly declared as mutable if needed.
+10. **Constant by Default:** Variables are immutable by default, but can be explicitly declared as mutable if needed.
 
 ### Functions
 
@@ -259,7 +259,7 @@ Modules can contain function and variable definitions, along with an optional `m
 
 ## Functions
 
-Functions are like lambdas but can have multiple parameters and are defined using the `fn` keyword.
+Functions can have multiple parameters and are defined using the `fn` keyword.
 
 -   Functions are defined using the `fn` keyword followed by the function name, parameter list, return type, and body.
 -   Functions can accept other functions as parameters or return functions.
@@ -267,7 +267,9 @@ Functions are like lambdas but can have multiple parameters and are defined usin
 This function takes two integers `a` and `b` and returns their sum.
 
 ```ts
-fn add(a: int, b: int): int { a + b }
+fn add(a: int, b: int): int {
+	next a + b
+}
 ```
 
 ### Named Arguments
@@ -288,7 +290,7 @@ add(b = 1, a = 2) # Named arguments
 
 ```ts
 fn greet(name: string = "World"): string {
-    return "Hello, " + name + "!";
+    next "Hello, " + name + "!";
 }
 
 greet()          # Output: "Hello, World!"
@@ -318,7 +320,7 @@ counter()    # Output: 2
 
 ```ts
 fn factorial(n: int): int {
-    (n <= 1) ? 1 : n * factorial(n - 1);
+    next (n <= 1) ? 1 : n * factorial(n - 1);
 }
 
 factorial(5)    # Output: 120
@@ -423,7 +425,7 @@ fn operation() {
 
 ```ts
 fn add<T extends int>(a: T, b: T): T {
-    return a + b;
+    next a + b;
 }
 
 add(1, 2)    # Output: 3
@@ -469,7 +471,7 @@ Example:
 
 ```ts
 fn identity<T>(value: T): T {
-    return value;
+    next value;
 }
 
 identity(42)       # Output: 42
@@ -484,7 +486,7 @@ identity("Hello")  # Output: "Hello"
 
 ```ts
 fn max<T extends Comparable<T>>(a: T, b: T): T {
-    return a.compareTo(b) > 0 ? a : b;
+    next a.compareTo(b) > 0 ? a : b;
 }
 
 max(5, 10)   # Output: 10
