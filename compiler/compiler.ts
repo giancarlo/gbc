@@ -14,11 +14,12 @@ const block = (n: NodeMap['{'] | NodeMap['main']) => {
 		n.kind === '{' &&
 		n.statements.length === 1 &&
 		n.statements[0].kind !== 'def'
-			? `next?.(${code})`
+			? `const $r=${code};if(next)next($r);else return $r;`
 			: code
 	}`;
 };
 const compileEach = (nodes: Node[], sep = '') => nodes.map(compile).join(sep);
+const defaultParam = '$';
 
 function assign(node: Node, value?: Node) {
 	if (node.kind !== 'ident' || !node.symbol || !value)
@@ -101,11 +102,16 @@ export function compile(node: Node): string {
 		case '^':
 			return infix(node);
 		case '>>': {
-			//const [l,r] = node.children;
-			//return l.kind==='{' ? `${compile(l)},n=>{${compile(r)}`
-			return node.children.reduce((acc, child) => {
-				return acc ? `(${compile(child)})(${acc})` : compile(child);
-			}, '');
+			let text = '',
+				i = node.children.length;
+			while (i--) {
+				const child = node.children[i];
+				text =
+					i === 0
+						? `${text}(${compile(child)})`
+						: `(n=>(${compile(child)})(n,${text || 'null'}))`;
+			}
+			return text;
 		}
 
 		case 'propdef':
@@ -124,14 +130,12 @@ export function compile(node: Node): string {
 
 			return assign(left, right);
 		}
-		case '{': {
-			const defaultParam = '$';
+		case '{':
 			return `(${
 				node.parameters
 					? compileEach(node.parameters, ',')
 					: defaultParam
-			})=>{${block(node)}}`;
-		}
+			},next)=>{${block(node)}}`;
 		case '?':
 			return `${compile(node.children[0])} ? ${compile(
 				node.children[1],

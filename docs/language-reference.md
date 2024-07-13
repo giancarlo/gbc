@@ -18,10 +18,6 @@ The language will abide by the following principles:
 9. **Mandatory Initialization:** All variables must be assigned a value during declaration.
 10. **Constant by Default:** Variables are immutable by default, but can be explicitly declared as mutable if needed.
 
-### Functions
-
-11. **Named Function Parameters:** All function parameters must have explicit names.
-
 ## Hello World
 
 This is a sample of a simple "Hello World" program. The _main_ block is our entry point. No code is allowed outside of it other than type and function definitions. The standard library is always available through the _std_ namespace. The pipe `>>` operator will call the `std.out` function passing its left value as an argument.

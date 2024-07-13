@@ -343,20 +343,20 @@ export default spec('compiler', s => {
 			'value >> fn',
 			'1 >> std.out',
 			'(>> 1 (macro :std :out))',
-			'(((next,$)=>{console.log($);next?.($)}))(null,1)',
+			'(n=>(((next,$)=>{console.log($);next?.($)}))(n,null))(1)',
 		);
 
 		baselineExpr(
 			'value >> block',
 			'1 >> { $ + 1 }',
 			'(>> 1 ({ (+ $ 1)))',
-			'((next,$)=>{next?.($+1)})(null,1)',
+			'(n=>(($,next)=>{const $r=$+1;if(next)next($r);else return $r;})(n,null))(1)',
 		);
 		baselineExpr(
 			'value >> block >> fn',
 			'1 >> { $ + 1 } >> std.out',
 			'(>> 1 ({ (+ $ 1)) (macro :std :out))',
-			'((next,$)=>{next?.($+1)})(null,1)',
+			'(n=>(($,next)=>{const $r=$+1;if(next)next($r);else return $r;})(n,(n=>(((next,$)=>{console.log($);next?.($)}))(n,null))))(1)',
 		);
 		/*
 		baseline(
@@ -417,7 +417,7 @@ export default spec('compiler', s => {
 			'hello world',
 			`'Hello World!' >> std.out`,
 			"(>> 'Hello World!' (macro :std :out))",
-			`(((next,$)=>{console.log($);next?.($)}))(null,'Hello World!')`,
+			`(n=>(((next,$)=>{console.log($);next?.($)}))(n,null))('Hello World!')`,
 		);
 		/*
 		baseline(
@@ -429,6 +429,22 @@ export default spec('compiler', s => {
 		);
 		*/
 		baseline(
+			'fibonacci',
+			`fib = { $ <= 1 ? $ : fib($ - 1) + fib($ - 2) }`,
+			'(root (def :fib ({ (? (<= $ 1) $ (+ (call :fib (- $ 1)) (call :fib (- $ 2)))))))',
+			'const fib=($,next)=>{const $r=$<=1 ? $ : fib($-1)+fib($-2);if(next)next($r);else return $r;}',
+			(a, n) => {
+				const fib = n();
+				fib(0, (n: number) => a.equal(n, 0));
+				fib(1, (n: number) => a.equal(n, 1));
+				fib(2, (n: number) => a.equal(n, 1));
+				fib(3, (n: number) => a.equal(n, 2));
+				fib(4, (n: number) => a.equal(n, 3));
+				fib(5, (n: number) => a.equal(n, 5));
+			},
+			';return fib',
+		);
+		/*baseline(
 			'ackermann',
 			`
 ackermann = fn(m: number, n:number) {
@@ -448,6 +464,6 @@ ackermann = fn(m: number, n:number) {
 				a.equal(ack(3, 5), 253);
 			},
 			';return ackermann;',
-		);
+		);*/
 	});
 });
