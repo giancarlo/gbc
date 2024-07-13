@@ -124,7 +124,21 @@ export function parseExpression(
 			prefix,
 			current,
 		}) => ({
-			'>>': infixOperator(1, 0),
+			//'>>': infixOperator(1, 0),
+			'>>': {
+				precedence: 1,
+				infix(tk, left) {
+					const node = tk as NodeMap['>>'];
+					node.start = left.start;
+					const right = expectNode(expr(0), 'Expected expression');
+					node.children =
+						right.kind === '>>'
+							? [left, ...right.children]
+							: [left, right];
+					node.end = right.end;
+					return node;
+				},
+			},
 			fn: {
 				prefix(tk) {
 					return parseBlock(tk, node => {
@@ -328,12 +342,9 @@ export function parseExpression(
 			next: {
 				prefix(tk) {
 					const result = tk as NodeMap['next'];
-					if (optional('(')) {
-						result.children = [
-							expectNode(expr(), 'Expected expression'),
-						];
-						result.end = expect(')').end;
-					}
+					expect('(');
+					result.children = [expr()];
+					result.end = expect(')').end;
 					return result;
 				},
 			},

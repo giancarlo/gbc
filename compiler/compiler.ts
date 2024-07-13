@@ -14,7 +14,7 @@ const block = (n: NodeMap['{'] | NodeMap['main']) => {
 		n.kind === '{' &&
 		n.statements.length === 1 &&
 		n.statements[0].kind !== 'def'
-			? `next(${code})`
+			? `next?.(${code})`
 			: code
 	}`;
 };
@@ -46,8 +46,11 @@ export function compile(node: Node): string {
 		case '++':
 		case '--':
 			return `${compile(node.children[0])}${node.kind}`;
-		case '$':
 		case 'next':
+			return node.children?.[0]
+				? `next?.(${compile(node.children[0])})`
+				: '()';
+		case '$':
 		case 'parameter':
 		case 'ident':
 		case 'string':
@@ -95,17 +98,16 @@ export function compile(node: Node): string {
 		case '<':
 		case '>=':
 		case '<=':
-
 		case '^':
 			return infix(node);
 		case '>>': {
-			const [l, r] = node.children;
-			const left =
-				r.kind === 'ident' || r.kind === 'macro'
-					? compile(r)
-					: `(${compile(r)})`;
-			return `${left}(${compile(l)})`;
+			//const [l,r] = node.children;
+			//return l.kind==='{' ? `${compile(l)},n=>{${compile(r)}`
+			return node.children.reduce((acc, child) => {
+				return acc ? `(${compile(child)})(${acc})` : compile(child);
+			}, '');
 		}
+
 		case 'propdef':
 			return compile(node.children[1]);
 		case 'def': {
@@ -123,8 +125,8 @@ export function compile(node: Node): string {
 			return assign(left, right);
 		}
 		case '{': {
-			const defaultParam = '$'; //node.scope.$?.references?.length ? '$' : '';
-			return `(next,${
+			const defaultParam = '$';
+			return `(${
 				node.parameters
 					? compileEach(node.parameters, ',')
 					: defaultParam
@@ -140,7 +142,6 @@ export function compile(node: Node): string {
 			})`;
 		case 'macro':
 			return node.value;
-
 		case 'comment':
 		default:
 			return '';

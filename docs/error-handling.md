@@ -1,5 +1,3 @@
-Here are some alternative error handling mechanisms you can consider for your language without exceptions:
-
 1. **Return Codes:** Functions can return specific integer codes that indicate success (e.g., 0) or different types of errors (e.g., -1 for file not found, -2 for invalid input). The calling code needs to check the return code and handle the error appropriately.
 
 2. **Error Monad:** This is a functional programming concept where a wrapper type (monad) holds either a valid value or an error message. Functions can return this monad, propagating errors through the code. Specific functions can then handle or extract the value from the monad.

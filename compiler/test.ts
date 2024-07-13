@@ -324,7 +324,8 @@ export default spec('compiler', s => {
 			`[1,2,3]`,
 		);
 
-		/*baselineExpr(
+		/*
+		baselineExpr(
 			'assignment - sequence',
 			`a, b = 2, 1`,
 			`(def (, :a :b) (, 2 1))`,
@@ -342,14 +343,20 @@ export default spec('compiler', s => {
 			'value >> fn',
 			'1 >> std.out',
 			'(>> 1 (macro :std :out))',
-			'console.log(1)',
+			'(((next,$)=>{console.log($);next?.($)}))(null,1)',
 		);
 
 		baselineExpr(
 			'value >> block',
 			'1 >> { $ + 1 }',
 			'(>> 1 ({ (+ $ 1)))',
-			'(((next)=>{next(1);next(2)})((next,$)=>{next($+1)}))(console.log)',
+			'((next,$)=>{next?.($+1)})(null,1)',
+		);
+		baselineExpr(
+			'value >> block >> fn',
+			'1 >> { $ + 1 } >> std.out',
+			'(>> 1 ({ (+ $ 1)) (macro :std :out))',
+			'((next,$)=>{next?.($+1)})(null,1)',
 		);
 		/*
 		baseline(
@@ -410,7 +417,7 @@ export default spec('compiler', s => {
 			'hello world',
 			`'Hello World!' >> std.out`,
 			"(>> 'Hello World!' (macro :std :out))",
-			`console.log('Hello World!')`,
+			`(((next,$)=>{console.log($);next?.($)}))(null,'Hello World!')`,
 		);
 		/*
 		baseline(
@@ -420,12 +427,13 @@ export default spec('compiler', s => {
 			`let x=0;while((()=>{return x++==5 ? done : undefined})()!==done){}return x`,
 			(a, r) => a.equal(r(), 6),
 		);
+		*/
 		baseline(
 			'ackermann',
 			`
 ackermann = fn(m: number, n:number) {
-	next m == 0 ? n + 1 :
-		(n == 0 ? ackermann(m - 1, 1) : ackermann(m - 1, ackermann(m, n - 1)))
+	next(m == 0 ? n + 1 :
+		(n == 0 ? ackermann(m - 1, 1) : ackermann(m - 1, ackermann(m, n - 1))))
 }
 		`,
 			`(root (def :ackermann ({ (parameter :m :number) (parameter :n :number) (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1))))))))))`,
@@ -439,7 +447,7 @@ ackermann = fn(m: number, n:number) {
 				a.equal(ack(2, 5), 13);
 				a.equal(ack(3, 5), 253);
 			},
-			'return ackermann;',
-		);*/
+			';return ackermann;',
+		);
 	});
 });

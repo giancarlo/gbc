@@ -48,8 +48,8 @@ export type BaseNodeMap = {
 	data: { children: Node[]; scope: Scope };
 	'.': { children: [Node, Node]; symbol?: Symbol };
 	',': { children: Node[] };
+	'>>': { children: Node[] };
 } & MakeInfix<
-	| '>>'
 	| '||'
 	| '&&'
 	| '+'
