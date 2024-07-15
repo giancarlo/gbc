@@ -13,7 +13,8 @@ const block = (n: NodeMap['{'] | NodeMap['main']) => {
 	return `${
 		n.kind === '{' &&
 		n.statements.length === 1 &&
-		n.statements[0].kind !== 'def'
+		n.statements[0].kind !== 'def' &&
+		n.statements[0].kind !== 'next'
 			? `const $r=${code};if(next)next($r);else return $r;`
 			: code
 	}`;

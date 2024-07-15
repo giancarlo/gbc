@@ -444,16 +444,16 @@ export default spec('compiler', s => {
 			},
 			';return fib',
 		);
-		/*baseline(
+		baseline(
 			'ackermann',
 			`
 ackermann = fn(m: number, n:number) {
-	next(m == 0 ? n + 1 :
+	(m == 0 ? n + 1 :
 		(n == 0 ? ackermann(m - 1, 1) : ackermann(m - 1, ackermann(m, n - 1))))
 }
 		`,
 			`(root (def :ackermann ({ (parameter :m :number) (parameter :n :number) (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1))))))))))`,
-			'const ackermann=(m,n)=>{return m==0 ? n+1 : n==0 ? ackermann(m-1,1) : ackermann(m-1,ackermann(m,n-1))};',
+			'const ackermann=(m,n,next)=>{const $r=m==0 ? n+1 : n==0 ? ackermann(m-1,1) : ackermann(m-1,ackermann(m,n-1));if(next)next($r);else return $r;}',
 			(a, n) => {
 				const ack = n();
 				a.equal(ack(1, 3), 5);
@@ -464,6 +464,6 @@ ackermann = fn(m: number, n:number) {
 				a.equal(ack(3, 5), 253);
 			},
 			';return ackermann;',
-		);*/
+		);
 	});
 });
