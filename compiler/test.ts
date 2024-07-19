@@ -69,7 +69,7 @@ export default spec('compiler', s => {
 		function match(a: TestApi, src: string, out: string) {
 			const r = parse(src);
 			if (r.errors?.length) {
-				a.log(r.errors);
+				r.errors.forEach(e => a.log(formatError(e)));
 				throw new Error('Parsing failed');
 			}
 			a.assert(r.root);
@@ -144,12 +144,17 @@ export default spec('compiler', s => {
 			match(a, "a = 'hello'", "(root (= :a 'hello'))");
 			match(a, 'a = b', '(root (= :a :b))');
 			match(a, 'a = b = c', '(root (= :a (= :b :c)))');
-			/*match(a, 'a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
+			match(a, 'a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
 			match(
 				a,
 				'a, b, c = d, e, f',
 				'(root (= (, :a :b :c) (, :d :e :f)))',
-			);*/
+			);
+		});
+		it.should('parse var assignment', a => {
+			match(a, "var a = 'hello'", "(root (= :a 'hello'))");
+			match(a, 'var a = b', '(root (= :a :b))');
+			match(a, 'var a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
 		});
 
 		it.should('parse function assignment', a => {
@@ -444,6 +449,24 @@ export default spec('compiler', s => {
 			},
 			';return fib',
 		);
+		baseline(
+			'loop',
+			`main { var i=0 loop { i++==2 ? done : next(i) } }`,
+			'',
+			'',
+		);
+		/*baseline(
+			`repeat`,
+			`repeat = fn(n) { var x=0 loop >> { n-->0 ? next(x++) : done } }`,
+			'',
+			'',
+		);
+		baseline(
+			`while`,
+			`while = fn(condition) { loop >> { condition() ? next : done } }`,
+			'',
+			'',
+		);*/
 		baseline(
 			'ackermann',
 			`

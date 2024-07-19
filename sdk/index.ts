@@ -408,7 +408,7 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 	tableFn: ParserTableFn<Map, ScannerToken>,
 	api: ParserApi<ScannerToken>,
 ) {
-	const { current, next, error, expect, expectNode, optional } = api;
+	const { current, next, expect, expectNode, optional } = api;
 
 	function expression(precedence = 0) {
 		const left = current();
@@ -434,7 +434,7 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 		return (tk: Token<string>, left: MapNode<Map>) => {
 			const node = tk as Node;
 			node.start = left.start;
-			const right = expectNode(expression(rbp), 'Expected expression');
+			const right = expectExpression(rbp);
 			node.children = [left, right];
 			node.end = right.end;
 			cb?.(node);
@@ -458,7 +458,7 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 		cb?: (node: UnaryNode<Map>) => MapNode<Map>,
 	) {
 		return (tk: Token<K>) => {
-			const right = expectNode(expression(rbp), 'Expected expression');
+			const right = expectExpression(rbp);
 			const result = {
 				...tk,
 				children: [right],
@@ -479,10 +479,7 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 				left,
 			) as unknown as Node;
 			if (optional(operator2)) {
-				const child3 = expectNode(
-					expression(precedence),
-					'Expected expression',
-				);
+				const child3 = expectExpression(precedence);
 				result.end = child3.end;
 				result.children.push(child3);
 			}
@@ -501,17 +498,24 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 			) as unknown as Node;
 
 			expect(operator2);
-			const child3 = expression(precedence);
-			if (!child3) throw error('Expected expression', current());
+			const child3 = expectExpression(precedence);
 			result.end = child3.end;
 			result.children.push(child3);
 			return result;
 		};
 	}
 
+	function expectExpression(precedence = 0) {
+		return expectNode(expression(precedence), 'Expected expression');
+		/*const result = expression(precedence);
+		if (!result) throw error('Expected expression', current());
+		return result;*/
+	}
+
 	const tableApi = {
 		...api,
 		expression,
+		expectExpression,
 		infix,
 		infixOperator,
 		ternary,

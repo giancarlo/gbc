@@ -1,5 +1,5 @@
 ///<amd-module name="@cxl/gbc.compiler/compiler.js"/>
-import { InfixNode, text } from '@cxl/gbc.sdk';
+import { CompilerError, InfixNode, text } from '@cxl/gbc.sdk';
 import { Flags } from './symbol-table.js';
 
 import type { Node, NodeMap } from './node.js';
@@ -24,7 +24,7 @@ const defaultParam = '$';
 
 function assign(node: Node, value?: Node) {
 	if (node.kind !== 'ident' || !node.symbol || !value)
-		throw 'Invalid definition';
+		throw new CompilerError('Invalid definition', node);
 
 	return `${node.symbol.flags & Flags.Variable ? 'let' : 'const'} ${
 		node.symbol.name
@@ -38,7 +38,7 @@ export function compile(node: Node): string {
 		case 'done':
 			return 'return;';
 		case 'loop':
-			return `while((${compile(node.children[0])})()!==done){}`;
+			return `(next)=>{while(true)next()}`;
 		case 'root':
 			return compileEach(node.children);
 		case 'main':
@@ -69,7 +69,8 @@ export function compile(node: Node): string {
 		case '=': {
 			const [left, right] = node.children;
 			if (left.kind === ',') {
-				if (right.kind !== ',') throw 'Invalid definition';
+				if (right.kind !== ',')
+					throw new CompilerError('Invalid definition', right);
 				let result = '{';
 				for (let i = 0; i < left.children.length; i++) {
 					result += `const __${i}=${compile(right.children[i])};`;
@@ -121,7 +122,8 @@ export function compile(node: Node): string {
 			const [left, right] = node.children;
 
 			if (left.kind === ',') {
-				if (right.kind !== ',') throw 'Invalid definition';
+				if (right.kind !== ',')
+					throw new CompilerError('Invalid definition', right);
 				let result = '';
 				for (let i = 0; i < left.children.length; i++) {
 					result += assign(left.children[i], right.children[i]);

@@ -26,8 +26,11 @@ export function symbolFlags(flags: number) {
 }
 
 export function ast(node: Node): string {
-	//const flags = 'flags' in node ? symbolFlags(node.flags as number) : '';
-	const id = nodeId(node); // + flags;
+	const flags =
+		'symbol' in node && node.symbol?.flags
+			? symbolFlags(node.symbol.flags as number)
+			: '';
+	const id = nodeId(node) + (flags ? ` ${flags.join(' ')}` : '');
 
 	return 'children' in node && node.children?.length
 		? `(${id} ${node.children.map(n => (n ? ast(n) : '?')).join(' ')})`

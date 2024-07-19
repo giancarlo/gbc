@@ -121,6 +121,7 @@ export function parseExpression(
 			infixOperator,
 			infix,
 			ternaryOptional,
+			expectExpression,
 			prefix,
 			current,
 		}) => ({
@@ -130,7 +131,7 @@ export function parseExpression(
 				infix(tk, left) {
 					const node = tk as NodeMap['>>'];
 					node.start = left.start;
-					const right = expectNode(expr(0), 'Expected expression');
+					const right = expectExpression();
 					node.children =
 						right.kind === '>>'
 							? [left, ...right.children]
@@ -150,10 +151,17 @@ export function parseExpression(
 				},
 			},
 			var: {
-				prefix(tk: NodeMap['var']) {
-					tk.ident = expect('ident') as NodeMap['ident'];
-					tk.end = tk.ident.end;
-					return tk;
+				prefix(tk) {
+					const child = expectExpression(15);
+					if (child.kind !== 'ident')
+						throw error('Expected an identifier', child);
+					if (child.symbol) child.symbol.flags |= Flags.Variable;
+					return {
+						...tk,
+						children: [child],
+						ident: child,
+						end: child.end,
+					};
 				},
 			},
 			'{': {
@@ -252,7 +260,7 @@ export function parseExpression(
 				infix(tk, left) {
 					const node = tk as NodeMap[','];
 					node.start = left.start;
-					const right = expectNode(expr(1), 'Expected expression');
+					const right = expectExpression(2);
 					node.children =
 						left.kind === ','
 							? [...left.children, right]
@@ -266,7 +274,7 @@ export function parseExpression(
 				infix(tk, left) {
 					const node = tk as NodeMap['='];
 					let isDefinition = define(left);
-					const right = expectNode(expr(1), 'Expected expression');
+					const right = expectExpression(1);
 					if (isDefinition)
 						(node as Node).kind =
 							context === 'data' ? 'propdef' : 'def';
@@ -282,7 +290,7 @@ export function parseExpression(
 			'(': {
 				precedence: 20,
 				prefix() {
-					const node = expectNode(expr(0), 'Expected expression');
+					const node = expectExpression();
 					expect(')');
 					return node as NodeMap['('];
 				},
@@ -305,9 +313,7 @@ export function parseExpression(
 							...tk,
 							kind: 'data',
 							scope,
-							children: [
-								expectNode(expr(), 'Expected expression'),
-							],
+							children: [expectExpression()],
 							end: expect(']').end,
 						};
 						context = 'normal';
@@ -317,10 +323,7 @@ export function parseExpression(
 				infix(tk, left) {
 					return {
 						...tk,
-						children: [
-							left,
-							expectNode(expr(), 'Expected expression'),
-						],
+						children: [left, expectExpression()],
 						end: expect(']').end,
 					};
 				},
@@ -342,19 +345,21 @@ export function parseExpression(
 			next: {
 				prefix(tk) {
 					const result = tk as NodeMap['next'];
-					expect('(');
-					result.children = [expr()];
-					result.end = expect(')').end;
+					if (optional('(')) {
+						result.children = [expr()];
+						result.end = expect(')').end;
+					}
 					return result;
 				},
 			},
 			loop: {
 				prefix(tk) {
-					const result = tk as NodeMap['loop'];
-					const child = expectNode(expr(), 'Expected expression');
-					result.children = [child];
-					result.end = child.end;
-					return result;
+					const child = expectExpression();
+					return {
+						...tk,
+						children: [child],
+						end: child.end,
+					};
 				},
 			},
 			number: {
@@ -367,11 +372,10 @@ export function parseExpression(
 			ident: {
 				prefix(n: NodeMap['ident']) {
 					const name = text(n);
-					if (!n.symbol) {
-						const symbol = symbolTable.getRef(name, n);
-						//if (!symbol) throw error(`Unexpected identifier "${name}"`, n);
-						n.symbol = symbol;
-					}
+					//if (!n.symbol) {
+					const symbol = symbolTable.getRef(name, n);
+					n.symbol = symbol;
+					//}
 					return n;
 				},
 			},

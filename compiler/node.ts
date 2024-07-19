@@ -16,7 +16,7 @@ export type BaseNodeMap = {
 	ident: { symbol?: Symbol };
 	string: {};
 	number: { value: number };
-	loop: { children: Node[] };
+	loop: { children: [Node] };
 	next: { children: [Node | undefined] };
 	comment: {};
 	$: {};
