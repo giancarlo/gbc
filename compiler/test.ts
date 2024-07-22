@@ -299,7 +299,7 @@ export default spec('compiler', s => {
 				const mainSrc = `__main={ ${src} }`;
 				const [program, sf] = parse(mainSrc);
 				const block = sf.root.children[0].children[1];
-				if (block.kind !== '{') throw 'Invalid ast';
+				if (block.kind !== '{') throw 'Invalid AST';
 				const expr = block.children[0];
 				a.equal(ast(expr), astText);
 				a.equal(expr.source.slice(expr.start, expr.end), src);
@@ -325,6 +325,20 @@ export default spec('compiler', s => {
 			`[ var label=1,2,3 ]`,
 			`(data (, (propdef :label @variable 1) 2 3))`,
 			`[1,2,3]`,
+		);
+
+		baselineExpr(
+			'lambda - multiple emit',
+			'{ $+1, $+2 }',
+			'({ (, (+ $ 1) (+ $ 2)))',
+			'($,next)=>{next?.($+1);next?.($+2)}',
+			(a, fn) => {
+				let i = 1;
+				fn()(0, (n: number) => a.equal(n, i++));
+				i = 1;
+				fn()(1, (n: number) => a.equal(n, 1 + i++));
+				a.equal(i, 3);
+			},
 		);
 
 		/*
@@ -355,12 +369,28 @@ export default spec('compiler', s => {
 			'(>> 1 ({ (+ $ 1)))',
 			'(n=>(($,next)=>{const $r=$+1;if(next)next($r);else return $r;})(n,null))(1)',
 		);
+
+		baselineExpr(
+			'value >> block(2)',
+			'1 >> { $ + 1, $ + 2 }',
+			'(>> 1 ({ (, (+ $ 1) (+ $ 2))))',
+			'(n=>(($,next)=>{next?.($+1);next?.($+2)})(n,null))(1)',
+		);
+
+		baselineExpr(
+			'value >> block(2) >> fn',
+			'1 >> { $ + 1, $ + 2 } >> std.out',
+			'(>> 1 ({ (, (+ $ 1) (+ $ 2))) (macro :std :out))',
+			'(n=>(($,next)=>{next?.($+1);next?.($+2)})(n,null))(1)',
+		);
+
 		baselineExpr(
 			'value >> block >> fn',
 			'1 >> { $ + 1 } >> std.out',
 			'(>> 1 ({ (+ $ 1)) (macro :std :out))',
 			'(n=>(($,next)=>{const $r=$+1;if(next)next($r);else return $r;})(n,(n=>(((next,$)=>{console.log($);next?.($)}))(n,null))))(1)',
 		);
+		baselineExpr('call >> block', '{1,2}() >> { $ + 1 }', '', '');
 		/*
 		baseline(
 			'assignment - swap',

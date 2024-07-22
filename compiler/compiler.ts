@@ -8,18 +8,23 @@ export const RUNTIME = `"use strict";`;
 
 const infix = (n: InfixNode<NodeMap>, op: string = n.kind) =>
 	`${compile(n.children[0])}${op}${compile(n.children[1])}`;
+const blockLambda = (n: NodeMap['{']) => {
+	const child = n.statements[0];
+	if (child.kind === ',')
+		return child.children.map(c => `next?.(${compile(c)})`).join(';');
+	else return `const $r=${compile(child)};if(next)next($r);else return $r;`;
+};
 const block = (n: NodeMap['{'] | NodeMap['main']) => {
-	const code = compileEach(n.statements);
 	return `${
 		n.kind === '{' &&
 		n.statements.length === 1 &&
 		n.statements[0].kind !== 'def' &&
 		n.statements[0].kind !== 'next'
-			? `const $r=${code};if(next)next($r);else return $r;`
-			: code
+			? blockLambda(n)
+			: compileEach(n.statements)
 	}`;
 };
-const compileEach = (nodes: Node[], sep = '') => nodes.map(compile).join(sep);
+const compileEach = (nodes: Node[], sep = ';') => nodes.map(compile).join(sep);
 const defaultParam = '$';
 
 function assign(node: Node, value?: Node) {

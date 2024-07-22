@@ -44,7 +44,7 @@ export function SymbolTable() {
 				out: {
 					name: 'out',
 					kind: 'native',
-					replace: '((next,$)=>{console.log($);next?.($)})',
+					replace: '(($,next)=>{console.log($);next?.($)})',
 					flags: 0,
 				},
 			},

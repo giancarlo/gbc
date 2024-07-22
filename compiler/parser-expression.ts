@@ -312,6 +312,7 @@ export function parseExpression(
 						...tk,
 						kind: 'call',
 						children: [left, cur.kind === ')' ? undefined : expr()],
+						start: left.start,
 						end: expect(')').end,
 					};
 				},
