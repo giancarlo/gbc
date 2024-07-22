@@ -83,6 +83,12 @@ export function parseExpression(
 		return node;
 	}
 
+	/**
+	 * Function that defines a variable in the symbol table.
+	 * @param n The node to define.
+	 * @param isDef True if the definition is a `def`, false if it's an assignment.
+	 * @returns True if the variable was defined, false if it was already defined.
+	 */
 	function define(n: Node, isDef = false) {
 		const ident =
 			n.kind === 'var' ? n.ident : n.kind === 'ident' ? n : undefined;
@@ -151,17 +157,21 @@ export function parseExpression(
 				},
 			},
 			var: {
-				prefix(tk) {
-					const child = expectExpression(15);
-					if (child.kind !== 'ident')
-						throw error('Expected an identifier', child);
-					if (child.symbol) child.symbol.flags |= Flags.Variable;
-					return {
+				prefix(_tk) {
+					const child = expectExpression(1);
+					if (child.kind !== (context === 'data' ? 'propdef' : 'def'))
+						throw error('Expected definition', child);
+					const left = child.children[0];
+					if (left.kind === 'ident' && left.symbol)
+						left.symbol.flags |= Flags.Variable;
+
+					return child;
+					/*{
 						...tk,
 						children: [child],
 						ident: child,
 						end: child.end,
-					};
+					};*/
 				},
 			},
 			'{': {
@@ -272,18 +282,20 @@ export function parseExpression(
 			'=': {
 				precedence: 2,
 				infix(tk, left) {
-					const node = tk as NodeMap['='];
 					let isDefinition = define(left);
 					const right = expectExpression(1);
-					if (isDefinition)
-						(node as Node).kind =
-							context === 'data' ? 'propdef' : 'def';
 
-					node.children = [left, right];
-					node.start = left.start;
-					node.end = right.end;
-
-					return node;
+					return {
+						...tk,
+						kind: isDefinition
+							? context === 'data'
+								? 'propdef'
+								: 'def'
+							: '=',
+						children: [left, right],
+						start: left.start,
+						end: right.end,
+					};
 				},
 			},
 
@@ -373,8 +385,7 @@ export function parseExpression(
 				prefix(n: NodeMap['ident']) {
 					const name = text(n);
 					//if (!n.symbol) {
-					const symbol = symbolTable.getRef(name, n);
-					n.symbol = symbol;
+					n.symbol = symbolTable.getRef(name, n);
 					//}
 					return n;
 				},

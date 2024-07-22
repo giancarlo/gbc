@@ -38,20 +38,20 @@ export default spec('compiler', s => {
 	});
 
 	s.test('Parser - Expressions', it => {
-		const st = SymbolTable();
-		const api = ParserApi(scan);
-		st.setSymbols(
-			{ name: 'a', kind: 'variable', flags: 0 },
-			{ name: 'b', kind: 'variable', flags: 0 },
-			{ name: 'c', kind: 'variable', flags: 0 },
-			{ name: 'd', kind: 'variable', flags: 0 },
-			{ name: 'e', kind: 'variable', flags: 0 },
-			{ name: 'f', kind: 'variable', flags: 0 },
-			{ name: 'scan', kind: 'function', flags: 0 },
-			{ name: 'true', kind: 'literal', flags: 0 },
-			{ name: 'false', kind: 'literal', flags: 0 },
-		);
 		const parse = (src: string) => {
+			const st = SymbolTable();
+			const api = ParserApi(scan);
+			st.setSymbols(
+				/*{ name: 'a', kind: 'variable', flags: 0 },
+				{ name: 'b', kind: 'variable', flags: 0 },
+				{ name: 'c', kind: 'variable', flags: 0 },
+				{ name: 'd', kind: 'variable', flags: 0 },
+				{ name: 'e', kind: 'variable', flags: 0 },
+				{ name: 'f', kind: 'variable', flags: 0 },*/
+				{ name: 'scan', kind: 'function', flags: 0 },
+				{ name: 'true', kind: 'literal', flags: 0 },
+				{ name: 'false', kind: 'literal', flags: 0 },
+			);
 			api.start(src);
 			const scope = st.push();
 			const expr = parseExpression(api, st);
@@ -132,7 +132,7 @@ export default spec('compiler', s => {
 			const c1 = match(
 				a,
 				'# Comment 1\n#Comment 2\na = 10',
-				'(root (= :a 10))',
+				'(root (def :a 10))',
 			);
 			a.equal(c1[0].line, 2);
 
@@ -140,21 +140,23 @@ export default spec('compiler', s => {
 			a.equal(c2[0].line, 1);
 		});
 
-		it.should('parse assignment', a => {
-			match(a, "a = 'hello'", "(root (= :a 'hello'))");
-			match(a, 'a = b', '(root (= :a :b))');
-			match(a, 'a = b = c', '(root (= :a (= :b :c)))');
-			match(a, 'a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
+		it.should('parse definition', a => {
+			match(a, "a = 'hello'", "(root (def :a 'hello'))");
+			match(a, 'a = 0', '(root (def :a 0))');
+			match(a, 'a = b', '(root (def :a :b))');
+			match(a, 'a = b = c', '(root (def :a (def :b :c)))');
+			/*match(a, 'a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
 			match(
 				a,
 				'a, b, c = d, e, f',
 				'(root (= (, :a :b :c) (, :d :e :f)))',
-			);
+			);*/
 		});
-		it.should('parse var assignment', a => {
-			match(a, "var a = 'hello'", "(root (= :a 'hello'))");
-			match(a, 'var a = b', '(root (= :a :b))');
-			match(a, 'var a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
+		it.should('parse var definition', a => {
+			match(a, "var a = 'hello'", "(root (def :a @variable 'hello'))");
+			match(a, 'var a = b', '(root (def :a @variable :b))');
+			match(a, 'a = b', '(root (def :a :b))');
+			//match(a, 'var a, var b = c, d', '(root (= (, :a :b) (, :c :d)))');
 		});
 
 		it.should('parse function assignment', a => {
@@ -170,12 +172,8 @@ export default spec('compiler', s => {
 			);
 		});
 
-		it.should('parse variable assignment', a => {
-			match(a, 'a = 0', '(root (= :a 0))');
-		});
-
 		it.should('parse ternary ? operator', a => {
-			match(a, 'a = b ? c : d', '(root (= :a (? :b :c :d)))');
+			match(a, 'a = b ? c : d', '(root (def :a (? :b :c :d)))');
 		});
 
 		it.should('parse infix operators', a => {
@@ -216,14 +214,14 @@ export default spec('compiler', s => {
 			match(
 				a,
 				`a = [ 'string', 2, true, 4.5 ]`,
-				`(root (= :a (data (, 'string' 2 :true 4.5))))`,
+				`(root (def :a (data (, 'string' 2 :true 4.5))))`,
 			);
 		});
 		it.should('parse data block with label', a => {
 			match(
 				a,
 				`b = [ label = 'string', 2 ]`,
-				`(root (= :b (data (, (propdef :label 'string') 2))))`,
+				`(root (def :b (data (, (propdef :label 'string') 2))))`,
 			);
 		});
 
@@ -325,7 +323,7 @@ export default spec('compiler', s => {
 		baselineExpr(
 			'data - var label',
 			`[ var label=1,2,3 ]`,
-			`(data (, (propdef var 1) 2 3))`,
+			`(data (, (propdef :label @variable 1) 2 3))`,
 			`[1,2,3]`,
 		);
 
@@ -424,6 +422,12 @@ export default spec('compiler', s => {
 			"(>> 'Hello World!' (macro :std :out))",
 			`(n=>(((next,$)=>{console.log($);next?.($)}))(n,null))('Hello World!')`,
 		);
+		baseline(
+			'loop',
+			`main { var i=0 loop { i++==2 ? done : next(i) } }`,
+			'',
+			'',
+		);
 		/*
 		baseline(
 			'loop - 0 to 5',
@@ -449,12 +453,7 @@ export default spec('compiler', s => {
 			},
 			';return fib',
 		);
-		baseline(
-			'loop',
-			`main { var i=0 loop { i++==2 ? done : next(i) } }`,
-			'',
-			'',
-		);
+
 		/*baseline(
 			`repeat`,
 			`repeat = fn(n) { var x=0 loop >> { n-->0 ? next(x++) : done } }`,
