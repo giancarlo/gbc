@@ -77,6 +77,9 @@ export function parseExpression(
 				flags: 0,
 			});
 			cb(node);
+			/*if (node.statements.length===1) {
+				node.children.push({ kind: 'next', children: [node.statements[0]], start: tk.start,end:tk.end,line:tk.line,source:tk.source});
+			} else*/
 			node.children.push(...node.statements);
 			node.end = expect('}').end;
 		});
@@ -110,14 +113,6 @@ export function parseExpression(
 		ident.symbol = symbol;
 
 		return !existing;
-	}
-
-	function unexpected() {
-		return {
-			prefix(tk: ScannerToken) {
-				throw error('Unexpected token', tk);
-			},
-		};
 	}
 
 	const parser = parserTable<NodeMap, ScannerToken>(
@@ -166,12 +161,6 @@ export function parseExpression(
 						left.symbol.flags |= Flags.Variable;
 
 					return child;
-					/*{
-						...tk,
-						children: [child],
-						ident: child,
-						end: child.end,
-					};*/
 				},
 			},
 			'{': {
@@ -225,7 +214,7 @@ export function parseExpression(
 			},
 			'/': infixOperator(12),
 			'*': infixOperator(12),
-
+			comment: { prefix: n => n },
 			'.': {
 				precedence: 17,
 				infix(tk, left) {
@@ -367,11 +356,12 @@ export function parseExpression(
 			},
 			loop: {
 				prefix(tk) {
+					expect('{');
 					const child = expectExpression();
 					return {
 						...tk,
 						children: [child],
-						end: child.end,
+						end: expect('}').end,
 					};
 				},
 			},
@@ -385,14 +375,10 @@ export function parseExpression(
 			ident: {
 				prefix(n: NodeMap['ident']) {
 					const name = text(n);
-					//if (!n.symbol) {
 					n.symbol = symbolTable.getRef(name, n);
-					//}
 					return n;
 				},
 			},
-			')': unexpected(),
-			']': unexpected(),
 		}),
 	);
 	return parser(api);

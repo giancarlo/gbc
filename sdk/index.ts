@@ -208,6 +208,11 @@ export function SymbolTable<S extends { name: string }>(
 			for (const s of symbols) scope[s.name] = s;
 		},
 
+		/**
+		 * This function allows executing code within a new scope of the symbol table.
+		 * The `fn` function receives the new scope object.
+		 * The scope is automatically pushed onto the stack before executing `fn` and popped off when `fn` finishes.
+		 */
 		withScope<C>(fn: (scope: typeof globalScope) => C) {
 			const scope = push();
 			try {
@@ -313,7 +318,11 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 				while (token && !condition() && token.kind !== 'eof') {
 					const node = parser();
 					if (node) result.push(node);
-					else next(); //throw error('Unexpected token', current());
+					else
+						throw error(
+							`Unexpected token "${token.kind}"`,
+							current(),
+						);
 				}
 			},
 			() => skipUntil(condition),

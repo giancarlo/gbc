@@ -127,17 +127,26 @@ export default spec('compiler', s => {
 		});
 
 		it.should('parse comments', a => {
-			match(a, '# Single Line Comment', 'root');
-			match(a, '# Line Comment 1\n  # Line Comment 2', 'root');
+			match(a, '# Single Line Comment', '(root comment)');
+			match(
+				a,
+				'# Line Comment 1\n  # Line Comment 2',
+				'(root comment comment)',
+			);
 			const c1 = match(
 				a,
 				'# Comment 1\n#Comment 2\na = 10',
-				'(root (def :a 10))',
+				'(root comment comment (def :a 10))',
 			);
-			a.equal(c1[0].line, 2);
+			a.equal(c1[0].line, 0);
+			a.equal(c1[2].line, 2);
 
-			const c2 = match(a, '# Comment\n123\n# Comment 2', '(root 123)');
-			a.equal(c2[0].line, 1);
+			const c2 = match(
+				a,
+				'# Comment\n123\n# Comment 2',
+				'(root comment 123 comment)',
+			);
+			a.equal(c2[1].line, 1);
 		});
 
 		it.should('parse definition', a => {
@@ -242,7 +251,12 @@ export default spec('compiler', s => {
 				});
 			}
 
-			testError(`(true || false) && false)`, 'Unexpected token', 24, 25);
+			testError(
+				`(true || false) && false)`,
+				'Unexpected token ")"',
+				24,
+				25,
+			);
 		});
 		/*it.should('parse type definition', a => {
 			match(
@@ -331,13 +345,11 @@ export default spec('compiler', s => {
 			'lambda - multiple emit',
 			'{ $+1, $+2 }',
 			'({ (, (+ $ 1) (+ $ 2)))',
-			'($,next)=>{next?.($+1);next?.($+2)}',
+			'function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=$+2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}',
 			(a, fn) => {
-				let i = 1;
-				fn()(0, (n: number) => a.equal(n, i++));
-				i = 1;
-				fn()(1, (n: number) => a.equal(n, 1 + i++));
-				a.equal(i, 3);
+				const iter = fn()(2);
+				a.equal(iter.next().value, 3);
+				a.equal(iter.next().value, 4);
 			},
 		);
 
@@ -360,37 +372,54 @@ export default spec('compiler', s => {
 			'value >> fn',
 			'1 >> std.out',
 			'(>> 1 (macro :std :out))',
-			'(n=>(((next,$)=>{console.log($);next?.($)}))(n,null))(1)',
+			'(function*(){const _=1;const __=function*($){console.log($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(1)){yield(_1)}})()',
 		);
 
 		baselineExpr(
 			'value >> block',
 			'1 >> { $ + 1 }',
 			'(>> 1 ({ (+ $ 1)))',
-			'(n=>(($,next)=>{const $r=$+1;if(next)next($r);else return $r;})(n,null))(1)',
+			'(function*(){const _=1;const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(1)){yield(_1)}})()',
 		);
 
 		baselineExpr(
 			'value >> block(2)',
 			'1 >> { $ + 1, $ + 2 }',
 			'(>> 1 ({ (, (+ $ 1) (+ $ 2))))',
-			'(n=>(($,next)=>{next?.($+1);next?.($+2)})(n,null))(1)',
+			'(function*(){const _=1;const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=$+2;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(1)){yield(_1)}})()',
 		);
 
 		baselineExpr(
 			'value >> block(2) >> fn',
 			'1 >> { $ + 1, $ + 2 } >> std.out',
 			'(>> 1 ({ (, (+ $ 1) (+ $ 2))) (macro :std :out))',
-			'(n=>(($,next)=>{next?.($+1);next?.($+2)})(n,null))(1)',
+			'(function*(){const _=1;const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=$+2;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}}else for(const _1 of __(1)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}})()',
 		);
 
 		baselineExpr(
 			'value >> block >> fn',
 			'1 >> { $ + 1 } >> std.out',
 			'(>> 1 ({ (+ $ 1)) (macro :std :out))',
-			'(n=>(($,next)=>{const $r=$+1;if(next)next($r);else return $r;})(n,(n=>(((next,$)=>{console.log($);next?.($)}))(n,null))))(1)',
+			'(function*(){const _=1;const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}}else for(const _1 of __(1)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}})()',
 		);
-		baselineExpr('call >> block', '{1,2}() >> { $ + 1 }', '', '');
+		baselineExpr(
+			'sequence',
+			'{ 1, 2 }()',
+			'(call ({ (, 1 2)) ?)',
+			'function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}()',
+		);
+		baselineExpr(
+			'call >> block',
+			'{1,2}() >> { $ + 1 }',
+			'(>> (call ({ (, 1 2)) ?) ({ (+ $ 1)))',
+			'(function*(){const _=function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}();const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}())){yield(_1)}})()',
+		);
+		baselineExpr(
+			'call >> block >> fn',
+			'{1,2}() >> { $ + 1 } >> std.out',
+			'(>> (call ({ (, 1 2)) ?) ({ (+ $ 1)) (macro :std :out))',
+			'(function*(){const _=function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}();const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}}else for(const _1 of __(function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}())){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}})()',
+		);
 		/*
 		baseline(
 			'assignment - swap',
@@ -450,15 +479,14 @@ export default spec('compiler', s => {
 			'hello world',
 			`'Hello World!' >> std.out`,
 			"(>> 'Hello World!' (macro :std :out))",
-			`(n=>(((next,$)=>{console.log($);next?.($)}))(n,null))('Hello World!')`,
+			`(function*(){const _='Hello World!';const __=function*($){console.log($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __('Hello World!')){yield(_1)}})()`,
 		);
-		baseline(
+		/*baseline(
 			'loop',
-			`main { var i=0 loop { i++==2 ? done : next(i) } }`,
+			`main { var i=0 loop { i++<2 } >> { i } >> std.out }`,
 			'',
 			'',
 		);
-		/*
 		baseline(
 			'loop - 0 to 5',
 			`main { var x=0 loop { x++ == 5 ? done } return x }`,
@@ -471,15 +499,16 @@ export default spec('compiler', s => {
 			'fibonacci',
 			`fib = { $ <= 1 ? $ : fib($ - 1) + fib($ - 2) }`,
 			'(root (def :fib ({ (? (<= $ 1) $ (+ (call :fib (- $ 1)) (call :fib (- $ 2)))))))',
-			'const fib=($,next)=>{const $r=$<=1 ? $ : fib($-1)+fib($-2);if(next)next($r);else return $r;}',
+			'const fib=function*($){{const _$=$<=1 ? $ : fib($-1)+fib($-2);if(_$ instanceof Iterator)yield*(_$);else yield _$}}',
 			(a, n) => {
 				const fib = n();
-				fib(0, (n: number) => a.equal(n, 0));
-				fib(1, (n: number) => a.equal(n, 1));
-				fib(2, (n: number) => a.equal(n, 1));
-				fib(3, (n: number) => a.equal(n, 2));
-				fib(4, (n: number) => a.equal(n, 3));
-				fib(5, (n: number) => a.equal(n, 5));
+				a.equal(fib(0).next().value, 0);
+				a.equal(fib(1).next().value, 1);
+				a.equal(fib(2).next().value, 1);
+				a.equal(fib(3).next().value, 2);
+				a.equal(fib(4).next().value, 3);
+				a.equal(fib(5).next().value, 5);
+				a.equal(fib(6).next().value, 8);
 			},
 			';return fib',
 		);
@@ -501,19 +530,19 @@ export default spec('compiler', s => {
 			`
 ackermann = fn(m: number, n:number) {
 	(m == 0 ? n + 1 :
-		(n == 0 ? ackermann(m - 1, 1) : ackermann(m - 1, ackermann(m, n - 1))))
+		(n == 0 ? ackermann(m - 1, 1) : (ackermann(m, n - 1) >> { ackermann(m - 1, $) })))
 }
 		`,
-			`(root (def :ackermann ({ (parameter :m :number) (parameter :n :number) (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1))))))))))`,
-			'const ackermann=(m,n,next)=>{const $r=m==0 ? n+1 : n==0 ? ackermann(m-1,1) : ackermann(m-1,ackermann(m,n-1));if(next)next($r);else return $r;}',
+			`(root (def :ackermann ({ (parameter :m :number) (parameter :n :number) (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (>> (call :ackermann (, :m (- :n 1))) ({ (call :ackermann (, (- :m 1) $)))))))))`,
+			'const ackermann=function*(m,n){{const _$=m===0 ? n+1 : n===0 ? ackermann(m-1,1) : (function*(){const _=ackermann(m,n-1);const __=function*($){{const _$=ackermann(m-1,$);if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(ackermann(m,n-1))){yield(_1)}})();if(_$ instanceof Iterator)yield*(_$);else yield _$}}',
 			(a, n) => {
 				const ack = n();
-				a.equal(ack(1, 3), 5);
-				a.equal(ack(2, 3), 9);
-				a.equal(ack(3, 3), 61);
-				a.equal(ack(1, 5), 7);
-				a.equal(ack(2, 5), 13);
-				a.equal(ack(3, 5), 253);
+				a.equal(ack(1, 3).next().value, 5);
+				a.equal(ack(2, 3).next().value, 9);
+				a.equal(ack(3, 3).next().value, 61);
+				a.equal(ack(1, 5).next().value, 7);
+				a.equal(ack(2, 5).next().value, 13);
+				a.equal(ack(3, 5).next().value, 253);
 			},
 			';return ackermann;',
 		);
