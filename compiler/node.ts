@@ -25,8 +25,12 @@ export type BaseNodeMap = {
 		symbol?: Symbol;
 	};
 	macro: { value: string };
-	def: { children: [Node, Node] };
-	propdef: { children: [Node, Node] };
+	def: {
+		children: [Node, Node] | [Node, Node, Node];
+		left: Node;
+		right: Node;
+		type?: Node;
+	};
 	'=': { children: [Node, Node] };
 	'?': { children: [Node, Node, Node | undefined] };
 	'~': { children: [Node] };

@@ -13,7 +13,6 @@ export function parseType(
 		({ expect, expression, expectNode, infixOperator }) => ({
 			':': infixOperator(2),
 			ident: { prefix: n => n },
-			//',': infixOperator(3),
 			'(': {
 				prefix(tk) {
 					const result = tk as NodeMap['('];

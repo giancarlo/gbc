@@ -22,12 +22,12 @@ export function parseExpression(
 
 		if (ident) {
 			const name = text(ident);
+			if (optional(':')) type = expectNode(typeParser(), 'Expected type');
 			symbol = symbolTable.set(name, {
 				name,
 				kind: 'parameter',
 				flags: 0,
 			});
-			if (optional(':')) type = expectNode(typeParser(), 'Expected type');
 			children = [ident, type];
 		} else {
 			expect(':');
@@ -92,16 +92,13 @@ export function parseExpression(
 	 * @param isDef True if the definition is a `def`, false if it's an assignment.
 	 * @returns True if the variable was defined, false if it was already defined.
 	 */
-	function define(n: Node, isDef = false) {
+	function define(n: Node) {
 		const ident =
 			n.kind === 'var' ? n.ident : n.kind === 'ident' ? n : undefined;
 
 		if (!ident) throw error('Expected identifier', n);
 		const name = text(ident);
 		const existing = symbolTable.getRef(name, n);
-
-		if (isDef && existing)
-			throw error('Cannot mix assignment and defitions', n);
 
 		const symbol =
 			existing ||
@@ -271,16 +268,24 @@ export function parseExpression(
 			'=': {
 				precedence: 2,
 				infix(tk, left) {
-					let isDefinition = define(left);
+					const isDefinition = define(left);
 					const right = expectExpression(1);
+
+					if (isDefinition) {
+						return {
+							...tk,
+							kind: 'def',
+							children: [left, right],
+							left,
+							right,
+							start: left.start,
+							end: right.end,
+						};
+					}
 
 					return {
 						...tk,
-						kind: isDefinition
-							? context === 'data'
-								? 'propdef'
-								: 'def'
-							: '=',
+						kind: '=',
 						children: [left, right],
 						start: left.start,
 						end: right.end,
@@ -376,6 +381,24 @@ export function parseExpression(
 				prefix(n: NodeMap['ident']) {
 					const name = text(n);
 					n.symbol = symbolTable.getRef(name, n);
+					if (!n.symbol && optional(':')) {
+						const type = expectNode(typeParser(), 'Expected type');
+						n.symbol = symbolTable.set(name, {
+							name,
+							kind: 'parameter',
+							flags: 0,
+						});
+						expect('=');
+						const right = expectExpression(1);
+						return {
+							...n,
+							kind: 'def',
+							children: [n, type, right],
+							type,
+							left: n,
+							right,
+						};
+					}
 					return n;
 				},
 			},

@@ -37,21 +37,35 @@ export default spec('compiler', s => {
 		});
 	});
 
+	s.test('Parser - Types', it => {
+		const parse = (src: string) => {
+			const st = SymbolTable();
+			const api = ParserApi(scan);
+			api.start(src);
+			const scope = st.push();
+			const expr = parseExpression(api, st);
+			st.pop(scope);
+			return {
+				root: {
+					...api.node('root'),
+					children: api.parseUntilKind(expr, 'eof'),
+				},
+				scope,
+				errors: api.errors,
+			};
+		};
+
+		it.should('parse variable types', a => {
+			const { scope } = parse('a: int = 100');
+			a.ok(scope.a);
+			a.equal(scope.a.type?.name, 'int');
+		});
+	});
+
 	s.test('Parser - Expressions', it => {
 		const parse = (src: string) => {
 			const st = SymbolTable();
 			const api = ParserApi(scan);
-			st.setSymbols(
-				/*{ name: 'a', kind: 'variable', flags: 0 },
-				{ name: 'b', kind: 'variable', flags: 0 },
-				{ name: 'c', kind: 'variable', flags: 0 },
-				{ name: 'd', kind: 'variable', flags: 0 },
-				{ name: 'e', kind: 'variable', flags: 0 },
-				{ name: 'f', kind: 'variable', flags: 0 },*/
-				{ name: 'scan', kind: 'function', flags: 0 },
-				{ name: 'true', kind: 'literal', flags: 0 },
-				{ name: 'false', kind: 'literal', flags: 0 },
-			);
 			api.start(src);
 			const scope = st.push();
 			const expr = parseExpression(api, st);
@@ -172,12 +186,12 @@ export default spec('compiler', s => {
 			match(
 				a,
 				`scan = fn(a: string) { }`,
-				'(root (= :scan ({ (parameter :a :string))))',
+				'(root (def :scan ({ (parameter :a :string))))',
 			);
 			match(
 				a,
 				`scan = fn(:string) { }`,
-				'(root (= :scan ({ (parameter ? :string))))',
+				'(root (def :scan ({ (parameter ? :string))))',
 			);
 		});
 
@@ -312,7 +326,9 @@ export default spec('compiler', s => {
 			a.test(testName, a => {
 				const mainSrc = `__main={ ${src} }`;
 				const [program, sf] = parse(mainSrc);
-				const block = sf.root.children[0].children[1];
+				const first = sf.root.children[0];
+				if (first.kind !== 'def') throw 'Invalid AST';
+				const block = first.right;
 				if (block.kind !== '{') throw 'Invalid AST';
 				const expr = block.children[0];
 				a.equal(ast(expr), astText);

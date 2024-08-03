@@ -161,7 +161,7 @@ By default data is immutable. The 'var' keyword can be used to specify variable 
 
 ```
 c = [
-    var field: bool | string = true,
+    var field: boolean | string = true,
     2
 ];
 

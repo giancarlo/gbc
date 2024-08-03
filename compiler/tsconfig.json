@@ -9,6 +9,7 @@
 		"error.ts",
 		"index.ts",
 		"scanner.ts",
+		"types.ts",
 		"parser-expression.ts",
 		"parser.ts",
 		"parser-type.ts",

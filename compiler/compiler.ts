@@ -54,7 +54,7 @@ function next(child?: Node) {
 	return child
 		? `{const _$=${compile(
 				child,
-		  )};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
+			)};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
 		: 'yield';
 }
 
@@ -153,10 +153,8 @@ export function compile(node: Node): string {
 			}
 			return text;
 		}
-		case 'propdef':
-			return compile(node.children[1]);
 		case 'def': {
-			const [left, right] = node.children;
+			const { left, right } = node;
 
 			if (left.kind === ',') {
 				if (right.kind !== ',')

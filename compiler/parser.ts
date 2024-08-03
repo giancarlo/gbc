@@ -31,9 +31,7 @@ export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
 		const expr = expectNodeKind(expression(), 'def', 'Expected definition');
 
 		if (isExport) {
-			if (expr.children[0].kind === ',') {
-				for (const child of expr.children) markExported(child);
-			} else markExported(expr.children[0]);
+			markExported(expr.children[0]);
 		}
 		return expr;
 	}
