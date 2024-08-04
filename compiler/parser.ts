@@ -9,7 +9,11 @@ import type { Node } from './node.js';
 
 export type RootNode = ReturnType<typeof parse>;
 
-export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
+export function parse(
+	api: ParserApi<ScannerToken>,
+	symbolTable: SymbolTable,
+	typesTable: SymbolTable,
+) {
 	const {
 		current,
 		expect,
@@ -19,7 +23,7 @@ export function parse(api: ParserApi<ScannerToken>, symbolTable: SymbolTable) {
 		parseUntilKind,
 		next,
 	} = api;
-	const expression = parseExpression(api, symbolTable);
+	const expression = parseExpression(api, symbolTable, typesTable);
 
 	function markExported(n: Node) {
 		if (n.kind === 'ident' && n.symbol) n.symbol.flags |= Flags.Export;

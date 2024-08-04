@@ -1,7 +1,7 @@
 ///<amd-module name="@cxl/gbc.compiler/scanner.js"/>
-import { CompilerError, Token } from '@cxl/gbc.sdk';
+import { CompilerError, Token, Position } from '@cxl/gbc.sdk';
 
-export type ScannerToken = ReturnType<ReturnType<typeof scan>>;
+export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
 
 const digit = /[\d_]/,
@@ -67,6 +67,11 @@ export function scan(source: string) {
 			if (ch === '\n') endLine++;
 			else if (ch !== '\r' && ch !== ' ' && ch !== '\t') break;
 		}
+	}
+
+	function backtrack(pos: Position) {
+		index = pos.end;
+		endLine = line = pos.line;
 	}
 
 	function next() {
@@ -208,5 +213,5 @@ export function scan(source: string) {
 		}
 	}
 
-	return next;
+	return { next, backtrack };
 }

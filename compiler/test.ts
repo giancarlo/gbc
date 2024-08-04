@@ -2,11 +2,16 @@ import { TestApi, spec } from '@cxl/spec';
 import { each, Token, ParserApi, formatError } from '@cxl/gbc.sdk';
 
 import { Program } from './program.js';
-import { SymbolTable } from './symbol-table.js';
+import {
+	Symbol,
+	ProgramSymbolTable,
+	TypesSymbolTable,
+} from './symbol-table.js';
 import { scan } from './scanner.js';
 import { parseExpression } from './parser-expression.js';
 import { RUNTIME } from './compiler.js';
 import { ast } from './debug.js';
+import { checker } from './checker.js';
 
 export default spec('compiler', s => {
 	s.test('Scanner', it => {
@@ -15,7 +20,7 @@ export default spec('compiler', s => {
 			src: string,
 			...expect: Partial<Token<string>>[]
 		) {
-			const next = scan(src);
+			const { next } = scan(src);
 			let i = 0;
 			for (const tk of each(next)) a.equalValues(tk, expect[i++]);
 		}
@@ -39,20 +44,32 @@ export default spec('compiler', s => {
 
 	s.test('Parser - Types', it => {
 		const parse = (src: string) => {
-			const st = SymbolTable();
+			const st = ProgramSymbolTable();
+			const tt = TypesSymbolTable();
 			const api = ParserApi(scan);
 			api.start(src);
 			const scope = st.push();
-			const expr = parseExpression(api, st);
-			st.pop(scope);
-			return {
+			const expr = parseExpression(api, st, tt);
+			const children = api.parseUntilKind(expr, 'eof');
+			const result = {
 				root: {
 					...api.node('root'),
-					children: api.parseUntilKind(expr, 'eof'),
+					children,
 				},
 				scope,
 				errors: api.errors,
 			};
+			if (result.errors.length) {
+				result.errors.forEach(e => it.log(formatError(e)));
+				throw 'Parsing Errors';
+			}
+			checker(result).run();
+			if (result.errors.length) {
+				it.log(result.errors);
+				throw 'Checker Errors';
+			}
+			st.pop(scope);
+			return result;
 		};
 
 		it.should('parse variable types', a => {
@@ -63,12 +80,14 @@ export default spec('compiler', s => {
 	});
 
 	s.test('Parser - Expressions', it => {
-		const parse = (src: string) => {
-			const st = SymbolTable();
+		const parse = (src: string, symbols?: Symbol[]) => {
+			const st = ProgramSymbolTable();
+			const tt = TypesSymbolTable();
+			if (symbols) st.setSymbols(...symbols);
 			const api = ParserApi(scan);
 			api.start(src);
 			const scope = st.push();
-			const expr = parseExpression(api, st);
+			const expr = parseExpression(api, st, tt);
 			st.pop(scope);
 			return {
 				root: {
@@ -80,8 +99,13 @@ export default spec('compiler', s => {
 			};
 		};
 
-		function match(a: TestApi, src: string, out: string) {
-			const r = parse(src);
+		function match(
+			a: TestApi,
+			src: string,
+			out: string,
+			symbols?: Symbol[],
+		) {
+			const r = parse(src, symbols);
 			if (r.errors?.length) {
 				r.errors.forEach(e => a.log(formatError(e)));
 				throw new Error('Parsing failed');
@@ -166,8 +190,7 @@ export default spec('compiler', s => {
 		it.should('parse definition', a => {
 			match(a, "a = 'hello'", "(root (def :a 'hello'))");
 			match(a, 'a = 0', '(root (def :a 0))');
-			match(a, 'a = b', '(root (def :a :b))');
-			match(a, 'a = b = c', '(root (def :a (def :b :c)))');
+			match(a, 'a = true', '(root (def :a :true))');
 			/*match(a, 'a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
 			match(
 				a,
@@ -177,8 +200,8 @@ export default spec('compiler', s => {
 		});
 		it.should('parse var definition', a => {
 			match(a, "var a = 'hello'", "(root (def :a @variable 'hello'))");
-			match(a, 'var a = b', '(root (def :a @variable :b))');
-			match(a, 'a = b', '(root (def :a :b))');
+			match(a, 'var a = 1', '(root (def :a @variable 1))');
+			match(a, 'a = 2', '(root (def :a 2))');
 			//match(a, 'var a, var b = c, d', '(root (= (, :a :b) (, :c :d)))');
 		});
 
@@ -196,11 +219,14 @@ export default spec('compiler', s => {
 		});
 
 		it.should('parse ternary ? operator', a => {
-			match(a, 'a = b ? c : d', '(root (def :a (? :b :c :d)))');
+			match(a, 'a = 1 ? 2 : 3', '(root (def :a (? 1 2 3)))');
 		});
 
 		it.should('parse infix operators', a => {
-			match(a, 'a > 0 || b > 0', '(root (|| (> :a 0) (> :b 0)))');
+			match(a, 'a > 0 || b > 0', '(root (|| (> :a 0) (> :b 0)))', [
+				{ name: 'a', kind: 'variable', flags: 0 },
+				{ name: 'b', kind: 'variable', flags: 0 },
+			]);
 			match(
 				a,
 				'true || false && false',

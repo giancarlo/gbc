@@ -1,8 +1,15 @@
 ///<amd-module name="@cxl/gbc.compiler/symbol-table.js"/>
 import { SymbolTable as BaseSymbolTable } from '@cxl/gbc.sdk';
-
+import {
+	BooleanType,
+	FloatType,
+	ObjectType,
+	FunctionType,
+	IntegerType,
+	StringType,
+	Type,
+} from './checker.js';
 import type { Node } from './node.js';
-import type { Type } from './types.js';
 
 export enum Flags {
 	None = 0,
@@ -18,6 +25,7 @@ type BaseSymbol = {
 	references?: Node[];
 };
 export type SymbolMap = {
+	type: {};
 	literal: {};
 	namespace: { members: Record<string, Symbol> };
 	function: {};
@@ -32,15 +40,25 @@ export type Scope = Record<string, Symbol>;
 
 export type SymbolTable = ReturnType<typeof SymbolTable>;
 
-export const BooleanType = { name: 'boolean' };
-export const FloatType = { name: 'float' };
-export const ObjectType = { name: 'object' };
-export const FunctionType = { name: 'function' };
-
-export function SymbolTable() {
+export function SymbolTable(globals?: Symbol[]) {
 	const st = BaseSymbolTable<Symbol>();
 
-	st.setSymbols(
+	if (globals) st.setSymbols(...globals);
+
+	return {
+		...st,
+		getRef(id: string, node: Node) {
+			const symbol = st.get(id);
+			if (symbol) {
+				(symbol.references ||= []).push(node);
+			}
+			return symbol;
+		},
+	};
+}
+
+export function ProgramSymbolTable() {
+	return SymbolTable([
 		{ name: 'true', kind: 'literal', flags: 0, type: BooleanType },
 		{ name: 'false', kind: 'literal', flags: 0, type: BooleanType },
 		{ name: 'NaN', kind: 'literal', flags: 0, type: FloatType },
@@ -60,16 +78,14 @@ export function SymbolTable() {
 				},
 			},
 		},
-	);
+	]);
+}
 
-	return {
-		...st,
-		getRef(id: string, node: Node) {
-			const symbol = st.get(id);
-			if (symbol) {
-				(symbol.references ||= []).push(node);
-			}
-			return symbol;
-		},
-	};
+export function TypesSymbolTable() {
+	return SymbolTable([
+		{ name: 'int', kind: 'type', flags: 0, type: IntegerType },
+		{ name: 'string', kind: 'type', flags: 0, type: StringType },
+		{ name: 'true', kind: 'literal', flags: 0, type: BooleanType },
+		{ name: 'false', kind: 'literal', flags: 0, type: BooleanType },
+	]);
 }

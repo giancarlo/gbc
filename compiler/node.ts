@@ -13,7 +13,7 @@ export type BaseNodeMap = {
 	type: { children: [Node] };
 	var: { ident: NodeMap['ident'] };
 	done: {};
-	ident: { symbol?: Symbol };
+	ident: { symbol: Symbol };
 	string: {};
 	number: { value: number };
 	loop: { children: [Node] };
@@ -26,8 +26,8 @@ export type BaseNodeMap = {
 	};
 	macro: { value: string };
 	def: {
-		children: [Node, Node] | [Node, Node, Node];
-		left: Node;
+		children: [NodeMap['ident'], Node] | [NodeMap['ident'], Node, Node];
+		left: NodeMap['ident'];
 		right: Node;
 		type?: Node;
 	};

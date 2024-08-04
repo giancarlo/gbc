@@ -54,7 +54,7 @@ function next(child?: Node) {
 	return child
 		? `{const _$=${compile(
 				child,
-			)};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
+		  )};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
 		: 'yield';
 }
 
@@ -156,7 +156,7 @@ export function compile(node: Node): string {
 		case 'def': {
 			const { left, right } = node;
 
-			if (left.kind === ',') {
+			/*if (left.kind === ',') {
 				if (right.kind !== ',')
 					throw new CompilerError('Invalid definition', right);
 				let result = '';
@@ -164,7 +164,7 @@ export function compile(node: Node): string {
 					result += assign(left.children[i], right.children[i]);
 				}
 				return result;
-			}
+			}*/
 
 			return assign(left, right);
 		}

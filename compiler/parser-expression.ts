@@ -1,5 +1,5 @@
 ///<amd-module name="@cxl/gbc.compiler/parser-expression.js"/>
-import { ParserApi, UnaryNode, text, parserTable } from '@cxl/gbc.sdk';
+import { ParserApi, UnaryNode, Token, text, parserTable } from '@cxl/gbc.sdk';
 import { parseType } from './parser-type.js';
 import { Flags, SymbolTable } from './symbol-table.js';
 
@@ -9,10 +9,11 @@ import type { ScannerToken } from './scanner.js';
 export function parseExpression(
 	api: ParserApi<ScannerToken>,
 	symbolTable: SymbolTable,
+	typesTable: SymbolTable,
 ) {
-	const typeParser = parseType(api, symbolTable);
+	const typeParser = parseType(api, typesTable);
 	const { current, error, expect, expectNode, optional, parseList } = api;
-	let context: 'normal' | 'data' = 'normal';
+	//let context: 'normal' | 'data' = 'normal';
 
 	function parameter(): NodeMap['parameter'] {
 		const ident = optional('ident');
@@ -28,7 +29,7 @@ export function parseExpression(
 				kind: 'parameter',
 				flags: 0,
 			});
-			children = [ident, type];
+			children = [{ ...ident, symbol }, type];
 		} else {
 			expect(':');
 			type = expectNode(typeParser(), 'Expected type');
@@ -88,28 +89,21 @@ export function parseExpression(
 
 	/**
 	 * Function that defines a variable in the symbol table.
-	 * @param n The node to define.
-	 * @param isDef True if the definition is a `def`, false if it's an assignment.
-	 * @returns True if the variable was defined, false if it was already defined.
 	 */
-	function define(n: Node) {
-		const ident =
-			n.kind === 'var' ? n.ident : n.kind === 'ident' ? n : undefined;
-
-		if (!ident) throw error('Expected identifier', n);
+	function define(ident: Token<'ident'>, flags = 0): NodeMap['ident'] {
 		const name = text(ident);
-		const existing = symbolTable.getRef(name, n);
+		const existing = symbolTable.get(name);
+		if (existing) throw error('Symbol already defined', ident);
 
-		const symbol =
-			existing ||
-			symbolTable.set(name, {
-				name,
-				kind: 'variable',
-				flags: n.kind === 'var' ? Flags.Variable : 0,
-			});
-		ident.symbol = symbol;
-
-		return !existing;
+		const symbol = symbolTable.set(name, {
+			name,
+			kind: 'variable',
+			flags,
+		});
+		return {
+			...ident,
+			symbol,
+		};
 	}
 
 	const parser = parserTable<NodeMap, ScannerToken>(
@@ -123,7 +117,6 @@ export function parseExpression(
 			prefix,
 			current,
 		}) => ({
-			//'>>': infixOperator(1, 0),
 			'>>': {
 				precedence: 1,
 				infix(tk, left) {
@@ -144,11 +137,11 @@ export function parseExpression(
 						const tk = current();
 						if (tk.kind === '(') blockParameters(node);
 						expect('{');
-						node.statements = parseUntilKind(expr, '}');
+						node.statements = parseUntilKind(statement, '}');
 					});
 				},
 			},
-			var: {
+			/*var: {
 				prefix(_tk) {
 					const child = expectExpression(1);
 					if (child.kind !== (context === 'data' ? 'propdef' : 'def'))
@@ -159,11 +152,11 @@ export function parseExpression(
 
 					return child;
 				},
-			},
+			},*/
 			'{': {
 				prefix: tk =>
 					parseBlock(tk, node => {
-						node.statements = parseUntilKind(expr, '}');
+						node.statements = parseUntilKind(statement, '}');
 					}),
 			},
 			'||': infixOperator(3),
@@ -268,10 +261,10 @@ export function parseExpression(
 			'=': {
 				precedence: 2,
 				infix(tk, left) {
-					const isDefinition = define(left);
+					//const isDefinition = define(left);
 					const right = expectExpression(1);
 
-					if (isDefinition) {
+					/*if (isDefinition) {
 						return {
 							...tk,
 							kind: 'def',
@@ -281,7 +274,7 @@ export function parseExpression(
 							start: left.start,
 							end: right.end,
 						};
-					}
+					}*/
 
 					return {
 						...tk,
@@ -314,7 +307,7 @@ export function parseExpression(
 			'[': {
 				precedence: 17,
 				prefix(tk) {
-					context = 'data';
+					//context = 'data';
 					return symbolTable.withScope(scope => {
 						const result: NodeMap['data'] = {
 							...tk,
@@ -323,7 +316,7 @@ export function parseExpression(
 							children: [expectExpression()],
 							end: expect(']').end,
 						};
-						context = 'normal';
+						//context = 'normal';
 						return result;
 					});
 				},
@@ -380,29 +373,60 @@ export function parseExpression(
 			ident: {
 				prefix(n: NodeMap['ident']) {
 					const name = text(n);
-					n.symbol = symbolTable.getRef(name, n);
-					if (!n.symbol && optional(':')) {
-						const type = expectNode(typeParser(), 'Expected type');
-						n.symbol = symbolTable.set(name, {
-							name,
-							kind: 'parameter',
-							flags: 0,
-						});
-						expect('=');
-						const right = expectExpression(1);
-						return {
-							...n,
-							kind: 'def',
-							children: [n, type, right],
-							type,
-							left: n,
-							right,
-						};
-					}
+					const symbol = symbolTable.getRef(name, n);
+					if (!symbol) throw error('Identifier not defined', n);
+					n.symbol = symbol;
 					return n;
 				},
 			},
 		}),
 	);
-	return parser(api);
+
+	const exprParser = parser(api);
+
+	function definition(): NodeMap['def'] | undefined {
+		let tk = current();
+		let flags = 0;
+		if (tk.kind !== 'ident' && tk.kind !== 'var') return;
+		api.next();
+		if (tk.kind === 'var') {
+			flags = Flags.Variable;
+			tk = expect('ident');
+		}
+		const next = optional(':') || optional('=');
+		if (!next) {
+			if (flags) throw api.error('Expected definition', tk);
+			api.backtrack(tk);
+			return;
+		}
+		const left = define(tk, flags);
+		let type;
+		if (next.kind === ':') {
+			type = expectNode(typeParser(), 'Expected type');
+			expect('=');
+		}
+		const right = expectNode(exprParser(), 'Expected expression');
+		return {
+			kind: 'def',
+			children: type ? [left, type, right] : [left, right],
+			left,
+			right,
+			type,
+			start: left.start,
+			end: right.end,
+			source: left.source,
+			line: left.line,
+		};
+	}
+
+	/**
+	 * This is the entry point for parsing a statement.
+	 * It first attempts to parse a definition (e.g., `var x = 5` or `x: number = 5`).
+	 * If a definition is not found, it falls back to parsing a general expression.
+	 */
+	function statement() {
+		return definition() || exprParser();
+	}
+
+	return statement;
 }

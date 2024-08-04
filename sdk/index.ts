@@ -12,7 +12,11 @@ export interface Token<Kind> extends Position {
 }
 
 export type ScanFn<Node extends Token<string>> = () => Node;
-export type Scanner<Node extends Token<string>> = (src: string) => () => Node;
+export type Scanner<Node extends Token<string>> = (src: string) => {
+	next: ScanFn<Node>;
+	backtrack: (pos: Position) => void;
+};
+
 export type BaseNode = Position & { children?: BaseNode[] };
 
 export type NodeMap = {
@@ -260,6 +264,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		parseList,
 		parseListWithEmpty,
 		start,
+		backtrack,
 	};
 
 	function start(src: string) {
@@ -268,8 +273,13 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		next();
 	}
 
+	function backtrack(pos: Node) {
+		scan.backtrack(pos);
+		token = pos;
+	}
+
 	function next(): Node {
-		return catchAndRecover(() => (token = scan()), next);
+		return catchAndRecover(() => (token = scan.next()), next);
 	}
 
 	function skipWhile(kind: Node['kind']) {
