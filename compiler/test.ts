@@ -222,6 +222,13 @@ export default spec('compiler', s => {
 			match(a, 'a = 1 ? 2 : 3', '(root (def :a (? 1 2 3)))');
 		});
 
+		it.should('parse assignment', a => {
+			match(a, 'b = 10 a = b', '(root (= :b 10) (= :a :b))', [
+				{ name: 'a', kind: 'variable', flags: 0 },
+				{ name: 'b', kind: 'variable', flags: 0 },
+			]);
+		});
+
 		it.should('parse infix operators', a => {
 			match(a, 'a > 0 || b > 0', '(root (|| (> :a 0) (> :b 0)))', [
 				{ name: 'a', kind: 'variable', flags: 0 },

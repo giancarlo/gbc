@@ -384,6 +384,16 @@ export function parseExpression(
 
 	const exprParser = parser(api);
 
+	/**
+	 * Parses a definition statement. A definition statement can be in the form of:
+	 *  - `identifier = expression`
+	 *  - `var identifier = expression`
+	 *  - `identifier : type = expression`
+	 *  - `var identifier : type = expression`
+	 *
+	 * If the statement does not match a definition pattern, it returns undefined.
+	 * This allows the caller to fallback to parsing a general expression.
+	 */
 	function definition(): NodeMap['def'] | undefined {
 		let tk = current();
 		let flags = 0;
@@ -399,6 +409,15 @@ export function parseExpression(
 			api.backtrack(tk);
 			return;
 		}
+
+		// Check if a symbol with this identifier already exists in the symbol table.
+		// If it does, and we are not explicitly defining a variable (with 'var'),
+		// this is likely an assignment expression, not a definition.
+		if (next.kind === '=' && !flags && symbolTable.get(text(tk))) {
+			api.backtrack(tk);
+			return;
+		}
+
 		const left = define(tk, flags);
 		let type;
 		if (next.kind === ':') {
