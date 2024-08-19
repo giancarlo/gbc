@@ -78,9 +78,6 @@ export function parseExpression(
 				flags: 0,
 			});
 			cb(node);
-			/*if (node.statements.length===1) {
-				node.children.push({ kind: 'next', children: [node.statements[0]], start: tk.start,end:tk.end,line:tk.line,source:tk.source});
-			} else*/
 			node.children.push(...node.statements);
 			node.end = expect('}').end;
 		});
@@ -141,18 +138,6 @@ export function parseExpression(
 					});
 				},
 			},
-			/*var: {
-				prefix(_tk) {
-					const child = expectExpression(1);
-					if (child.kind !== (context === 'data' ? 'propdef' : 'def'))
-						throw error('Expected definition', child);
-					const left = child.children[0];
-					if (left.kind === 'ident' && left.symbol)
-						left.symbol.flags |= Flags.Variable;
-
-					return child;
-				},
-			},*/
 			'{': {
 				prefix: tk =>
 					parseBlock(tk, node => {
@@ -170,7 +155,6 @@ export function parseExpression(
 			'>': infixOperator(9),
 			'<=': infixOperator(9),
 			'>=': infixOperator(9),
-			//'<<': infixOperator(10),
 			'<:': infixOperator(10),
 			':>': infixOperator(10),
 			'++': {
