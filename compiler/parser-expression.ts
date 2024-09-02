@@ -13,7 +13,6 @@ export function parseExpression(
 ) {
 	const typeParser = parseType(api, typesTable);
 	const { current, error, expect, expectNode, optional, parseList } = api;
-	//let context: 'normal' | 'data' = 'normal';
 
 	function parameter(): NodeMap['parameter'] {
 		const ident = optional('ident');
@@ -291,7 +290,6 @@ export function parseExpression(
 			'[': {
 				precedence: 17,
 				prefix(tk) {
-					//context = 'data';
 					return symbolTable.withScope(scope => {
 						const result: NodeMap['data'] = {
 							...tk,

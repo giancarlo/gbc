@@ -562,6 +562,19 @@ export default spec('compiler', s => {
 			';return fib',
 		);
 
+		baseline(
+			'factorial',
+			`
+fn factorial(n: int): int {
+    next (n <= 1) ? 1 : n * factorial(n - 1);
+}
+
+factorial(5)    # Output: 120
+			`,
+			'',
+			'',
+		);
+
 		/*baseline(
 			`repeat`,
 			`repeat = fn(n) { var x=0 loop >> { n-->0 ? next(x++) : done } }`,

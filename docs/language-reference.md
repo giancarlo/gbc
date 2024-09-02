@@ -1,23 +1,5 @@
 # GB Programming Language
 
-## Design Principles
-
-The language will abide by the following principles:
-
-1. **Limited Choice:** Minimize ways to achieve the same functionality.
-2. **Enforce Best Practices:** Integrate critical practices into syntax/type system.
-3. **Explicit Errors:** Throw errors with clear messages and suggestions.
-4. **Convention over Configuration:** Define most behaviors with minimal configuration.
-5. **No Hidden Magic:** Maintain transparency, avoid unexpected behavior.
-6. **No Unnecessary Features:** Focus on essential development features.
-
-### Variables
-
-7. **No Variable Shadowing:** Prevent variables within a block from masking wider scope variables with the same name.
-8. **No Unused Variables:** Flag variables declared but never used.
-9. **Mandatory Initialization:** All variables must be assigned a value during declaration.
-10. **Constant by Default:** Variables are immutable by default, but can be explicitly declared as mutable if needed.
-
 ## Hello World
 
 This is a sample of a simple "Hello World" program. The _main_ block is our entry point. No code is allowed outside of it other than type and function definitions. The standard library is always available through the _std_ namespace. The pipe `>>` operator will call the `std.out` function passing its left value as an argument.
@@ -38,7 +20,7 @@ Identifiers must start with an alphabetic character and might be followed by any
 
 ### Keywords
 
-The following keyboards are reserved.
+The following keywords are reserved.
 
 as - Type Casting
 done - Mark the function as complete
@@ -153,7 +135,9 @@ String literals are immutable. All strings are utf8 encoded.
 Data blocks are typed structures stored in -contiguous- memory. Data blocks are enclosed in brackets '[]' and are zero-indexed.
 
 ```
+# Creates a list named `a` containing a string 'string' and the integer 2.
 a = [ 'string', 2 ]
+# Creates a list named `b` containing a named element `label` with the value 'string' and the integer 2.
 b = [ label = 'string', 2 ]
 ```
 
