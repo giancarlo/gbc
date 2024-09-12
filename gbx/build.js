@@ -1,4 +1,4 @@
-const { buildCxl, tsBundle } = require('../../cxl/dist/build');
+const { buildCxl, tsBundle } = require('@cxl/build');
 
 buildCxl({
 	outputDir: '../dist/gbx',

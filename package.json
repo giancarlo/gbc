@@ -4,10 +4,14 @@
 	"version": "0.0.0",
 	"devDependencies": {
 		"@cxl/build": "^0.2.0",
+		"@cxl/program": "^0.0.3",
 		"@cxl/rx": "^0.8.1",
 		"@cxl/spec": "^0.3.1",
 		"@cxl/tester": "^0.2.0",
 		"@typescript-eslint/eslint-plugin": "^8.4.0",
 		"typescript": "^5.6.2"
+	},
+	"scripts": {
+		"build": "npm run build package docs --prefix compiler"
 	}
 }

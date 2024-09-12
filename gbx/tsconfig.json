@@ -5,5 +5,5 @@
 		"allowJs": true
 	},
 	"files": ["index.ts"],
-	"references": [{ "path": "../../cxl/program" }, { "path": "../compiler" }]
+	"references": [{ "path": "../compiler" }]
 }

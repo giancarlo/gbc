@@ -5,5 +5,5 @@
 		"types": ["node"]
 	},
 	"files": ["test.ts"],
-	"references": [{ "path": "." }, { "path": "../../cxl/spec" }]
+	"references": [{ "path": "." }]
 }

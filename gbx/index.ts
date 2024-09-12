@@ -15,7 +15,7 @@ export default program('gbx', () => {
 		const program = Program();
 		for (const srcFile of options.$) {
 			const src = readFileSync(srcFile, 'utf8');
-			new Function(program.compile(src))();
+			new Function(program.compile(src).output)();
 		}
 	}
 });

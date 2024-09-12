@@ -4,5 +4,5 @@
 		"module": "amd",
 		"outDir": "../dist/compiler-next/amd"
 	},
-	"references": [{ "path": "../../cxl/compiler" }]
+	"references": []
 }
