@@ -3,13 +3,11 @@
 	"private": true,
 	"version": "0.0.0",
 	"devDependencies": {
-		"@cxl/amd": "file:../cxl/dist/amd",
-		"@cxl/build": "file:../cxl/dist/build",
-		"@cxl/program": "file:../cxl/dist/program",
-		"@cxl/source": "file:../cxl/dist/source",
-		"@cxl/spec": "file:../cxl/dist/spec",
-		"@cxl/tester": "file:../cxl/dist/tester",
-		"@typescript-eslint/eslint-plugin": "^5.15.0",
-		"typescript": "^5.2.2"
+		"@cxl/build": "^0.2.0",
+		"@cxl/rx": "^0.8.1",
+		"@cxl/spec": "^0.3.1",
+		"@cxl/tester": "^0.2.0",
+		"@typescript-eslint/eslint-plugin": "^8.4.0",
+		"typescript": "^5.6.2"
 	}
 }
