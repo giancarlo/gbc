@@ -89,9 +89,8 @@ export function Bytecode() {
 export function compileWasm(ast: Node) {
 	const { out } = Bytecode();
 
-	function compile(node: Node) {
-		switch (node.kind) {
-		}
+	function compile(_node: Node) {
+		/*noop*/
 	}
 
 	compile(ast);

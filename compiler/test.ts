@@ -331,12 +331,12 @@ export default spec('compiler', s => {
 			}
 			return [program, sf] as const;
 		}
-		function baseline(
+		function baseline<T>(
 			testName: string,
 			src: string,
 			astText: string,
 			output: string,
-			test?: (a: TestApi, fn: Function) => void,
+			test?: (a: TestApi, fn: T) => void,
 			extra = '',
 		) {
 			a.test(testName, a => {
@@ -346,15 +346,15 @@ export default spec('compiler', s => {
 				const code = program.compileAst(sf.root);
 				a.equal(code.slice(RUNTIME.length), output);
 				const fn = new Function(code + extra);
-				test?.(a, fn);
+				test?.(a, fn());
 			});
 		}
-		function baselineExpr(
+		function baselineExpr<T = () => unknown>(
 			testName: string,
 			src: string,
 			astText: string,
 			output: string,
-			test?: (a: TestApi, fn: Function) => void,
+			test?: (a: TestApi, fn: T) => void,
 		) {
 			a.test(testName, a => {
 				const mainSrc = `__main={ ${src} }`;
@@ -370,7 +370,7 @@ export default spec('compiler', s => {
 				const outSrc = code.slice(RUNTIME.length);
 				a.equal(outSrc, output);
 				const fn = new Function(`return ${outSrc}`);
-				test?.(a, fn);
+				test?.(a, fn());
 			});
 		}
 
@@ -390,13 +390,13 @@ export default spec('compiler', s => {
 			`[1,2,3]`,
 		);
 
-		baselineExpr(
+		baselineExpr<(n: number) => Iterator<number>>(
 			'lambda - multiple emit',
 			'{ $+1, $+2 }',
 			'({ (, (+ $ 1) (+ $ 2)))',
 			'function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=$+2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}',
 			(a, fn) => {
-				const iter = fn()(2);
+				const iter = fn(2);
 				a.equal(iter.next().value, 3);
 				a.equal(iter.next().value, 4);
 			},
@@ -544,13 +544,12 @@ export default spec('compiler', s => {
 			(a, r) => a.equal(r(), 6),
 		);
 		*/
-		baseline(
+		baseline<(n: number) => Iterator<number>>(
 			'fibonacci',
 			`fib = { $ <= 1 ? $ : fib($ - 1) + fib($ - 2) }`,
 			'(root (def :fib ({ (? (<= $ 1) $ (+ (call :fib (- $ 1)) (call :fib (- $ 2)))))))',
 			'const fib=function*($){{const _$=$<=1 ? $ : fib($-1)+fib($-2);if(_$ instanceof Iterator)yield*(_$);else yield _$}}',
-			(a, n) => {
-				const fib = n();
+			(a, fib) => {
 				a.equal(fib(0).next().value, 0);
 				a.equal(fib(1).next().value, 1);
 				a.equal(fib(2).next().value, 1);
@@ -587,7 +586,7 @@ factorial(5)    # Output: 120
 			'',
 			'',
 		);*/
-		baseline(
+		baseline<(a: number, b: number) => Iterator<number>>(
 			'ackermann',
 			`
 ackermann = fn(m: number, n:number) {
@@ -597,8 +596,7 @@ ackermann = fn(m: number, n:number) {
 		`,
 			`(root (def :ackermann ({ (parameter :m :number) (parameter :n :number) (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (>> (call :ackermann (, :m (- :n 1))) ({ (call :ackermann (, (- :m 1) $)))))))))`,
 			'const ackermann=function*(m,n){{const _$=m===0 ? n+1 : n===0 ? ackermann(m-1,1) : (function*(){const _=ackermann(m,n-1);const __=function*($){{const _$=ackermann(m-1,$);if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(ackermann(m,n-1))){yield(_1)}})();if(_$ instanceof Iterator)yield*(_$);else yield _$}}',
-			(a, n) => {
-				const ack = n();
+			(a, ack) => {
 				a.equal(ack(1, 3).next().value, 5);
 				a.equal(ack(2, 3).next().value, 9);
 				a.equal(ack(3, 3).next().value, 61);

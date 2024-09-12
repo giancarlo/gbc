@@ -6,20 +6,19 @@ import type { Scope, Symbol } from './symbol-table.js';
 type Infix = { children: [Node, Node] };
 type MakeInfix<T extends string> = { [K in T]: Infix };
 
-/* eslint @typescript-eslint/ban-types:off */
 export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[]; scope: Scope };
 	type: { children: [Node] };
 	var: { ident: NodeMap['ident'] };
-	done: {};
+	done: void;
 	ident: { symbol: Symbol };
-	string: {};
+	string: void;
 	number: { value: number };
 	loop: { children: [Node] };
 	next: { children: [Node | undefined] };
-	comment: {};
-	$: {};
+	comment: void;
+	$: void;
 	parameter: {
 		children: [Node, Node | undefined] | [undefined, Node];
 		symbol?: Symbol;

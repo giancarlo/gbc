@@ -20,8 +20,6 @@ export function Program(options?: ProgramOptions) {
 	const typesTable = TypesSymbolTable();
 	const api = ParserApi(scan);
 
-	symbolTable;
-
 	function parser(src: string) {
 		api.start(src);
 		const scope = symbolTable.push();

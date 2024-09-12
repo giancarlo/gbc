@@ -25,12 +25,12 @@ type BaseSymbol = {
 	references?: Node[];
 };
 export type SymbolMap = {
-	type: {};
-	literal: {};
+	type: unknown;
+	literal: unknown;
 	namespace: { members: Record<string, Symbol> };
-	function: {};
-	parameter: {};
-	variable: {};
+	function: unknown;
+	parameter: unknown;
+	variable: unknown;
 	native: { replace: string };
 };
 export type Symbol = {

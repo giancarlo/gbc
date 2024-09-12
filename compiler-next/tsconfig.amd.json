@@ -1,8 +1,0 @@
-{
-	"extends": "./tsconfig.json",
-	"compilerOptions": {
-		"module": "amd",
-		"outDir": "../dist/compiler-next/amd"
-	},
-	"references": []
-}
