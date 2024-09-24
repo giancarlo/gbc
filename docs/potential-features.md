@@ -4,7 +4,8 @@
 
 ### Modules as Functions
 
--   Modules are functions that return exports.
+-   Modules act as functions that provide exports.
+-   They are designed to be stateless.
 
 ```ts
 module = {
