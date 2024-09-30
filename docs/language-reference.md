@@ -308,37 +308,6 @@ factorial(5)    # Output: 120
 
 -   The `factorial` function calculates the factorial of a number using recursion.
 
-### Emitting Values in Functions
-
-Functions have the ability to emit multiple values over time, using the `next` keyword. The `done` keyword is used to indicate that a function has finished emitting values.
-
-### Emitting Values with `next`
-
--   The `next` keyword is used within a function to emit a value to the next function or code block in the chain.
--   A function can emit multiple values by calling `next` multiple times.
-
-```ts
-fn emitValues(): void {
-    next(1);
-    next(2);
-    next(3);
-    done();
-}
-
-emitValues() >> @.out
-```
-
--   This function emits the values `1`, `2`, and `3` before calling `done` to signal completion.
-
-### Completion
-
-Functions complete execution once all expressions have been evaluated and their corresponding values emitted to the next block in the chain. This means:
-
--   The function does not wait for any response or processing from the next block in the chain before continuing.
--   The function cannot access the results or modify the behavior of the next block in the chain based on its emitted values.
--   Once all expressions are evaluated, the function is considered finished and moves on to the next statement in your code.
--   The done keyword can be used to explicitly signal early termination if needed.
-
 ### Error Handling
 
 #### `catch` Block
@@ -351,20 +320,51 @@ The `"done"` keyword can be used to signal completion of the stream. This premat
 
 The code within the `catch` block can choose to re-throw the original error. This allows subsequent parts of the stream or the caller to handle the error in their own way.
 
-The `$` variable will be available inside the catch bloand and it will contain the caught error.
+The `$` variable will be available inside the catch block and it will contain the caught error.
 
-## Lambdas
+## Blocks
 
--   Lambdas are enclosed within curly braces `{}`.
--   Each lambda accepts a single parameter, referenced using the `$` symbol.
--   Lambdas can be chained together using the `>>` operator.
+-   Blocks are enclosed within curly braces `{}`.
+-   Each block accepts a single parameter, referenced using the `$` symbol.
+-   Blocks can be chained together using the `>>` operator.
 
 ```
 1 >> { $ + $ } >> @.out
 ```
 
--   This lambda adds its input to itself.
+-   This block adds its input to itself.
 -   Output: `2`
+
+### Emitting Values
+
+Blocks have the ability to emit multiple values over time, using the `next` keyword. The `done` keyword is used to indicate that a function has finished emitting values.
+
+### Emitting Values with `next`
+
+-   The `next` keyword is used within a block to emit a value to the next function or code block in the chain.
+-   A block can emit multiple values by calling `next` multiple times.
+
+```ts
+emitValues = {
+    next(1);
+    next(2);
+    next(3);
+    done();
+}
+
+emitValues() >> @.out
+```
+
+-   This block emits the values `1`, `2`, and `3` before calling `done` to signal completion.
+
+### Completion
+
+Functions complete execution once all expressions have been evaluated and their corresponding values emitted to the next block in the chain. This means:
+
+-   The function does not wait for any response or processing from the next block in the chain before continuing.
+-   The function cannot access the results or modify the behavior of the next block in the chain based on its emitted values.
+-   Once all expressions are evaluated, the function is considered finished and moves on to the next statement in your code.
+-   The done keyword can be used to explicitly signal early termination if needed.
 
 ### Sequences
 

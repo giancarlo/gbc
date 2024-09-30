@@ -84,6 +84,7 @@ export function ProgramSymbolTable() {
 export function TypesSymbolTable() {
 	return SymbolTable([
 		{ name: 'int', kind: 'type', flags: 0, type: IntegerType },
+		{ name: 'number', kind: 'type', flags: 0, type: Number },
 		{ name: 'string', kind: 'type', flags: 0, type: StringType },
 		{ name: 'true', kind: 'literal', flags: 0, type: BooleanType },
 		{ name: 'false', kind: 'literal', flags: 0, type: BooleanType },

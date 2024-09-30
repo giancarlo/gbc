@@ -3,8 +3,10 @@ import { ParserApi, UnaryNode, Token, text, parserTable } from '@cxl/gbc.sdk';
 import { parseType } from './parser-type.js';
 import { Flags, SymbolTable } from './symbol-table.js';
 
-import { Node, NodeMap } from './node.js';
+import { BlockFlags, Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
+
+type PartialBlock = Omit<NodeMap['{'], 'statements'> & { statements?: Node[] };
 
 export function parseExpression(
 	api: ParserApi<ScannerToken>,
@@ -47,10 +49,11 @@ export function parseExpression(
 		};
 	}
 
-	function blockParameters(node: NodeMap['{']) {
-		const params = expect('(') as NodeMap['('];
+	function blockParameters(node: PartialBlock) {
+		//const params = expect('(') as NodeMap['('];
 		node.parameters = parseList(parameter, ',', n => !!n);
-		params.end = expect(')').end;
+		//params.end = expect(')').end;
+		expect(')');
 		node.children.push(...node.parameters);
 	}
 
@@ -65,22 +68,24 @@ export function parseExpression(
 		};
 	}
 
-	function parseBlock(tk: ScannerToken, cb: (node: NodeMap['{']) => void) {
-		const node = tk as NodeMap['{'];
-		node.kind = '{';
-		node.children = [];
-		symbolTable.withScope(scope => {
-			node.scope = scope;
+	function parseBlock(tk: ScannerToken, cb: (node: PartialBlock) => Node[]) {
+		return symbolTable.withScope<NodeMap['{']>(scope => {
+			const node: PartialBlock = {
+				...tk,
+				kind: '{',
+				children: [],
+				scope,
+				flags: 0,
+			};
 			symbolTable.set('$', {
 				name: '$',
 				kind: 'variable',
 				flags: 0,
 			});
-			cb(node);
+			node.statements = cb(node);
 			node.children.push(...node.statements);
-			node.end = expect('}').end;
+			return node as NodeMap['{'];
 		});
-		return node;
 	}
 
 	/**
@@ -128,19 +133,27 @@ export function parseExpression(
 				},
 			},
 			fn: {
-				prefix(tk) {
+				prefix(tk): NodeMap['{'] {
 					return parseBlock(tk, node => {
-						const tk = current();
-						if (tk.kind === '(') blockParameters(node);
+						if (optional('(')) blockParameters(node);
+						if (optional('=>')) {
+							node.flags |= BlockFlags.Lambda;
+							return [expectExpression()];
+						}
 						expect('{');
-						node.statements = parseUntilKind(statement, '}');
+						const result = parseUntilKind(statement, '}');
+						node.end = expect('}').end;
+						return result;
 					});
 				},
 			},
 			'{': {
 				prefix: tk =>
 					parseBlock(tk, node => {
-						node.statements = parseUntilKind(statement, '}');
+						node.flags = BlockFlags.Sequence;
+						const result = parseUntilKind(statement, '}');
+						node.end = expect('}').end;
+						return result;
 					}),
 			},
 			'||': infixOperator(3),
@@ -425,7 +438,7 @@ export function parseExpression(
 	 * It first attempts to parse a definition (e.g., `var x = 5` or `x: number = 5`).
 	 * If a definition is not found, it falls back to parsing a general expression.
 	 */
-	function statement() {
+	function statement(): Node | undefined {
 		return definition() || exprParser();
 	}
 

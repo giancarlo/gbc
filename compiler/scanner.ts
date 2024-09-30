@@ -87,7 +87,11 @@ export function scan(source: string) {
 		switch (ch) {
 			// 2-char operators
 			case '=':
-				return la === '=' ? tk('==', 2) : tk('=', 1);
+				return la === '='
+					? tk('==', 2)
+					: la === '>'
+					? tk('=>', 2)
+					: tk('=', 1);
 			case '|':
 				return la === '|' ? tk('||', 2) : tk('|', 1);
 			case '&':

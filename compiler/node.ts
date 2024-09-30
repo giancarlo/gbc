@@ -6,6 +6,12 @@ import type { Scope, Symbol } from './symbol-table.js';
 type Infix = { children: [Node, Node] };
 type MakeInfix<T extends string> = { [K in T]: Infix };
 
+export enum BlockFlags {
+	Default = 0,
+	Lambda = 1,
+	Sequence = 2,
+}
+
 export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[]; scope: Scope };
@@ -39,10 +45,11 @@ export type BaseNodeMap = {
 	'--': { children: [Node] };
 	'-': { children: [Node] };
 	'{': {
-		parameters: NodeMap['parameter'][] | undefined;
+		parameters?: NodeMap['parameter'][];
 		statements: Node[];
 		scope: Scope;
 		children: Node[];
+		flags: BlockFlags;
 	};
 	'[': { children: [Node, Node] };
 	'(': { children: [Node] };

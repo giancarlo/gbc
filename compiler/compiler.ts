@@ -2,7 +2,7 @@
 import { CompilerError, InfixNode, text } from '@cxl/gbc.sdk';
 import { Flags } from './symbol-table.js';
 
-import type { Node, NodeMap } from './node.js';
+import { BlockFlags, Node, NodeMap } from './node.js';
 
 export const RUNTIME = `"use strict";`;
 
@@ -11,21 +11,15 @@ const infix = (n: InfixNode<NodeMap>, op: string = n.kind) =>
 
 const blockLambda = (n: NodeMap['{']) => {
 	const child = n.statements[0];
-	if (child.kind === ',') return child.children.map(next).join(';');
-	else return next(child); //`const $r=${compile(child)};if(next)next($r);else return $r;`;
+	//if (child.kind === ',') return child.children.map(next).join(';');
+	//else return next(child);
+	return `(${compile(child)})`;
 };
-const block = (n: NodeMap['{'] | NodeMap['main']) => {
-	return `${
-		n.kind === '{' &&
-		n.statements.length === 1 &&
-		n.statements[0].kind !== 'def' &&
-		n.statements[0].kind !== 'next'
-			? blockLambda(n)
-			: compileEach(n.statements)
-	}`;
-};
+const block = (n: NodeMap['{']) =>
+	n.flags & BlockFlags.Lambda
+		? blockLambda(n)
+		: `{${compileEach(n.statements)}}`;
 const compileEach = (nodes: Node[], sep = ';') => nodes.map(compile).join(sep);
-//const defaultParam = '$';
 function isExpression(n: Node) {
 	return n.kind !== 'next' && n.kind !== 'done';
 }
@@ -69,7 +63,7 @@ export function compile(node: Node): string {
 		case 'root':
 			return compileEach(node.children);
 		case 'main':
-			return block(node);
+			return compileEach(node.statements);
 		case 'number':
 			return node.value.toString();
 		case '++':
@@ -168,10 +162,13 @@ export function compile(node: Node): string {
 
 			return assign(left, right);
 		}
-		case '{':
-			return `function*(${
-				node.parameters ? compileEach(node.parameters, ',') : '$'
-			}){${generatorBody(node)}}`;
+		case '{': {
+			const parameters =
+				node.parameters && compileEach(node.parameters, ',');
+			return node.flags & BlockFlags.Sequence
+				? `function*(${parameters ?? '$'}){${generatorBody(node)}}`
+				: `(${parameters ?? ''})=>${block(node)}`;
+		}
 		case '?':
 			return `${compile(node.children[0])} ? ${compile(
 				node.children[1],
