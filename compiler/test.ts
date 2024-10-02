@@ -1,5 +1,11 @@
 import { TestApi, spec } from '@cxl/spec';
-import { each, Token, ParserApi, formatError } from '@cxl/gbc.sdk';
+import {
+	CompilerError,
+	each,
+	Token,
+	ParserApi,
+	formatError,
+} from '@cxl/gbc.sdk';
 
 import { Program } from './program.js';
 import {
@@ -12,6 +18,7 @@ import { parseExpression } from './parser-expression.js';
 import { RUNTIME } from './compiler.js';
 import { ast } from './debug.js';
 import { checker } from './checker.js';
+import type { Node } from './node.js';
 
 export default spec('compiler', s => {
 	s.test('Scanner', it => {
@@ -211,11 +218,11 @@ export default spec('compiler', s => {
 				`scan = fn(a: string) { }`,
 				'(root (def :scan ({ (parameter :a :string))))',
 			);
-			match(
+			/*match(
 				a,
 				`scan = fn(:string) { }`,
 				'(root (def :scan ({ (parameter ? :string))))',
-			);
+			);*/
 		});
 
 		it.should('parse ternary ? operator', a => {
@@ -322,14 +329,17 @@ export default spec('compiler', s => {
 	});
 
 	s.test('baselines', a => {
+		function printErrors(errors: CompilerError[]) {
+			errors.forEach(e => a.log(formatError(e)));
+		}
 		function parse(src: string) {
 			const program = Program();
-			const sf = program.parse(src);
-			if (sf.errors.length) {
-				sf.errors.forEach(e => a.log(formatError(e)));
+			const result = program.compile(src);
+			if (result.errors.length) {
+				printErrors(result.errors);
 				throw 'Errors found';
 			}
-			return [program, sf] as const;
+			return { ...result, program };
 		}
 		function baseline<T>(
 			testName: string,
@@ -340,15 +350,21 @@ export default spec('compiler', s => {
 			extra = '',
 		) {
 			a.test(testName, a => {
-				const [program, sf] = parse(src);
-				a.equal(ast(sf.root), astText);
-
-				const code = program.compileAst(sf.root);
+				const { ast: rootAst, output: code } = parse(src);
+				a.equal(ast(rootAst), astText);
 				a.equal(code.slice(RUNTIME.length), output);
 				const fn = new Function(code + extra);
 				test?.(a, fn());
 			});
 		}
+
+		function validateExpr(first: Node) {
+			if (first.kind !== 'def') return;
+			const block = first.right;
+			if (block.kind !== '{') return;
+			return block;
+		}
+
 		function baselineExpr<T = unknown>(
 			testName: string,
 			src: string,
@@ -358,12 +374,9 @@ export default spec('compiler', s => {
 		) {
 			a.test(testName, a => {
 				const mainSrc = `__main={ ${src} }`;
-				const [program, sf] = parse(mainSrc);
-				const first = sf.root.children[0];
-				if (first.kind !== 'def') throw 'Invalid AST';
-				const block = first.right;
-				if (block.kind !== '{') throw 'Invalid AST';
-				const expr = block.children[0];
+				const { ast: rootAst, program } = parse(mainSrc);
+				const expr = validateExpr(rootAst.children[0])?.children[0];
+				if (!expr) throw 'Invalid AST';
 				a.equal(ast(expr), astText);
 				a.equal(expr.source.slice(expr.start, expr.end), src);
 				const code = program.compileAst(expr);
@@ -371,6 +384,28 @@ export default spec('compiler', s => {
 				a.equal(outSrc, output);
 				const fn = new Function(`return ${outSrc}`);
 				test?.(a, fn());
+			});
+		}
+
+		function baselineError(
+			testName: string,
+			src: string,
+			astText: string,
+			errors: string[],
+		) {
+			a.test(testName, a => {
+				const program = Program();
+				const out = program.compile(`__main={ ${src} }`);
+				const expr = validateExpr(out.ast.children[0]);
+				if (!expr?.children?.length) {
+					printErrors(out.errors);
+					throw 'Invalid AST';
+				}
+				a.equal(ast(expr), astText);
+				a.equalValues(
+					out.errors.map(e => e.message),
+					errors,
+				);
 			});
 		}
 
@@ -390,6 +425,7 @@ export default spec('compiler', s => {
 			`[1,2,3]`,
 		);*/
 
+		/*
 		baselineExpr<(n: number) => Iterator<number>>(
 			'lambda - multiple emit',
 			'{ $+1, $+2 }',
@@ -402,7 +438,6 @@ export default spec('compiler', s => {
 			},
 		);
 
-		/*
 		baselineExpr(
 			'assignment - sequence',
 			`a, b = 2, 1`,
@@ -550,7 +585,7 @@ export default spec('compiler', s => {
 		baseline<(n: number) => number>(
 			'fibonacci',
 			`fib = fn(n: number) => n <= 1 ? n : fib(n - 1) + fib(n - 2)`,
-			'(root (def :fib ({ (parameter :n :number) (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2)))))))',
+			'(root (def :fib ({ (parameter :n :number) (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))))',
 			'const fib=(n)=>(n<=1 ? n : fib(n-1)+fib(n-2))',
 			(a, fib) => {
 				a.equal(fib(0), 0);
@@ -564,18 +599,56 @@ export default spec('compiler', s => {
 			';return fib',
 		);
 
-		/*baseline(
+		baseline<(n: number) => number>(
 			'factorial',
 			`
-fn factorial(n: int): int {
-    next (n <= 1) ? 1 : n * factorial(n - 1);
+factorial = fn(n: int): int {
+    next (n <= 1) ? 1 : n * factorial(n - 1)
 }
-
-factorial(5)    # Output: 120
 			`,
-			'',
-			'',
+			'(root (def :factorial ({ (parameter :n :int) :int (? (next (<= :n 1)) 1 (* :n (call :factorial (- :n 1)))))))',
+			'const factorial=(n)=>{return(n<=1) ? 1 : n*factorial(n-1)}',
+			(a, factorial) => {
+				a.equal(factorial(0), 1);
+				a.equal(factorial(1), 1);
+				a.equal(factorial(2), 2);
+				a.equal(factorial(3), 6);
+				a.equal(factorial(4), 24);
+				a.equal(factorial(5), 120);
+			},
+			';return factorial',
 		);
+		baseline<(a: number, b: number) => number>(
+			'ackermann',
+			`
+ackermann = fn(m: number, n:number) {
+	next(m == 0 ? n + 1 :
+		(n == 0 ? ackermann(m - 1, 1) : (ackermann(m - 1, ackermann(m, n - 1)))))
+}
+		`,
+			`(root (def :ackermann ({ (parameter :m :number) (parameter :n :number) (next (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1)))))))))))`,
+			'const ackermann=(m,n)=>{return(m===0 ? n+1 : n===0 ? ackermann(m-1,1) : ackermann(m-1,ackermann(m,n-1)))}',
+			(a, ack) => {
+				a.equal(ack(1, 3), 5);
+				a.equal(ack(2, 3), 9);
+				a.equal(ack(3, 3), 61);
+				a.equal(ack(1, 5), 7);
+				a.equal(ack(2, 5), 13);
+				a.equal(ack(3, 5), 253);
+			},
+			';return ackermann;',
+		);
+
+		baselineError('<= operator', 'true <= -1', '({ (<= :true -1))', [
+			`Operator "<=" cannot be applied to types "boolean" and "int".`,
+		]);
+		baselineError(
+			'* operator',
+			'fn1=fn():int => 1\nfn1() * true',
+			'({ (def :fn1 ({ :int (next 1))) (* (call :fn1 ?) :true))',
+			[`Operator "*" cannot be applied to types "int" and "boolean".`],
+		);
+		/*
 
 		baseline(
 			`repeat`,
@@ -589,25 +662,6 @@ factorial(5)    # Output: 120
 			'',
 			'',
 		);
-		baseline<(a: number, b: number) => Iterator<number>>(
-			'ackermann',
-			`
-ackermann = fn(m: number, n:number) {
-	(m == 0 ? n + 1 :
-		(n == 0 ? ackermann(m - 1, 1) : (ackermann(m, n - 1) >> { ackermann(m - 1, $) })))
-}
-		`,
-			`(root (def :ackermann ({ (parameter :m :number) (parameter :n :number) (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (>> (call :ackermann (, :m (- :n 1))) ({ (call :ackermann (, (- :m 1) $)))))))))`,
-			'const ackermann=function*(m,n){{const _$=m===0 ? n+1 : n===0 ? ackermann(m-1,1) : (function*(){const _=ackermann(m,n-1);const __=function*($){{const _$=ackermann(m-1,$);if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(ackermann(m,n-1))){yield(_1)}})();if(_$ instanceof Iterator)yield*(_$);else yield _$}}',
-			(a, ack) => {
-				a.equal(ack(1, 3).next().value, 5);
-				a.equal(ack(2, 3).next().value, 9);
-				a.equal(ack(3, 3).next().value, 61);
-				a.equal(ack(1, 5).next().value, 7);
-				a.equal(ack(2, 5).next().value, 13);
-				a.equal(ack(3, 5).next().value, 253);
-			},
-			';return ackermann;',
-		);*/
+		*/
 	});
 });

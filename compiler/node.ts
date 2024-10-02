@@ -1,7 +1,7 @@
 ///<amd-module name="@cxl/gbc.compiler/node.js"/>
 import { MakeNodeMap } from '@cxl/gbc.sdk';
 
-import type { Scope, Symbol } from './symbol-table.js';
+import type { Symbol, SymbolMap, Scope } from './symbol-table.js';
 
 type Infix = { children: [Node, Node] };
 type MakeInfix<T extends string> = { [K in T]: Infix };
@@ -12,22 +12,35 @@ export enum BlockFlags {
 	Sequence = 2,
 }
 
+export enum VariableFlags {
+	None = 0,
+	Variable = 1,
+	Export = 2,
+}
+
 export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[]; scope: Scope };
 	type: { children: [Node] };
-	var: { ident: NodeMap['ident'] };
+	//var: { ident: NodeMap['ident'] };
 	done: void;
 	ident: { symbol: Symbol };
 	string: void;
 	number: { value: number };
+	literal: { value: unknown; references?: Node[] };
 	loop: { children: [Node] };
-	next: { children: [Node | undefined] };
+	next: {
+		children?: [Node | undefined];
+		generator?: boolean;
+		owner: SymbolMap['function'];
+	};
 	comment: void;
 	$: void;
 	parameter: {
-		children: [Node, Node | undefined] | [undefined, Node];
-		symbol?: Symbol;
+		children: [Node, Node | undefined];
+		symbol: Symbol;
+		name: Node;
+		type?: Node;
 	};
 	macro: { value: string };
 	def: {
@@ -46,17 +59,21 @@ export type BaseNodeMap = {
 	'-': { children: [Node] };
 	'{': {
 		parameters?: NodeMap['parameter'][];
-		statements: Node[];
+		statements?: Node[];
 		scope: Scope;
 		children: Node[];
 		flags: BlockFlags;
+		returnType?: Node;
+		references?: Node[];
 	};
 	'[': { children: [Node, Node] };
 	'(': { children: [Node] };
 	':': { children: [Node, Node] };
 	call: { children: [Node, Node | undefined] };
-	data: { children: Node[]; scope: Scope };
-	'.': { children: [Node, Node]; symbol?: Symbol };
+	data: {
+		children: Node[];
+	};
+	'.': { children: [Node, Node] };
 	',': { children: Node[] };
 	'>>': { children: Node[] };
 } & MakeInfix<
@@ -81,3 +98,4 @@ export type BaseNodeMap = {
 export type NodeMap = MakeNodeMap<BaseNodeMap>;
 export type Node = NodeMap[keyof NodeMap];
 export type NodeKind = keyof NodeMap;
+export type InfixNode = Extract<Node, Infix>;

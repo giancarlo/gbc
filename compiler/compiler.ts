@@ -10,15 +10,14 @@ const infix = (n: InfixNode<NodeMap>, op: string = n.kind) =>
 	`${compile(n.children[0])}${op}${compile(n.children[1])}`;
 
 const blockLambda = (n: NodeMap['{']) => {
-	const child = n.statements[0];
-	//if (child.kind === ',') return child.children.map(next).join(';');
-	//else return next(child);
-	return `(${compile(child)})`;
+	const next = n.statements?.[0];
+	const expr = next?.kind === 'next' && next.children?.[0];
+	return expr ? `(${compile(expr)})` : '';
 };
 const block = (n: NodeMap['{']) =>
 	n.flags & BlockFlags.Lambda
 		? blockLambda(n)
-		: `{${compileEach(n.statements)}}`;
+		: `{${n.statements ? compileEach(n.statements) : ''}}`;
 const compileEach = (nodes: Node[], sep = ';') => nodes.map(compile).join(sep);
 function isExpression(n: Node) {
 	return n.kind !== 'next' && n.kind !== 'done';
@@ -28,11 +27,13 @@ function generatorYield(n: Node) {
 	return next(n);
 }
 function generatorBody(n: NodeMap['{']) {
-	return `${
-		n.kind === '{' && n.statements.length === 1 && isExpression(n)
-			? generatorYield(n.statements[0])
-			: compileEach(n.statements)
-	}`;
+	return n.statements
+		? `${
+				n.kind === '{' && n.statements.length === 1 && isExpression(n)
+					? generatorYield(n.statements[0])
+					: compileEach(n.statements)
+		  }`
+		: '';
 }
 
 function assign(node: Node, value?: Node) {
@@ -45,6 +46,10 @@ function assign(node: Node, value?: Node) {
 }
 
 function next(child?: Node) {
+	return child ? `return(${compile(child)})` : 'return';
+}
+
+function nextGenerator(child?: Node) {
 	return child
 		? `{const _$=${compile(
 				child,
@@ -70,12 +75,13 @@ export function compile(node: Node): string {
 		case '--':
 			return `${compile(node.children[0])}${node.kind}`;
 		case 'next':
-			return next(node.children?.[0]);
+			return node.generator
+				? nextGenerator(node.children?.[0])
+				: next(node.children?.[0]);
 		case '$':
 		case 'parameter':
 		case 'ident':
 		case 'string':
-		case 'var':
 		case '~':
 		case '!':
 			return text(node);

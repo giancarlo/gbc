@@ -1,49 +1,36 @@
 ///<amd-module name="@cxl/gbc.compiler/symbol-table.js"/>
 import { SymbolTable as BaseSymbolTable } from '@cxl/gbc.sdk';
-import {
-	BooleanType,
-	FloatType,
-	ObjectType,
-	FunctionType,
-	IntegerType,
-	StringType,
-	Type,
-} from './checker.js';
+import { IntegerType, StringType } from './checker.js';
 import type { Node } from './node.js';
 
-export enum Flags {
-	None = 0,
-	Variable = 1,
-	Export = 2,
-}
-
 type BaseSymbol = {
-	name: string;
-	flags: Flags;
-	type?: Type;
 	definition?: Node;
 	references?: Node[];
 };
-export type SymbolMap = {
+type SymbolProp = {
 	type: unknown;
 	literal: unknown;
 	namespace: { members: Record<string, Symbol> };
 	function: unknown;
 	parameter: unknown;
 	variable: unknown;
-	native: { replace: string };
+	data: { members: Record<string, Symbol> };
+	macro: { value: string };
 };
-export type Symbol = {
-	[K in keyof SymbolMap]: BaseSymbol & { kind: K } & SymbolMap[K];
-}[keyof SymbolMap];
-export type Scope = Record<string, Symbol>;
+export type SymbolMap = {
+	[K in keyof SymbolProp]: BaseSymbol & { kind: K } & SymbolProp[K];
+};
+export type Symbol = SymbolMap[keyof SymbolProp];
+export type Scope = Record<string | symbol, Symbol>;
 
 export type SymbolTable = ReturnType<typeof SymbolTable>;
 
-export function SymbolTable(globals?: Symbol[]) {
+export const ScopeOwner = Symbol('ScopeOwner');
+
+export function SymbolTable(globals?: Record<string, Symbol>) {
 	const st = BaseSymbolTable<Symbol>();
 
-	if (globals) st.setSymbols(...globals);
+	if (globals) st.setSymbols(globals);
 
 	return {
 		...st,
@@ -57,36 +44,51 @@ export function SymbolTable(globals?: Symbol[]) {
 	};
 }
 
+function literal(value: unknown) {
+	return { kind: 'literal', value } as const;
+}
+
 export function ProgramSymbolTable() {
-	return SymbolTable([
-		{ name: 'true', kind: 'literal', flags: 0, type: BooleanType },
-		{ name: 'false', kind: 'literal', flags: 0, type: BooleanType },
-		{ name: 'NaN', kind: 'literal', flags: 0, type: FloatType },
-		{ name: 'infinity', kind: 'literal', flags: 0, type: FloatType },
-		{
+	return SymbolTable({
+		true: literal(true),
+		false: literal(false),
+		NaN: literal(NaN),
+		infinity: literal(Infinity),
+		std: {
+			kind: 'namespace',
+			members: {
+				log: {
+					kind: 'macro',
+					value: `function*($){console.log($);yield($)}`,
+				},
+			},
+		},
+	});
+
+	/*{
 			name: 'std',
 			kind: 'namespace',
 			flags: 0,
-			type: ObjectType,
+			type: { name: 'std' },
 			members: {
 				out: {
 					name: 'out',
 					kind: 'native',
 					replace: `function*($){console.log($);yield($)}`,
-					type: FunctionType,
+					type: { name: 'out' },
 					flags: 0,
 				},
 			},
 		},
-	]);
+	]);*/
 }
 
 export function TypesSymbolTable() {
-	return SymbolTable([
-		{ name: 'int', kind: 'type', flags: 0, type: IntegerType },
-		{ name: 'number', kind: 'type', flags: 0, type: Number },
-		{ name: 'string', kind: 'type', flags: 0, type: StringType },
-		{ name: 'true', kind: 'literal', flags: 0, type: BooleanType },
-		{ name: 'false', kind: 'literal', flags: 0, type: BooleanType },
-	]);
+	return SymbolTable({
+		int: literal(IntegerType),
+		number: literal(Number),
+		string: literal(StringType),
+		true: literal(true),
+		false: literal(false),
+	});
 }

@@ -52,6 +52,10 @@ export function scan(source: string) {
 		return consumed + s.length;
 	}
 
+	function matchKeyword(s: string) {
+		return matchString(s, notIdent);
+	}
+
 	function error(message: string, consumed = 0, start = index) {
 		index += consumed;
 		return new CompilerError(message, {
@@ -199,15 +203,15 @@ export function scan(source: string) {
 			}
 			default:
 				// Keywords
-				if (matchString('done', notIdent)) return tk('done', 4);
-				if (matchString('export', notIdent)) return tk('export', 6);
-				if (matchString('loop', notIdent)) return tk('loop', 4);
-				if (matchString('main', notIdent)) return tk('main', 4);
-				if (matchString('next', notIdent)) return tk('next', 4);
-				if (matchString('return', notIdent)) return tk('return', 6);
-				if (matchString('type', notIdent)) return tk('type', 4);
-				if (ch === 'f' && la === 'n') return tk('fn', 2);
-				if (matchString('var', notIdent)) return tk('var', 3);
+				if (matchKeyword('done')) return tk('done', 4);
+				if (matchKeyword('export')) return tk('export', 6);
+				if (matchKeyword('loop')) return tk('loop', 4);
+				if (matchKeyword('main')) return tk('main', 4);
+				if (matchKeyword('next')) return tk('next', 4);
+				if (matchKeyword('return')) return tk('return', 6);
+				if (matchKeyword('type')) return tk('type', 4);
+				if (matchKeyword('fn')) return tk('fn', 2);
+				if (matchKeyword('var')) return tk('var', 3);
 
 				// Identifiers
 				if (identFirst.test(ch))

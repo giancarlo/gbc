@@ -1,12 +1,9 @@
 ///<amd-module name="@cxl/gbc.compiler/parser-expression.js"/>
 import { ParserApi, UnaryNode, Token, text, parserTable } from '@cxl/gbc.sdk';
 import { parseType } from './parser-type.js';
-import { Flags, SymbolTable } from './symbol-table.js';
-
-import { BlockFlags, Node, NodeMap } from './node.js';
+import { ScopeOwner, Symbol, SymbolMap, SymbolTable } from './symbol-table.js';
+import { BlockFlags, VariableFlags, Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
-
-type PartialBlock = Omit<NodeMap['{'], 'statements'> & { statements?: Node[] };
 
 export function parseExpression(
 	api: ParserApi<ScannerToken>,
@@ -16,43 +13,33 @@ export function parseExpression(
 	const typeParser = parseType(api, typesTable);
 	const { current, error, expect, expectNode, optional, parseList } = api;
 
-	function parameter(): NodeMap['parameter'] {
-		const ident = optional('ident');
-		let type: Node | undefined;
-		let symbol;
-		let children: NodeMap['parameter']['children'];
-
-		if (ident) {
-			const name = text(ident);
-			if (optional(':')) type = expectNode(typeParser(), 'Expected type');
-			symbol = symbolTable.set(name, {
-				name,
-				kind: 'parameter',
-				flags: 0,
-			});
-			children = [{ ...ident, symbol }, type];
-		} else {
-			expect(':');
-			type = expectNode(typeParser(), 'Expected type');
-			children = [undefined, type];
-		}
-		const pos = ident || type;
-
-		if (!children || !pos)
-			throw error('Invalid parameter definition', current());
-
-		return {
-			...pos,
-			kind: 'parameter',
-			children,
-			symbol,
-		};
+	function expectType() {
+		return expectNode(typeParser(), 'Expected type expression');
 	}
 
-	function blockParameters(node: PartialBlock) {
-		//const params = expect('(') as NodeMap['('];
+	function parameter(): NodeMap['parameter'] | undefined {
+		const ident = expect('ident');
+		let type: Node | undefined;
+		const name = text(ident);
+
+		if (optional(':')) type = expectNode(typeParser(), 'Expected type');
+
+		const symbol: SymbolMap['variable'] = symbolTable.set(name, {
+			name,
+			kind: 'variable',
+		});
+		const nameNode = { ...ident, symbol };
+		return (symbol.definition = {
+			...ident,
+			kind: 'parameter',
+			symbol,
+			name: nameNode,
+			children: [nameNode, type],
+		});
+	}
+
+	function blockParameters(node: NodeMap['{']) {
 		node.parameters = parseList(parameter, ',', n => !!n);
-		//params.end = expect(')').end;
 		expect(')');
 		node.children.push(...node.parameters);
 	}
@@ -68,43 +55,74 @@ export function parseExpression(
 		};
 	}
 
-	function parseBlock(tk: ScannerToken, cb: (node: PartialBlock) => Node[]) {
-		return symbolTable.withScope<NodeMap['{']>(scope => {
-			const node: PartialBlock = {
+	/**
+	 * Parses a block of code, creating a new scope for it in the symbol table.
+	 *
+	 * This function takes a token indicating the start of a block and a callback
+	 * to parse the block's children nodes. It creates a new scope for variables
+	 * within the block using symbolTable.withScope.
+	 *
+	 * A node for the block is created. The block's statements are parsed and added
+	 * as children nodes.
+	 */
+	function parseBlock(
+		tk: ScannerToken,
+		cb: (node: NodeMap['{']) => Node[],
+	): NodeMap['{'] {
+		return symbolTable.withScope(scope => {
+			const node: NodeMap['{'] = {
 				...tk,
 				kind: '{',
 				children: [],
 				scope,
 				flags: 0,
 			};
+			symbolTable.set(ScopeOwner, {
+				kind: 'function',
+				definition: node,
+			});
 			symbolTable.set('$', {
-				name: '$',
+				...tk,
 				kind: 'variable',
-				flags: 0,
+				children: [
+					{ source: '$', start: 0, end: 1, line: 0, kind: 'ident' },
+					undefined,
+				],
 			});
 			node.statements = cb(node);
 			node.children.push(...node.statements);
-			return node as NodeMap['{'];
+			return node;
 		});
 	}
 
 	/**
 	 * Function that defines a variable in the symbol table.
 	 */
-	function define(ident: Token<'ident'>, flags = 0): NodeMap['ident'] {
+	function define(
+		ident: Token<'ident'>,
+		flags?: VariableFlags,
+	): NodeMap['ident'] {
 		const name = text(ident);
 		const existing = symbolTable.get(name);
-		if (existing) throw error('Symbol already defined', ident);
-
+		if (existing)
+			throw error(
+				`Cannot redeclare block-scoped variable "${name}".`,
+				ident,
+			);
 		const symbol = symbolTable.set(name, {
-			name,
+			...ident,
 			kind: 'variable',
 			flags,
+			children: [ident, undefined],
 		});
-		return {
-			...ident,
-			symbol,
-		};
+		return { ...ident, symbol };
+	}
+
+	function expectScopeOwner(): SymbolMap['function'] {
+		const owner = symbolTable.get(ScopeOwner);
+		if (!owner || owner.kind !== 'function')
+			throw error('Invalid function scope.', current());
+		return owner;
 	}
 
 	const parser = parserTable<NodeMap, ScannerToken>(
@@ -133,19 +151,32 @@ export function parseExpression(
 				},
 			},
 			fn: {
-				prefix(tk): NodeMap['{'] {
-					return parseBlock(tk, node => {
-						if (optional('(')) blockParameters(node);
-						if (optional('=>')) {
+				prefix: tk =>
+					parseBlock(tk, node => {
+						if (optional('(')) {
+							blockParameters(node);
+							if (optional(':'))
+								node.children.push(
+									(node.returnType = expectType()),
+								);
+						}
+						const inline = optional('=>');
+						if (inline) {
 							node.flags |= BlockFlags.Lambda;
-							return [expectExpression()];
+							return [
+								{
+									...inline,
+									kind: 'next',
+									owner: expectScopeOwner(),
+									children: [expectExpression()],
+								},
+							];
 						}
 						expect('{');
 						const result = parseUntilKind(statement, '}');
 						node.end = expect('}').end;
 						return result;
-					});
-				},
+					}),
 			},
 			'{': {
 				prefix: tk =>
@@ -204,37 +235,33 @@ export function parseExpression(
 			'.': {
 				precedence: 17,
 				infix(tk, left) {
-					const right = expect('ident') as NodeMap['ident'];
-					let symbol;
+					const right = expect('ident');
+					let symbol: Symbol;
 
-					if (
-						left.kind === 'ident' &&
-						left.symbol?.kind === 'namespace'
-					) {
+					if (left.kind === 'ident' && left.symbol.kind === 'data') {
 						const prop = text(right);
-						symbol = left.symbol.members[prop];
+						symbol = left.symbol.members?.[prop];
 						if (!symbol)
 							throw error(
-								`Property "${prop}" does not exist in "${left.symbol.name}"`,
+								`Property "${prop}" does not exist in "${text(
+									left,
+								)}"`,
 								right,
 							);
 
-						right.symbol = symbol;
-
-						if (symbol.kind === 'native')
+						if (symbol.kind === 'macro')
 							return {
 								...tk,
 								kind: 'macro',
-								children: [left, right],
 								end: right.end,
-								value: symbol.replace,
-							} as unknown as NodeMap['.'];
-					}
+								value: symbol.value,
+							};
+					} else throw error('Invalid left operatnd.', left);
 
 					return {
 						...tk,
 						start: left.start,
-						children: [left, right],
+						children: [left, { ...right, symbol }],
 						end: right.end,
 						symbol,
 					};
@@ -257,21 +284,7 @@ export function parseExpression(
 			'=': {
 				precedence: 2,
 				infix(tk, left) {
-					//const isDefinition = define(left);
 					const right = expectExpression(1);
-
-					/*if (isDefinition) {
-						return {
-							...tk,
-							kind: 'def',
-							children: [left, right],
-							left,
-							right,
-							start: left.start,
-							end: right.end,
-						};
-					}*/
-
 					return {
 						...tk,
 						kind: '=',
@@ -303,7 +316,14 @@ export function parseExpression(
 			'[': {
 				precedence: 17,
 				prefix(tk) {
-					return symbolTable.withScope(scope => {
+					const result: NodeMap['data'] = {
+						...tk,
+						kind: 'data',
+						children: [expectExpression()],
+						end: expect(']').end,
+					};
+					return result;
+					/*return symbolTable.withScope(scope => {
 						const result: NodeMap['data'] = {
 							...tk,
 							kind: 'data',
@@ -311,9 +331,8 @@ export function parseExpression(
 							children: [expectExpression()],
 							end: expect(']').end,
 						};
-						//context = 'normal';
 						return result;
-					});
+					});*/
 				},
 				infix(tk, left) {
 					return {
@@ -339,7 +358,8 @@ export function parseExpression(
 			done: { prefix: n => n },
 			next: {
 				prefix(tk) {
-					const result = tk as NodeMap['next'];
+					const owner = expectScopeOwner();
+					const result: NodeMap['next'] = { ...tk, owner };
 					if (optional('(')) {
 						result.children = [expr()];
 						result.end = expect(')').end;
@@ -366,12 +386,11 @@ export function parseExpression(
 			},
 			string: { prefix: n => n },
 			ident: {
-				prefix(n: NodeMap['ident']) {
+				prefix: n => {
 					const name = text(n);
 					const symbol = symbolTable.getRef(name, n);
 					if (!symbol) throw error('Identifier not defined', n);
-					n.symbol = symbol;
-					return n;
+					return { ...n, symbol };
 				},
 			},
 		}),
@@ -395,7 +414,7 @@ export function parseExpression(
 		if (tk.kind !== 'ident' && tk.kind !== 'var') return;
 		api.next();
 		if (tk.kind === 'var') {
-			flags = Flags.Variable;
+			flags = VariableFlags.Variable;
 			tk = expect('ident');
 		}
 		const next = optional(':') || optional('=');

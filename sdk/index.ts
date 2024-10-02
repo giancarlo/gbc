@@ -172,8 +172,8 @@ export function ErrorApi() {
 export type SymbolTable<S extends { name: string }> = ReturnType<
 	typeof SymbolTable<S>
 >;
-export function SymbolTable<S extends { name: string }>(
-	newScope: () => Record<string, S> = () => ({}),
+export function SymbolTable<S>(
+	newScope: () => Record<string | symbol, S> = () => ({}),
 ) {
 	const globalScope = newScope();
 	let scope = globalScope;
@@ -196,7 +196,7 @@ export function SymbolTable<S extends { name: string }>(
 		stack,
 		push,
 		pop,
-		get(id: string) {
+		get(id: string | symbol) {
 			for (
 				let i = stack.length - 1, scope = stack[i];
 				i >= 0;
@@ -204,12 +204,12 @@ export function SymbolTable<S extends { name: string }>(
 			)
 				if (scope[id]) return scope[id];
 		},
-		set(id: string, symbol: S) {
+		set<T extends S>(id: string | symbol, symbol: T): T {
 			scope[id] = symbol;
 			return symbol;
 		},
-		setSymbols(...symbols: S[]) {
-			for (const s of symbols) scope[s.name] = s;
+		setSymbols(symbols: Record<string, S>) {
+			Object.assign(scope, symbols);
 		},
 
 		/**
