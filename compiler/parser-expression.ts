@@ -6,6 +6,7 @@ import {
 	Symbol,
 	SymbolMap,
 	SymbolTable,
+	TypesSymbolTable,
 	Flags,
 } from './symbol-table.js';
 import { BlockFlags, Node, NodeMap } from './node.js';
@@ -14,7 +15,7 @@ import type { ScannerToken } from './scanner.js';
 export function parseExpression(
 	api: ParserApi<ScannerToken>,
 	symbolTable: SymbolTable,
-	typesTable: SymbolTable,
+	typesTable: TypesSymbolTable,
 ) {
 	const typeParser = parseType(api, typesTable);
 	const { current, error, expect, expectNode, optional, parseList } = api;
@@ -42,12 +43,15 @@ export function parseExpression(
 			kind: 'parameter',
 			symbol,
 			name: nameNode,
+			type,
 			children: [nameNode, type],
 		});
 	}
 
 	function blockParameters(node: NodeMap['{']) {
 		node.parameters = parseList(parameter, ',', n => !!n);
+		if (node.symbol)
+			node.symbol.parameters = node.parameters.map(p => p.symbol);
 		expect(')');
 		node.children.push(...node.parameters);
 	}

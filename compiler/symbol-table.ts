@@ -30,13 +30,14 @@ export type SymbolMap = {
 export type Symbol = SymbolMap[keyof SymbolProp];
 export type Scope = Record<string | symbol, Symbol>;
 
-export type SymbolTable = ReturnType<typeof SymbolTable>;
+export type SymbolTable = ReturnType<typeof ProgramSymbolTable>;
+export type TypesSymbolTable = ReturnType<typeof TypesSymbolTable>;
 export type Type = SymbolMap['type' | 'function'];
 
 export const ScopeOwner = Symbol('ScopeOwner');
 
-export function SymbolTable(globals?: Record<string, Symbol>) {
-	const st = BaseSymbolTable<Symbol>();
+export function SymbolTable<T extends Symbol>(globals?: Record<string, T>) {
+	const st = BaseSymbolTable<T>();
 
 	if (globals) st.setSymbols(globals);
 
@@ -57,7 +58,7 @@ function literal(value: unknown, type: SymbolMap['type']) {
 }
 
 export function ProgramSymbolTable() {
-	return SymbolTable({
+	return SymbolTable<Symbol>({
 		true: literal(true, BaseTypes.boolean),
 		false: literal(false, BaseTypes.boolean),
 		NaN: literal(NaN, BaseTypes.float),
@@ -104,5 +105,5 @@ export const BaseTypes: Record<string, SymbolMap['type']> = {
 };
 
 export function TypesSymbolTable() {
-	return SymbolTable(BaseTypes);
+	return SymbolTable<Type>(BaseTypes);
 }

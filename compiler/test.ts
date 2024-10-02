@@ -648,6 +648,13 @@ ackermann = fn(m: int, n:int) {
 			'({ (def :fn1 ({ :int (next 1))) (* (call :fn1 ?) :true))',
 			[`Operator "*" cannot be applied to types "int" and "boolean".`],
 		);
+		baselineError(
+			'call - parameter check',
+			'fn1=fn(a:int):int => 1\nfn1(true)',
+			'({ (def :fn1 ({ (parameter :a :int) :int (next 1))) (call :fn1 :true))',
+			[`Expected 0 arguments but got 1.`],
+		);
+
 		/*
 
 		baseline(

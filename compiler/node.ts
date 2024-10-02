@@ -1,7 +1,7 @@
 ///<amd-module name="@cxl/gbc.compiler/node.js"/>
 import { MakeNodeMap } from '@cxl/gbc.sdk';
 
-import type { Symbol, SymbolMap, Scope } from './symbol-table.js';
+import type { Symbol, SymbolMap, Scope, Type } from './symbol-table.js';
 
 type Infix = { children: [Node, Node] };
 type MakeInfix<T extends string> = { [K in T]: Infix };
@@ -16,6 +16,7 @@ export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[]; scope: Scope };
 	type: { children: [Node] };
+	typeident: { symbol: Type };
 	done: void;
 	ident: { symbol: Symbol };
 	string: void;

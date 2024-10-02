@@ -3,11 +3,11 @@ import { ParserApi, Token, parserTable, text } from '@cxl/gbc.sdk';
 
 import type { NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
-import type { SymbolTable } from './symbol-table.js';
+import type { TypesSymbolTable } from './symbol-table.js';
 
 export function parseType(
 	api: ParserApi<ScannerToken>,
-	symbolTable: SymbolTable,
+	symbolTable: TypesSymbolTable,
 ) {
 	/**
 	 * This helper function retrieves a symbol from the symbol table based on its name.
@@ -16,7 +16,7 @@ export function parseType(
 	function expectSymbol(name: string, tk: Token<'ident'>) {
 		const symbol = symbolTable.get(name);
 		if (!symbol) throw api.error('Type not defined', tk);
-		const node: NodeMap['ident'] = { ...tk, symbol };
+		const node: NodeMap['typeident'] = { ...tk, kind: 'typeident', symbol };
 		(symbol.references ||= []).push(node);
 		return node;
 	}
