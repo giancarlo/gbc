@@ -2,16 +2,7 @@
 import { CompilerError } from '@cxl/gbc.sdk';
 
 import type { InfixNode, Node } from './node.js';
-
-export type Type = {
-	name: string;
-};
-
-export const BooleanType = { name: 'boolean' };
-export const FloatType = { name: 'float' };
-export const IntegerType = { name: 'int' };
-export const StringType = { name: 'string' };
-export const VoidType = { name: 'void' };
+import { BaseTypes, Type } from './symbol-table.js';
 
 const typeSymbol = Symbol('type');
 export type CheckedNode = Node & { [typeSymbol]?: Type };
@@ -30,6 +21,11 @@ export function checker({
 	root: Node;
 	errors: CompilerError[];
 }) {
+	/*function resolveFunctionType(node: NodeMap['{'], symbol: SymbolMap['function']) {
+		const type = { kind: 'function' };
+		return type;
+	}*/
+
 	/**
 	 * Resolves the type of a given node.
 	 */
@@ -49,13 +45,26 @@ export function checker({
 			case 'call':
 				return resolveReturnType(node.children[0]);
 			case 'number':
-				return Number.isInteger(node.value) ? IntegerType : FloatType;
+				return Number.isInteger(node.value)
+					? BaseTypes.int
+					: BaseTypes.float;
+			case '{': {
+				const sym = node.symbol;
+				if (!sym) return;
+
+				if (!sym.returnType) {
+					if (node.returnType)
+						sym.returnType = getNodeType(node.returnType);
+				}
+				return sym;
+			}
 		}
 	}
 	function resolveReturnType(node: Node) {
 		if (node.kind === 'ident') {
 			const type = getNodeType(node);
-			if (type) return node.symbol.type;
+			if (type?.kind === 'function' && type.returnType)
+				return type.returnType;
 		}
 	}
 
@@ -71,7 +80,7 @@ export function checker({
 	}
 
 	function isNumberType(node: Node) {
-		return node.kind === 'ident' && node.symbol?.type === IntegerType;
+		return node.kind === 'ident' && node.symbol?.type === BaseTypes.int;
 	}
 
 	function isNumber(node: Node) {
@@ -93,22 +102,33 @@ export function checker({
 		}
 	}
 
+	function canAssign(to: Type, a: Type): boolean {
+		if (to === a) return true;
+		return false;
+	}
+
 	function check(node: Node): void {
 		switch (node.kind) {
 			case 'root':
 				return checkEach(node.children);
 			case '{':
-				//if (node.returnType) getNodeType(node.returnType);
+				getNodeType(node);
 				return node.statements && checkEach(node.statements);
 			case 'main':
 				return checkEach(node.statements);
-			/*case 'next': {
+			case 'next': {
+				const fn = node.owner;
 				const val = node.children?.[0];
-				const type = val ? getNodeType(val) : VoidType;
-				const retType = getReturnType();
-				
+				const type = val ? getNodeType(val) : BaseTypes.void;
+
+				if (!fn.returnType) fn.returnType = type;
+				else if (type && !canAssign(fn.returnType, type))
+					errors.push({
+						message: `Type "${typeToStr(type)}" is not assignable to type "${typeToStr(fn.returnType)}".`,
+						position: node,
+					});
 				return;
-			}*/
+			}
 			case 'def':
 				getNodeType(node);
 				check(node.right);

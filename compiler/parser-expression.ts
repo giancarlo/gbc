@@ -1,8 +1,14 @@
 ///<amd-module name="@cxl/gbc.compiler/parser-expression.js"/>
 import { ParserApi, UnaryNode, Token, text, parserTable } from '@cxl/gbc.sdk';
 import { parseType } from './parser-type.js';
-import { ScopeOwner, Symbol, SymbolMap, SymbolTable } from './symbol-table.js';
-import { BlockFlags, VariableFlags, Node, NodeMap } from './node.js';
+import {
+	ScopeOwner,
+	Symbol,
+	SymbolMap,
+	SymbolTable,
+	Flags,
+} from './symbol-table.js';
+import { BlockFlags, Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
 
 export function parseExpression(
@@ -18,7 +24,8 @@ export function parseExpression(
 	}
 
 	function parameter(): NodeMap['parameter'] | undefined {
-		const ident = expect('ident');
+		const ident = optional('ident');
+		if (!ident) return;
 		let type: Node | undefined;
 		const name = text(ident);
 
@@ -27,6 +34,7 @@ export function parseExpression(
 		const symbol: SymbolMap['variable'] = symbolTable.set(name, {
 			name,
 			kind: 'variable',
+			flags: 0,
 		});
 		const nameNode = { ...ident, symbol };
 		return (symbol.definition = {
@@ -77,17 +85,16 @@ export function parseExpression(
 				scope,
 				flags: 0,
 			};
-			symbolTable.set(ScopeOwner, {
+			const symbol = symbolTable.set(ScopeOwner, {
 				kind: 'function',
 				definition: node,
+				flags: 0,
 			});
+			node.symbol = symbol;
 			symbolTable.set('$', {
-				...tk,
+				name: '$',
 				kind: 'variable',
-				children: [
-					{ source: '$', start: 0, end: 1, line: 0, kind: 'ident' },
-					undefined,
-				],
+				flags: 0,
 			});
 			node.statements = cb(node);
 			node.children.push(...node.statements);
@@ -98,10 +105,7 @@ export function parseExpression(
 	/**
 	 * Function that defines a variable in the symbol table.
 	 */
-	function define(
-		ident: Token<'ident'>,
-		flags?: VariableFlags,
-	): NodeMap['ident'] {
+	function define(ident: Token<'ident'>, flags: Flags = 0): NodeMap['ident'] {
 		const name = text(ident);
 		const existing = symbolTable.get(name);
 		if (existing)
@@ -110,10 +114,9 @@ export function parseExpression(
 				ident,
 			);
 		const symbol = symbolTable.set(name, {
-			...ident,
+			name,
 			kind: 'variable',
 			flags,
-			children: [ident, undefined],
 		});
 		return { ...ident, symbol };
 	}
@@ -256,7 +259,7 @@ export function parseExpression(
 								end: right.end,
 								value: symbol.value,
 							};
-					} else throw error('Invalid left operatnd.', left);
+					} else throw error('Invalid left operand.', left);
 
 					return {
 						...tk,
@@ -414,7 +417,7 @@ export function parseExpression(
 		if (tk.kind !== 'ident' && tk.kind !== 'var') return;
 		api.next();
 		if (tk.kind === 'var') {
-			flags = VariableFlags.Variable;
+			flags = Flags.Variable;
 			tk = expect('ident');
 		}
 		const next = optional(':') || optional('=');
@@ -445,7 +448,7 @@ export function parseExpression(
 			left,
 			right,
 			type,
-			start: left.start,
+			start: tk.start,
 			end: right.end,
 			source: left.source,
 			line: left.line,

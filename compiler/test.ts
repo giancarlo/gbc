@@ -87,10 +87,10 @@ export default spec('compiler', s => {
 	});
 
 	s.test('Parser - Expressions', it => {
-		const parse = (src: string, symbols?: Symbol[]) => {
+		const parse = (src: string, symbols?: Record<string, Symbol>) => {
 			const st = ProgramSymbolTable();
 			const tt = TypesSymbolTable();
-			if (symbols) st.setSymbols(...symbols);
+			if (symbols) st.setSymbols(symbols);
 			const api = ParserApi(scan);
 			api.start(src);
 			const scope = st.push();
@@ -110,7 +110,7 @@ export default spec('compiler', s => {
 			a: TestApi,
 			src: string,
 			out: string,
-			symbols?: Symbol[],
+			symbols?: Record<string, Symbol>,
 		) {
 			const r = parse(src, symbols);
 			if (r.errors?.length) {
@@ -230,17 +230,17 @@ export default spec('compiler', s => {
 		});
 
 		it.should('parse assignment', a => {
-			match(a, 'b = 10 a = b', '(root (= :b 10) (= :a :b))', [
-				{ name: 'a', kind: 'variable', flags: 0 },
-				{ name: 'b', kind: 'variable', flags: 0 },
-			]);
+			match(a, 'b = 10 a = b', '(root (= :b 10) (= :a :b))', {
+				a: { name: 'a', kind: 'variable', flags: 0 },
+				b: { name: 'b', kind: 'variable', flags: 0 },
+			});
 		});
 
 		it.should('parse infix operators', a => {
-			match(a, 'a > 0 || b > 0', '(root (|| (> :a 0) (> :b 0)))', [
-				{ name: 'a', kind: 'variable', flags: 0 },
-				{ name: 'b', kind: 'variable', flags: 0 },
-			]);
+			match(a, 'a > 0 || b > 0', '(root (|| (> :a 0) (> :b 0)))', {
+				a: { name: 'a', kind: 'variable', flags: 0 },
+				b: { name: 'b', kind: 'variable', flags: 0 },
+			});
 			match(
 				a,
 				'true || false && false',
@@ -565,7 +565,7 @@ export default spec('compiler', s => {
 		baselineExpr(
 			'hello world',
 			`'Hello World!' >> std.out`,
-			"(>> 'Hello World!' (macro :std :out))",
+			"(>> 'Hello World!' macro)",
 			`(function*(){const _='Hello World!';const __=function*($){console.log($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __('Hello World!')){yield(_1)}})()`,
 		);
 		/*baseline(
@@ -584,8 +584,8 @@ export default spec('compiler', s => {
 		*/
 		baseline<(n: number) => number>(
 			'fibonacci',
-			`fib = fn(n: number) => n <= 1 ? n : fib(n - 1) + fib(n - 2)`,
-			'(root (def :fib ({ (parameter :n :number) (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))))',
+			`fib = fn(n: int) => n <= 1 ? n : fib(n - 1) + fib(n - 2)`,
+			'(root (def :fib ({ (parameter :n :int) (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))))',
 			'const fib=(n)=>(n<=1 ? n : fib(n-1)+fib(n-2))',
 			(a, fib) => {
 				a.equal(fib(0), 0);
@@ -621,12 +621,12 @@ factorial = fn(n: int): int {
 		baseline<(a: number, b: number) => number>(
 			'ackermann',
 			`
-ackermann = fn(m: number, n:number) {
+ackermann = fn(m: int, n:int) {
 	next(m == 0 ? n + 1 :
 		(n == 0 ? ackermann(m - 1, 1) : (ackermann(m - 1, ackermann(m, n - 1)))))
 }
 		`,
-			`(root (def :ackermann ({ (parameter :m :number) (parameter :n :number) (next (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1)))))))))))`,
+			`(root (def :ackermann ({ (parameter :m :int) (parameter :n :int) (next (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1)))))))))))`,
 			'const ackermann=(m,n)=>{return(m===0 ? n+1 : n===0 ? ackermann(m-1,1) : ackermann(m-1,ackermann(m,n-1)))}',
 			(a, ack) => {
 				a.equal(ack(1, 3), 5);

@@ -32,17 +32,8 @@ function generatorBody(n: NodeMap['{']) {
 				n.kind === '{' && n.statements.length === 1 && isExpression(n)
 					? generatorYield(n.statements[0])
 					: compileEach(n.statements)
-		  }`
+			}`
 		: '';
-}
-
-function assign(node: Node, value?: Node) {
-	if (node.kind !== 'ident' || !node.symbol || !value)
-		throw new CompilerError('Invalid definition', node);
-
-	return `${node.symbol.flags & Flags.Variable ? 'let' : 'const'} ${
-		node.symbol.name
-	}=${compile(value)}`;
 }
 
 function next(child?: Node) {
@@ -53,7 +44,7 @@ function nextGenerator(child?: Node) {
 	return child
 		? `{const _$=${compile(
 				child,
-		  )};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
+			)};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
 		: 'yield';
 }
 
@@ -154,19 +145,14 @@ export function compile(node: Node): string {
 			return text;
 		}
 		case 'def': {
-			const { left, right } = node;
+			const symbol = node.left.symbol;
+			if (symbol.kind !== 'variable') throw 'Invalid node';
+			const isVar =
+				symbol.kind === 'variable' && symbol.flags & Flags.Variable;
 
-			/*if (left.kind === ',') {
-				if (right.kind !== ',')
-					throw new CompilerError('Invalid definition', right);
-				let result = '';
-				for (let i = 0; i < left.children.length; i++) {
-					result += assign(left.children[i], right.children[i]);
-				}
-				return result;
-			}*/
-
-			return assign(left, right);
+			return `${isVar ? 'let' : 'const'} ${
+				symbol.name
+			}=${compile(node.right)}`;
 		}
 		case '{': {
 			const parameters =

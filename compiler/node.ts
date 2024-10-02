@@ -12,17 +12,10 @@ export enum BlockFlags {
 	Sequence = 2,
 }
 
-export enum VariableFlags {
-	None = 0,
-	Variable = 1,
-	Export = 2,
-}
-
 export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[]; scope: Scope };
 	type: { children: [Node] };
-	//var: { ident: NodeMap['ident'] };
 	done: void;
 	ident: { symbol: Symbol };
 	string: void;
@@ -62,9 +55,9 @@ export type BaseNodeMap = {
 		statements?: Node[];
 		scope: Scope;
 		children: Node[];
+		symbol?: SymbolMap['function'];
 		flags: BlockFlags;
 		returnType?: Node;
-		references?: Node[];
 	};
 	'[': { children: [Node, Node] };
 	'(': { children: [Node] };
