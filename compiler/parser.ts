@@ -2,7 +2,7 @@
 import { ParserApi } from '@cxl/gbc.sdk';
 
 import { parseExpression } from './parser-expression.js';
-import { Flags, SymbolTable } from './symbol-table.js';
+import { Flags, SymbolTable, TypesSymbolTable } from './symbol-table.js';
 
 import type { ScannerToken } from './scanner.js';
 import type { Node } from './node.js';
@@ -12,7 +12,7 @@ export type RootNode = ReturnType<typeof parse>;
 export function parse(
 	api: ParserApi<ScannerToken>,
 	symbolTable: SymbolTable,
-	typesTable: SymbolTable,
+	typesTable: TypesSymbolTable,
 ) {
 	const {
 		current,
