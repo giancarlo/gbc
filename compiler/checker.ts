@@ -1,7 +1,7 @@
 ///<amd-module name="@cxl/gbc.compiler/checker.js"/>
 import { CompilerError } from '@cxl/gbc.sdk';
 
-import type { InfixNode, Node, NodeMap } from './node.js';
+import type { InfixNode, Node, NodeMap, NodeKind } from './node.js';
 import { BaseTypes, Type } from './symbol-table.js';
 
 const typeSymbol = Symbol('type');
@@ -11,49 +11,39 @@ function typeToStr(type?: Type) {
 	return type?.name || 'unknown';
 }
 
-/**
- * Resolves the type of a given node.
- */
-function resolveType(node: Node): Type | undefined {
-	switch (node.kind) {
-		case 'def': {
-			let type = node.left.symbol.type;
-			if (type) return type;
-			type = (node.type && resolver(node.type)) || resolver(node.right);
-			if (type) node.left.symbol.type = type;
-			return type;
-		}
-		case 'ident':
+const resolveMap: {
+	[K in NodeKind]?: (node: NodeMap[K]) => Type | undefined;
+} = {
+	def: node => {
+		let type = node.left.symbol.type;
+		if (type) return type;
+		type = (node.type && resolver(node.type)) || resolver(node.right);
+		if (type) node.left.symbol.type = type;
+		return type;
+	},
+	ident: n => n.symbol.type,
+	typeident: n => n.symbol,
+	call: n => resolveReturnType(n.children[0]),
+	number: n => BaseTypes[Number.isInteger(n.value) ? 'int' : 'float'],
+	parameter: node => {
+		if (node.symbol.type) return node.symbol.type;
+		if (node.type) {
+			node.symbol.type = resolver(node.type);
 			return node.symbol.type;
-		case 'typeident':
-			return node.symbol;
-		case 'call':
-			return resolveReturnType(node.children[0]);
-		case 'number':
-			return Number.isInteger(node.value)
-				? BaseTypes.int
-				: BaseTypes.float;
-		case 'parameter': {
-			if (node.symbol.type) return node.symbol.type;
-			if (node.type) {
-				node.symbol.type = resolver(node.type);
-				return node.symbol.type;
-			}
-			return;
 		}
-		case '{': {
-			const sym = node.symbol;
-			if (!sym) return;
+	},
+	fn: node => {
+		const sym = node.symbol;
 
-			if (!sym.returnType) {
-				if (node.returnType) sym.returnType = resolver(node.returnType);
-			}
-			if (node.parameters?.length) node.parameters.forEach(resolver);
-
-			return sym;
+		if (!sym.returnType) {
+			if (node.returnType) sym.returnType = resolver(node.returnType);
 		}
-	}
-}
+		if (node.parameters?.length) node.parameters.forEach(resolver);
+
+		return sym;
+	},
+};
+
 function resolveReturnType(node: Node) {
 	if (node.kind === 'ident') {
 		const type = resolver(node);
@@ -66,7 +56,7 @@ function resolveReturnType(node: Node) {
  * Determines the type of a node based on its kind and associated type declarations.
  */
 function resolver(node: CheckedNode) {
-	return (node[typeSymbol] ||= resolveType(node));
+	return (node[typeSymbol] ||= resolveMap[node.kind]?.(node as never));
 }
 
 function isNumberType(node: Node) {
@@ -78,8 +68,7 @@ function isNumber(node: Node) {
 }
 
 function canAssign(to: Type, a: Type): boolean {
-	if (to === a) return true;
-	return false;
+	return to === a;
 }
 
 function getListTypes(node: NodeMap[',']) {
@@ -119,11 +108,17 @@ export function checker({
 		}
 	}
 
+	/**
+	 * The `check` function performs semantic analysis on a node by exploring its structure and applying various checks
+	 * based on its kind. Each case handles a specific node kind, ensuring that the proper validation and type-resolution
+	 * operations are performed. Depending on the node kind, it might resolve types, validate parameters, and enforce
+	 * correct usage of operations and calls.
+	 */
 	function check(node: Node): void {
 		switch (node.kind) {
 			case 'root':
 				return checkEach(node.children);
-			case '{':
+			case 'fn':
 				resolver(node);
 				return node.statements && checkEach(node.statements);
 			case 'main':
@@ -136,7 +131,11 @@ export function checker({
 				if (!fn.returnType) fn.returnType = type;
 				else if (type && !canAssign(fn.returnType, type))
 					error(
-						`Type "${typeToStr(type)}" is not assignable to type "${typeToStr(fn.returnType)}".`,
+						`Type "${typeToStr(
+							type,
+						)}" is not assignable to type "${typeToStr(
+							fn.returnType,
+						)}".`,
 						node,
 					);
 				return;
@@ -173,7 +172,11 @@ export function checker({
 						const typeB = params[i].type;
 						if (typeA && typeB && !canAssign(typeA, typeB))
 							error(
-								`Argument of type "${typeToStr(typeA)}' is not assignable to parameter of type "${typeToStr(typeB)}".`,
+								`Argument of type "${typeToStr(
+									typeA,
+								)}' is not assignable to parameter of type "${typeToStr(
+									typeB,
+								)}".`,
 								node,
 							);
 					}

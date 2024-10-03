@@ -35,6 +35,10 @@ export type TypesSymbolTable = ReturnType<typeof TypesSymbolTable>;
 export type Type = SymbolMap['type' | 'function'];
 
 export const ScopeOwner = Symbol('ScopeOwner');
+export const EmptyFunction: SymbolMap['function'] = {
+	kind: 'function',
+	flags: 0,
+};
 
 export function SymbolTable<T extends Symbol>(globals?: Record<string, T>) {
 	const st = BaseSymbolTable<T>();

@@ -216,7 +216,7 @@ export default spec('compiler', s => {
 			match(
 				a,
 				`scan = fn(a: string) { }`,
-				'(root (def :scan ({ (parameter :a :string))))',
+				'(root (def :scan (fn (parameter :a typeident))))',
 			);
 			/*match(
 				a,
@@ -361,7 +361,7 @@ export default spec('compiler', s => {
 		function validateExpr(first: Node) {
 			if (first.kind !== 'def') return;
 			const block = first.right;
-			if (block.kind !== '{') return;
+			if (block.kind !== 'fn') return;
 			return block;
 		}
 
@@ -547,12 +547,14 @@ export default spec('compiler', s => {
 			(a, r) => a.equal(r, 1),
 		);
 
-		/*baseline(
+		/*
+		baseline(
 			'function call',
-			'a = { 123 } main { next a() }',
+			'a = { 123 } main { a() }',
 			'(root (def :a ({ 123)) (main (call :a ?)))',
 			'const a=()=>{return 123};return a()',
 			(a, r) => a.equal(r(), 123),
+			'return a'
 		);
 		baselineExpr(
 			'$ variable',
@@ -585,7 +587,7 @@ export default spec('compiler', s => {
 		baseline<(n: number) => number>(
 			'fibonacci',
 			`fib = fn(n: int) => n <= 1 ? n : fib(n - 1) + fib(n - 2)`,
-			'(root (def :fib ({ (parameter :n :int) (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))))',
+			'(root (def :fib (fn (parameter :n typeident) (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))))',
 			'const fib=(n)=>(n<=1 ? n : fib(n-1)+fib(n-2))',
 			(a, fib) => {
 				a.equal(fib(0), 0);
@@ -606,7 +608,7 @@ factorial = fn(n: int): int {
     next (n <= 1) ? 1 : n * factorial(n - 1)
 }
 			`,
-			'(root (def :factorial ({ (parameter :n :int) :int (? (next (<= :n 1)) 1 (* :n (call :factorial (- :n 1)))))))',
+			'(root (def :factorial (fn (parameter :n typeident) typeident (? (next (<= :n 1)) 1 (* :n (call :factorial (- :n 1)))))))',
 			'const factorial=(n)=>{return(n<=1) ? 1 : n*factorial(n-1)}',
 			(a, factorial) => {
 				a.equal(factorial(0), 1);
@@ -626,7 +628,7 @@ ackermann = fn(m: int, n:int) {
 		(n == 0 ? ackermann(m - 1, 1) : (ackermann(m - 1, ackermann(m, n - 1)))))
 }
 		`,
-			`(root (def :ackermann ({ (parameter :m :int) (parameter :n :int) (next (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1)))))))))))`,
+			`(root (def :ackermann (fn (parameter :m typeident) (parameter :n typeident) (next (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1)))))))))))`,
 			'const ackermann=(m,n)=>{return(m===0 ? n+1 : n===0 ? ackermann(m-1,1) : ackermann(m-1,ackermann(m,n-1)))}',
 			(a, ack) => {
 				a.equal(ack(1, 3), 5);
@@ -639,20 +641,22 @@ ackermann = fn(m: int, n:int) {
 			';return ackermann;',
 		);
 
-		baselineError('<= operator', 'true <= -1', '({ (<= :true -1))', [
+		baselineError('<= operator', 'true <= -1', '(fn (<= :true -1))', [
 			`Operator "<=" cannot be applied to types "boolean" and "int".`,
 		]);
 		baselineError(
 			'* operator',
 			'fn1=fn():int => 1\nfn1() * true',
-			'({ (def :fn1 ({ :int (next 1))) (* (call :fn1 ?) :true))',
+			'(fn (def :fn1 (fn typeident (next 1))) (* (call :fn1 ?) :true))',
 			[`Operator "*" cannot be applied to types "int" and "boolean".`],
 		);
 		baselineError(
 			'call - parameter check',
 			'fn1=fn(a:int):int => 1\nfn1(true)',
-			'({ (def :fn1 ({ (parameter :a :int) :int (next 1))) (call :fn1 :true))',
-			[`Expected 0 arguments but got 1.`],
+			'(fn (def :fn1 (fn (parameter :a typeident) typeident (next 1))) (call :fn1 :true))',
+			[
+				`Argument of type "boolean' is not assignable to parameter of type "int".`,
+			],
 		);
 
 		/*

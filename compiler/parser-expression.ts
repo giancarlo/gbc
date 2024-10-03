@@ -2,6 +2,7 @@
 import { ParserApi, UnaryNode, Token, text, parserTable } from '@cxl/gbc.sdk';
 import { parseType } from './parser-type.js';
 import {
+	EmptyFunction,
 	ScopeOwner,
 	Symbol,
 	SymbolMap,
@@ -48,7 +49,7 @@ export function parseExpression(
 		});
 	}
 
-	function blockParameters(node: NodeMap['{']) {
+	function blockParameters(node: NodeMap['fn']) {
 		node.parameters = parseList(parameter, ',', n => !!n);
 		if (node.symbol)
 			node.symbol.parameters = node.parameters.map(p => p.symbol);
@@ -79,15 +80,15 @@ export function parseExpression(
 	 */
 	function parseBlock(
 		tk: ScannerToken,
-		cb: (node: NodeMap['{']) => Node[],
-	): NodeMap['{'] {
-		return symbolTable.withScope(scope => {
-			const node: NodeMap['{'] = {
+		cb: (node: NodeMap['fn']) => Node[],
+	): NodeMap['fn'] {
+		return symbolTable.withScope(() => {
+			const node: NodeMap['fn'] = {
 				...tk,
-				kind: '{',
+				kind: 'fn',
 				children: [],
-				scope,
 				flags: 0,
+				symbol: EmptyFunction,
 			};
 			const symbol = symbolTable.set(ScopeOwner, {
 				kind: 'function',
@@ -355,13 +356,14 @@ export function parseExpression(
 				infix: ternaryOptional(2, ':'),
 			},
 
-			$: {
+			/*$: {
 				prefix: n => {
 					if (!symbolTable.getRef('$', n))
 						throw error('$ not defined', n);
 					return n;
 				},
-			},
+			},*/
+
 			done: { prefix: n => n },
 			next: {
 				prefix(tk) {

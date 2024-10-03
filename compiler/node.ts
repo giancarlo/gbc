@@ -29,7 +29,6 @@ export type BaseNodeMap = {
 		owner: SymbolMap['function'];
 	};
 	comment: void;
-	$: void;
 	parameter: {
 		children: [Node, Node | undefined];
 		symbol: Symbol;
@@ -51,12 +50,11 @@ export type BaseNodeMap = {
 	'++': { children: [Node] };
 	'--': { children: [Node] };
 	'-': { children: [Node] };
-	'{': {
+	fn: {
 		parameters?: NodeMap['parameter'][];
 		statements?: Node[];
-		scope: Scope;
 		children: Node[];
-		symbol?: SymbolMap['function'];
+		symbol: SymbolMap['function'];
 		flags: BlockFlags;
 		returnType?: Node;
 	};

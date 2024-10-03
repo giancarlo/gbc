@@ -241,13 +241,13 @@ Modules can contain function and variable definitions, along with an optional `m
 
 Functions can have multiple parameters and are defined using the `fn` keyword.
 
--   Functions are defined using the `fn` keyword followed by the function name, parameter list, return type, and body.
+-   Functions are defined using the `fn` keyword followed by the parameter list, return type, and body.
 -   Functions can accept other functions as parameters or return functions.
 
 This function takes two integers `a` and `b` and returns their sum.
 
 ```ts
-fn add(a: int, b: int): int {
+add = fn(a: int, b: int): int {
 	next a + b
 }
 ```
@@ -269,7 +269,7 @@ add(b = 1, a = 2) # Named arguments
 -   Functions can have default values for parameters, which are used if no argument is provided for that parameter.
 
 ```ts
-fn greet(name: string = "World"): string {
+greet = fn(name: string = "World"): string {
     next "Hello, " + name + "!";
 }
 
@@ -284,7 +284,7 @@ greet("Alice")   # Output: "Hello, Alice!"
 Functions can capture variables from their surrounding scope, creating closures.
 
 ```ts
-fn makeCounter(): {
+makeCounter = fn {
     var count = 0;
     next { count += 1 }
 }
@@ -299,7 +299,7 @@ counter()    # Output: 2
 -   Functions can call themselves recursively.
 
 ```ts
-fn factorial(n: int): int {
+factorial = fn(n: int): int {
     next (n <= 1) ? 1 : n * factorial(n - 1);
 }
 
@@ -359,7 +359,7 @@ emitValues() >> @.out
 
 ### Completion
 
-Functions complete execution once all expressions have been evaluated and their corresponding values emitted to the next block in the chain. This means:
+Blocks complete execution once all expressions have been evaluated and their corresponding values emitted to the next block in the chain. This means:
 
 -   The function does not wait for any response or processing from the next block in the chain before continuing.
 -   The function cannot access the results or modify the behavior of the next block in the chain based on its emitted values.
@@ -389,7 +389,7 @@ This is equivalent to using the `next` keyword for each expression.
 -   The above example is equivalent to using the `next` keyword for each expression:
 
 ```ts
-fn operation() {
+operation = fn {
 	next $ / 2
 	next $ * 2
 }
@@ -404,7 +404,7 @@ fn operation() {
 -   The type parameter can be constrained to a certain type or range of types using the `extends` keyword.
 
 ```ts
-fn add<T extends int>(a: T, b: T): T {
+add = fn<T extends int>(a: T, b: T): T {
     next a + b;
 }
 
@@ -418,7 +418,7 @@ add(1, 2)    # Output: 3
 -   Generics can be constrained to specific types or interfaces using the `extends` keyword.
 
 ```ts
-fn display<T extends string | int>(value: T): void {
+display = fn<T extends string | int>(value: T): void {
     @.out(value.toString());
 }
 
@@ -433,7 +433,7 @@ display(123)      # Output: "123"
 -   Functions can use multiple type parameters.
 
 ```ts
-fn pair<T, U>(first: T, second: U): (T, U) {
+pair = fn<T, U>(first: T, second: U): (T, U) {
     (first, second);
 }
 
@@ -450,7 +450,7 @@ pair(1, "one") >> @.out
 Example:
 
 ```ts
-fn identity<T>(value: T): T {
+identity = fn<T>(value: T): T {
     next value;
 }
 
@@ -465,7 +465,7 @@ identity("Hello")  # Output: "Hello"
 -   Bounded generics restrict the types that can be used as type arguments. This is useful for ensuring type safety.
 
 ```ts
-fn max<T extends Comparable<T>>(a: T, b: T): T {
+max = fn<T extends Comparable<T>>(a: T, b: T): T {
     next a.compareTo(b) > 0 ? a : b;
 }
 

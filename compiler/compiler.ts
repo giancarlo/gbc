@@ -9,12 +9,12 @@ export const RUNTIME = `"use strict";`;
 const infix = (n: InfixNode<NodeMap>, op: string = n.kind) =>
 	`${compile(n.children[0])}${op}${compile(n.children[1])}`;
 
-const blockLambda = (n: NodeMap['{']) => {
+const blockLambda = (n: NodeMap['fn']) => {
 	const next = n.statements?.[0];
 	const expr = next?.kind === 'next' && next.children?.[0];
 	return expr ? `(${compile(expr)})` : '';
 };
-const block = (n: NodeMap['{']) =>
+const block = (n: NodeMap['fn']) =>
 	n.flags & BlockFlags.Lambda
 		? blockLambda(n)
 		: `{${n.statements ? compileEach(n.statements) : ''}}`;
@@ -26,13 +26,13 @@ function generatorYield(n: Node) {
 	if (n.kind === ',') return n.children.map(next).join(';');
 	return next(n);
 }
-function generatorBody(n: NodeMap['{']) {
+function generatorBody(n: NodeMap['fn']) {
 	return n.statements
 		? `${
-				n.kind === '{' && n.statements.length === 1 && isExpression(n)
+				n.kind === 'fn' && n.statements.length === 1 && isExpression(n)
 					? generatorYield(n.statements[0])
 					: compileEach(n.statements)
-			}`
+		  }`
 		: '';
 }
 
@@ -44,7 +44,7 @@ function nextGenerator(child?: Node) {
 	return child
 		? `{const _$=${compile(
 				child,
-			)};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
+		  )};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
 		: 'yield';
 }
 
@@ -69,7 +69,6 @@ export function compile(node: Node): string {
 			return node.generator
 				? nextGenerator(node.children?.[0])
 				: next(node.children?.[0]);
-		case '$':
 		case 'parameter':
 		case 'ident':
 		case 'string':
@@ -150,11 +149,11 @@ export function compile(node: Node): string {
 			const isVar =
 				symbol.kind === 'variable' && symbol.flags & Flags.Variable;
 
-			return `${isVar ? 'let' : 'const'} ${
-				symbol.name
-			}=${compile(node.right)}`;
+			return `${isVar ? 'let' : 'const'} ${symbol.name}=${compile(
+				node.right,
+			)}`;
 		}
-		case '{': {
+		case 'fn': {
 			const parameters =
 				node.parameters && compileEach(node.parameters, ',');
 			return node.flags & BlockFlags.Sequence
