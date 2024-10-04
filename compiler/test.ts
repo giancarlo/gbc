@@ -452,13 +452,14 @@ export default spec('compiler', s => {
 			`let a=2;let b=1;`,
 		);
 		*/
-		/*baselineExpr(
+		baselineExpr(
 			'value >> fn',
 			'1 >> std.out',
-			'(>> 1 (macro :std :out))',
+			'(>> 1 macro)',
 			'(function*(){const _=1;const __=function*($){console.log($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(1)){yield(_1)}})()',
 		);
 
+		/*
 		baselineExpr(
 			'value >> block',
 			'1 >> { $ + 1 }',
