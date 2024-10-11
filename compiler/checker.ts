@@ -44,6 +44,7 @@ const resolveMap: {
 	},
 };
 
+/** Completes the return type resolution for function identifiers if their type is function and it has a defined returnType.*/
 function resolveReturnType(node: Node) {
 	if (node.kind === 'ident') {
 		const type = resolver(node);
