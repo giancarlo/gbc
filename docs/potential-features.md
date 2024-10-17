@@ -319,3 +319,14 @@ print("Hello")  # Output: "Hello"
 ```
 
 -   The `print` function is overloaded to handle both integers and strings.
+
+### Should variable mutability be part of the type declaration?
+
+```
+type MutableString = var string;
+x: MutableString = 'hello';
+
+var x: string | boolean = true;
+vs
+x: var string | boolean = true;
+```

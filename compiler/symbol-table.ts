@@ -37,7 +37,7 @@ export type Type = SymbolMap['type' | 'function'];
 export const ScopeOwner = Symbol('ScopeOwner');
 export const EmptyFunction: SymbolMap['function'] = {
 	kind: 'function',
-	flags: 0,
+	flags: Flags.None,
 };
 
 export function SymbolTable<T extends Symbol>(globals?: Record<string, T>) {
@@ -47,7 +47,8 @@ export function SymbolTable<T extends Symbol>(globals?: Record<string, T>) {
 
 	return {
 		...st,
-		getRef(id: string, node: Position) {
+		/** Retrieves a symbol by id and logs a reference at the specified node position. */
+		getWithReference(id: string, node: Position) {
 			const symbol = st.get(id);
 			if (symbol) {
 				(symbol.references ||= []).push(node);
@@ -79,23 +80,6 @@ export function ProgramSymbolTable() {
 			},
 		},
 	});
-
-	/*{
-			name: 'std',
-			kind: 'namespace',
-			flags: 0,
-			type: { name: 'std' },
-			members: {
-				out: {
-					name: 'out',
-					kind: 'native',
-					replace: `function*($){console.log($);yield($)}`,
-					type: { name: 'out' },
-					flags: 0,
-				},
-			},
-		},
-	]);*/
 }
 
 export const BaseTypes: Record<string, SymbolMap['type']> = {

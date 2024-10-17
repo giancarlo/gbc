@@ -397,7 +397,7 @@ export function parseExpression(
 			ident: {
 				prefix: n => {
 					const name = text(n);
-					const symbol = symbolTable.getRef(name, n);
+					const symbol = symbolTable.getWithReference(name, n);
 					if (!symbol) throw error('Identifier not defined', n);
 					return { ...n, symbol };
 				},
