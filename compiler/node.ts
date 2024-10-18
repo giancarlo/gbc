@@ -42,6 +42,7 @@ export type BaseNodeMap = {
 		right: Node;
 		type?: Node;
 	};
+	'@': { children: [Node] };
 	'=': { children: [Node, Node] };
 	'?': { children: [Node, Node, Node | undefined] };
 	'~': { children: [Node] };

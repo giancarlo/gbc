@@ -644,7 +644,7 @@ ackermann = fn(m: int, n:int) {
 		baseline(
 			'build',
 			`
-[ buildCxl, tsBundle, minify ] = @cxl/build
+@cxl.build import buildCxl, tsBundle, minify;
 
 buildCxl([
 	target = 'package',

@@ -94,8 +94,8 @@ export function scan(source: string) {
 				return la === '='
 					? tk('==', 2)
 					: la === '>'
-					? tk('=>', 2)
-					: tk('=', 1);
+						? tk('=>', 2)
+						: tk('=', 1);
 			case '|':
 				return la === '|' ? tk('||', 2) : tk('|', 1);
 			case '&':
@@ -104,16 +104,16 @@ export function scan(source: string) {
 				return la === '='
 					? tk('>=', 2)
 					: la === '>'
-					? tk('>>', 2)
-					: tk('>', 1);
+						? tk('>>', 2)
+						: tk('>', 1);
 			case '<':
 				return la === '='
 					? tk('<=', 2)
 					: la === '<'
-					? tk('<<', 2)
-					: la === ':'
-					? tk('<:', 2)
-					: tk('<', 1);
+						? tk('<<', 2)
+						: la === ':'
+							? tk('<:', 2)
+							: tk('<', 1);
 			case '!':
 				return la === '=' ? tk('!=', 2) : tk('!', 1);
 			case '+':
@@ -135,6 +135,7 @@ export function scan(source: string) {
 			case ')':
 			case '^':
 			case '$':
+			case '@':
 			case '[':
 			case ']':
 				return tk(ch, 1);
@@ -205,10 +206,10 @@ export function scan(source: string) {
 				// Keywords
 				if (matchKeyword('done')) return tk('done', 4);
 				if (matchKeyword('export')) return tk('export', 6);
+				if (matchKeyword('import')) return tk('import', 6);
 				if (matchKeyword('loop')) return tk('loop', 4);
 				if (matchKeyword('main')) return tk('main', 4);
 				if (matchKeyword('next')) return tk('next', 4);
-				if (matchKeyword('return')) return tk('return', 6);
 				if (matchKeyword('type')) return tk('type', 4);
 				if (matchKeyword('fn')) return tk('fn', 2);
 				if (matchKeyword('var')) return tk('var', 3);

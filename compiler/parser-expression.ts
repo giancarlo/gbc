@@ -240,6 +240,19 @@ export function parseExpression(
 			'/': infixOperator(12),
 			'*': infixOperator(12),
 			comment: { prefix: n => n },
+			'@': {
+				prefix(tk) {
+					const ident = expectExpression();
+					if (ident.kind !== 'ident' && ident.kind !== '.')
+						throw error(`Invalid import.`, tk);
+
+					const children: [Node] = [ident];
+					return {
+						...tk,
+						children,
+					};
+				},
+			},
 			'.': {
 				precedence: 17,
 				infix(tk, left) {
