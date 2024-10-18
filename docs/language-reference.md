@@ -237,6 +237,16 @@ Modules serve as the primary building blocks for code organization and reusabili
 
 Modules can contain function and variable definitions, along with an optional `main` block. However, only functions are explicitly exported from a module.
 
+### Importing modules
+
+To import a module, use the `@` operator. This operator allows you to incorporate functions or variables from external files into your codebase.
+
+To import a specific function from a module, use the `@` operator followed by the module's path and the desired function name.
+
+```
+@module.path.function()
+```
+
 ## Functions
 
 Functions can have multiple parameters and are defined using the `fn` keyword.

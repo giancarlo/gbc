@@ -641,6 +641,20 @@ ackermann = fn(m: int, n:int) {
 			},
 			';return ackermann;',
 		);
+		baseline(
+			'build',
+			`
+[ buildCxl, tsBundle, minify ] = @cxl/build
+
+buildCxl([
+	target = 'package',
+	outputDir = '../dist/compiler',
+	tasks = [ tsBundle('tsconfig.json', 'index.bundle.js', true).pipe(minify()) ]
+])
+		`,
+			'',
+			'',
+		);
 
 		baselineError('<= operator', 'true <= -1', '(fn (<= :true -1))', [
 			`Operator "<=" cannot be applied to types "boolean" and "int".`,
