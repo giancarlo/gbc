@@ -1,5 +1,13 @@
 # GB Programming Language
 
+The GB programming language is a concise, type-safe, and functional programming language that emphasizes immutability, modularity, and streamlined syntax. Its design revolves around the use of blocks as fundamental execution units, chained through the `>>` operator to represent pipelines of computation.
+
+GB enforces strong typing with type inference, supports advanced features like generics, closures, and streams, and offers a standard library. It incorporates immutable variables by default, with optional mutability, and supports a rich set of data types, including number types, strings, and user-defined structures.
+
+Error handling is integrated within streams using constructs like `catch`, while concepts like sequences and emission (`next`) enable asynchronous and multi-value processing.
+
+GB also promotes clean and modular code organization using its module system, coupled with a minimalistic approach to function definitions, arguments, and recursion.
+
 ## Hello World
 
 This is a sample of a simple "Hello World" program. The _main_ block is our entry point. No code is allowed outside of it other than type and function definitions. The standard library is always available through the _std_ namespace. The pipe `>>` operator will call the `std.out` function passing its left value as an argument.

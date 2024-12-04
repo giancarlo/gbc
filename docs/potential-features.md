@@ -27,7 +27,12 @@ The `use` operator after the data block allows member autocomplete.
 
 ```
 # Add symbols to current scope
-module use a, b, c.d
+module use a, b as B, c use d, e
+
+@module.file use func1, func2
+
+[1]->fn(help, rn)
+[1, 2, 3] >> each >> [ a, b ,c ];
 
 ```
 
