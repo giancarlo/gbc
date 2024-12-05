@@ -242,47 +242,51 @@ export function parseExpression(
 			comment: { prefix: n => n },
 			'@': {
 				prefix(tk) {
-					const ident = expectExpression();
-					if (ident.kind !== 'ident' && ident.kind !== '.')
-						throw error(`Invalid import.`, tk);
-
-					const children: [Node] = [ident];
-					return {
-						...tk,
-						children,
-					};
+					const ident = optional('ident');
+					if (ident) tk.end = ident.end;
+					return tk;
 				},
 			},
 			'.': {
 				precedence: 17,
 				infix(tk, left) {
 					const right = expect('ident');
-					let symbol: Symbol;
+					const prop = text(right);
 
-					if (left.kind === 'ident' && left.symbol.kind === 'data') {
-						const prop = text(right);
-						symbol = left.symbol.members?.[prop];
-						if (!symbol)
-							throw error(
-								`Property "${prop}" does not exist in "${text(
-									left,
-								)}"`,
-								right,
-							);
+					let symbol: Symbol | undefined;
 
-						if (symbol.kind === 'macro')
-							return {
-								...tk,
-								kind: 'macro',
-								end: right.end,
-								value: symbol.value,
-							};
-					} else throw error('Invalid left operand.', left);
+					// Handle module import operator '@'
+					if (left.kind === '@') {
+						const importName = text(left).slice(1);
+						// We'll return a placeholder macro until the standard library is implemented.
+						if (!importName) symbol = symbolTable.get('@');
+					} else if (left.kind === 'ident') symbol = left.symbol;
+
+					const propSymbol =
+						symbol?.kind === 'data'
+							? symbol?.members?.[prop]
+							: undefined;
+
+					if (!propSymbol)
+						throw error(
+							`Property "${prop}" does not exist in "${text(
+								left,
+							)}"`,
+							right,
+						);
+
+					if (propSymbol.kind === 'macro')
+						return {
+							...tk,
+							kind: 'macro',
+							end: right.end,
+							value: propSymbol.value,
+						};
 
 					return {
 						...tk,
 						start: left.start,
-						children: [left, { ...right, symbol }],
+						children: [left, { ...right, symbol: propSymbol }],
 						end: right.end,
 						symbol,
 					};

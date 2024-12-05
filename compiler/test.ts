@@ -454,7 +454,7 @@ export default spec('compiler', s => {
 		*/
 		baselineExpr(
 			'value >> fn',
-			'1 >> std.out',
+			'1 >> @.out',
 			'(>> 1 macro)',
 			'(function*(){const _=1;const __=function*($){console.log($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(1)){yield(_1)}})()',
 		);
@@ -567,7 +567,7 @@ export default spec('compiler', s => {
 		*/
 		baselineExpr(
 			'hello world',
-			`'Hello World!' >> std.out`,
+			`'Hello World!' >> @.out`,
 			"(>> 'Hello World!' macro)",
 			`(function*(){const _='Hello World!';const __=function*($){console.log($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __('Hello World!')){yield(_1)}})()`,
 		);

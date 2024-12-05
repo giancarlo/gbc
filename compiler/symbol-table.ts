@@ -68,7 +68,9 @@ export function ProgramSymbolTable() {
 		false: literal(false, BaseTypes.boolean),
 		NaN: literal(NaN, BaseTypes.float),
 		infinity: literal(Infinity, BaseTypes.float),
-		std: {
+
+		// Standard Library
+		'@': {
 			kind: 'data',
 			flags: 0,
 			members: {
