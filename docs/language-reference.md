@@ -2,18 +2,12 @@
 
 The GB programming language is a concise, type-safe, and functional programming language that emphasizes immutability, modularity, and streamlined syntax. Its design revolves around the use of blocks as fundamental execution units, chained through the `>>` operator to represent pipelines of computation.
 
-GB enforces strong typing with type inference, supports advanced features like generics, closures, and streams, and offers a standard library. It incorporates immutable variables by default, with optional mutability, and supports a rich set of data types, including number types, strings, and user-defined structures.
-
-Error handling is integrated within streams using constructs like `catch`, while concepts like sequences and emission (`next`) enable asynchronous and multi-value processing.
-
-GB also promotes clean and modular code organization using its module system, coupled with a minimalistic approach to function definitions, arguments, and recursion.
-
 ## Hello World
 
-This is a sample of a simple "Hello World" program. The _main_ block is our entry point. No code is allowed outside of it other than type and function definitions. The standard library is always available through the _std_ namespace. The pipe `>>` operator will call the `std.out` function passing its left value as an argument.
+This is a sample of a simple "Hello World" program. The _main_ block is our entry point. No code is allowed outside of it other than type and function definitions. The standard library is always available through the _@_ operator. The pipe `>>` operator will call the `@.out` function passing its left value as an argument.
 
 ```
-main { 'Hello World' >> std.out }
+main { 'Hello World' >> @.out }
 ```
 
 ## Lexical Elements
@@ -168,7 +162,7 @@ c[1] = 3
 
 All data structures are iterable:
 
-    [ a=1, b=2 ] >> each >> std.out
+    [ a=1, b=2 ] >> each >> @.out
 
 ### Variable Definition
 
@@ -254,6 +248,8 @@ To import a specific function from a module, use the `@` operator followed by th
 ```
 @module.path.function()
 ```
+
+The `@` operator can also be used to access standard library functions directly by referencing it with an empty path. For example, `@.out` refers to the standard output function.
 
 ## Functions
 
@@ -497,8 +493,8 @@ max(5, 10)   # Output: 10
 Code blocks can emit multiple values. The block automatically completes once it reaches the end of the function.
 
 ```ts
-    { 1, 2 } >> std.out # Prints 1 and 2
-    { next(1) done next(2) } >> std.out # Unreachable code compiler error.
+    { 1, 2 } >> @.out # Prints 1 and 2
+    { next(1) done next(2) } >> @.out # Unreachable code compiler error.
 ```
 
 ## Errors
@@ -507,7 +503,7 @@ Errors are data and are part of the function return type. Errors implement the E
 
 ```ts
     open = (filename: string) {
-    	try { f = std.file(filename); } # f type is File | Error
+    	try { f = @.file(filename); } # f type is File | Error
     }
 
     open('file') >> catch { = open('file2') } >> {
@@ -536,4 +532,4 @@ double = { $ * 2 }
 
 Emits void indefinetely.
 
-    var i=0; loop { i++ } >> std.out;
+    var i=0; loop { i++ } >> @.out;
