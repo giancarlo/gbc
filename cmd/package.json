@@ -1,0 +1,13 @@
+{
+	"name": "@cxl/gbc.cmd",
+	"version": "0.0.1",
+	"bugs": "https://github.com/giancarlo/gbc/issues",
+	"homepage": "https://github.com/giancarlo/gbc/cmd",
+	"description": "A language for IDE commands",
+	"license": "UNLICENSED",
+	"scripts": {
+		"build": "cxl-build",
+		"test": "npm run build && cd ../dist/cmd && cxl-tester"
+	},
+	"dependencies": {}
+}

@@ -11,6 +11,7 @@ export interface Token<Kind> extends Position {
 	kind: Kind;
 }
 
+export type MatchFn = (ch: string) => boolean;
 export type ScanFn<Node extends Token<string>> = () => Node;
 export type Scanner<Node extends Token<string>> = (src: string) => {
 	next: ScanFn<Node>;
@@ -71,6 +72,37 @@ export type TernaryNode<
 export type MapKind<Map extends NodeMap> = keyof Map;
 export type MapNode<Map extends NodeMap> = Map[keyof Map];
 
+// Utility Types
+export type DistributeToken<T> = T extends Token<infer U> ? Token<U> : never;
+export type MapToToken<T extends string> = T extends infer U ? Token<U> : never;
+
+export type TrieNode = { [K in string]: TrieNode } & { [TrieMatch]?: string };
+const TrieMatch = Symbol('TrieMatch');
+
+const alpha = (ch: string) =>
+	(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+const digit = (ch: string) => ch >= '0' && ch <= '9';
+const alnum = (ch: string) => alpha(ch) || digit(ch);
+const hexDigit = (ch: string) =>
+	(ch >= '0' && ch <= '9') ||
+	(ch >= 'a' && ch <= 'f') ||
+	(ch >= 'A' && ch <= 'F');
+
+export const matchers = {
+	alpha,
+	digit,
+	alnum,
+	hexDigit,
+	digitUnderscore: ch => ch === '_' || digit(ch),
+	hexDigitUnderscore: ch => ch === '_' || hexDigit(ch),
+	binaryDigit: ch => ch === '0' || ch === '1',
+	binaryDigitUnderscore: ch => ch === '0' || ch === '1' || ch === '_',
+	ident: ch => ch === '_' || alnum(ch),
+	notIdent: ch => ch === undefined && ch !== '_' && !alnum(ch),
+	eol: ch => ch === '\n',
+	stringEscape: ch => ch === '\\',
+} as const satisfies Record<string, MatchFn>;
+
 export class CompilerError {
 	constructor(
 		public message: string,
@@ -88,7 +120,9 @@ export function each<Node extends Token<string>>(scan: ScanFn<Node>) {
 			return {
 				next() {
 					const value = scan();
-					return value.kind === 'eof' ? { done: true } : { value };
+					return value.kind === 'eof'
+						? { done: true, value }
+						: { value };
 				},
 			};
 		},
@@ -400,13 +434,13 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		isItem: (item: C) => boolean,
 	) {
 		const result: C[] = [];
-		while (true) {
+		do {
 			// Handle empty params
 			const item = parseFn();
 			if (!item || !isItem(item)) break;
 			result.push(item);
-			if (!optional(separator)) break;
-		}
+		} while (optional(separator));
+
 		return result;
 	}
 
@@ -562,4 +596,132 @@ export function findNodeAtIndex(node: BaseNode, index: number) {
 			else if (child.start <= index && child.end >= index) return child;
 	}
 	return node;
+}
+
+/**
+ * Builds a trie from the input map and
+ */
+export function createTrie<T extends string>(...map: T[]) {
+	const trie: TrieNode = {};
+
+	// Build the trie from the input map
+	for (const token of map) {
+		let current: TrieNode = trie;
+		for (const char of token) current = current[char] ??= {};
+		current[TrieMatch] = token;
+	}
+	return trie;
+}
+
+export function ScannerApi({ source }: { source: string }) {
+	const length = source.length;
+	let index = 0;
+	let line = 0;
+	let endLine = 0;
+
+	function tk<Kind extends string>(kind: Kind, consume: number): Token<Kind> {
+		return {
+			kind,
+			start: index,
+			end: (index += consume),
+			line,
+			source,
+		};
+	}
+
+	function matchWhile(match: MatchFn, consumed = 0) {
+		while (index + consumed < length && match(source[index + consumed]))
+			consumed++;
+		return consumed;
+	}
+
+	function matchString(
+		s: string,
+		match: (ch: string) => boolean,
+		consumed = 0,
+	) {
+		const start = index + consumed;
+
+		for (let i = 0; i < s.length; i++)
+			if (source[start + i] !== s[i]) return 0;
+
+		if (match(source.charAt(start + s.length))) return 0;
+
+		return consumed + s.length;
+	}
+
+	function matchEnclosed(match: MatchFn, escape?: MatchFn) {
+		let n = 1;
+		while (
+			index + n < length &&
+			(match(source[index + n]) || escape?.(source[index + n - 1]))
+		) {
+			if (source[index + n] === '\n') endLine++;
+			n++;
+		}
+		return n;
+	}
+
+	function error(message: string, consumed = 0, start = index) {
+		index += consumed;
+		return new CompilerError(message, {
+			start,
+			end: index,
+			line,
+			source,
+		});
+	}
+
+	function skipWhitespace() {
+		for (let ch = source[index]; index < length; ch = source[++index]) {
+			if (ch === '\n') endLine++;
+			else if (ch !== '\r' && ch !== ' ' && ch !== '\t') break;
+		}
+		line = endLine;
+	}
+
+	function backtrack(pos: Position) {
+		index = pos.end;
+		endLine = line = pos.line;
+	}
+
+	function matchRegex<T extends string>(
+		regex: RegExp,
+	): MapToToken<T> | undefined {
+		const m = regex.exec(source.slice(index));
+		const token = m && (m[1] ?? m[0]);
+		return token ? (tk(token, token.length) as MapToToken<T>) : undefined;
+	}
+
+	function createTrieMatcher<T extends string>(
+		map: readonly T[],
+		end: MatchFn,
+	) {
+		const trie = createTrie(...map);
+		return (): MapToToken<T> | undefined => {
+			let ch = source[index];
+			let consumed = 0;
+			let node = trie;
+			while ((node = node[ch])) {
+				consumed++;
+				ch = source[index + consumed];
+				if (node[TrieMatch] && end(ch))
+					return tk(node[TrieMatch], consumed) as MapToToken<T>;
+			}
+		};
+	}
+
+	return {
+		createTrieMatcher,
+		tk,
+		matchWhile,
+		matchString,
+		matchEnclosed,
+		matchRegex,
+		error,
+		skipWhitespace,
+		backtrack,
+		eof: () => index >= length,
+		current: (offset = 0) => source.charAt(index + offset),
+	};
 }

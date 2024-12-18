@@ -1,4 +1,4 @@
-///<amd-module name="@cxl/gbc.compiler/scanner.js"/>
+///<amd-module name="@cxl/gbc.cmd"/>
 import { ScannerApi, matchers } from '@cxl/gbc.sdk';
 
 //declare const console: { log(...m: unknown[]): void };
@@ -6,17 +6,7 @@ import { ScannerApi, matchers } from '@cxl/gbc.sdk';
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
 
-export const keywords = [
-	'done',
-	'export',
-	'import',
-	'loop',
-	'main',
-	'next',
-	'type',
-	'fn',
-	'var',
-] as const;
+export const keywords = ['fn', 'var', 'main'] as const;
 
 const {
 	alpha,

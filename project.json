@@ -4,6 +4,10 @@
 	},
 	"watch": {
 		"rules": {
+			"cmd": {
+				"files": ["cmd/*"],
+				"tasks": "npm run build --prefix cmd"
+			},
 			"compiler": {
 				"files": ["compiler/*"],
 				"tasks": "npm run build --prefix compiler"
