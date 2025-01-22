@@ -18,7 +18,7 @@ Comments start with the `#` character and end at the end of line.
 
 ### Identifiers
 
-Identifiers must start with an alphabetic character and might be followed by any number of alphanumeric characters or underscores.
+Identifiers must begin with a letter and can include alphanumeric characters or underscores.
 
 ### Keywords
 
@@ -121,11 +121,13 @@ String literals are immutable. All strings are utf8 encoded.
 
 #### Escape Sequences
 
-| \n | Newline |
-| \r | Carriage Report |
-| \t | Tab |
-| \' | Single Quote |
-| \0 | Null Character |
+| Symbol     | Description                    |
+| ---------- | ------------------------------ |
+| \n         | Newline                        |
+| \r         | Carriage Report                |
+| \t         | Tab                            |
+| \'         | Single Quote                   |
+| \0         | Null Character                 |
 | \u{NNNNNN} | Hexadecimal Unicode code point |
 
 ### Boolean literals
@@ -162,15 +164,15 @@ c[1] = 3
 
 All data structures are iterable:
 
-    [ a=1, b=2 ] >> each >> @.out
+    [ a=1, b=2 ] >> @.each >> @.out
 
 ### Variable Definition
 
-Variables act as named containers for data. You define a variable by giving it a name and assigning it a value using the equals sign (`=`). By default, these variables are immutable, meaning their values cannot be changed after they are first assigned. However, you can declare it as mutable using the `var` keyword.
+Variables act as named containers for data. You define a variable by giving it a name and assigning it a value using the equals sign (`=`). By default, these variables are immutable. You can declare it as mutable using the `var` keyword.
 
 The language also employs type inference. If you don't explicitly specify the type of data a variable will hold, the compiler will automatically determine it based on the value you assign during declaration.
 
-All variables must be initialized with a value when they are declared. This helps to prevent errors caused by using undefined variables.
+All variables must be initialized with a value when they are declared.
 
 ```
 # Define a constant with name 'constant', type 'string', and value 'value'
@@ -326,9 +328,7 @@ factorial(5)    # Output: 120
 
 #### `catch` Block
 
-The `catch` block is a construct used within the stream pipeline to intercept errors. It allows you to define custom behavior when errors occur.
-
-It can emit new values to replace the error and continue processing the stream.
+The `catch` block in a stream pipeline intercepts errors and defines custom error-handling behavior. It can emit new values to replace the error and continue processing the stream.
 
 The `"done"` keyword can be used to signal completion of the stream. This prematurely terminates the stream processing due to the encountered error.
 

@@ -6,15 +6,15 @@
 	"homepage": "https://github.com/giancarlo/gbc",
 	"description": "The GB Compiler (GBC) framework is a modular toolset designed to simplify the creation of compilers, particularly for languages targeting JavaScript and WebAssembly. It provides essential components for syntax parsing, semantic analysis, and code generation, enabling developers to focus on high-level logic while relying on built-in low-level functionality.",
 	"devDependencies": {
-		"@cxl/build": "^0.2.0",
+		"@cxl/build": "^0.2.1",
 		"@cxl/docgen": "^0.1.0",
 		"@cxl/program": "^0.0.3",
 		"@cxl/rx": "^0.8.1",
 		"@cxl/spec": "^0.3.1",
 		"@cxl/tester": "^0.2.0",
-		"@typescript-eslint/eslint-plugin": "^8.4.0",
-		"@typescript-eslint/parser": "^8.5.0",
-		"typescript": "^5.6.2"
+		"eslint": "^9.18.0",
+		"typescript": "^5.7.3",
+		"typescript-eslint": "^8.20.0"
 	},
 	"scripts": {
 		"build": "npm run build package docs --prefix compiler"
