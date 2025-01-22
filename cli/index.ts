@@ -1,10 +1,11 @@
+#!/usr/bin/env node
 ///<amd-module name="@cxl/gbc.cli"/>
-import { readFileSync /*writeFileSync, existsSync*/ } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync /* existsSync*/ } from 'fs';
 import { basename, extname, join, resolve } from 'path';
 
 import { parseParameters, program } from '@cxl/program';
 import { Program } from '../compiler';
-import { ast } from '../compiler/debug';
+//import { ast } from '../compiler/debug';
 import { formatError } from '../sdk';
 
 export interface Project {
@@ -32,29 +33,29 @@ export default program('gbc', () => {
 
 	if (options.$) {
 		const program = Program();
-		const outdir = options.outdir ? resolve(options.outdir) : process.cwd();
 		let hasErrors = false;
 
 		for (const srcFile of options.$) {
 			const resolvedFile = resolve(srcFile);
-			const ext = extname(srcFile);
-			const src = readFileSync(srcFile, 'utf8');
+			const src = readFileSync(resolvedFile, 'utf8');
 			const out = program.compile(src);
 
 			if (out.errors.length) {
 				hasErrors = true;
-				console.log(resolvedFile);
-				for (const e of out.errors) console.log(formatError(e));
+				for (const e of out.errors) console.error(formatError(e));
 			} else {
-				const outFile = join(
-					outdir,
-					`${basename(resolvedFile, ext)}.js`,
-				);
-				console.log(outFile);
-				console.log(ast(out.ast));
-				console.log(out.output);
-
-				//console.log('Valid: ', WebAssembly.validate(out.output));
+				if (options.outdir) {
+					const ext = extname(srcFile);
+					const outdir = options.outdir
+						? resolve(options.outdir)
+						: process.cwd();
+					const outFile = join(
+						outdir,
+						`${basename(resolvedFile, ext)}.js`,
+					);
+					mkdirSync(outdir, { recursive: true });
+					writeFileSync(outFile, out.output);
+				} else console.log(out.output);
 			}
 		}
 		if (hasErrors) process.exitCode = 1;

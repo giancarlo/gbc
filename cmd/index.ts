@@ -52,8 +52,8 @@ export function scan(source: string) {
 				return la === '='
 					? tk('==', 2)
 					: la === '>'
-					? tk('=>', 2)
-					: tk('=', 1);
+						? tk('=>', 2)
+						: tk('=', 1);
 			case '|':
 				return la === '|' ? tk('||', 2) : tk('|', 1);
 			case '&':
@@ -62,16 +62,16 @@ export function scan(source: string) {
 				return la === '='
 					? tk('>=', 2)
 					: la === '>'
-					? tk('>>', 2)
-					: tk('>', 1);
+						? tk('>>', 2)
+						: tk('>', 1);
 			case '<':
 				return la === '='
 					? tk('<=', 2)
 					: la === '<'
-					? tk('<<', 2)
-					: la === ':'
-					? tk('<:', 2)
-					: tk('<', 1);
+						? tk('<<', 2)
+						: la === ':'
+							? tk('<:', 2)
+							: tk('<', 1);
 			case '!':
 				return la === '=' ? tk('!=', 2) : tk('!', 1);
 			case '+':

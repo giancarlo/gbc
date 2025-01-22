@@ -630,7 +630,10 @@ export function ScannerApi({ source }: { source: string }) {
 	}
 
 	function matchWhile(match: MatchFn, consumed = 0) {
-		while (index + consumed < length && match(source[index + consumed]))
+		while (
+			index + consumed < length &&
+			match(source.charAt(index + consumed))
+		)
 			consumed++;
 		return consumed;
 	}
@@ -643,7 +646,7 @@ export function ScannerApi({ source }: { source: string }) {
 		const start = index + consumed;
 
 		for (let i = 0; i < s.length; i++)
-			if (source[start + i] !== s[i]) return 0;
+			if (source.charAt(start + i) !== s[i]) return 0;
 
 		if (match(source.charAt(start + s.length))) return 0;
 
@@ -654,9 +657,10 @@ export function ScannerApi({ source }: { source: string }) {
 		let n = 1;
 		while (
 			index + n < length &&
-			(match(source[index + n]) || escape?.(source[index + n - 1]))
+			(match(source.charAt(index + n)) ||
+				escape?.(source.charAt(index + n - 1)))
 		) {
-			if (source[index + n] === '\n') endLine++;
+			if (source.charAt(index + n) === '\n') endLine++;
 			n++;
 		}
 		return n;
