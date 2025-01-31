@@ -30,7 +30,10 @@ const {
 const identFirst = (ch: string) => ch === '_' || alpha(ch);
 const notIdent = (ch: string) => ch === undefined || !ident(ch);
 const notEol = (ch: string) => ch !== '\n';
-const stringCh = (ch: string) => ch !== "'";
+
+const stringCh = (ch: string) => ch !== "'"; // && ch !== '{';
+/*const stringEscape = (ch: string, cur: string) =>
+	(cur === "'" && ch === '\\') || (cur === '{' && ch !== '$');*/
 
 export function scan(source: string) {
 	const {
@@ -108,9 +111,14 @@ export function scan(source: string) {
 			case ']':
 				return tk(ch, 1);
 			case "'": {
-				const n = matchEnclosed(stringCh, stringEscape);
-				if (current(n) !== "'") throw error('Unterminated string', n);
-				return tk('string', n + 1);
+				let n = matchEnclosed(stringCh, stringEscape);
+				const end = current(n);
+				if (end === '') throw error('Unterminated string', n);
+				else if (end === "'") n += 1;
+				// We have an embedded expression
+				else n -= 1;
+
+				return tk('string', n);
 			}
 			case '#': {
 				const n = matchWhile(notEol, 1);

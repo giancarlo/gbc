@@ -148,10 +148,11 @@ export function compile(node: Node): string {
 			if (symbol.kind !== 'variable') throw 'Invalid node';
 			const isVar =
 				symbol.kind === 'variable' && symbol.flags & Flags.Variable;
+			const isExport = symbol.flags & Flags.Export;
 
-			return `${isVar ? 'let' : 'const'} ${symbol.name}=${compile(
-				node.right,
-			)}`;
+			return `${isExport ? 'export ' : ''}${isVar ? 'let' : 'const'} ${
+				symbol.name
+			}=${compile(node.right)}`;
 		}
 		case 'fn': {
 			const parameters =
@@ -171,6 +172,7 @@ export function compile(node: Node): string {
 		case 'macro':
 			return node.value;
 		case 'comment':
+		case 'type':
 			return '';
 		default:
 			throw new CompilerError(`Unexpected "${node.kind}"`, node);

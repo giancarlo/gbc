@@ -36,6 +36,7 @@ export type Type = SymbolMap['type' | 'function'];
 
 export const ScopeOwner = Symbol('ScopeOwner');
 export const EmptyFunction: SymbolMap['function'] = {
+	name: '__empty',
 	kind: 'function',
 	flags: Flags.None,
 };
@@ -92,6 +93,7 @@ export const BaseTypes: Record<string, SymbolMap['type']> = {
 	void: { name: 'void', kind: 'type', flags: 0 },
 	true: { name: 'true', kind: 'type', flags: 0 },
 	false: { name: 'false', kind: 'type', flags: 0 },
+	unknown: { name: 'unknown', kind: 'type', flags: 0 },
 };
 
 export function TypesSymbolTable() {

@@ -4,6 +4,7 @@ import { ProgramSymbolTable, TypesSymbolTable } from './symbol-table.js';
 import { parse } from './parser.js';
 import { scan } from './scanner.js';
 import { compiler } from './compiler.js';
+import { compileTypes } from './compiler-types.js';
 import { checker } from './checker.js';
 import type { Node } from './node.js';
 
@@ -47,6 +48,7 @@ export function Program(options?: ProgramOptions) {
 	return {
 		compile,
 		compileAst,
+		compileTypes,
 		options,
 		parse: parser,
 		symbolTable,

@@ -1,13 +1,11 @@
 ///<amd-module name="@cxl/gbc.compiler/parser-expression.js"/>
 import { ParserApi, UnaryNode, Token, text, parserTable } from '@cxl/gbc.sdk';
-import { parseType } from './parser-type.js';
 import {
 	EmptyFunction,
 	ScopeOwner,
 	Symbol,
 	SymbolMap,
 	SymbolTable,
-	TypesSymbolTable,
 	Flags,
 } from './symbol-table.js';
 import { BlockFlags, Node, NodeMap } from './node.js';
@@ -16,15 +14,13 @@ import type { ScannerToken } from './scanner.js';
 export function parseExpression(
 	api: ParserApi<ScannerToken>,
 	symbolTable: SymbolTable,
-	typesTable: TypesSymbolTable,
+	typeParser: () => Node | undefined,
 ) {
-	const typeParser = parseType(api, typesTable);
 	const { current, error, expect, expectNode, optional, parseList } = api;
 
 	function expectType() {
 		return expectNode(typeParser(), 'Expected type expression');
 	}
-
 	function parameter(): NodeMap['parameter'] | undefined {
 		const ident = optional('ident');
 		if (!ident) return;

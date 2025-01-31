@@ -15,7 +15,7 @@ export enum BlockFlags {
 export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[]; scope: Scope };
-	type: { children: [Node] };
+	type: { children: [Node, Node]; symbol: Symbol };
 	typeident: { symbol: Type };
 	done: void;
 	ident: { symbol: Symbol };

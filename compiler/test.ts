@@ -15,6 +15,7 @@ import {
 } from './symbol-table.js';
 import { scan } from './scanner.js';
 import { parseExpression } from './parser-expression.js';
+import { parseType } from './parser-type.js';
 import { RUNTIME } from './compiler.js';
 import { ast } from './debug.js';
 import { checker } from './checker.js';
@@ -56,7 +57,8 @@ export default spec('compiler', s => {
 			const api = ParserApi(scan);
 			api.start(src);
 			const scope = st.push();
-			const expr = parseExpression(api, st, tt);
+			const typeParser = parseType(api, tt);
+			const expr = parseExpression(api, st, typeParser);
 			const children = api.parseUntilKind(expr, 'eof');
 			const result = {
 				root: {
@@ -94,7 +96,8 @@ export default spec('compiler', s => {
 			const api = ParserApi(scan);
 			api.start(src);
 			const scope = st.push();
-			const expr = parseExpression(api, st, tt);
+			const typeParser = parseType(api, tt);
+			const expr = parseExpression(api, st, typeParser);
 			st.pop(scope);
 			return {
 				root: {

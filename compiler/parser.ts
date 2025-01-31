@@ -1,11 +1,12 @@
 ///<amd-module name="@cxl/gbc.compiler/parser.js"/>
-import { ParserApi } from '@cxl/gbc.sdk';
+import { ParserApi, Token, text } from '@cxl/gbc.sdk';
 
 import { parseExpression } from './parser-expression.js';
+import { parseType } from './parser-type.js';
 import { Flags, SymbolTable, TypesSymbolTable } from './symbol-table.js';
 
 import type { ScannerToken } from './scanner.js';
-import type { Node } from './node.js';
+import type { Node, NodeMap } from './node.js';
 
 export type RootNode = ReturnType<typeof parse>;
 
@@ -17,22 +18,50 @@ export function parse(
 	const {
 		current,
 		expect,
+		expectNode,
 		expectNodeKind,
 		optional,
 		node,
 		parseUntilKind,
 		next,
 	} = api;
-	const expression = parseExpression(api, symbolTable, typesTable);
+	const typeParser = parseType(api, typesTable);
+	const expression = parseExpression(api, symbolTable, typeParser);
 
 	function markExported(n: Node) {
 		if (n.kind === 'ident' && n.symbol) n.symbol.flags |= Flags.Export;
 		else throw 'Invalid Symbol';
 	}
 
+	function typeIdent(tk: Token<'ident'>) {
+		const name = text(tk);
+		const symbol = typesTable.set(name, { name, kind: 'type', flags: 0 });
+		return {
+			...tk,
+			kind: 'typeident',
+			symbol,
+		} as const;
+	}
+
+	function typeDefinition(node: Token<'type'>) {
+		const name = typeIdent(expect('ident'));
+		expect('=');
+		const def = expectNode(typeParser(), 'Expected type definition');
+		const result: NodeMap['type'] = {
+			...node,
+			children: [name, def],
+			symbol: name.symbol,
+		};
+		return result;
+	}
+
 	function definition() {
 		const isExport = optional('export');
-		const expr = expectNodeKind(expression(), 'def', 'Expected definition');
+		const isType = optional('type');
+
+		const expr = isType
+			? typeDefinition(isType)
+			: expectNodeKind(expression(), 'def', 'Expected definition');
 
 		if (isExport) {
 			markExported(expr.children[0]);

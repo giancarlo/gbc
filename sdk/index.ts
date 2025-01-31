@@ -653,12 +653,18 @@ export function ScannerApi({ source }: { source: string }) {
 		return consumed + s.length;
 	}
 
-	function matchEnclosed(match: MatchFn, escape?: MatchFn) {
+	function matchEnclosed(
+		match: MatchFn,
+		escape?: (previous: string, current: string) => void,
+	) {
 		let n = 1;
 		while (
 			index + n < length &&
 			(match(source.charAt(index + n)) ||
-				escape?.(source.charAt(index + n - 1)))
+				escape?.(
+					source.charAt(index + n - 1),
+					source.charAt(index + n),
+				))
 		) {
 			if (source.charAt(index + n) === '\n') endLine++;
 			n++;

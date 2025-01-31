@@ -5,7 +5,7 @@ import { basename, extname, join, resolve } from 'path';
 
 import { parseParameters, program } from '@cxl/program';
 import { Program } from '../compiler';
-//import { ast } from '../compiler/debug';
+import { ast } from '../compiler/debug';
 import { formatError } from '../sdk';
 
 export interface Project {
@@ -22,6 +22,10 @@ export default program('gbc', () => {
 			outdir: {
 				help: 'Output directory',
 				type: 'string',
+			},
+			types: {
+				help: 'Output Typescript declaration file',
+				type: 'boolean',
 			},
 			wasm: {
 				help: 'Target WebAssembly',
@@ -55,6 +59,17 @@ export default program('gbc', () => {
 					);
 					mkdirSync(outdir, { recursive: true });
 					writeFileSync(outFile, out.output);
+
+					if (options.types) {
+						const dts = program.compileTypes(out.ast);
+						const dtsFile = join(
+							outdir,
+							`${basename(resolvedFile, ext)}.d.ts`,
+						);
+						console.log(ast(out.ast));
+						console.log(dts);
+						writeFileSync(dtsFile, dts);
+					}
 				} else console.log(out.output);
 			}
 		}
