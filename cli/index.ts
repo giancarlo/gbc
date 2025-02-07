@@ -3,7 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync /* existsSync*/ } from 'fs';
 import { basename, extname, join, resolve } from 'path';
 
-import { parseParameters, program } from '@cxl/program';
+import { parseParameters, program } from './program';
 import { Program } from '../compiler';
 import { ast } from '../compiler/debug';
 import { formatError } from '../sdk';
@@ -12,9 +12,9 @@ export interface Project {
 	files: string[];
 }
 
-declare const WebAssembly: {
+/*declare const WebAssembly: {
 	validate(buffer: ArrayBuffer): boolean;
-};
+};*/
 
 export default program('gbc', () => {
 	const options = parseParameters(

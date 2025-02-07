@@ -35,7 +35,10 @@ export type BaseNodeMap = {
 		name: Node;
 		type?: Node;
 	};
-	macro: { value: string };
+	macro: {
+		children: [Node];
+		name: Node;
+	};
 	def: {
 		children: [NodeMap['ident'], Node] | [NodeMap['ident'], Node, Node];
 		left: NodeMap['ident'];

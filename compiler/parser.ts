@@ -63,10 +63,28 @@ export function parse(
 			? typeDefinition(isType)
 			: expectNodeKind(expression(), 'def', 'Expected definition');
 
-		if (isExport) {
-			markExported(expr.children[0]);
-		}
+		if (isExport) markExported(expr.children[0]);
+
 		return expr;
+	}
+
+	function macro(token: Token<'macro'>): NodeMap['macro'] {
+		next();
+		const nameTk = expect('ident');
+		const macroName = text(nameTk);
+		const symbol = symbolTable.set(macroName, {
+			name: macroName,
+			kind: 'macro',
+			flags: 0,
+			value: '',
+		});
+		const name = { ...nameTk, symbol };
+
+		return {
+			...token,
+			name,
+			children: [name],
+		};
 	}
 
 	function topStatement() {
@@ -84,7 +102,10 @@ export function parse(
 					statements: children,
 				};
 			});
-		}
+		} else if (token.kind === 'comment') {
+			next();
+			return token;
+		} else if (token.kind === 'macro') return macro(token);
 
 		return definition();
 	}

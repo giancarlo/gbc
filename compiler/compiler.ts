@@ -170,7 +170,7 @@ export function compile(node: Node): string {
 				node.children[1] ? compile(node.children[1]) : ''
 			})`;
 		case 'macro':
-			return node.value;
+		//	return node.value;
 		case 'comment':
 		case 'type':
 			return '';

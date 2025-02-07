@@ -271,13 +271,13 @@ export function parseExpression(
 							right,
 						);
 
-					if (propSymbol.kind === 'macro')
+					/*if (propSymbol.kind === 'macro')
 						return {
 							...tk,
 							kind: 'macro',
 							end: right.end,
 							value: propSymbol.value,
-						};
+						};*/
 
 					return {
 						...tk,

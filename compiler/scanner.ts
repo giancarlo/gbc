@@ -16,6 +16,7 @@ export const keywords = [
 	'type',
 	'fn',
 	'var',
+	'macro',
 ] as const;
 
 const {

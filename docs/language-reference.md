@@ -151,14 +151,14 @@ By default data is immutable. The 'var' keyword can be used to specify variable 
 c = [
     var field: boolean | string = true,
     2
-];
+]
 
 # Valid
-c[0] = 'string';
-c.field = false;
+c[0] = 'string'
+c.field = false
 
 # Results in compiler error
-c.field = 10;
+c.field = 10
 c[1] = 3
 ```
 
@@ -179,7 +179,7 @@ All variables must be initialized with a value when they are declared.
 constant = 'value'
 
 # 'variable' will be a variable with value '10.0' and type 'float'
-var variable = 10.0;
+var variable = 10.0
 ```
 
 ## Types
@@ -206,10 +206,10 @@ var variable = 10.0;
 ### String Types
 
     # var str can contain any string
-    var str: string = '';
+    var str: string = ''
 
     # Variable name can only contain the values 'foo' or 'bar'.
-    var name: 'foo' | 'bar' = 'bar';
+    var name: 'foo' | 'bar' = 'bar'
 
 ### Data Types
 
@@ -229,7 +229,7 @@ var variable = 10.0;
 
 ### Type Parameters
 
-    type Fn<T> = (T): Void;
+    type Fn<T> = (T): Void
 
 ### Other Types
 
@@ -278,22 +278,22 @@ add(1, 2)       # Positional arguments
 add(b = 1, a = 2) # Named arguments
 ```
 
--   Both calls to `add` return `3`, but the second call uses named arguments for clarity.
+Both calls to `add` return `3`, but the second call uses named arguments for clarity.
 
 ### Default Parameters
 
--   Functions can have default values for parameters, which are used if no argument is provided for that parameter.
+Functions can have default values for parameters, which are used if no argument is provided for that parameter.
 
 ```ts
 greet = fn(name: string = "World"): string {
-    next "Hello, " + name + "!";
+    next "Hello, " + name + "!"
 }
 
 greet()          # Output: "Hello, World!"
 greet("Alice")   # Output: "Hello, Alice!"
 ```
 
--   The `greet` function has a default parameter `name` with a value of `"World"`.
+The `greet` function has a default parameter `name` with a value of `"World"`.
 
 ### Closures
 
@@ -301,28 +301,28 @@ Functions can capture variables from their surrounding scope, creating closures.
 
 ```ts
 makeCounter = fn {
-    var count = 0;
+    var count = 0
     next { count += 1 }
 }
 
-counter = makeCounter();
+counter = makeCounter()
 counter()    # Output: 1
 counter()    # Output: 2
 ```
 
 ### Recursion
 
--   Functions can call themselves recursively.
+Functions can call themselves recursively.
 
 ```ts
 factorial = fn(n: int): int {
-    next (n <= 1) ? 1 : n * factorial(n - 1);
+    next (n <= 1) ? 1 : n * factorial(n - 1)
 }
 
 factorial(5)    # Output: 120
 ```
 
--   The `factorial` function calculates the factorial of a number using recursion.
+The `factorial` function calculates the factorial of a number using recursion.
 
 ### Error Handling
 
@@ -346,8 +346,8 @@ The `$` variable will be available inside the catch block and it will contain th
 1 >> { $ + $ } >> @.out
 ```
 
--   This block adds its input to itself.
--   Output: `2`
+This block adds its input to itself.
+Output: `2`
 
 ### Emitting Values
 
@@ -355,21 +355,21 @@ Blocks have the ability to emit multiple values over time, using the `next` keyw
 
 ### Emitting Values with `next`
 
--   The `next` keyword is used within a block to emit a value to the next function or code block in the chain.
--   A block can emit multiple values by calling `next` multiple times.
+The `next` keyword is used within a block to emit a value to the next function or code block in the chain.
+A block can emit multiple values by calling `next` multiple times.
 
 ```ts
 emitValues = {
-    next(1);
-    next(2);
-    next(3);
-    done();
+    next(1)
+    next(2)
+    next(3)
+    done()
 }
 
 emitValues() >> @.out
 ```
 
--   This block emits the values `1`, `2`, and `3` before calling `done` to signal completion.
+This block emits the values `1`, `2`, and `3` before calling `done` to signal completion.
 
 ### Completion
 
@@ -389,18 +389,18 @@ This is equivalent to using the `next` keyword for each expression.
 
 #### Comma Operator
 
--   The comma operator `,` separates expressions within a code block.
--   Each expression separated by a comma is evaluated, and its result is emitted as a separate value.
+The comma operator `,` separates expressions within a code block.
+Each expression separated by a comma is evaluated, and its result is emitted as a separate value.
 
 ```ts
 2 >> { $ / 2, $ * 2 } >> @.out
 ```
 
--   This code emits `1` (2 divided by 2) and `4` (2 multiplied by 2).
+This code emits `1` (2 divided by 2) and `4` (2 multiplied by 2).
 
 ### Equivalent `next` Usage
 
--   The above example is equivalent to using the `next` keyword for each expression:
+The above example is equivalent to using the `next` keyword for each expression:
 
 ```ts
 operation = fn {
@@ -414,58 +414,58 @@ operation = fn {
 
 ## Generics
 
--   Generics are defined using angle brackets `<>` with a type parameter.
--   The type parameter can be constrained to a certain type or range of types using the `extends` keyword.
+Generics are defined using angle brackets `<>` with a type parameter.
+The type parameter can be constrained to a certain type or range of types using the `extends` keyword.
 
 ```ts
 add = fn<T extends int>(a: T, b: T): T {
-    next a + b;
+    next a + b
 }
 
 add(1, 2)    # Output: 3
 ```
 
--   The `add` function uses a generic type `T` that extends `int`. It can add two integers of the same type.
+The `add` function uses a generic type `T` that extends `int`. It can add two integers of the same type.
 
 ### Generic Constraints
 
--   Generics can be constrained to specific types or interfaces using the `extends` keyword.
+Generics can be constrained to specific types or interfaces using the `extends` keyword.
 
 ```ts
 display = fn<T extends string | int>(value: T): void {
-    @.out(value.toString());
+    @.out(value.toString())
 }
 
 display("Hello")  # Output: "Hello"
 display(123)      # Output: "123"
 ```
 
--   The `display` function accepts a parameter `value` of a generic type `T` that extends `string` or `int`. It can display either a string or an integer.
+The `display` function accepts a parameter `value` of a generic type `T` that extends `string` or `int`. It can display either a string or an integer.
 
 ### Multiple Type Parameters
 
--   Functions can use multiple type parameters.
+Functions can use multiple type parameters.
 
 ```ts
 pair = fn<T, U>(first: T, second: U): (T, U) {
-    (first, second);
+    (first, second)
 }
 
 # Outputs 1 and 'one'
 pair(1, "one") >> @.out
 ```
 
--   The `pair` function uses two generic type parameters `T` and `U` to create a sequence from the two input values.
+The `pair` function uses two generic type parameters `T` and `U` to create a sequence from the two input values.
 
 ### Type Inference
 
--   The compiler can often infer the generic type based on the function arguments, so you may not need to explicitly specify the type.
+The compiler can often infer the generic type based on the function arguments, so you may not need to explicitly specify the type.
 
 Example:
 
 ```ts
 identity = fn<T>(value: T): T {
-    next value;
+    next value
 }
 
 identity(42)       # Output: 42
@@ -480,7 +480,7 @@ identity("Hello")  # Output: "Hello"
 
 ```ts
 max = fn<T extends Comparable<T>>(a: T, b: T): T {
-    next a.compareTo(b) > 0 ? a : b;
+    next a.compareTo(b) > 0 ? a : b
 }
 
 max(5, 10)   # Output: 10
@@ -503,7 +503,7 @@ Errors are data and are part of the function return type. Errors implement the E
 
 ```ts
     open = (filename: string) {
-    	try { f = @.file(filename); } # f type is File | Error
+    	try { f = @.file(filename) } # f type is File | Error
     }
 
     open('file') >> catch { = open('file2') } >> {
@@ -526,10 +526,51 @@ double = { $ * 2 }
 -   This chain increments the input by 1 and then doubles the result.
 -   Output: `8`
 
+## Macros
+
+Macros allow compile-time code generation. A macro is defined as a special function that takes parameters and has read-only access to the AST node of the statement immediately following it. The macro's body determines how the given AST node is positioned within the generated code.
+
+### Defining a Macro
+
+A macro is declared using the `macro` keyword. It can accept parameters in addition to the AST node it modifies.
+
+```
+macro log(fn: @.ast.Node['fn'], message: string) {
+    'Starting: ${message}` >> @.out
+	(fn)()
+    'Finished: ${message}` >> @.out
+}
+```
+
+### Using a Macro
+
+Macros are applied to statements using the `#` syntax:
+
+```
+#log("Computation")
+fn compute() => 42
+```
+
+### Expansion at Compile-Time
+
+```
+'Starting: Computation` >> @.out
+(fn compute() => 42)()
+'Finished: Computation` >> @.out
+```
+
+### Behavior
+
+-   The macro receives the AST node of the statement following it.
+-   It can insert the AST node anywhere within its generated code.
+-   It cannot modify the AST node itself.
+-   Macros **must return valid code**, ensuring correctness.
+
 ## Statements
 
 ### loop
 
 Emits void indefinetely.
 
-    var i=0; loop { i++ } >> @.out;
+    var i=0
+    loop { i++ } >> @.out
