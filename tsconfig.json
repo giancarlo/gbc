@@ -3,7 +3,7 @@
 		"incremental": true,
 		"strict": true,
 		"target": "esnext",
-		"module": "commonjs",
+		"module": "es2022",
 		"lib": ["ESNext"],
 		"experimentalDecorators": true,
 		"sourceMap": false,
@@ -14,7 +14,7 @@
 		"skipLibCheck": true,
 		"typeRoots": [],
 		"paths": {
-			"@cxl/gbc.*": ["./*"]
+			"gbc/*": ["./*"]
 		}
 	},
 	"files": []

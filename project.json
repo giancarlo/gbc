@@ -27,6 +27,14 @@
 			"sdk": {
 				"files": ["sdk/*"],
 				"tasks": "npm run build --prefix sdk"
+			},
+			"html": {
+				"files": ["html/*"],
+				"tasks": "npm run build --prefix html"
+			},
+			"markdown": {
+				"files": ["markdown/*"],
+				"tasks": "npm run build --prefix markdown"
 			}
 		}
 	}

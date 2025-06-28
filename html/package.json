@@ -1,0 +1,14 @@
+{
+	"name": "@cxl/gbc.html",
+	"version": "0.0.1",
+	"bugs": "https://github.com/giancarlo/gbc/issues",
+	"homepage": "https://github.com/giancarlo/gbc/tree/main/html",
+	"description": "HTML Parser",
+	"type": "module",
+	"license": "UNLICENSED",
+	"scripts": {
+		"build": "cxl-build",
+		"test": "npm run build test"
+	},
+	"dependencies": {}
+}

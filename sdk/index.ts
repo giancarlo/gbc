@@ -1,5 +1,3 @@
-///<amd-module name="@cxl/gbc.sdk"/>
-
 export interface Position {
 	start: number;
 	end: number;
@@ -35,8 +33,8 @@ export type Operator<Kind extends keyof Map, Map extends NodeMap> =
 			prefix?(node: Token<Kind>): MapNode<Map>;
 	  }
 	| {
-			prefix(node: Token<Kind>): MapNode<Map>;
 			infix?: never;
+			prefix(node: Token<Kind>): MapNode<Map>;
 	  };
 
 type NodeWithChildren<Map extends NodeMap, Children = MapNode<Map>[]> = {
@@ -299,6 +297,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		parseListWithEmpty,
 		start,
 		backtrack,
+		parseWhile,
 	};
 
 	function start(src: string) {
@@ -350,6 +349,17 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 
 	function skipUntil(condition: () => boolean) {
 		while (!condition()) next();
+	}
+
+	function parseWhile<C>(parser: () => C | undefined) {
+		const result: C[] = [];
+		while (token?.kind !== 'eof') {
+			const node = parser();
+			if (node) result.push(node);
+			else break;
+		}
+
+		return result;
 	}
 
 	function parseUntil<C>(
@@ -629,6 +639,15 @@ export function ScannerApi({ source }: { source: string }) {
 		};
 	}
 
+	function matchUntil(match: MatchFn, consumed = 0) {
+		while (
+			index + consumed < length &&
+			!match(source.charAt(index + consumed))
+		)
+			consumed++;
+		return consumed;
+	}
+
 	function matchWhile(match: MatchFn, consumed = 0) {
 		while (
 			index + consumed < length &&
@@ -640,7 +659,7 @@ export function ScannerApi({ source }: { source: string }) {
 
 	function matchString(
 		s: string,
-		match: (ch: string) => boolean,
+		matchEnd?: (ch: string) => boolean,
 		consumed = 0,
 	) {
 		const start = index + consumed;
@@ -648,23 +667,24 @@ export function ScannerApi({ source }: { source: string }) {
 		for (let i = 0; i < s.length; i++)
 			if (source.charAt(start + i) !== s[i]) return 0;
 
-		if (match(source.charAt(start + s.length))) return 0;
+		if (matchEnd?.(source.charAt(start + s.length))) return 0;
 
 		return consumed + s.length;
 	}
 
+	/**
+	 * Attempts to match a sequence of characters enclosed according to the provided match function,
+	 * supporting optional escape logic for handling special character sequences within the enclosure.
+	 * Useful for parsing strings or blocks with delimiters (like quotes or brackets) where escapes may appear.
+	 */
 	function matchEnclosed(
 		match: MatchFn,
-		escape?: (previous: string, current: string) => void,
+		escape?: (index: number) => void,
+		n = 1,
 	) {
-		let n = 1;
 		while (
 			index + n < length &&
-			(match(source.charAt(index + n)) ||
-				escape?.(
-					source.charAt(index + n - 1),
-					source.charAt(index + n),
-				))
+			(match(source.charAt(index + n)) || escape?.(n))
 		) {
 			if (source.charAt(index + n) === '\n') endLine++;
 			n++;
@@ -695,12 +715,13 @@ export function ScannerApi({ source }: { source: string }) {
 		endLine = line = pos.line;
 	}
 
-	function matchRegex<T extends string>(
-		regex: RegExp,
-	): MapToToken<T> | undefined {
-		const m = regex.exec(source.slice(index));
-		const token = m && (m[1] ?? m[0]);
-		return token ? (tk(token, token.length) as MapToToken<T>) : undefined;
+	function matchWhileRegex(regex: RegExp, consumed = 0) {
+		while (
+			index + consumed < length &&
+			regex.test(source.charAt(index + consumed))
+		)
+			consumed++;
+		return consumed;
 	}
 
 	function createTrieMatcher<T extends string>(
@@ -725,13 +746,15 @@ export function ScannerApi({ source }: { source: string }) {
 		createTrieMatcher,
 		tk,
 		matchWhile,
+		matchUntil,
 		matchString,
 		matchEnclosed,
-		matchRegex,
+		matchWhileRegex,
 		error,
+		skip: (offset = 1) => (index += offset),
 		skipWhitespace,
 		backtrack,
-		eof: () => index >= length,
+		eof: (offset = 0) => index + offset >= length,
 		current: (offset = 0) => source.charAt(index + offset),
 	};
 }
