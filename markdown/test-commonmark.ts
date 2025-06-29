@@ -211,7 +211,7 @@ export default [
 	},
 	{
 		md: '***\n---\n___\n',
-		html: '<hr />\n<hr />\n<hr />\n',
+		html: '<hr /><hr /><hr />\n',
 		section: 'Thematic breaks',
 	},
 	{
@@ -231,7 +231,7 @@ export default [
 	},
 	{
 		md: ' ***\n  ***\n   ***\n',
-		html: '<hr />\n<hr />\n<hr />\n',
+		html: '<hr /><hr /><hr />\n',
 		section: 'Thematic breaks',
 	},
 	{
@@ -281,22 +281,22 @@ export default [
 	},
 	{
 		md: '- foo\n***\n- bar\n',
-		html: '<ul><li>foo</li></ul><hr />\n<ul><li>bar</li></ul>\n',
+		html: '<ul><li>foo</li></ul><hr /><ul><li>bar</li></ul>\n',
 		section: 'Thematic breaks',
 	},
 	{
 		md: 'Foo\n***\nbar\n',
-		html: '<p>Foo</p>\n<hr />\n<p>bar</p>\n',
+		html: '<p>Foo</p><hr /><p>bar</p>\n',
 		section: 'Thematic breaks',
 	},
 	{
 		md: 'Foo\n---\nbar\n',
-		html: '<h2>Foo</h2>\n<p>bar</p>\n',
+		html: '<h2>Foo</h2><p>bar</p>\n',
 		section: 'Thematic breaks',
 	},
 	{
 		md: '* Foo\n* * *\n* Bar\n',
-		html: '<ul><li>Foo</li></ul><hr />\n<ul><li>Bar</li></ul>\n',
+		html: '<ul><li>Foo</li></ul><hr /><ul><li>Bar</li></ul>\n',
 		section: 'Thematic breaks',
 	},
 	{
@@ -306,7 +306,7 @@ export default [
 	},
 	{
 		md: '# foo\n## foo\n### foo\n#### foo\n##### foo\n###### foo\n',
-		html: '<h1>foo</h1>\n<h2>foo</h2>\n<h3>foo</h3>\n<h4>foo</h4>\n<h5>foo</h5>\n<h6>foo</h6>\n',
+		html: '<h1>foo</h1><h2>foo</h2><h3>foo</h3><h4>foo</h4><h5>foo</h5><h6>foo</h6>\n',
 		section: 'ATX headings',
 	},
 	{
@@ -336,7 +336,7 @@ export default [
 	},
 	{
 		md: ' ### foo\n  ## foo\n   # foo\n',
-		html: '<h3>foo</h3>\n<h2>foo</h2>\n<h1>foo</h1>\n',
+		html: '<h3>foo</h3><h2>foo</h2><h1>foo</h1>\n',
 		section: 'ATX headings',
 	},
 	{
@@ -351,12 +351,12 @@ export default [
 	},
 	{
 		md: '## foo ##\n  ###   bar    ###\n',
-		html: '<h2>foo</h2>\n<h3>bar</h3>\n',
+		html: '<h2>foo</h2><h3>bar</h3>\n',
 		section: 'ATX headings',
 	},
 	{
 		md: '# foo ##################################\n##### foo ##\n',
-		html: '<h1>foo</h1>\n<h5>foo</h5>\n',
+		html: '<h1>foo</h1><h5>foo</h5>\n',
 		section: 'ATX headings',
 	},
 	{
@@ -376,27 +376,27 @@ export default [
 	},
 	{
 		md: '### foo \\###\n## foo #\\##\n# foo \\#\n',
-		html: '<h3>foo ###</h3>\n<h2>foo ###</h2>\n<h1>foo #</h1>\n',
+		html: '<h3>foo ###</h3><h2>foo ###</h2><h1>foo #</h1>\n',
 		section: 'ATX headings',
 	},
 	{
 		md: '****\n## foo\n****\n',
-		html: '<hr />\n<h2>foo</h2>\n<hr />\n',
+		html: '<hr /><h2>foo</h2><hr />\n',
 		section: 'ATX headings',
 	},
 	{
 		md: 'Foo bar\n# baz\nBar foo\n',
-		html: '<p>Foo bar</p>\n<h1>baz</h1>\n<p>Bar foo</p>\n',
+		html: '<p>Foo bar</p><h1>baz</h1><p>Bar foo</p>\n',
 		section: 'ATX headings',
 	},
 	{
 		md: '## \n#\n### ###\n',
-		html: '<h2></h2>\n<h1></h1>\n<h3></h3>\n',
+		html: '<h2></h2><h1></h1><h3></h3>\n',
 		section: 'ATX headings',
 	},
 	{
 		md: 'Foo *bar*\n=========\n\nFoo *bar*\n---------\n',
-		html: '<h1>Foo <em>bar</em></h1>\n<h2>Foo <em>bar</em></h2>\n',
+		html: '<h1>Foo <em>bar</em></h1><h2>Foo <em>bar</em></h2>\n',
 		section: 'Setext headings',
 	},
 	{
@@ -411,17 +411,17 @@ export default [
 	},
 	{
 		md: 'Foo\n-------------------------\n\nFoo\n=\n',
-		html: '<h2>Foo</h2>\n<h1>Foo</h1>\n',
+		html: '<h2>Foo</h2><h1>Foo</h1>\n',
 		section: 'Setext headings',
 	},
 	{
 		md: '   Foo\n---\n\n  Foo\n-----\n\n  Foo\n  ===\n',
-		html: '<h2>Foo</h2>\n<h2>Foo</h2>\n<h1>Foo</h1>\n',
+		html: '<h2>Foo</h2><h2>Foo</h2><h1>Foo</h1>\n',
 		section: 'Setext headings',
 	},
 	{
 		md: '    Foo\n    ---\n\n    Foo\n---\n',
-		html: '<pre><code>Foo\n---\n\nFoo\n</code></pre>\n<hr />\n',
+		html: '<pre><code>Foo\n---\n\nFoo\n</code></pre><hr />\n',
 		section: 'Setext headings',
 	},
 	{
@@ -436,7 +436,7 @@ export default [
 	},
 	{
 		md: 'Foo\n= =\n\nFoo\n--- -\n',
-		html: '<p>Foo\n= =</p>\n<p>Foo</p>\n<hr />\n',
+		html: '<p>Foo\n= =</p><p>Foo</p><hr />\n',
 		section: 'Setext headings',
 	},
 	{
@@ -451,12 +451,12 @@ export default [
 	},
 	{
 		md: '`Foo\n----\n`\n\n<a title="a lot\n---\nof dashes"/>\n',
-		html: '<h2>`Foo</h2>\n<p>`</p>\n<h2>&lt;a title=&quot;a lot</h2>\n<p>of dashes&quot;/&gt;</p>\n',
+		html: '<h2>`Foo</h2><p>`</p><h2>&lt;a title=&quot;a lot</h2><p>of dashes&quot;/&gt;</p>\n',
 		section: 'Setext headings',
 	},
 	{
 		md: '> Foo\n---\n',
-		html: '<blockquote>\n<p>Foo</p>\n</blockquote>\n<hr />\n',
+		html: '<blockquote><p>Foo</p></blockquote><hr />\n',
 		section: 'Setext headings',
 	},
 	{
@@ -466,7 +466,7 @@ export default [
 	},
 	{
 		md: '- Foo\n---\n',
-		html: '<ul>\n<li>Foo</li>\n</ul>\n<hr />\n',
+		html: '<ul><li>Foo</li></ul><hr />\n',
 		section: 'Setext headings',
 	},
 	{
@@ -476,7 +476,7 @@ export default [
 	},
 	{
 		md: '---\nFoo\n---\nBar\n---\nBaz\n',
-		html: '<hr />\n<h2>Foo</h2>\n<h2>Bar</h2>\n<p>Baz</p>\n',
+		html: '<hr /><h2>Foo</h2><h2>Bar</h2><p>Baz</p>\n',
 		section: 'Setext headings',
 	},
 	{
@@ -486,22 +486,22 @@ export default [
 	},
 	{
 		md: '---\n---\n',
-		html: '<hr />\n<hr />\n',
+		html: '<hr /><hr />\n',
 		section: 'Setext headings',
 	},
 	{
 		md: '- foo\n-----\n',
-		html: '<ul>\n<li>foo</li>\n</ul>\n<hr />\n',
+		html: '<ul><li>foo</li></ul><hr />\n',
 		section: 'Setext headings',
 	},
 	{
 		md: '    foo\n---\n',
-		html: '<pre><code>foo\n</code></pre>\n<hr />\n',
+		html: '<pre><code>foo\n</code></pre><hr />\n',
 		section: 'Setext headings',
 	},
 	{
 		md: '> foo\n-----\n',
-		html: '<blockquote>\n<p>foo</p>\n</blockquote>\n<hr />\n',
+		html: '<blockquote><p>foo</p></blockquote><hr />\n',
 		section: 'Setext headings',
 	},
 	{
@@ -511,17 +511,17 @@ export default [
 	},
 	{
 		md: 'Foo\n\nbar\n---\nbaz\n',
-		html: '<p>Foo</p>\n<h2>bar</h2>\n<p>baz</p>\n',
+		html: '<p>Foo</p><h2>bar</h2><p>baz</p>\n',
 		section: 'Setext headings',
 	},
 	{
 		md: 'Foo\nbar\n\n---\n\nbaz\n',
-		html: '<p>Foo\nbar</p>\n<hr />\n<p>baz</p>\n',
+		html: '<p>Foo\nbar</p><hr /><p>baz</p>\n',
 		section: 'Setext headings',
 	},
 	{
 		md: 'Foo\nbar\n* * *\nbaz\n',
-		html: '<p>Foo\nbar</p>\n<hr />\n<p>baz</p>\n',
+		html: '<p>Foo\nbar</p><hr /><p>baz</p>\n',
 		section: 'Setext headings',
 	},
 	{
@@ -536,12 +536,12 @@ export default [
 	},
 	{
 		md: '  - foo\n\n    bar\n',
-		html: '<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>\n',
+		html: '<ul><li><p>foo</p><p>bar</p></li></ul>\n',
 		section: 'Indented code blocks',
 	},
 	{
 		md: '1.  foo\n\n    - bar\n',
-		html: '<ol>\n<li>\n<p>foo</p>\n<ul>\n<li>bar</li>\n</ul>\n</li>\n</ol>\n',
+		html: '<ol><li><p>foo</p><ul><li>bar</li></ul></li></ol>\n',
 		section: 'Indented code blocks',
 	},
 	{
@@ -566,12 +566,12 @@ export default [
 	},
 	{
 		md: '    foo\nbar\n',
-		html: '<pre><code>foo\n</code></pre>\n<p>bar</p>\n',
+		html: '<pre><code>foo\n</code></pre><p>bar</p>\n',
 		section: 'Indented code blocks',
 	},
 	{
 		md: '# Heading\n    foo\nHeading\n------\n    foo\n----\n',
-		html: '<h1>Heading</h1>\n<pre><code>foo\n</code></pre>\n<h2>Heading</h2>\n<pre><code>foo\n</code></pre>\n<hr />\n',
+		html: '<h1>Heading</h1><pre><code>foo\n</code></pre><h2>Heading</h2><pre><code>foo\n</code></pre><hr />\n',
 		section: 'Indented code blocks',
 	},
 	{
@@ -696,12 +696,12 @@ export default [
 	},
 	{
 		md: 'foo\n```\nbar\n```\nbaz\n',
-		html: '<p>foo</p>\n<pre><code>bar\n</code></pre>\n<p>baz</p>\n',
+		html: '<p>foo</p><pre><code>bar\n</code></pre><p>baz</p>\n',
 		section: 'Fenced code blocks',
 	},
 	{
 		md: 'foo\n---\n~~~\nbar\n~~~\n# baz\n',
-		html: '<h2>foo</h2>\n<pre><code>bar\n</code></pre>\n<h1>baz</h1>\n',
+		html: '<h2>foo</h2><pre><code>bar\n</code></pre><h1>baz</h1>\n',
 		section: 'Fenced code blocks',
 	},
 	{
@@ -736,7 +736,7 @@ export default [
 	},
 	{
 		md: '<table><tr><td>\n<pre>\n**Hello**,\n\n_world_.\n</pre>\n</td></tr></table>\n',
-		html: '<table><tr><td>\n<pre>\n**Hello**,\n<p><em>world</em>.\n</pre></p>\n</td></tr></table>\n',
+		html: '<table><tr><td>\n<pre>\n**Hello**,\n<p><em>world</em>.\n</pre></p></td></tr></table>\n',
 		section: 'HTML blocks',
 	},
 	{
@@ -756,7 +756,7 @@ export default [
 	},
 	{
 		md: '<DIV CLASS="foo">\n\n*Markdown*\n\n</DIV>\n',
-		html: '<DIV CLASS="foo">\n<p><em>Markdown</em></p>\n</DIV>\n',
+		html: '<DIV CLASS="foo">\n<p><em>Markdown</em></p></DIV>\n',
 		section: 'HTML blocks',
 	},
 	{
@@ -831,7 +831,7 @@ export default [
 	},
 	{
 		md: '<del>\n\n*foo*\n\n</del>\n',
-		html: '<del>\n<p><em>foo</em></p>\n</del>\n',
+		html: '<del>\n<p><em>foo</em></p></del>\n',
 		section: 'HTML blocks',
 	},
 	{
@@ -871,7 +871,7 @@ export default [
 	},
 	{
 		md: '- <div>\n- foo\n',
-		html: '<ul>\n<li>\n<div>\n</li>\n<li>foo</li>\n</ul>\n',
+		html: '<ul><li><div></li><li>foo</li></ul>\n',
 		section: 'HTML blocks',
 	},
 	{
@@ -921,7 +921,7 @@ export default [
 	},
 	{
 		md: 'Foo\n<div>\nbar\n</div>\n',
-		html: '<p>Foo</p>\n<div>\nbar\n</div>\n',
+		html: '<p>Foo</p><div>\nbar\n</div>\n',
 		section: 'HTML blocks',
 	},
 	{
@@ -936,7 +936,7 @@ export default [
 	},
 	{
 		md: '<div>\n\n*Emphasized* text.\n\n</div>\n',
-		html: '<div>\n<p><em>Emphasized</em> text.</p>\n</div>\n',
+		html: '<div>\n<p><em>Emphasized</em> text.</p></div>\n',
 		section: 'HTML blocks',
 	},
 	{
@@ -1131,7 +1131,7 @@ export default [
 	},
 	{
 		md: '  \n\naaa\n  \n\n# aaa\n\n  \n',
-		html: '<p>aaa</p>\n<h1>aaa</h1>\n',
+		html: '<p>aaa</p><h1>aaa</h1>\n',
 		section: 'Blank lines',
 	},
 	{
@@ -1261,7 +1261,7 @@ export default [
 	},
 	{
 		md: 'A paragraph\nwith two lines.\n\n    indented code\n\n> A block quote.\n',
-		html: '<p>A paragraph\nwith two lines.</p>\n<pre><code>indented code\n</code></pre>\n<blockquote>\n<p>A block quote.</p>\n</blockquote>\n',
+		html: '<p>A paragraph\nwith two lines.</p><pre><code>indented code\n</code></pre><blockquote>\n<p>A block quote.</p>\n</blockquote>\n',
 		section: 'List items',
 	},
 	{
@@ -1501,7 +1501,7 @@ export default [
 	},
 	{
 		md: '- foo\n- bar\n+ baz\n',
-		html: '<ul>\n<li>foo</li>\n<li>bar</li>\n</ul>\n<ul>\n<li>baz</li>\n</ul>\n',
+		html: '<ul><li>foo</li><li>bar</li></ul><ul><li>baz</li></ul>\n',
 		section: 'Lists',
 	},
 	{

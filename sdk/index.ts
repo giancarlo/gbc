@@ -729,16 +729,17 @@ export function ScannerApi({ source }: { source: string }) {
 		end: MatchFn,
 	) {
 		const trie = createTrie(...map);
-		return (): MapToToken<T> | undefined => {
-			let ch = source[index];
-			let consumed = 0;
+		return (consumed = 0) => {
+			let ch = source[index + consumed];
 			let node = trie;
 			while ((node = node[ch])) {
 				consumed++;
 				ch = source[index + consumed];
 				if (node[TrieMatch] && end(ch))
-					return tk(node[TrieMatch], consumed) as MapToToken<T>;
+					//return tk(node[TrieMatch], consumed) as MapToToken<T>;
+					return consumed;
 			}
+			return 0;
 		};
 	}
 

@@ -17,6 +17,7 @@ type NodeMapBase = {
 	root: { children: Children };
 	heading: { level: number; children: Children };
 	ul: { children: Children };
+	ol: { children: Children };
 	li: { children: Children; indent: number; pCount: number };
 	eol: { count: number };
 	text: { value: string; children?: Node[] };
@@ -25,7 +26,7 @@ type NodeMapBase = {
 	block: { info?: string; value: string };
 	blockquote: { children: Children; pCount: number };
 	link: { href: string; text: string; title?: string };
-	html: {};
+	html: { block: boolean };
 };
 type NodeMap = MakeNodeMap<NodeMapBase>;
 
@@ -42,7 +43,8 @@ const isEol = (c: string) => c === '\n';
 const isSpace = (c: string) => c === ' ' || c === '\t';
 const alpha = (ch: string) =>
 	(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
-const htmlChar = (ch: string) => alpha(ch) || ch === '-';
+const alphaDash = (ch: string) => alpha(ch) || ch === '-';
+const alphaDashPlus = (c: string) => alpha(c) || c === '-' || c === '+';
 //const isSpaceOrEol = (c: string) => c === ' ' || c === '\t' || c === '\n';
 const isHash = (c: string) => c === '#';
 const notStartInline = (ch: string) =>
@@ -52,6 +54,7 @@ const notStartInline = (ch: string) =>
 	ch !== '*' &&
 	ch !== '<' &&
 	ch !== '[';
+const digit = (ch: string) => ch >= '0' && ch <= '9';
 //const isLineStart = (c: string) => c === '\n' || c === '';
 
 function countSpaces(
@@ -123,17 +126,164 @@ function matchBlock(
 	return { consumed, blockEnd, blockStart, lineStart, lineCount };
 }
 
-export function matchHtml(
-	{ matchWhile, matchUntil }: ReturnType<typeof ScannerApi>,
-	start: number,
-) {
-	const tagNameEnd = matchWhile(htmlChar, start);
-	const closing = matchUntil(c => c === '>', tagNameEnd + 1);
-	if (closing > tagNameEnd + 1) {
-		return closing + 1;
+const htmlRule6 =
+	/^(address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)$/i;
+const htmlRule1 = /pre|script|style|textarea/i;
+
+function htmlScanner(api: ReturnType<typeof ScannerApi>) {
+	const { matchWhile, current, eof, matchString, matchUntil } = api;
+
+	function matchTagName(start: number) {
+		let tagName = '',
+			tagNameEnd = start,
+			ch;
+
+		while ((ch = current(tagNameEnd)) && alphaDash(ch)) {
+			tagName += ch;
+			tagNameEnd++;
+		}
+
+		return { tagNameEnd, tagName };
 	}
-	return 0;
+
+	function matchTag(start: number) {
+		let ch = current(start);
+		const isClosingTag = ch === '/';
+		if (isClosingTag) ch = current(start++);
+
+		const { tagNameEnd, tagName } = matchTagName(start);
+		if (!tagName) return;
+
+		const afterTag = current(tagNameEnd);
+		if (afterTag === '>')
+			return { tagName, tagEnd: tagNameEnd + 1, isClosingTag };
+		//if (afterTag !== ' ') return 0;
+		let p = '';
+		let tagEnd = matchWhile(c => {
+			const r = c !== '>' && !(c === '\n' && p === '\n');
+			p = c;
+			return r;
+		}, tagNameEnd + 1);
+
+		if (eof(tagEnd)) return { tagName, tagEnd: tagEnd - 1, isClosingTag };
+
+		return current(tagEnd++) === '>'
+			? { tagName, tagEnd, isClosingTag }
+			: 0;
+	}
+
+	function matchComment(start: number, closing: string) {
+		while (!eof(start++)) {
+			//if (current(start) === '\n') break;
+			if (matchString(closing, undefined, start))
+				return matchUntil(isEol, start);
+		}
+		return 0;
+	}
+
+	function matchInline(start: number) {
+		const openTag = matchTag(start);
+		if (!openTag) return 0;
+
+		return openTag.tagEnd;
+	}
+
+	function isLineEnd(start: number) {
+		const spaces = matchWhile(isSpace, start);
+		return current(spaces) === '\n' || current(spaces) === '';
+	}
+
+	function matchHtml(start: number) {
+		const openTag = matchTag(start);
+
+		if (!openTag) {
+			if (current(start) === '!') {
+				if (current(start + 1) === '-' && current(start + 2) === '-')
+					return matchComment(start + 3, '-->');
+				else return matchComment(start + 1, '>');
+			} else if (current(start) === '?')
+				return matchComment(start + 1, '?>');
+			return 0;
+		}
+
+		const { tagName, tagEnd, isClosingTag } = openTag;
+		if (eof(tagEnd)) return tagEnd;
+
+		if (htmlRule1.test(tagName)) {
+			if (isClosingTag) return 0;
+			const closing = `</`;
+			let closeTag = tagEnd;
+			while (!eof(closeTag++)) {
+				if (matchString(closing, undefined, closeTag)) {
+					const tag = matchTag(closeTag + 1);
+					if (tag && htmlRule1.test(tag.tagName)) {
+						return matchUntil(isEol, tag.tagEnd);
+					}
+				}
+			}
+			return closeTag - 2;
+		}
+		const isRule6 = htmlRule6.test(tagName);
+		if (!isRule6 && !isLineEnd(tagEnd)) return 0;
+
+		// Read until blank line
+		let closeTag = tagEnd;
+		do {
+			if (
+				current(closeTag) === '\n' &&
+				(current(closeTag + 1) === '\n' || current(closeTag + 1) === '')
+			)
+				return closeTag;
+		} while (!eof(closeTag++));
+
+		return 0;
+	}
+	return { matchHtml, matchInline };
 }
+
+/*const htmlInline = [
+	'a',
+	'abbr',
+	'acronym',
+	'b',
+	'bdo',
+	'big',
+	'br',
+	'button',
+	'cite',
+	'code',
+	'dfn',
+	'em',
+	'i',
+	'img',
+	'input',
+	'kbd',
+	'label',
+	'map',
+	'mark',
+	'meter',
+	'noscript',
+	'object',
+	'output',
+	'progress',
+	'q',
+	'ruby',
+	's',
+	'samp',
+	'script',
+	'select',
+	'small',
+	'span',
+	'strong',
+	'sub',
+	'sup',
+	'textarea',
+	'time',
+	'tt',
+	'u',
+	'var',
+	'wbr',
+];*/
 
 export function scannerInline(src: string) {
 	const api = ScannerApi({
@@ -150,6 +300,7 @@ export function scannerInline(src: string) {
 		skip,
 		//createTrieMatcher,
 	} = api;
+	const { matchInline } = htmlScanner(api);
 
 	/*const htmlAutoClose = createTrieMatcher(
 		[
@@ -186,8 +337,10 @@ export function scannerInline(src: string) {
 		if (textStart >= 2 && ch === '\n') return tk('br', textStart + 1);
 
 		if (indent >= 4) {
-			const block = tk('tabsBlock', matchUntil(isEol, textStart));
-			return { ...block, textStart, indent };
+			if (ch !== '\n' && ch !== '') {
+				const block = tk('tabsBlock', matchUntil(isEol, textStart));
+				return { ...block, textStart, indent };
+			}
 		}
 
 		switch (ch) {
@@ -219,18 +372,23 @@ export function scannerInline(src: string) {
 				return tk('em', 1);
 			case '<': {
 				// Scan Autolink
-				const scheme = matchWhile(alpha, textStart + 1);
-				if (scheme - textStart > 1 && current(scheme) === ':') {
+				const scheme = matchWhile(alphaDashPlus, textStart + 1);
+				const type = current(scheme);
+				if (
+					(scheme - textStart - 1 > 1 && type === ':') ||
+					type === '@'
+				) {
 					const host = matchWhile(
 						n => n !== '>' && n !== ' ' && n !== '<',
 						scheme + 1,
 					);
 					// Check for invalid URL
-					if (current(host) === '>') return tk('autolink', host + 1);
+					if (current(host) === '>')
+						return { ...tk('autolink', host + 1), type };
 				}
 				// can it be HTML ?
-				const maybeHtml = matchHtml(api, scheme + 1);
-				if (maybeHtml > scheme + 1) return tk('html', maybeHtml);
+				const maybeHtml = matchInline(textStart + 1);
+				if (maybeHtml) return tk('html', maybeHtml);
 
 				return tk('text', scheme);
 			}
@@ -240,11 +398,23 @@ export function scannerInline(src: string) {
 					current(linkTextEnd) === ']' &&
 					current(linkTextEnd + 1) === '('
 				) {
-					const linkEnd = matchEnclosed(
-						c => c !== ')' && c !== ' ' && c !== '\t' && c !== '\n',
-						escape,
-						linkTextEnd + 2,
-					);
+					const linkEnd =
+						current(linkTextEnd + 2) === '<'
+							? matchEnclosed(
+									c => c !== '>' && c !== '\n',
+									escape,
+									linkTextEnd + 2,
+							  ) + 1
+							: matchEnclosed(
+									c =>
+										c !== ')' &&
+										c !== ' ' &&
+										c !== '\t' &&
+										c !== '\n',
+									escape,
+									linkTextEnd + 2,
+							  );
+
 					const afterLink = current(linkEnd + 1);
 					let titleEnd: number | undefined,
 						titleStart: number | undefined;
@@ -309,7 +479,8 @@ export function scannerBlock(src: string) {
 	const api = ScannerApi({
 		source: src,
 	});
-	const { current, tk, matchWhile, backtrack, eof, matchUntil } = api;
+	const { current, tk, matchWhile, backtrack, eof, matchUntil, skip } = api;
+	const { matchHtml } = htmlScanner(api);
 
 	function thematicBreak(ch: string, n = 1) {
 		const startSpaces = matchWhile(isSpace, n);
@@ -336,27 +507,64 @@ export function scannerBlock(src: string) {
 		const { textStart, indent } = countSpaces(matchWhile);
 		const afterSpace = current(textStart);
 
-		if (afterSpace === '\n') return tk('eol', matchWhile(isEol, textStart));
+		if (afterSpace === '\n') {
+			let count = 0;
+			let end = matchWhile(
+				n => (n === '\n' ? (count++, true) : isSpace(n)),
+				textStart,
+			);
+			while (current(end) !== '\n') end--;
+			return { ...tk('eol', end + 1), count };
+		}
 
 		if (indent < 4 && (afterSpace === '`' || afterSpace === '~')) {
 			const start = matchWhile(n => n === afterSpace, textStart);
 			const len = start - textStart;
 			if (len >= 3) {
-				const { consumed, blockStart, lineStart, lineCount } =
-					matchBlock(
+				let match,
+					found = false,
+					firstStart = 0,
+					consumed = start;
+				do {
+					match = matchBlock(
 						api,
 						afterSpace,
 						len,
-						start,
+						consumed,
 						(n, indent) => current(n) === '\n' && indent < 4,
 					);
+					consumed = match.consumed;
+					if (!found) firstStart = match.blockStart;
+					if (eof(consumed)) break;
+					else found = true;
+				} while (!match.lineCount);
 
-				if (lineCount)
+				if (match.lineCount && !(eof(consumed) && found)) {
+					const { consumed, lineStart } = match;
 					return {
 						...tk('block', consumed),
 						blockEnd: lineStart + 1 || consumed,
-						blockStart,
+						blockStart: firstStart,
 						indent,
+					};
+				}
+			}
+		}
+
+		// setext
+		if (indent < 4 && current(-1)) {
+			const startChar = current(textStart);
+			if (startChar === '=' || startChar === '-') {
+				const lineLen = matchWhile(c => c === startChar, textStart + 1);
+				const trailing = matchWhile(isSpace, lineLen);
+				if (current(trailing) === '\n')
+					return {
+						...tk('setext', trailing),
+						level: startChar === '=' ? 1 : 2,
+						length: trailing - textStart,
+						/*textStart,
+						textEnd: trailing,
+						textIndent: indent,*/
 					};
 			}
 		}
@@ -367,6 +575,29 @@ export function scannerBlock(src: string) {
 		) {
 			const result = thematicBreak(afterSpace);
 			if (result) return tk('hr', result);
+		}
+
+		if (digit(afterSpace)) {
+			const markerEnd = matchWhile(digit, textStart + 1);
+			const dot = current(markerEnd);
+			if (dot === '.' || dot === ')') {
+				const { indent: textIndent, textStart: start } = countSpaces(
+					matchWhile,
+					markerEnd + 1,
+				);
+				const markerLen = markerEnd - textStart + 1;
+				const end = matchUntil(isEol, start);
+				return {
+					...tk('ol', end),
+					indent: indent + markerLen,
+					textStart: start,
+					blockStart: textStart,
+					markerStart: textStart,
+					markerEnd,
+					// Substract the space occupied by '- '
+					textIndent: textIndent - markerLen,
+				};
+			}
 		}
 
 		if (
@@ -393,6 +624,7 @@ export function scannerBlock(src: string) {
 			return {
 				...tk('li', end),
 				indent: indent + 2,
+				blockStart: textStart,
 				textStart: start,
 				bullet,
 				hasThematicBreak,
@@ -432,15 +664,6 @@ export function scannerBlock(src: string) {
 			}
 		}
 
-		if (indent === 0 && afterSpace === '<') {
-			const scheme = matchWhile(alpha, textStart + 1);
-			// Ignore Autolink
-			if (current(scheme) !== ':') {
-				const maybeHtml = matchHtml(api, textStart);
-				if (maybeHtml > textStart) return tk('html', maybeHtml);
-			}
-		}
-
 		if (afterSpace === '>') {
 			// handle multiple > levels
 			let i = textStart;
@@ -469,34 +692,21 @@ export function scannerBlock(src: string) {
 			};
 		}
 
-		const textEnd = matchUntil(isEol);
-		// handle setext headings
-		if (current(textEnd) === '\n') {
-			const { indent, textStart: lineStart } = countSpaces(
-				matchWhile,
-				textEnd + 1,
-			);
-			if (indent < 4) {
-				const startChar = current(lineStart + 1);
-				if (startChar === '=' || startChar === '-') {
-					const lineLen = matchWhile(
-						c => c === startChar,
-						lineStart + 2,
-					);
-					const trailing = matchWhile(isSpace, lineLen);
-					if (current(trailing) === '\n' || trailing !== lineLen)
-						return {
-							...tk('heading', trailing),
-							level: startChar === '=' ? 1 : 2,
-							textStart,
-							textEnd,
-							textIndent: indent,
-						};
-				}
+		// heading takes precedence
+		if (afterSpace === '<') {
+			const scheme = matchWhile(alpha, textStart + 1);
+			// Ignore Autolink
+			if (current(scheme) !== ':') {
+				const maybeHtml = matchHtml(textStart + 1);
+				if (maybeHtml) return tk('html', maybeHtml);
 			}
 		}
 
-		return tk('text', matchUntil(isEol));
+		const textEnd = matchUntil(isEol);
+		// Remove whitespace
+		skip(textStart);
+
+		return tk('text', textEnd - textStart);
 	}
 
 	return { next, backtrack };
@@ -579,16 +789,19 @@ export function parserInline(api: ParserApi<InlineToken>) {
 				next();
 				return token;
 			case 'autolink': {
-				const href = text(token).slice(1, -1);
+				const src = text(token).slice(1, -1);
+				const href = (token.type === '@' ? 'mailto:' : '') + src;
 				next();
-				return { ...token, kind: 'link', href, text: href };
+				return { ...token, kind: 'link', href, text: src };
 			}
 			case 'link': {
 				const src = text(token);
 				const content = src.slice(1, token.linkTextEnd);
-				const href = unescapeText(
+				let href = unescapeText(
 					src.slice(token.linkTextEnd + 2, token.linkEnd),
 				);
+				if (href.startsWith('<') && href.endsWith('>'))
+					href = href.slice(1, -1);
 				const title =
 					token.titleStart !== undefined &&
 					token.titleEnd !== undefined
@@ -604,7 +817,7 @@ export function parserInline(api: ParserApi<InlineToken>) {
 			}
 			case 'html':
 				next();
-				return token;
+				return { ...token, block: false };
 		}
 	}
 
@@ -665,14 +878,36 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 	}
 
 	function p(parentToken: BlockToken, child = textNode(parentToken)) {
+		let newChild: Node | undefined;
+
 		while (child) {
 			const token = next();
-			if (token.kind === 'eol' && token.end - token.start === 1) {
+			if (token.kind === 'eol' && token.count === 1) {
 				const nextToken = next();
 
-				if (nextToken.kind === 'text') {
+				if (nextToken.kind === 'setext') {
+					next();
+					if (child.value) {
+						// Need to trim the start and end of each line
+						child.value = child.value.replace(
+							/^\s*([^\n]+?)\s*$/gm,
+							'$1',
+						);
+						newChild = {
+							...nextToken,
+							start: child.start,
+							kind: 'heading',
+							children: [child],
+						};
+					} else {
+						child.value += text(nextToken);
+					}
+				} else if (nextToken.kind === 'text') {
 					nextToken.start = token.start;
-					child.value += text(nextToken); //)'\n' + text(nextToken);
+					child.value += text(nextToken).replace(
+						/^[\t ]*([^\n]+?)\s*$/gm,
+						'$1',
+					);
 					continue;
 				} else if (nextToken.kind === 'tabsBlock') {
 					child.value +=
@@ -684,6 +919,8 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 			}
 			break;
 		}
+
+		if (newChild) return newChild;
 
 		const node: NodeMap['p'] = {
 			...parentToken,
@@ -708,9 +945,11 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 			const token = current();
 
 			if (token.kind === 'eol') {
-				if (token.end - token.start > 1) {
+				if (token.count > 1) {
 					pCount++;
-					return handleNewLine(indent);
+					const result = handleNewLine(indent);
+					if (result) return result;
+					backtrack(token);
 				}
 
 				const nextToken = next();
@@ -759,6 +998,82 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 		return { ...token, kind: 'ul', children };
 	}
 
+	function ol(token: Token<'ol'>): NodeMap['ol'] {
+		const children = parseWhile(() => {
+			const liToken = current();
+			if (liToken.kind !== 'ol') return;
+
+			const bullet = liToken.source.slice(
+				liToken.markerStart,
+				liToken.markerEnd,
+			);
+			const li = inlineBlock(
+				{ ...liToken, kind: 'li', bullet, hasThematicBreak: 0 },
+				//liToken.hasThematicBreak ? createNode('hr') : undefined,
+			);
+			return li;
+		});
+		return { ...token, kind: 'ol', children };
+	}
+
+	function normalizeBlock(block: NodeMap['block'], indent: number) {
+		block.value = block.value.replace(
+			new RegExp(`^[ \t]{1,${indent}}`, 'gm'),
+			'',
+		);
+	}
+
+	function tabsBlock(
+		token: Extract<BlockToken, { textStart: number; indent: number }>,
+	) {
+		const node: NodeMap['block'] = {
+			...token,
+			kind: 'block',
+			value: text(token), //.slice(token.textStart),
+		};
+		let nextToken = next();
+		let minIndent = token.indent;
+
+		while (nextToken.kind === 'eol') {
+			const maybeBlock = next();
+			if (maybeBlock.kind === 'li' && maybeBlock.indent >= 4) {
+				const eolText = text(nextToken);
+				/*.replace(
+					new RegExp(`^[ \t]{1,${token.indent}}`, 'gm'),
+					'',
+				);*/
+				if (maybeBlock.indent < minIndent)
+					minIndent = maybeBlock.indent;
+				node.value +=
+					eolText + text(maybeBlock).slice(maybeBlock.blockStart);
+				node.end = maybeBlock.end;
+				nextToken = next();
+			} else if (maybeBlock.kind === 'tabsBlock') {
+				const eolText = text(nextToken); /*.replace(
+					new RegExp(`^[ \t]{1,${token.indent}}`, 'gm'),
+					'',
+				);*/
+				if (maybeBlock.indent < minIndent)
+					minIndent = maybeBlock.indent;
+				node.value +=
+					eolText +
+					//text(nextToken) +
+					//' '.repeat(Math.max(0, maybeBlock.indent - token.indent)) +
+					text(maybeBlock); //.slice(maybeBlock.textStart);
+				node.end = maybeBlock.end;
+				nextToken = next();
+			} else {
+				backtrack(maybeBlock);
+				node.value += '\n';
+				break;
+			}
+		}
+
+		normalizeBlock(node, minIndent);
+
+		return node;
+	}
+
 	function top() {
 		const token = current();
 		switch (token.kind) {
@@ -796,36 +1111,20 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 				return inlineBlock(token);
 			}
 			case 'tabsBlock': {
-				const node: NodeMap['block'] = {
-					...token,
-					kind: 'block',
-					value: text(token).slice(token.textStart),
-				};
-				let nextToken = next();
-
-				while (nextToken.kind === 'eol') {
-					const maybeBlock = next();
-					if (maybeBlock.kind === 'tabsBlock') {
-						node.value +=
-							text(nextToken) +
-							text(maybeBlock).slice(maybeBlock.textStart);
-						node.end = maybeBlock.end;
-						nextToken = next();
-					} else {
-						backtrack(maybeBlock);
-						node.value += '\n';
-						break;
-					}
-				}
-
-				return node;
+				return tabsBlock(token);
 			}
 			case 'html': {
 				next();
-				return token;
+				return { ...token, block: true };
 			}
 			case 'li': {
+				// This might be a tabsBlock
+				if (token.indent > 4) return tabsBlock(token);
+
 				return ul(token);
+			}
+			case 'ol': {
+				return ol(token);
 			}
 			case 'hr': {
 				next();
@@ -834,9 +1133,20 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 			case 'eol': {
 				const after = next();
 				if (after.kind === 'eof') return;
-				if (token.end - token.start === 1)
-					return { ...token, kind: 'text', value: '\n' } as const;
+				//if (token.end - token.start === 1)
+				//	return { ...token, kind: 'text', value: '' } as const;
 				return top();
+			}
+			case 'setext': {
+				// Node is most likely an hr
+				if (token.level === 2 && token.length >= 3) {
+					next();
+					return {
+						...token,
+						kind: 'hr',
+					} as const;
+				}
+				break;
 			}
 			case 'eof':
 				return;
@@ -894,16 +1204,17 @@ export function compiler(node: Node): string {
 			const title = node.title
 				? ` title="${escapeHtml(node.title)}"`
 				: '';
-			return `<a href="${encodeURI(node.href)}"${title}>${escapeHtml(
-				node.text,
-			)}</a>`;
+			return `<a href="${encodeURI(
+				escapeHtml(node.href),
+			)}"${title}>${escapeHtml(node.text)}</a>`;
 		}
 		case 'em':
 		case 'b':
 		case 'p':
-		case 'ul':
-			return renderChildren(node.children, node.kind);
 		case 'blockquote':
+		case 'ul':
+		case 'ol':
+			return renderChildren(node.children, node.kind);
 		case 'li':
 			if (node.pCount === 0) {
 				const children: string = node.children
@@ -930,7 +1241,10 @@ export function compiler(node: Node): string {
 				? renderChildren(node.children)
 				: escapeHtml(node.value);
 		case 'html':
-			return text(node);
+			return (
+				text(node) +
+				(node.block && node.end < node.source.length - 1 ? '\n' : '')
+			);
 	}
 
 	return '';
