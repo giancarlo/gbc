@@ -14,10 +14,14 @@ type NodeMapBase = {
 	em: { children: Children };
 	p: { children: Children };
 	b: { children: Children };
-	root: { children: Children };
+	root: {
+		children: Children;
+		linkDefinitions: Record<string, LinkDefinition | undefined>;
+	};
 	heading: { level: number; children: Children };
 	ul: { children: Children };
 	ol: { children: Children };
+	linkdef: LinkDefinition;
 	li: {
 		children: Children;
 		indent: number;
@@ -31,7 +35,7 @@ type NodeMapBase = {
 	br: {};
 	block: { info?: string; value: string };
 	blockquote: { children: Children; pCount: number };
-	link: { href: string; text: string; title?: string };
+	a: LinkDefinition;
 	html: { block: boolean };
 };
 type NodeMap = MakeNodeMap<NodeMapBase>;
@@ -44,6 +48,7 @@ type InlineBlockToken = Extract<
 	BlockToken,
 	{ indent: number; textStart: number; textIndent: number }
 >;
+export type LinkDefinition = { href: string; text: string; title?: string };
 
 const isEol = (c: string) => c === '\n';
 const isSpace = (c: string) => c === ' ' || c === '\t';
@@ -241,6 +246,46 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 	return { matchHtml, matchInline };
 }
 
+function matchLink(
+	{ matchEnclosed, current, matchWhile }: ReturnType<typeof ScannerApi>,
+	escape: (n: number) => boolean,
+	linkStart: number,
+	closing?: boolean,
+) {
+	const linkEnd =
+		current(linkStart) === '<'
+			? matchEnclosed(
+					c => c !== '>' && c !== '\n',
+					escape,
+					linkStart + 1,
+			  ) + 1
+			: matchEnclosed(
+					c =>
+						(!closing || c !== ')') &&
+						c !== ' ' &&
+						c !== '\t' &&
+						c !== '\n',
+					escape,
+					linkStart,
+			  );
+	if (linkEnd === linkStart) return;
+
+	const spaces = matchWhileSpaceOrOneLineEnding(matchWhile, linkEnd + 1);
+
+	const afterLink = current(spaces);
+	let titleEnd: number | undefined, titleStart: number | undefined;
+
+	if (afterLink === '"' || afterLink === "'") {
+		// possible title
+		titleStart = spaces;
+		titleEnd =
+			matchEnclosed(c => c !== afterLink, escape, titleStart + 1) + 1;
+	}
+	const end = titleEnd === undefined ? linkEnd : titleEnd;
+	if (!closing || current(end) === ')')
+		return { titleEnd, titleStart, linkEnd, linkStart };
+}
+
 export function scannerInline(src: string) {
 	const api = ScannerApi({
 		source: src,
@@ -329,51 +374,76 @@ export function scannerInline(src: string) {
 				return tk('text', scheme);
 			}
 			case '[': {
-				const linkTextEnd = matchEnclosed(c => c !== ']', escape);
-				if (
-					current(linkTextEnd) === ']' &&
-					current(linkTextEnd + 1) === '('
-				) {
-					const linkEnd =
-						current(linkTextEnd + 2) === '<'
-							? matchEnclosed(
-									c => c !== '>' && c !== '\n',
-									escape,
-									linkTextEnd + 2,
-							  ) + 1
-							: matchEnclosed(
-									c =>
-										c !== ')' &&
-										c !== ' ' &&
-										c !== '\t' &&
-										c !== '\n',
-									escape,
-									linkTextEnd + 2,
-							  );
-
-					const afterLink = current(linkEnd + 1);
-					let titleEnd: number | undefined,
-						titleStart: number | undefined;
-
-					if (afterLink === '"' || afterLink === "'") {
-						// possible title
-						titleStart = linkEnd + 1;
-						titleEnd = matchEnclosed(
-							c => c !== ')',
+				const linkTextEnd = matchEnclosed(
+					c => c !== ']',
+					escape,
+					textStart + 1,
+				);
+				if (current(linkTextEnd) === ']') {
+					if (current(linkTextEnd + 1) === '(') {
+						const result = matchLink(
+							api,
 							escape,
-							linkEnd + 2,
+							linkTextEnd + 2,
+							true,
 						);
-					}
-					if (current(titleEnd ?? linkEnd) === ')') {
+						/* const linkEnd =
+							current(linkTextEnd + 2) === '<'
+								? matchEnclosed(
+										c => c !== '>' && c !== '\n',
+										escape,
+										linkTextEnd + 2,
+								  ) + 1
+								: matchEnclosed(
+										c =>
+											c !== ')' &&
+											c !== ' ' &&
+											c !== '\t' &&
+											c !== '\n',
+										escape,
+										linkTextEnd + 2,
+								  );
+
+						const afterLink = current(linkEnd + 1);
+						let titleEnd: number | undefined,
+							titleStart: number | undefined;
+
+						if (afterLink === '"' || afterLink === "'") {
+							// possible title
+							titleStart = linkEnd + 1;
+							titleEnd = matchEnclosed(
+								c => c !== ')',
+								escape,
+								linkEnd + 2,
+							);
+						}*/
+						if (result) {
+							return {
+								...tk(
+									'a',
+									(result.titleEnd ?? result.linkEnd) + 1,
+								),
+								linkTextEnd,
+								...result,
+								/*linkTextEnd,
+								titleEnd,
+								titleStart,
+								linkEnd,*/
+							};
+						}
+					} else {
+						// Possible link reference
 						return {
-							...tk('link', (titleEnd ?? linkEnd) + 1),
+							...tk('a', linkTextEnd + 1),
 							linkTextEnd,
-							titleEnd,
-							titleStart,
-							linkEnd,
+							linkStart: 0,
+							titleEnd: 0,
+							titleStart: 0,
+							linkEnd: 0,
 						};
 					}
 				}
+
 				return tk('text', textStart + 1);
 			}
 		}
@@ -411,12 +481,34 @@ export function scannerInline(src: string) {
 	return { next, backtrack };
 }
 
+function matchWhileSpaceOrOneLineEnding(
+	matchWhile: (fn: (c: string) => boolean, start: number) => number,
+	start: number,
+) {
+	let lb = 0;
+	return matchWhile(c => isSpace(c) || (c === '\n' && lb++ < 1), start);
+}
+
 export function scannerBlock(src: string) {
 	const api = ScannerApi({
 		source: src,
 	});
-	const { current, tk, matchWhile, backtrack, eof, matchUntil, skip } = api;
+	const {
+		current,
+		tk,
+		matchWhile,
+		backtrack,
+		eof,
+		matchUntil,
+		skip,
+		matchEnclosed,
+	} = api;
 	const { matchHtml } = htmlScanner(api);
+
+	const escape = (i: number) =>
+		current(i) !== '\n' &&
+		current(i - 1) === '\\' &&
+		current(i - 2) !== '\\';
 
 	function thematicBreak(ch: string, n = 1) {
 		const startSpaces = matchWhile(isSpace, n);
@@ -619,6 +711,36 @@ export function scannerBlock(src: string) {
 			}
 		}
 
+		if (afterSpace === '[') {
+			const linkTextEnd = matchEnclosed(
+				c => c !== ']',
+				escape,
+				textStart + 1,
+			);
+
+			if (
+				current(linkTextEnd) === ']' &&
+				current(linkTextEnd + 1) === ':'
+			) {
+				// Optional spaces including up to one line break
+				const start = matchWhileSpaceOrOneLineEnding(
+					matchWhile,
+					linkTextEnd + 2,
+				);
+
+				const result = matchLink(api, escape, start);
+				if (result)
+					return {
+						...tk(
+							'linkdef',
+							(result.titleEnd ?? result.linkEnd) + 1,
+						),
+						...result,
+						linkTextEnd,
+					};
+			}
+		}
+
 		if (afterSpace === '>') {
 			// handle multiple > levels
 			let i = textStart;
@@ -673,7 +795,36 @@ function unescapeText(value: string) {
 	return value.replace(/\\([\\!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~])/g, '$1');
 }
 
-export function parserInline(api: ParserApi<InlineToken>) {
+function getLinkParts(
+	token: Token<string> & {
+		linkTextEnd: number;
+		linkEnd: number;
+		linkStart: number;
+		titleStart?: number;
+		titleEnd?: number;
+	},
+	linkRefs?: Record<string, LinkDefinition | undefined>,
+) {
+	const src = text(token);
+	const content = src.slice(1, token.linkTextEnd);
+
+	if (!token.linkEnd && linkRefs) {
+		const ref = linkRefs[content];
+		if (ref) return ref;
+	}
+	let href = unescapeText(src.slice(token.linkStart, token.linkEnd));
+	if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1);
+	const title =
+		token.titleStart !== undefined && token.titleEnd !== undefined
+			? unescapeText(src.slice(token.titleStart + 1, token.titleEnd - 1))
+			: undefined;
+	return { title, href, text: content };
+}
+
+export function parserInline(
+	api: ParserApi<InlineToken>,
+	linkRefs: Record<string, LinkDefinition | undefined>,
+) {
 	const { current, parseWhile, next, backtrack } = api;
 
 	let i = 0;
@@ -765,28 +916,12 @@ export function parserInline(api: ParserApi<InlineToken>) {
 				const src = text(token).slice(1, -1);
 				const href = (token.type === '@' ? 'mailto:' : '') + src;
 				next();
-				return { ...token, kind: 'link', href, text: src };
+				return { ...token, kind: 'a', href, text: src };
 			}
-			case 'link': {
-				const src = text(token);
-				const content = src.slice(1, token.linkTextEnd);
-				let href = unescapeText(
-					src.slice(token.linkTextEnd + 2, token.linkEnd),
-				);
-				if (href.startsWith('<') && href.endsWith('>'))
-					href = href.slice(1, -1);
-				const title =
-					token.titleStart !== undefined &&
-					token.titleEnd !== undefined
-						? unescapeText(
-								src.slice(
-									token.titleStart + 1,
-									token.titleEnd - 1,
-								),
-						  )
-						: undefined;
+			case 'a': {
+				const parts = getLinkParts(token, linkRefs);
 				next();
-				return { ...token, kind: 'link', href, text: content, title };
+				return { ...token, kind: 'a', ...parts };
 			}
 			case 'html':
 				next();
@@ -807,7 +942,7 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 
 		for (const node of deferInline) {
 			api.start(node.value);
-			node.children = parserInline(api);
+			node.children = parserInline(api, linkDefinitions);
 		}
 	}
 
@@ -1097,11 +1232,14 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 				next();
 				return token;
 			}
+			case 'linkdef': {
+				const parts = getLinkParts(token);
+				linkDefinitions[parts.text] = parts;
+				next();
+			}
 			case 'eol': {
 				const after = next();
 				if (after.kind === 'eof') return;
-				//if (token.end - token.start === 1)
-				//	return { ...token, kind: 'text', value: '' } as const;
 				return top();
 			}
 			case 'setext': {
@@ -1121,10 +1259,12 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 
 		return p(token);
 	}
+	const linkDefinitions: Record<string, LinkDefinition | undefined> = {};
 
 	const root: NodeMap['root'] = {
 		...createNode('root'),
 		children: parseWhile(top),
+		linkDefinitions,
 	};
 
 	parseInline();
@@ -1167,7 +1307,7 @@ export function compiler(node: Node): string {
 		case 'code': {
 			return `<code>${escapeHtml(node.value)}</code>`;
 		}
-		case 'link': {
+		case 'a': {
 			const title = node.title
 				? ` title="${escapeHtml(node.title)}"`
 				: '';
