@@ -18,7 +18,13 @@ type NodeMapBase = {
 	heading: { level: number; children: Children };
 	ul: { children: Children };
 	ol: { children: Children };
-	li: { children: Children; indent: number; pCount: number };
+	li: {
+		children: Children;
+		indent: number;
+		pCount: number;
+		bullet: string;
+		bulletOrder?: string;
+	};
 	eol: { count: number };
 	text: { value: string; children?: Node[] };
 	hr: {};
@@ -45,7 +51,6 @@ const alpha = (ch: string) =>
 	(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
 const alphaDash = (ch: string) => alpha(ch) || ch === '-';
 const alphaDashPlus = (c: string) => alpha(c) || c === '-' || c === '+';
-//const isSpaceOrEol = (c: string) => c === ' ' || c === '\t' || c === '\n';
 const isHash = (c: string) => c === '#';
 const notStartInline = (ch: string) =>
 	ch !== '`' &&
@@ -55,12 +60,14 @@ const notStartInline = (ch: string) =>
 	ch !== '<' &&
 	ch !== '[';
 const digit = (ch: string) => ch >= '0' && ch <= '9';
-//const isLineStart = (c: string) => c === '\n' || c === '';
+const uWhiteSpace = /\p{White_Space}/u;
+const uPunctuation = /\p{P}/u;
 
 function countSpaces(
 	matchWhile: (match: MatchFn, consumed?: number) => number,
 	offset = 0,
 ) {
+	// max tab length is 4, depending on where in the text it is.
 	let indent = offset;
 	const textStart = matchWhile(ch => {
 		const count = ch === '\t' ? 4 - (indent % 4) : ch === ' ' ? 1 : 0;
@@ -71,22 +78,6 @@ function countSpaces(
 	return { indent, textStart };
 }
 
-function matchEndBlock(
-	{ matchWhile }: ReturnType<typeof ScannerApi>,
-	ch: string,
-	len: number,
-	consumed: number,
-	//endFn: (consumed: number) => boolean,
-) {
-	const end = matchWhile(c => c === ch, consumed);
-	if (end - consumed >= len) {
-		/*const spaces = matchWhile(isSpace, end);
-		if (endFn(spaces)) return spaces;*/
-		return matchWhile(isSpace, end);
-	}
-	return false;
-}
-
 // turn to matchDelimitedBlock api
 // Optimize this..
 function matchBlock(
@@ -94,6 +85,7 @@ function matchBlock(
 	ch: string,
 	len: number,
 	consumed: number,
+	inline: boolean,
 	endFn: (consumed: number, lineStart: number, lineCount: number) => boolean,
 ) {
 	const blockStart = consumed;
@@ -116,7 +108,15 @@ function matchBlock(
 		}
 		consumed++;
 
-		const found = matchEndBlock(api, ch, len, consumed);
+		let found = 0;
+		const maybeClose = api.matchWhile(c => c === ch, consumed);
+		if (inline) {
+			if (maybeClose - consumed === len) found = maybeClose;
+			else consumed = maybeClose;
+		} else if (maybeClose - consumed >= len) {
+			found = api.matchWhile(isSpace, maybeClose);
+		}
+
 		if (found && endFn(found, indent, lineCount)) {
 			blockEnd = consumed;
 			consumed = found;
@@ -241,50 +241,6 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 	return { matchHtml, matchInline };
 }
 
-/*const htmlInline = [
-	'a',
-	'abbr',
-	'acronym',
-	'b',
-	'bdo',
-	'big',
-	'br',
-	'button',
-	'cite',
-	'code',
-	'dfn',
-	'em',
-	'i',
-	'img',
-	'input',
-	'kbd',
-	'label',
-	'map',
-	'mark',
-	'meter',
-	'noscript',
-	'object',
-	'output',
-	'progress',
-	'q',
-	'ruby',
-	's',
-	'samp',
-	'script',
-	'select',
-	'small',
-	'span',
-	'strong',
-	'sub',
-	'sup',
-	'textarea',
-	'time',
-	'tt',
-	'u',
-	'var',
-	'wbr',
-];*/
-
 export function scannerInline(src: string) {
 	const api = ScannerApi({
 		source: src,
@@ -298,29 +254,8 @@ export function scannerInline(src: string) {
 		matchEnclosed,
 		matchUntil,
 		skip,
-		//createTrieMatcher,
 	} = api;
 	const { matchInline } = htmlScanner(api);
-
-	/*const htmlAutoClose = createTrieMatcher(
-		[
-			'area',
-			'base',
-			'br',
-			'col',
-			'embed',
-			'hr',
-			'img',
-			'input',
-			'link',
-			'meta',
-			'param',
-			'source',
-			'track',
-			'wbr',
-		],
-		c => c === ' ' || c === '\n' || c === '\t',
-	);*/
 
 	const escape = (i: number) =>
 		current(i) !== '\n' &&
@@ -356,6 +291,7 @@ export function scannerInline(src: string) {
 					ch,
 					len,
 					start,
+					true,
 					() => true,
 				);
 				if (blockEnd)
@@ -365,9 +301,9 @@ export function scannerInline(src: string) {
 				return tk('text', start + len);
 			}
 			case '*':
-				if (current(textStart + 1) === '*')
-					return tk('b', textStart + 2);
-				else return tk('em', textStart + 1);
+				const la = current(textStart + 1);
+				if (la === '*') return tk('b', textStart + 2);
+				return tk('em', textStart + 1);
 			case '_':
 				return tk('em', 1);
 			case '<': {
@@ -531,6 +467,7 @@ export function scannerBlock(src: string) {
 						afterSpace,
 						len,
 						consumed,
+						false,
 						(n, indent) => current(n) === '\n' && indent < 4,
 					);
 					consumed = match.consumed;
@@ -580,22 +517,34 @@ export function scannerBlock(src: string) {
 		if (digit(afterSpace)) {
 			const markerEnd = matchWhile(digit, textStart + 1);
 			const dot = current(markerEnd);
-			if (dot === '.' || dot === ')') {
+			if (
+				markerEnd - textStart < 10 &&
+				(dot === '.' || dot === ')') &&
+				isSpace(current(markerEnd + 1))
+			) {
 				const { indent: textIndent, textStart: start } = countSpaces(
 					matchWhile,
 					markerEnd + 1,
 				);
 				const markerLen = markerEnd - textStart + 1;
+
 				const end = matchUntil(isEol, start);
+				/*do {
+					const count = matchWhile(isEol, end + 1);
+					if (count - end - 1 === 1) end = matchUntil(isEol, count);
+					else break;
+				} while (!eof(end));*/
+
 				return {
 					...tk('ol', end),
-					indent: indent + markerLen,
+					indent: indent + markerLen + textIndent,
 					textStart: start,
 					blockStart: textStart,
 					markerStart: textStart,
+					dot,
 					markerEnd,
 					// Substract the space occupied by '- '
-					textIndent: textIndent - markerLen,
+					textIndent: 0, //textIndent,
 				};
 			}
 		}
@@ -621,9 +570,15 @@ export function scannerBlock(src: string) {
 			}
 
 			const end = matchUntil(isEol, start);
+			/*do {
+				const count = matchWhile(isEol, end + 1);
+				if (count - end === 1) end = matchUntil(isEol, count);
+				else break;
+			} while (!eof(end));*/
+
 			return {
 				...tk('li', end),
-				indent: indent + 2,
+				indent: indent + 1 + textIndent,
 				blockStart: textStart,
 				textStart: start,
 				bullet,
@@ -678,8 +633,7 @@ export function scannerBlock(src: string) {
 					i,
 				);
 				start = newStart;
-				// Substract the space occupied by '> '
-				textIndent = newIndent - 1;
+				if (newIndent) textIndent = newIndent - 1;
 				i += start;
 			}
 
@@ -706,7 +660,7 @@ export function scannerBlock(src: string) {
 		// Remove whitespace
 		skip(textStart);
 
-		return tk('text', textEnd - textStart);
+		return { ...tk('text', textEnd - textStart), indent };
 	}
 
 	return { next, backtrack };
@@ -722,8 +676,12 @@ function unescapeText(value: string) {
 export function parserInline(api: ParserApi<InlineToken>) {
 	const { current, parseWhile, next, backtrack } = api;
 
+	let i = 0;
+
 	function inline(): Node | undefined {
 		const token = current();
+
+		i++;
 
 		switch (token.kind) {
 			case 'code': {
@@ -731,7 +689,7 @@ export function parserInline(api: ParserApi<InlineToken>) {
 					.slice(token.blockStart, token.blockEnd)
 					.replace(/\n/g, ' ');
 				const value =
-					tokenText.length > 1 &&
+					tokenText.length > 2 &&
 					tokenText.startsWith(' ') &&
 					tokenText.endsWith(' ')
 						? tokenText.slice(1, -1)
@@ -742,27 +700,42 @@ export function parserInline(api: ParserApi<InlineToken>) {
 			}
 			case 'em':
 			case 'b': {
-				let found = false;
-				next();
-				const children: Node[] = parseWhile(() => {
-					const newToken = current();
-					if (newToken.kind === token.kind) {
-						found = true;
-						return;
+				// Check that it is not followed by Unicode whitespace, and either (2a) not followed by a Unicode punctuation character, or (2b) followed by a Unicode punctuation character and preceded by Unicode whitespace or a Unicode punctuation character
+				const n = token.source.charAt(token.end);
+				const p = token.source.charAt(token.start - 1);
+				if (
+					!uWhiteSpace.test(n) &&
+					(!uPunctuation.test(n) ||
+						!p ||
+						uWhiteSpace.test(p) ||
+						uPunctuation.test(p))
+				) {
+					let found = false;
+					next();
+					const children: Node[] = parseWhile(() => {
+						const newToken = current();
+						if (newToken.kind === token.kind) {
+							found = true;
+							return;
+						}
+						return inline();
+					});
+					if (found && children.length) {
+						next();
+						return { ...token, children } as const;
 					}
-					return inline();
-				});
-				if (found && children.length) {
-					next();
-					return { ...token, children } as const;
-				} else {
-					backtrack(token);
-					next();
-					return { ...token, kind: 'text', value: text(token) };
 				}
+
+				backtrack(token);
+				next();
+				return { ...token, kind: 'text', value: text(token) };
 			}
 			case 'text': {
-				const result = { ...token, value: unescapeText(text(token)) };
+				const value = unescapeText(text(token));
+				const result = {
+					...token,
+					value: i === 1 ? value.trimStart() : value,
+				};
 				let nextToken = next();
 				while (nextToken.kind === 'text') {
 					result.value += unescapeText(text(nextToken));
@@ -854,29 +827,6 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 		return node;
 	}
 
-	function handleNewLine(indent: number) {
-		const token = next();
-		if (token.kind === 'tabsBlock') {
-			const blockIndent = token.indent;
-			if (blockIndent > indent) {
-				const spaces = blockIndent - indent - 4;
-				token.start += token.textStart;
-				const nextToken = next();
-				// We need to calculate the leading spaces, based on indentation.
-				return {
-					...token,
-					kind: 'block',
-					value:
-						' '.repeat(spaces) +
-						text(token) +
-						(nextToken.kind === 'eol' ? '\n' : ''),
-				} as const;
-			} else if (blockIndent === indent) {
-				return p(token, textNode(token, token.textStart));
-			}
-		} else return;
-	}
-
 	function p(parentToken: BlockToken, child = textNode(parentToken)) {
 		let newChild: Node | undefined;
 
@@ -885,7 +835,16 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 			if (token.kind === 'eol' && token.count === 1) {
 				const nextToken = next();
 
-				if (nextToken.kind === 'setext') {
+				if (nextToken.kind === 'ol') {
+					const bulletOrder = nextToken.source.slice(
+						nextToken.start + nextToken.markerStart,
+						nextToken.start + nextToken.markerEnd,
+					);
+					if (bulletOrder !== '1') {
+						child.value += '\n' + text(nextToken);
+						continue;
+					}
+				} else if (nextToken.kind === 'setext') {
 					next();
 					if (child.value) {
 						// Need to trim the start and end of each line
@@ -945,25 +904,38 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 			const token = current();
 
 			if (token.kind === 'eol') {
+				const blockToken = next();
+
 				if (token.count > 1) {
 					pCount++;
-					const result = handleNewLine(indent);
-					if (result) return result;
-					backtrack(token);
+					if (
+						blockToken.kind === 'text' &&
+						blockToken.indent === indent
+					) {
+						return p(blockToken, textNode(blockToken));
+					}
 				}
 
-				const nextToken = next();
-
-				if (nextToken.kind === 'li') {
-					const liIndent = nextToken.indent;
-					if (liIndent > indent) return ul(nextToken);
+				if (blockToken.kind === 'tabsBlock') {
+					const blockIndent = blockToken.indent;
+					if (blockIndent > indent) {
+						let spaces = blockIndent - indent;
+						if (spaces >= 4) spaces -= 4;
+						return tabsBlock(blockToken, 4 + indent);
+					} else if (blockIndent === indent) {
+						if (token.count > 1)
+							return p(
+								blockToken,
+								textNode(blockToken, blockToken.textStart),
+							);
+					}
+				} else if (blockToken.kind === 'li') {
+					const liIndent = blockToken.indent;
+					if (liIndent > indent) return ul(blockToken);
 					return;
 				}
 
-				backtrack(nextToken);
-
-				/*if (nextToken.kind !== 'eof')
-					return { ...token, kind: 'text', value: '\n' } as const;*/
+				backtrack(blockToken);
 			}
 		});
 
@@ -999,49 +971,51 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 	}
 
 	function ol(token: Token<'ol'>): NodeMap['ol'] {
+		let listBullet;
 		const children = parseWhile(() => {
 			const liToken = current();
 			if (liToken.kind !== 'ol') return;
+			const bullet = liToken.dot;
+			listBullet ??= bullet;
+			if (bullet !== listBullet) return;
 
-			const bullet = liToken.source.slice(
-				liToken.markerStart,
-				liToken.markerEnd,
+			const bulletOrder = liToken.source.slice(
+				liToken.start + liToken.markerStart,
+				liToken.start + liToken.markerEnd,
 			);
-			const li = inlineBlock(
-				{ ...liToken, kind: 'li', bullet, hasThematicBreak: 0 },
-				//liToken.hasThematicBreak ? createNode('hr') : undefined,
-			);
+			const li = inlineBlock({
+				...liToken,
+				kind: 'li',
+				bullet,
+				bulletOrder,
+				hasThematicBreak: 0,
+			});
 			return li;
 		});
 		return { ...token, kind: 'ol', children };
 	}
 
 	function normalizeBlock(block: NodeMap['block'], indent: number) {
-		block.value = block.value.replace(
-			new RegExp(`^[ \t]{1,${indent}}`, 'gm'),
-			'',
-		);
+		block.value = block.value
+			.replace(/^\t+/gm, m => '    '.repeat(m.length))
+			.replace(new RegExp(`^[ \t]{1,${indent}}`, 'gm'), '');
 	}
 
 	function tabsBlock(
 		token: Extract<BlockToken, { textStart: number; indent: number }>,
+		minIndent = 4,
 	) {
 		const node: NodeMap['block'] = {
 			...token,
 			kind: 'block',
-			value: text(token), //.slice(token.textStart),
+			value: text(token),
 		};
 		let nextToken = next();
-		let minIndent = token.indent;
 
 		while (nextToken.kind === 'eol') {
 			const maybeBlock = next();
 			if (maybeBlock.kind === 'li' && maybeBlock.indent >= 4) {
 				const eolText = text(nextToken);
-				/*.replace(
-					new RegExp(`^[ \t]{1,${token.indent}}`, 'gm'),
-					'',
-				);*/
 				if (maybeBlock.indent < minIndent)
 					minIndent = maybeBlock.indent;
 				node.value +=
@@ -1049,17 +1023,10 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 				node.end = maybeBlock.end;
 				nextToken = next();
 			} else if (maybeBlock.kind === 'tabsBlock') {
-				const eolText = text(nextToken); /*.replace(
-					new RegExp(`^[ \t]{1,${token.indent}}`, 'gm'),
-					'',
-				);*/
+				const eolText = text(nextToken);
 				if (maybeBlock.indent < minIndent)
 					minIndent = maybeBlock.indent;
-				node.value +=
-					eolText +
-					//text(nextToken) +
-					//' '.repeat(Math.max(0, maybeBlock.indent - token.indent)) +
-					text(maybeBlock); //.slice(maybeBlock.textStart);
+				node.value += eolText + text(maybeBlock);
 				node.end = maybeBlock.end;
 				nextToken = next();
 			} else {
@@ -1118,8 +1085,8 @@ export function parserBlock(api: ParserApi<BlockToken>) {
 				return { ...token, block: true };
 			}
 			case 'li': {
-				// This might be a tabsBlock
-				if (token.indent > 4) return tabsBlock(token);
+				// This might be a tabsBlock?
+				//if (token.indent > 4) return tabsBlock(token);
 
 				return ul(token);
 			}
@@ -1208,15 +1175,23 @@ export function compiler(node: Node): string {
 				escapeHtml(node.href),
 			)}"${title}>${escapeHtml(node.text)}</a>`;
 		}
+		case 'ol':
+			const firstLi = node.children[0];
+			if (firstLi.kind === 'li') {
+				const start = firstLi?.bulletOrder;
+				const startStr =
+					start && start !== '1' ? ` start="${start}"` : '';
+				return `<ol${startStr}>${renderChildren(node.children)}</ol>`;
+			}
+			break;
 		case 'em':
 		case 'b':
 		case 'p':
-		case 'blockquote':
 		case 'ul':
-		case 'ol':
 			return renderChildren(node.children, node.kind);
+		case 'blockquote':
 		case 'li':
-			if (node.pCount === 0) {
+			if (node.pCount === 0 || node.children.length === 1) {
 				const children: string = node.children
 					.map(n =>
 						n.kind === 'p'

@@ -951,7 +951,7 @@ export default [
 	},
 	{
 		md: '<table>\n\n  <tr>\n\n    <td>\n      Hi\n    </td>\n\n  </tr>\n\n</table>\n',
-		html: '<table>\n  <tr>\n<pre><code>&lt;td&gt;\n  Hi\n&lt;/td&gt;\n</code></pre>\n  </tr>\n</table>\n',
+		html: '<table>\n  <tr>\n<pre><code>&lt;td&gt;\n  Hi\n&lt;/td&gt;\n</code></pre>  </tr>\n</table>\n',
 		section: 'HTML blocks',
 	},
 	{
@@ -1261,32 +1261,32 @@ export default [
 	},
 	{
 		md: 'A paragraph\nwith two lines.\n\n    indented code\n\n> A block quote.\n',
-		html: '<p>A paragraph\nwith two lines.</p><pre><code>indented code\n</code></pre><blockquote>\n<p>A block quote.</p>\n</blockquote>\n',
+		html: '<p>A paragraph\nwith two lines.</p><pre><code>indented code\n</code></pre><blockquote><p>A block quote.</p></blockquote>\n',
 		section: 'List items',
 	},
 	{
 		md: '1.  A paragraph\n    with two lines.\n\n        indented code\n\n    > A block quote.\n',
-		html: '<ol>\n<li>\n<p>A paragraph\nwith two lines.</p>\n<pre><code>indented code\n</code></pre>\n<blockquote>\n<p>A block quote.</p>\n</blockquote>\n</li>\n</ol>\n',
+		html: '<ol><li><p>A paragraph\nwith two lines.</p><pre><code>indented code\n</code></pre><blockquote><p>A block quote.</p></blockquote></li></ol>\n',
 		section: 'List items',
 	},
 	{
 		md: '- one\n\n two\n',
-		html: '<ul>\n<li>one</li>\n</ul>\n<p>two</p>\n',
+		html: '<ul><li>one</li></ul><p>two</p>\n',
 		section: 'List items',
 	},
 	{
 		md: '- one\n\n  two\n',
-		html: '<ul>\n<li>\n<p>one</p>\n<p>two</p>\n</li>\n</ul>\n',
+		html: '<ul><li><p>one</p><p>two</p></li></ul>\n',
 		section: 'List items',
 	},
 	{
 		md: ' -    one\n\n     two\n',
-		html: '<ul>\n<li>one</li>\n</ul>\n<pre><code> two\n</code></pre>\n',
+		html: '<ul><li>one</li></ul><pre><code> two\n</code></pre>\n',
 		section: 'List items',
 	},
 	{
 		md: ' -    one\n\n      two\n',
-		html: '<ul>\n<li>\n<p>one</p>\n<p>two</p>\n</li>\n</ul>\n',
+		html: '<ul><li><p>one</p><p>two</p></li></ul>\n',
 		section: 'List items',
 	},
 	{
@@ -1301,12 +1301,12 @@ export default [
 	},
 	{
 		md: '-one\n\n2.two\n',
-		html: '<p>-one</p>\n<p>2.two</p>\n',
+		html: '<p>-one</p><p>2.two</p>\n',
 		section: 'List items',
 	},
 	{
 		md: '- foo\n\n\n  bar\n',
-		html: '<ul>\n<li>\n<p>foo</p>\n<p>bar</p>\n</li>\n</ul>\n',
+		html: '<ul><li><p>foo</p><p>bar</p></li></ul>\n',
 		section: 'List items',
 	},
 	{
@@ -1316,12 +1316,12 @@ export default [
 	},
 	{
 		md: '- Foo\n\n      bar\n\n\n      baz\n',
-		html: '<ul>\n<li>\n<p>Foo</p>\n<pre><code>bar\n\n\nbaz\n</code></pre>\n</li>\n</ul>\n',
+		html: '<ul><li><p>Foo</p><pre><code>bar\n\n\nbaz\n</code></pre></li></ul>\n',
 		section: 'List items',
 	},
 	{
 		md: '123456789. ok\n',
-		html: '<ol start="123456789">\n<li>ok</li>\n</ol>\n',
+		html: '<ol start="123456789"><li>ok</li></ol>\n',
 		section: 'List items',
 	},
 	{
@@ -1331,12 +1331,12 @@ export default [
 	},
 	{
 		md: '0. ok\n',
-		html: '<ol start="0">\n<li>ok</li>\n</ol>\n',
+		html: '<ol start="0"><li>ok</li></ol>\n',
 		section: 'List items',
 	},
 	{
 		md: '003. ok\n',
-		html: '<ol start="3">\n<li>ok</li>\n</ol>\n',
+		html: '<ol start="3"><li>ok</li></ol>\n',
 		section: 'List items',
 	},
 	{
@@ -1506,12 +1506,12 @@ export default [
 	},
 	{
 		md: '1. foo\n2. bar\n3) baz\n',
-		html: '<ol>\n<li>foo</li>\n<li>bar</li>\n</ol>\n<ol start="3">\n<li>baz</li>\n</ol>\n',
+		html: '<ol><li>foo</li><li>bar</li></ol><ol start="3"><li>baz</li></ol>\n',
 		section: 'Lists',
 	},
 	{
 		md: 'Foo\n- bar\n- baz\n',
-		html: '<p>Foo</p>\n<ul>\n<li>bar</li>\n<li>baz</li>\n</ul>\n',
+		html: '<p>Foo</p><ul><li>bar</li><li>baz</li></ul>\n',
 		section: 'Lists',
 	},
 	{
@@ -1521,22 +1521,22 @@ export default [
 	},
 	{
 		md: 'The number of windows in my house is\n1.  The number of doors is 6.\n',
-		html: '<p>The number of windows in my house is</p>\n<ol>\n<li>The number of doors is 6.</li>\n</ol>\n',
+		html: '<p>The number of windows in my house is</p><ol><li>The number of doors is 6.</li></ol>\n',
 		section: 'Lists',
 	},
 	{
 		md: '- foo\n\n- bar\n\n\n- baz\n',
-		html: '<ul>\n<li>\n<p>foo</p>\n</li>\n<li>\n<p>bar</p>\n</li>\n<li>\n<p>baz</p>\n</li>\n</ul>\n',
+		html: '<ul><li><p>foo</p></li><li><p>bar</p></li><li><p>baz</p></li></ul>\n',
 		section: 'Lists',
 	},
 	{
 		md: '- foo\n  - bar\n    - baz\n\n\n      bim\n',
-		html: '<ul>\n<li>foo\n<ul>\n<li>bar\n<ul>\n<li>\n<p>baz</p>\n<p>bim</p>\n</li>\n</ul>\n</li>\n</ul>\n</li>\n</ul>\n',
+		html: '<ul><li>foo\n<ul><li>bar\n<ul><li><p>baz</p><p>bim</p></li></ul></li></ul></li></ul>\n',
 		section: 'Lists',
 	},
 	{
 		md: '- foo\n- bar\n\n<!-- -->\n\n- baz\n- bim\n',
-		html: '<ul>\n<li>foo</li>\n<li>bar</li>\n</ul>\n<!-- -->\n<ul>\n<li>baz</li>\n<li>bim</li>\n</ul>\n',
+		html: '<ul><li>foo</li><li>bar</li></ul><!-- --><ul><li>baz</li><li>bim</li></ul>\n',
 		section: 'Lists',
 	},
 	{
