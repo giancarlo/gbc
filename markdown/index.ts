@@ -13,7 +13,7 @@ type NodeMapBase = {
 	code: { value: string };
 	em: { children: Children };
 	p: { children: Children };
-	b: { children: Children };
+	strong: { children: Children };
 	root: {
 		children: Children;
 		linkDefinitions: Record<string, LinkDefinition | undefined>;
@@ -36,6 +36,7 @@ type NodeMapBase = {
 	block: { info?: string; value: string };
 	blockquote: { children: Children; pCount: number };
 	a: LinkDefinition;
+	img: LinkDefinition;
 	html: { block: boolean };
 };
 type NodeMap = MakeNodeMap<NodeMapBase>;
@@ -75,7 +76,9 @@ const notStartInline = (ch: string) =>
 	ch !== '[';
 const digit = (ch: string) => ch >= '0' && ch <= '9';
 const uWhiteSpace = /\p{White_Space}/u;
-const uPunctuation = /\p{P}/u;
+const uPunctuation = /\p{P}|\p{S}/u;
+//const uAlphanumeric = /\p{Alphabetic}|\p{Number}/u;
+const isUnicodeWhiteSpace = (ch: string) => ch === '' || uWhiteSpace.test(ch);
 
 function countSpaces(
 	matchWhile: (match: MatchFn, consumed?: number) => number,
@@ -284,11 +287,11 @@ function matchLink(
 					escape,
 					linkStart,
 			  );
-	if (linkEnd === linkStart) return;
+	if (!closing && linkEnd === linkStart) return;
 
 	const { consumed, eol } = matchWhileSpaceOrOneLineEnding(
 		matchWhile,
-		linkEnd,
+		(closing ? 1 : 0) + linkEnd,
 	);
 	// Title must be separated by spaces
 	if (consumed === linkEnd && !isEol(current(consumed))) return;
@@ -348,27 +351,15 @@ export function scannerInline(src: string) {
 	function next() {
 		if (eof()) return tk('eof', 0);
 
-		// Spaces are significant
-		const { indent, textStart } = countSpaces(matchWhile);
-		const ch = current(textStart);
-
-		if (textStart >= 2 && ch === '\n') return tk('br', textStart + 1);
-
-		if (indent >= 4) {
-			if (ch !== '\n' && ch !== '') {
-				const block = tk('tabsBlock', matchUntil(isEol, textStart));
-				return { ...block, textStart, indent };
-			}
-		}
+		let ch = current();
 
 		switch (ch) {
 			case '\\':
-				if (current(textStart + 1) === '\n')
-					return tk('br', textStart + 2);
+				if (current(1) === '\n') return tk('br', 2);
 				break;
 			case '`': {
-				const start = matchWhile(n => n === ch, textStart);
-				const len = start - textStart;
+				const start = matchWhile(n => n === ch);
+				const len = start;
 				const { consumed, blockEnd, blockStart } = matchBlock(
 					api,
 					ch,
@@ -383,20 +374,21 @@ export function scannerInline(src: string) {
 				// treat as text
 				return tk('text', start + len);
 			}
-			case '*':
-				const la = current(textStart + 1);
-				if (la === '*') return tk('b', textStart + 2);
-				return tk('em', textStart + 1);
-			case '_':
+			case '*': {
+				const la = current(1);
+				if (la === '*') return tk('strong', 2);
 				return tk('em', 1);
+			}
+			case '_': {
+				const la = current(1);
+				if (la === '_') return tk('strong', 2);
+				return tk('em', 1);
+			}
 			case '<': {
 				// Scan Autolink
-				const scheme = matchWhile(alphaDashPlus, textStart + 1);
+				const scheme = matchWhile(alphaDashPlus, 1);
 				const type = current(scheme);
-				if (
-					(scheme - textStart - 1 > 1 && type === ':') ||
-					type === '@'
-				) {
+				if ((scheme - 1 > 1 && type === ':') || type === '@') {
 					const host = matchWhile(
 						n => n !== '>' && n !== ' ' && n !== '<',
 						scheme + 1,
@@ -406,17 +398,47 @@ export function scannerInline(src: string) {
 						return { ...tk('autolink', host + 1), type };
 				}
 				// can it be HTML ?
-				const maybeHtml = matchInline(textStart + 1);
+				const maybeHtml = matchInline(1);
 				if (maybeHtml) return tk('html', maybeHtml);
 
 				return tk('text', scheme);
 			}
+			case '!': {
+				if (current(1) === '[') {
+					const linkTextEnd = matchEnclosed(
+						c => c !== ']',
+						escape,
+						1,
+					);
+					if (
+						current(linkTextEnd) === ']' &&
+						current(linkTextEnd + 1) === '('
+					) {
+						const result = matchLink(
+							api,
+							escape,
+							linkTextEnd + 2,
+							true,
+						);
+
+						if (result) {
+							return {
+								...tk(
+									'img',
+									(result.titleEnd ?? result.linkEnd) + 1,
+								),
+								linkTextEnd,
+								linkTextStart: 2,
+								...result,
+							};
+						}
+					}
+				}
+
+				return tk('text', 1);
+			}
 			case '[': {
-				const linkTextEnd = matchEnclosed(
-					c => c !== ']',
-					escape,
-					textStart + 1,
-				);
+				const linkTextEnd = matchEnclosed(c => c !== ']', escape, 1);
 				if (current(linkTextEnd) === ']') {
 					if (current(linkTextEnd + 1) === '(') {
 						const result = matchLink(
@@ -433,7 +455,7 @@ export function scannerInline(src: string) {
 									(result.titleEnd ?? result.linkEnd) + 1,
 								),
 								linkTextEnd,
-								linkTextStart: textStart + 1,
+								linkTextStart: 1,
 								...result,
 							};
 						}
@@ -442,7 +464,7 @@ export function scannerInline(src: string) {
 						return {
 							...tk('a', linkTextEnd + 1),
 							linkTextEnd,
-							linkTextStart: textStart + 1,
+							linkTextStart: 1,
 							linkStart: 0,
 							titleEnd: 0,
 							titleStart: 0,
@@ -451,7 +473,19 @@ export function scannerInline(src: string) {
 					}
 				}
 
-				return tk('text', textStart + 1);
+				return tk('text', 1);
+			}
+		}
+
+		const { indent, textStart } = countSpaces(matchWhile);
+		ch = current(textStart);
+
+		if (textStart >= 2 && ch === '\n') return tk('br', textStart + 1);
+
+		if (indent >= 4) {
+			if (ch !== '\n' && ch !== '') {
+				const block = tk('tabsBlock', matchUntil(isEol, textStart));
+				return { ...block, textStart, indent };
 			}
 		}
 
@@ -572,7 +606,9 @@ export function scannerBlock(src: string) {
 						len,
 						consumed,
 						false,
-						(n, indent) => current(n) === '\n' && indent < 4,
+						(n, indent) =>
+							(current(n) === '\n' || current(n) === '') &&
+							indent < 4,
 					);
 					consumed = match.consumed;
 					if (!found) firstStart = match.blockStart;
@@ -680,15 +716,6 @@ export function scannerBlock(src: string) {
 				textIndent = 2;
 				blockIndent = 2;
 			}
-
-			/*const startCh = current(start);
-			if (startCh === '\n') {
-				const m = countSpaces(matchWhile, start + 1);
-				textIndent = m.indent || 2; //indent + 2 + m.indent;
-				blockStart = start + 1;
-				blockIndent = 2;
-				start = m.textStart;
-			}*/
 
 			const end = matchUntil(isEol, start);
 
@@ -812,10 +839,11 @@ export function scannerBlock(src: string) {
 			}
 		}
 		// Remove whitespace
-		skip(textStart);
+		//skip(textStart);
+		skip(0);
 
 		return {
-			...tk('text', textEnd - textStart),
+			...tk('text', textEnd), // - textStart),
 			indent,
 			textIndent: indent,
 			textStart,
@@ -871,6 +899,68 @@ export function parserInline(
 
 	let i = 0;
 
+	function isEmphasisEnd(token: InlineToken, ch: string) {
+		const n = token.source.charAt(token.end);
+		const p = token.source.charAt(token.start - 1);
+
+		/*const rightFlanking =
+			!isUnicodeWhiteSpace(p) &&
+			(ch !== '_' || !uAlphanumeric.test(n) || isUnicodeWhiteSpace(n));
+
+		if (ch === '_') {
+			// underscore cannot be both preceded and followed by alphanum
+			const leftFlanking =
+				!isUnicodeWhiteSpace(n) &&
+				(!uAlphanumeric.test(p) || isUnicodeWhiteSpace(p));
+			return rightFlanking && !leftFlanking;
+		}*/
+
+		const afterIsWhitespace = isUnicodeWhiteSpace(n);
+		const afterIsPunct = uPunctuation.test(n);
+		const beforeIsWhitespace = isUnicodeWhiteSpace(p);
+		const beforeIsPunct = uPunctuation.test(p);
+
+		const leftFlanking =
+			!afterIsWhitespace &&
+			(!afterIsPunct || beforeIsWhitespace || beforeIsPunct);
+		const rightFlanking =
+			!beforeIsWhitespace &&
+			(!beforeIsPunct || afterIsWhitespace || afterIsPunct);
+
+		return ch === '_'
+			? rightFlanking && (!leftFlanking || afterIsPunct)
+			: rightFlanking;
+	}
+
+	function isEmphasisStart(token: InlineToken, ch: string) {
+		const n = token.source.charAt(token.end);
+		const p = token.source.charAt(token.start - 1);
+		/*
+		return (
+			(ch !== '_' ||
+				(!uAlphanumeric.test(p) && !uAlphanumeric.test(n))) &&
+			!isUnicodeWhiteSpace(n) &&
+			(!uPunctuation.test(n) ||
+				(uPunctuation.test(n) &&
+					(isUnicodeWhiteSpace(p) || uPunctuation.test(p))))
+		);*/
+		const afterIsWhitespace = isUnicodeWhiteSpace(n);
+		const afterIsPunct = uPunctuation.test(n);
+		const beforeIsWhitespace = isUnicodeWhiteSpace(p);
+		const beforeIsPunct = uPunctuation.test(p);
+
+		const leftFlanking =
+			!afterIsWhitespace &&
+			(!afterIsPunct || beforeIsWhitespace || beforeIsPunct);
+		const rightFlanking =
+			!beforeIsWhitespace &&
+			(!beforeIsPunct || afterIsWhitespace || afterIsPunct);
+
+		return ch === '_'
+			? leftFlanking && (!rightFlanking || beforeIsPunct)
+			: leftFlanking;
+	}
+
 	function inline(): Node | undefined {
 		const token = current();
 
@@ -892,22 +982,19 @@ export function parserInline(
 				return { ...token, kind: 'code', value } as const;
 			}
 			case 'em':
-			case 'b': {
-				// Check that it is not followed by Unicode whitespace, and either (2a) not followed by a Unicode punctuation character, or (2b) followed by a Unicode punctuation character and preceded by Unicode whitespace or a Unicode punctuation character
-				const n = token.source.charAt(token.end);
-				const p = token.source.charAt(token.start - 1);
-				if (
-					!uWhiteSpace.test(n) &&
-					(!uPunctuation.test(n) ||
-						!p ||
-						uWhiteSpace.test(p) ||
-						uPunctuation.test(p))
-				) {
+			case 'strong': {
+				const ch = token.source.charAt(token.start);
+				if (isEmphasisStart(token, ch)) {
 					let found = false;
 					next();
 					const children: Node[] = parseWhile(() => {
 						const newToken = current();
-						if (newToken.kind === token.kind) {
+
+						if (
+							newToken.kind === token.kind &&
+							newToken.source.charAt(newToken.start) === ch &&
+							isEmphasisEnd(newToken, ch)
+						) {
 							found = true;
 							return;
 						}
@@ -959,6 +1046,13 @@ export function parserInline(
 				const href = (token.type === '@' ? 'mailto:' : '') + src;
 				next();
 				return { ...token, kind: 'a', href, text: src };
+			}
+			case 'img': {
+				const parts = getLinkParts(token, linkRefs);
+				next();
+				return parts
+					? { ...token, kind: 'img', ...parts }
+					: { ...token, kind: 'text', value: text(token) };
 			}
 			case 'a': {
 				const parts = getLinkParts(token, linkRefs);
@@ -1063,8 +1157,12 @@ function parserBlock(
 					continue;
 				} else if (nextToken.kind === 'text') {
 					nextToken.start = token.start;
-					child.value += text(nextToken).replace(
+					/*child.value += text(nextToken).replace(
 						/^[\t ]*([^\n]+?)\s*$/gm,
+						'$1',
+					);*/
+					child.value += text(nextToken).replace(
+						/^[\t ]*([^\n]+?)$/gm,
 						'$1',
 					);
 					continue;
@@ -1475,6 +1573,14 @@ export function compiler(node: Node): string {
 		case 'code': {
 			return `<code>${escapeHtml(node.value)}</code>`;
 		}
+		case 'img': {
+			const title = node.title
+				? ` title="${escapeHtml(node.title)}"`
+				: '';
+			return `<img src="${encodeURI(
+				escapeHtml(node.href),
+			)}" alt="${escapeHtml(node.text)}"${title} />`;
+		}
 		case 'a': {
 			const title = node.title
 				? ` title="${escapeHtml(node.title)}"`
@@ -1498,7 +1604,7 @@ export function compiler(node: Node): string {
 			const value = renderChildren(node.children);
 			return `<blockquote>${value || '\n'}</blockquote>`;
 		case 'em':
-		case 'b':
+		case 'strong':
 		case 'p':
 			return renderChildren(node.children, node.kind);
 		case 'ul':

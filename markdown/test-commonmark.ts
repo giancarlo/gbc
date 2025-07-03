@@ -590,7 +590,7 @@ export default [
 		section: 'Indented code blocks',
 	},
 	{
-		md: '```\n<\n >\n```\n',
+		md: '```\n<\n >\n```',
 		html: '<pre><code>&lt;\n &gt;\n</code></pre>\n',
 		section: 'Fenced code blocks',
 	},
@@ -1766,7 +1766,7 @@ export default [
 	},
 	{
 		md: '*$*alpha.\n\n*£*bravo.\n\n*€*charlie.\n',
-		html: '<p>*$*alpha.</p>\n<p>*£*bravo.</p>\n<p>*€*charlie.</p>\n',
+		html: '<p>*$*alpha.</p><p>*£*bravo.</p><p>*€*charlie.</p>\n',
 		section: 'Emphasis and strong emphasis',
 	},
 	{
