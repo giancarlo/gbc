@@ -866,7 +866,7 @@ export default [
 	},
 	{
 		md: '> <div>\n> foo\n\nbar\n',
-		html: '<blockquote><div>\nfoo\n</blockquote><p>bar</p>\n',
+		html: '<blockquote><div>\nfoo</blockquote><p>bar</p>\n',
 		section: 'HTML blocks',
 	},
 	{
@@ -1421,7 +1421,7 @@ export default [
 	},
 	{
 		md: 'foo\n*\n\nfoo\n1.\n',
-		html: '<p>foo\n*</p>\n<p>foo\n1.</p>\n',
+		html: '<p>foo\n*</p><p>foo\n1.</p>\n',
 		section: 'List items',
 	},
 	{
@@ -1541,7 +1541,7 @@ export default [
 	},
 	{
 		md: '-   foo\n\n    notcode\n\n-   foo\n\n<!-- -->\n\n    code\n',
-		html: '<ul><li><p>foo</p>\n<p>notcode</p></li><li><p>foo</p></li></ul><!-- -->\n<pre><code>code\n</code></pre>\n',
+		html: '<ul><li><p>foo</p><p>notcode</p></li><li><p>foo</p></li></ul><!-- -->\n<pre><code>code\n</code></pre>\n',
 		section: 'Lists',
 	},
 	{
@@ -1576,12 +1576,12 @@ export default [
 	},
 	{
 		md: '- a\n- b\n\n  c\n- d\n',
-		html: '<ul><li><p>a</p>\n</li><li><p>b</p><p>c</p></li><li><p>d</p></li></ul>\n',
+		html: '<ul><li><p>a</p></li><li><p>b</p><p>c</p></li><li><p>d</p></li></ul>\n',
 		section: 'Lists',
 	},
 	{
 		md: '- a\n- b\n\n  [ref]: /url\n- d\n',
-		html: '<ul>\n<li>\n<p>a</p>\n</li>\n<li>\n<p>b</p>\n</li>\n<li>\n<p>d</p>\n</li>\n</ul>\n',
+		html: '<ul><li><p>a</p></li><li><p>b</p></li><li><p>d</p></li></ul>\n',
 		section: 'Lists',
 	},
 	{

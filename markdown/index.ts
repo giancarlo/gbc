@@ -16,6 +16,7 @@ type NodeMapBase = {
 	strong: { children: Children };
 	root: {
 		children: Children;
+		pCount: number;
 		linkDefinitions: Record<string, LinkDefinition | undefined>;
 	};
 	heading: { level: number; children: Children };
@@ -171,11 +172,15 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 		const { tagNameEnd, tagName } = matchTagName(start);
 		if (!tagName) return;
 
-		const afterTag = current(tagNameEnd);
 		const isRule6 = htmlRule6.test(tagName);
+		const skipSpaces = matchWhile(isSpace, tagNameEnd);
+		const afterTag = current(skipSpaces);
 
 		if (afterTag === '>')
-			return { tagName, tagEnd: tagNameEnd + 1, isClosingTag, isRule6 };
+			return { tagName, tagEnd: skipSpaces + 1, isClosingTag, isRule6 };
+		else if (isClosingTag) {
+			return;
+		}
 
 		let p = '';
 		let tagEnd = matchWhile(c => {
@@ -196,17 +201,24 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 			: 0;
 	}
 
-	function matchComment(start: number, closing: string) {
+	function matchComment(start: number, closing: string, block = true) {
 		while (!eof(start++)) {
-			//if (current(start) === '\n') break;
-			if (matchString(closing, undefined, start))
-				return matchUntil(isEol, start);
+			const end = matchString(closing, undefined, start);
+			if (end) return block ? matchUntil(isEol, start) : end;
 		}
 		return 0;
 	}
 
 	function matchInline(start: number) {
+		if (current(start) === '!') {
+			if (current(start + 1) === '-' && current(start + 2) === '-')
+				return matchComment(start, '-->', false);
+			else return matchComment(start + 1, '>', false);
+		} else if (current(start) === '?')
+			return matchComment(start + 1, '?>', false);
+
 		const openTag = matchTag(start);
+
 		if (!openTag) return 0;
 
 		return openTag.tagEnd;
@@ -218,17 +230,15 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 	}
 
 	function matchHtml(start: number, block = false) {
+		if (current(start) === '!') {
+			if (current(start + 1) === '-' && current(start + 2) === '-')
+				return matchComment(start + 3, '-->');
+			else return matchComment(start + 1, '>');
+		} else if (current(start) === '?') return matchComment(start + 1, '?>');
+
 		const openTag = matchTag(start, block);
 
-		if (!openTag) {
-			if (current(start) === '!') {
-				if (current(start + 1) === '-' && current(start + 2) === '-')
-					return matchComment(start + 3, '-->');
-				else return matchComment(start + 1, '>');
-			} else if (current(start) === '?')
-				return matchComment(start + 1, '?>');
-			return 0;
-		}
+		if (!openTag) return 0;
 
 		const { tagName, tagEnd, isClosingTag } = openTag;
 		if (eof(tagEnd)) return tagEnd;
@@ -546,7 +556,6 @@ export function scannerBlock(src: string) {
 		backtrack,
 		eof,
 		matchUntil,
-		skip,
 		matchEnclosed,
 	} = api;
 	const { matchHtml } = htmlScanner(api);
@@ -838,12 +847,9 @@ export function scannerBlock(src: string) {
 					};
 			}
 		}
-		// Remove whitespace
-		//skip(textStart);
-		skip(0);
 
 		return {
-			...tk('text', textEnd), // - textStart),
+			...tk('text', textEnd),
 			indent,
 			textIndent: indent,
 			textStart,
@@ -1114,10 +1120,24 @@ function parserBlock(
 						nextToken.start + nextToken.markerStart,
 						nextToken.start + nextToken.markerEnd,
 					)).toString();
-					if (bulletOrder !== '1') {
+					if (
+						bulletOrder !== '1' ||
+						// Empty lists cannot interrupt paragraphs
+						nextToken.textStart +
+							nextToken.start -
+							nextToken.end ===
+							0
+					) {
 						child.value += '\n' + text(nextToken);
 						continue;
 					}
+				} else if (
+					nextToken.kind === 'li' &&
+					text(nextToken).length === 1
+				) {
+					// Empty lists cannot interrupt paragraphs
+					child.value += '\n' + text(nextToken);
+					continue;
 				} else if (nextToken.kind === 'setext') {
 					// setext not allowed inside blocks
 					if (!isRoot) {
@@ -1157,10 +1177,6 @@ function parserBlock(
 					continue;
 				} else if (nextToken.kind === 'text') {
 					nextToken.start = token.start;
-					/*child.value += text(nextToken).replace(
-						/^[\t ]*([^\n]+?)\s*$/gm,
-						'$1',
-					);*/
 					child.value += text(nextToken).replace(
 						/^[\t ]*([^\n]+?)$/gm,
 						'$1',
@@ -1198,24 +1214,23 @@ function parserBlock(
 
 	function ul(token: Token<'li'> & { bullet: string }): NodeMap['ul'] {
 		const bullet = token.bullet;
-		let pCount = 0;
-		const children = parseWhile(() => {
-			const node = li(bullet);
-			if (node?.pCount === 2) pCount = 2;
-			else if (node?.pCount === 1 && pCount !== 2) pCount = 1;
-			return node;
+		const children = parseWhile(() => li(bullet));
+		const loose = !!children.find((child, i) => {
+			if (child.pCount === 2) return true;
+			else if (child.pCount === 1 && children.length - 1 !== i)
+				return true;
 		});
+
 		return {
 			...token,
 			kind: 'ul',
 			children,
-			loose: pCount === 1 ? children.length > 1 : pCount === 2,
+			loose, //: pCount === 1 ? children.length > 1 : pCount === 2,
 		};
 	}
 
 	function ol(token: Token<'ol'>): NodeMap['ol'] {
 		let listBullet;
-		let pCount = 0;
 		let listStart: string | undefined;
 
 		const children = parseWhile(() => {
@@ -1231,7 +1246,7 @@ function parserBlock(
 			)).toString();
 			listStart ??= bulletOrder;
 
-			const li = blockContainer(
+			return blockContainer(
 				{
 					...liToken,
 					kind: 'li',
@@ -1240,17 +1255,19 @@ function parserBlock(
 				},
 				true,
 			);
-			if (li.pCount === 2) pCount = 2;
-			else if (li.pCount === 1 && pCount !== 2) pCount = 1;
+		});
 
-			return li;
+		const loose = !!children.find((child, i) => {
+			if (child.pCount === 2) return true;
+			else if (child.pCount === 1 && children.length - 1 !== i)
+				return true;
 		});
 
 		return {
 			...token,
 			kind: 'ol',
 			children,
-			loose: pCount === 1 ? children.length > 1 : pCount === 2,
+			loose, //: pCount === 1 ? children.length > 1 : pCount === 2,
 			listStart,
 		};
 	}
@@ -1400,7 +1417,6 @@ function parserBlock(
 						bq.kind === 'text')
 				) {
 					if (isPartOfBlock(token, bq)) {
-						pCount = 2;
 						token.end = bq.end;
 						content.push(
 							text(nextToken),
@@ -1429,12 +1445,13 @@ function parserBlock(
 		return {
 			...token,
 			children: root.children,
-			pCount,
+			pCount: root.pCount === 2 ? 2 : pCount,
 		};
 	}
 
 	function top() {
 		const token = current();
+
 		switch (token.kind) {
 			case 'heading': {
 				const node: NodeMap['heading'] = {
@@ -1490,9 +1507,12 @@ function parserBlock(
 				return top();
 			}
 			case 'eol': {
-				const after = next();
+				if (token.count > 1) pCount = 2;
+				next();
+				return { ...token, kind: 'text', value: '' } as const;
+				/*const after = next();
 				if (after.kind === 'eof') return;
-				return top();
+				return top();*/
 			}
 			case 'setext': {
 				next();
@@ -1512,11 +1532,13 @@ function parserBlock(
 	}
 
 	const { current, node: createNode, parseWhile, next, backtrack } = api;
+	let pCount = 0;
 
 	const root: NodeMap['root'] = {
 		...createNode('root'),
 		children: parseWhile(top),
 		linkDefinitions,
+		pCount,
 	};
 
 	if (isRoot) parseInline();
