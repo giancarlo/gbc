@@ -384,15 +384,12 @@ export function scannerInline(src: string) {
 				// treat as text
 				return tk('text', start + len);
 			}
+			case '_':
 			case '*': {
 				const la = current(1);
-				if (la === '*') return tk('strong', 2);
-				return tk('em', 1);
-			}
-			case '_': {
-				const la = current(1);
-				if (la === '_') return tk('strong', 2);
-				return tk('em', 1);
+				const len = la === ch ? 2 : 1;
+
+				return len === 1 ? tk('em', 1) : tk('strong', 2);
 			}
 			case '<': {
 				// Scan Autolink
@@ -420,16 +417,11 @@ export function scannerInline(src: string) {
 						escape,
 						1,
 					);
-					if (
-						current(linkTextEnd) === ']' &&
-						current(linkTextEnd + 1) === '('
-					) {
-						const result = matchLink(
-							api,
-							escape,
-							linkTextEnd + 2,
-							true,
-						);
+					if (current(linkTextEnd) === ']') {
+						const result =
+							current(linkTextEnd + 1) === '('
+								? matchLink(api, escape, linkTextEnd + 2, true)
+								: undefined;
 
 						if (result) {
 							return {
@@ -440,6 +432,17 @@ export function scannerInline(src: string) {
 								linkTextEnd,
 								linkTextStart: 2,
 								...result,
+							};
+						} else {
+							// Possible link reference
+							return {
+								...tk('img', linkTextEnd + 1),
+								linkTextEnd,
+								linkTextStart: 2,
+								linkStart: 0,
+								titleEnd: 0,
+								titleStart: 0,
+								linkEnd: 0,
 							};
 						}
 					}
@@ -713,12 +716,12 @@ export function scannerBlock(src: string) {
 			isSpaceOrEol(current(textStart + 1))
 		) {
 			const bullet = afterSpace;
-			let { indent: textIndent, textStart: start } = countSpaces(
+			const { indent: afterIndent, textStart: start } = countSpaces(
 				matchWhile,
 				textStart + 1,
 			);
-			let blockStart = textStart;
-			textIndent = indent + 1 + textIndent;
+			const blockStart = textStart;
+			let textIndent = indent + 1 + afterIndent;
 			let blockIndent = indent + 2;
 
 			if (current(start) === '\n') {
@@ -905,51 +908,9 @@ export function parserInline(
 
 	let i = 0;
 
-	function isEmphasisEnd(token: InlineToken, ch: string) {
-		const n = token.source.charAt(token.end);
-		const p = token.source.charAt(token.start - 1);
-
-		/*const rightFlanking =
-			!isUnicodeWhiteSpace(p) &&
-			(ch !== '_' || !uAlphanumeric.test(n) || isUnicodeWhiteSpace(n));
-
-		if (ch === '_') {
-			// underscore cannot be both preceded and followed by alphanum
-			const leftFlanking =
-				!isUnicodeWhiteSpace(n) &&
-				(!uAlphanumeric.test(p) || isUnicodeWhiteSpace(p));
-			return rightFlanking && !leftFlanking;
-		}*/
-
-		const afterIsWhitespace = isUnicodeWhiteSpace(n);
-		const afterIsPunct = uPunctuation.test(n);
-		const beforeIsWhitespace = isUnicodeWhiteSpace(p);
-		const beforeIsPunct = uPunctuation.test(p);
-
-		const leftFlanking =
-			!afterIsWhitespace &&
-			(!afterIsPunct || beforeIsWhitespace || beforeIsPunct);
-		const rightFlanking =
-			!beforeIsWhitespace &&
-			(!beforeIsPunct || afterIsWhitespace || afterIsPunct);
-
-		return ch === '_'
-			? rightFlanking && (!leftFlanking || afterIsPunct)
-			: rightFlanking;
-	}
-
 	function isEmphasisStart(token: InlineToken, ch: string) {
 		const n = token.source.charAt(token.end);
 		const p = token.source.charAt(token.start - 1);
-		/*
-		return (
-			(ch !== '_' ||
-				(!uAlphanumeric.test(p) && !uAlphanumeric.test(n))) &&
-			!isUnicodeWhiteSpace(n) &&
-			(!uPunctuation.test(n) ||
-				(uPunctuation.test(n) &&
-					(isUnicodeWhiteSpace(p) || uPunctuation.test(p))))
-		);*/
 		const afterIsWhitespace = isUnicodeWhiteSpace(n);
 		const afterIsPunct = uPunctuation.test(n);
 		const beforeIsWhitespace = isUnicodeWhiteSpace(p);
@@ -965,6 +926,25 @@ export function parserInline(
 		return ch === '_'
 			? leftFlanking && (!rightFlanking || beforeIsPunct)
 			: leftFlanking;
+	}
+	function isEmphasisEnd(token: InlineToken, ch: string) {
+		const n = token.source.charAt(token.end);
+		const p = token.source.charAt(token.start - 1);
+		const afterIsWhitespace = isUnicodeWhiteSpace(n);
+		const afterIsPunct = uPunctuation.test(n);
+		const beforeIsWhitespace = isUnicodeWhiteSpace(p);
+		const beforeIsPunct = uPunctuation.test(p);
+
+		const leftFlanking =
+			!afterIsWhitespace &&
+			(!afterIsPunct || beforeIsWhitespace || beforeIsPunct);
+		const rightFlanking =
+			!beforeIsWhitespace &&
+			(!beforeIsPunct || afterIsWhitespace || afterIsPunct);
+
+		return ch === '_'
+			? rightFlanking && (!leftFlanking || afterIsPunct)
+			: rightFlanking;
 	}
 
 	function inline(): Node | undefined {
@@ -990,6 +970,7 @@ export function parserInline(
 			case 'em':
 			case 'strong': {
 				const ch = token.source.charAt(token.start);
+
 				if (isEmphasisStart(token, ch)) {
 					let found = false;
 					next();
@@ -1585,9 +1566,10 @@ function renderList(node: NodeMap['ul'] | NodeMap['ol']) {
 
 export function compiler(node: Node): string {
 	switch (node.kind) {
-		case 'root':
+		case 'root': {
 			const str = renderChildren(node.children);
 			return str ? str + '\n' : '';
+		}
 		case 'hr':
 			return `<${node.kind} />`;
 		case 'br':
@@ -1611,7 +1593,7 @@ export function compiler(node: Node): string {
 				escapeHtml(node.href),
 			)}"${title}>${escapeHtml(node.text)}</a>`;
 		}
-		case 'ol':
+		case 'ol': {
 			//const firstLi = node.children[0];
 			/*if (firstLi.kind === 'li') {
 				const start = firstLi?.bulletOrder;
@@ -1622,9 +1604,11 @@ export function compiler(node: Node): string {
 			const start = node.listStart;
 			const startStr = start && start !== '1' ? ` start="${start}"` : '';
 			return `<ol${startStr}>${renderList(node)}</ol>`;
-		case 'blockquote':
+		}
+		case 'blockquote': {
 			const value = renderChildren(node.children);
 			return `<blockquote>${value || '\n'}</blockquote>`;
+		}
 		case 'em':
 		case 'strong':
 		case 'p':
