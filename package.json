@@ -11,7 +11,7 @@
 		"@cxl/docgen": "^0.1.0",
 		"@cxl/program": "^0.0.3",
 		"@cxl/rx": "^0.8.1",
-		"@cxl/spec": "^0.3.1",
+		"@cxl/spec": "file:../cxl/dist/spec",
 		"@cxl/tester": "^0.2.0",
 		"@types/node": "^20.17.16",
 		"eslint": "^9.30.1",

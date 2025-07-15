@@ -1,5 +1,4 @@
-///<amd-module name="@cxl/gbc.compiler/node.js"/>
-import { MakeNodeMap } from '@cxl/gbc.sdk';
+import { MakeNodeMap } from 'gbc/sdk/index.js';
 
 import type { Symbol, SymbolMap, Scope, Type } from './symbol-table.js';
 

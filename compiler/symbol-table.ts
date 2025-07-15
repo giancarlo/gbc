@@ -1,5 +1,4 @@
-///<amd-module name="@cxl/gbc.compiler/symbol-table.js"/>
-import { SymbolTable as BaseSymbolTable, Position } from '@cxl/gbc.sdk';
+import { SymbolTable as BaseSymbolTable, Position } from 'gbc/sdk/index.js';
 import type { Node } from './node.js';
 
 export enum Flags {
@@ -77,8 +76,7 @@ export function ProgramSymbolTable() {
 			members: {
 				out: {
 					flags: 0,
-					kind: 'macro',
-					value: `function*($){console.log($);yield($)}`,
+					kind: 'function',
 				},
 			},
 		},

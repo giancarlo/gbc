@@ -1,7 +1,4 @@
-///<amd-module name="@cxl/gbc.compiler/scanner.js"/>
-import { ScannerApi, matchers } from '@cxl/gbc.sdk';
-
-//declare const console: { log(...m: unknown[]): void };
+import { ScannerApi, matchers, stringEscape } from 'gbc/sdk/index.js';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
@@ -25,7 +22,6 @@ const {
 	hexDigitUnderscore: hexDigit,
 	binaryDigitUnderscore: binaryDigit,
 	ident,
-	stringEscape,
 } = matchers;
 
 const identFirst = (ch: string) => ch === '_' || alpha(ch);
@@ -165,7 +161,7 @@ export function scan(source: string) {
 				// Keywords
 				const keywordToken = keywordMatcher();
 				if (keywordToken) return keywordToken;
-
+				
 				// Identifiers
 				if (identFirst(ch)) return tk('ident', matchWhile(ident, 1));
 

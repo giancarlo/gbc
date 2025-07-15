@@ -2,12 +2,14 @@
 	"name": "@cxl/gbc",
 	"version": "0.0.1",
 	"bugs": "https://github.com/giancarlo/gbc/issues",
+	"type": "module",
+	"browser": "index.js",
 	"homepage": "https://github.com/giancarlo/gbc/tree/main/compiler",
 	"description": "The GB programming language is a concise and type-safe functional language designed to prioritize immutability and modularity. It uses blocks as its core execution units, which are connected through the `>>` operator to form computation pipelines.",
 	"license": "UNLICENSED",
 	"scripts": {
 		"build": "node build",
-		"test": "npm run build && cd ../dist/compiler && cxl-tester"
+		"test": "npm run build test"
 	},
 	"dependencies": {}
 }

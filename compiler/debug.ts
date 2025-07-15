@@ -1,5 +1,4 @@
-///<amd-module name="@cxl/gbc.compiler/debug.js"/>
-import { text } from '@cxl/gbc.sdk';
+import { text } from 'gbc/sdk/index.js';
 import { Flags } from './symbol-table.js';
 
 import type { Node } from './node.js';

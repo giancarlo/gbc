@@ -1,5 +1,4 @@
-///<amd-module name="@cxl/gbc.compiler/parser.js"/>
-import { ParserApi, Token, text } from '@cxl/gbc.sdk';
+import { ParserApi, Token, text } from 'gbc/sdk/index.js';
 
 import { parseExpression } from './parser-expression.js';
 import { parseType } from './parser-type.js';

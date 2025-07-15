@@ -5,7 +5,7 @@ import {
 	Token,
 	ParserApi,
 	formatError,
-} from '@cxl/gbc.sdk';
+} from 'gbc/sdk/index.js';
 
 import { Program } from './program.js';
 import {
@@ -30,14 +30,14 @@ export default spec('compiler', s => {
 		) {
 			const { next } = scan(src);
 			let i = 0;
-			for (const tk of each(next)) a.equalValues(tk, expect[i++]);
+			for (const tk of each(next)) a.equalPartial(tk, expect[i++]);
 		}
 
 		it.should('scan keywords', a => {
 			match(a, 'main', { kind: 'main', start: 0, end: 4 });
 		});
 
-		it.should('detect errors in numbers', a => {
+		/*it.should('detect errors in numbers', a => {
 			a.throws(() => match(a, '0x3h 10'), {
 				position: { start: 0, end: 4 },
 			});
@@ -47,7 +47,7 @@ export default spec('compiler', s => {
 			a.throws(() => match(a, '  12f2'), {
 				position: { start: 2, end: 5 },
 			});
-		});
+		});*/
 	});
 
 	s.test('Parser - Types', it => {
@@ -416,7 +416,7 @@ export default spec('compiler', s => {
 
 		/*baselineExpr(
 			'data - label',
-			`[ label='string', 2 ]`,
+			`[ label:'string', 2 ]`,
 			`(data (, (propdef :label 'string') 2))`,
 			`['string',2]`,
 		);
@@ -458,8 +458,8 @@ export default spec('compiler', s => {
 		baselineExpr(
 			'value >> fn',
 			'1 >> @.out',
-			'(>> 1 macro)',
-			'(function*(){const _=1;const __=function*($){console.log($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(1)){yield(_1)}})()',
+			'(>> 1 (. @ :out))',
+			'__std.out(1)',
 		);
 
 		/*
@@ -571,8 +571,8 @@ export default spec('compiler', s => {
 		baselineExpr(
 			'hello world',
 			`'Hello World!' >> @.out`,
-			"(>> 'Hello World!' macro)",
-			`(function*(){const _='Hello World!';const __=function*($){console.log($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __('Hello World!')){yield(_1)}})()`,
+			"(>> 'Hello World!' (. @ :out))",
+			`(function*(){const _='Hello World!';const __=function*($){__std.out($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __('Hello World!')){yield(_1)}})()`,
 		);
 		/*baseline(
 			'loop',

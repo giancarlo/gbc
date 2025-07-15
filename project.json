@@ -10,7 +10,7 @@
 			},
 			"compiler": {
 				"files": ["compiler/*"],
-				"tasks": "npm run build --prefix cli"
+				"tasks": "npm run build --prefix compiler"
 			},
 			"std": {
 				"files": ["std/*"],

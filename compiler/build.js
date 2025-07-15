@@ -1,4 +1,4 @@
-const { buildCxl, tsBundle, minify } = require('@cxl/build');
+import { buildCxl, tsBundle, minify } from '@cxl/build';
 
 buildCxl({
 	target: 'package',

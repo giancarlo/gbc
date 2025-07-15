@@ -1,5 +1,4 @@
-///<amd-module name="@cxl/gbc.compiler/checker.js"/>
-import { CompilerError } from '@cxl/gbc.sdk';
+import { CompilerError } from 'gbc/sdk/index.js';
 
 import type { InfixNode, Node, NodeMap, NodeKind } from './node.js';
 import { BaseTypes, Type } from './symbol-table.js';

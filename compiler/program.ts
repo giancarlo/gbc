@@ -1,5 +1,4 @@
-///<amd-module name="@cxl/gbc.compiler/program.js"/>
-import { ParserApi } from '@cxl/gbc.sdk';
+import { ParserApi } from 'gbc/sdk/index.js';
 import { ProgramSymbolTable, TypesSymbolTable } from './symbol-table.js';
 import { parse } from './parser.js';
 import { scan } from './scanner.js';

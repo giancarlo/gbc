@@ -249,12 +249,13 @@ import './a11y' [ role ]
 # Bindable Link Component.
 #
 type A {
-	extends(Component)
-	tagName('cxl-a')
-	setAttribute('role', 'link');
+	// Left operand of '.' would be the current context (this), in this case type A instance
+	.extends(Component)
+	.tagName('cxl-a')
+	.setAttribute('role', 'link');
 
 	bind($, {
-		el = @.dom.a(style=[color='inherit'] children=[slot()])
+		el = @dom.a(style=[color='inherit'] children=[slot()])
 
 		return [
 			el,

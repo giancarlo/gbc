@@ -98,8 +98,9 @@ export const matchers = {
 	ident: ch => ch === '_' || alnum(ch),
 	notIdent: ch => ch === undefined && ch !== '_' && !alnum(ch),
 	eol: ch => ch === '\n',
-	stringEscape: ch => ch === '\\',
 } as const satisfies Record<string, MatchFn>;
+
+export const stringEscape = (n: number, src: string) => src[n-1]==='\\' && src[n-2]!=='\\'
 
 export class CompilerError {
 	constructor(
@@ -679,12 +680,12 @@ export function ScannerApi({ source }: { source: string }) {
 	 */
 	function matchEnclosed(
 		match: MatchFn,
-		escape?: (index: number) => void,
+		escape?: (index: number, source: string) => void,
 		n = 1,
 	) {
 		while (
 			index + n < length &&
-			(match(source.charAt(index + n)) || escape?.(n))
+			(match(source.charAt(index + n)) || escape?.(n, source))
 		) {
 			if (source.charAt(index + n) === '\n') endLine++;
 			n++;
@@ -736,10 +737,8 @@ export function ScannerApi({ source }: { source: string }) {
 				consumed++;
 				ch = source[index + consumed];
 				if (node[TrieMatch] && end(ch))
-					//return tk(node[TrieMatch], consumed) as MapToToken<T>;
-					return consumed;
+					return tk(node[TrieMatch], consumed) as MapToToken<T>;
 			}
-			return 0;
 		};
 	}
 

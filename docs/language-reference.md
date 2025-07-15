@@ -412,6 +412,15 @@ operation = fn {
 
 -   This also emits `1` and `4`.
 
+### Emitting Values
+
+Code blocks can emit multiple values. The block automatically completes once it reaches the end of the function.
+
+```ts
+    { 1, 2 } >> @.out # Prints 1 and 2
+    { next(1) done next(2) } >> @.out # Unreachable code compiler error.
+```
+
 ## Generics
 
 Generics are defined using angle brackets `<>` with a type parameter.
@@ -487,15 +496,6 @@ max(5, 10)   # Output: 10
 ```
 
 -   The `max` function uses a generic type `T` that extends `Comparable<T>`, ensuring that the type can be compared.
-
-### Emitting Values
-
-Code blocks can emit multiple values. The block automatically completes once it reaches the end of the function.
-
-```ts
-    { 1, 2 } >> @.out # Prints 1 and 2
-    { next(1) done next(2) } >> @.out # Unreachable code compiler error.
-```
 
 ## Errors
 

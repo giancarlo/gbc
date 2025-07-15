@@ -1,10 +1,12 @@
-///<amd-module name="@cxl/gbc.compiler/compiler.js"/>
-import { CompilerError, InfixNode, text } from '@cxl/gbc.sdk';
+import { CompilerError, InfixNode, text } from 'gbc/sdk/index.js';
 import { Flags } from './symbol-table.js';
 
 import { BlockFlags, Node, NodeMap } from './node.js';
 
-export const RUNTIME = `"use strict";`;
+export const RUNTIME = `"use strict";
+const __std={
+	out: console.log.bind(console)
+};`;
 
 const infix = (n: InfixNode<NodeMap>, op: string = n.kind) =>
 	`${compile(n.children[0])}${op}${compile(n.children[1])}`;
@@ -98,6 +100,8 @@ export function compile(node: Node): string {
 			}
 			return `${text(left)}=${compile(right)}`;
 		}
+		case '@':
+			return '__std';
 		case '<:':
 			return infix(node, '<<');
 		case ':>':
@@ -123,7 +127,7 @@ export function compile(node: Node): string {
 		case '>>': {
 			let i = node.children.length,
 				text = `yield(_${i - 1})`;
-
+				
 			while (i--) {
 				const child = node.children[i];
 				if (i === 0) break;
