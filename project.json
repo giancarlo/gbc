@@ -4,6 +4,10 @@
 	},
 	"watch": {
 		"rules": {
+			"basic": {
+				"files": ["basic/*"],
+				"tasks": "npm run build --prefix basic"
+			},
 			"cmd": {
 				"files": ["cmd/*"],
 				"tasks": "npm run build --prefix cmd"

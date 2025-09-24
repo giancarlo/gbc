@@ -10,6 +10,17 @@ This is a sample of a simple "Hello World" program. The _main_ block is our entr
 main { 'Hello World' >> @.out }
 ```
 
+## Design Constitution
+
+Language features must avoid breaking these rules:
+
+1. **One Way:** The language design should restrict multiple ways to accomplish the same task.
+2. **Built-in Best Practices:** Enforce optimal patterns via syntax and types.
+3. **Transparency:** No hidden or implicit behavior.
+4. **No Bloat:** Only essential, mainstream features.
+5. **Readable:** Prioritize clarity and concise code.
+   Syntax is clear enough to reduce need for comments.
+
 ## Lexical Elements
 
 ### Comments
@@ -42,7 +53,7 @@ export - Export module symbol
 | &&     | Short-circuiting logical AND     |
 | \*     | Arithmetic multiplication        |
 | +      | Addition                         |
-| -      | Arithmetic Negation              |
+| -      | Arithmetic Negation (Unary)      |
 | -      | Arithmetic Substraction          |
 | .      | Member access                    |
 | /      | Arithmetic division              |
@@ -58,6 +69,8 @@ export - Export module symbol
 | ?..:   | Conditional Ternary Operator     |
 | :>     | Bitwise Shift Right              |
 | <:     | Bitwise Shift Left               |
+| ++     | Increase                         |
+| --     | Decrease                         |
 
 ### Number Literals
 
@@ -145,11 +158,13 @@ a = [ 'string', 2 ]
 b = [ label = 'string', 2 ]
 ```
 
-By default data is immutable. The 'var' keyword can be used to specify variable fields.
+By default data is immutable. The 'var' type modifier can be used to specify variable fields.
+
+In the example below, we declare `field` as a mutable variable, allowing its value to change. However, the entire `c` data block itself cannot be reassigned to a new value.
 
 ```
 c = [
-    var field: boolean | string = true,
+    field: var boolean | string = true,
     2
 ]
 
@@ -170,17 +185,35 @@ All data structures are iterable:
 
 Variables act as named containers for data. You define a variable by giving it a name and assigning it a value using the equals sign (`=`). By default, these variables are immutable. You can declare it as mutable using the `var` keyword.
 
-The language also employs type inference. If you don't explicitly specify the type of data a variable will hold, the compiler will automatically determine it based on the value you assign during declaration.
-
-All variables must be initialized with a value when they are declared.
+If you don't explicitly specify the type of data a variable will hold, the compiler will determine it based on the value you assign during declaration.
 
 ```
 # Define a constant with name 'constant', type 'string', and value 'value'
 constant = 'value'
 
 # 'variable' will be a variable with value '10.0' and type 'float'
-var variable = 10.0
+variable: var = 10.0
 ```
+
+#### Variable Rules
+
+1. **No Variable Shadowing:** Prevent variables within a block from masking wider scope variables with the same name.
+2. **No Unused Variables:** Flag variables declared but never used.
+3. **Mandatory Initialization:** All variables must be assigned a value during declaration.
+
+### Ternary Operator
+
+The ternary operator syntax is `condition ? true_value : false_value`. Here, the `else` part (`: false_value`) is optional. If you omit it, the expression emits a value only when the condition is true; otherwise, it emits nothing.
+
+Example:
+
+```ts
+condition ? { $ + 1 }
+```
+
+This emits `$ + 1` when `condition` is true, and nothing if false.
+
+The `$` identifier holds the result of the condition expression and represents the current value in the ternary operation.
 
 ## Types
 
@@ -206,10 +239,10 @@ var variable = 10.0
 ### String Types
 
     # var str can contain any string
-    var str: string = ''
+    str: var string = ''
 
     # Variable name can only contain the values 'foo' or 'bar'.
-    var name: 'foo' | 'bar' = 'bar'
+    name: var 'foo' | 'bar' = 'bar'
 
 ### Data Types
 
@@ -229,11 +262,36 @@ var variable = 10.0
 
 ### Type Parameters
 
-    type Fn<T> = (T): Void
+    type Fn<T> = (:T): void
+
+### Literal Types
+
+    'string type' | 1 | true | false
 
 ### Other Types
 
-    boolean, true, false, void, error
+    boolean, void, error
+
+### Intersection Types
+
+Intersection types allow you to create new types by combining multiple types together. A value of an intersection type must satisfy all of the constituent types.
+
+```
+# Define two types
+type A = [ x: int ]
+type B = [ y: string ]
+
+# Intersection type AB must have both fields x (int) and y (string)
+type AB = A & B
+
+# Usage
+example: AB = [ x = 42, y = 'foo' ]
+
+# Functions can take intersection types as parameters
+fn printFields(value: A & B) {
+    @.out('${value.x}, ${value.y}')
+}
+```
 
 ## Modules
 
@@ -243,9 +301,9 @@ Modules can contain function and variable definitions, along with an optional `m
 
 ### Importing modules
 
-To import a module, use the `@` operator. This operator allows you to incorporate functions or variables from external files into your codebase.
+To import functions from a module, use the `@` operator followed by the module's path and the desired function name. Paths are relative to the
 
-To import a specific function from a module, use the `@` operator followed by the module's path and the desired function name.
+Only functions can be exported.
 
 ```
 @module.path.function()
@@ -278,8 +336,6 @@ add(1, 2)       # Positional arguments
 add(b = 1, a = 2) # Named arguments
 ```
 
-Both calls to `add` return `3`, but the second call uses named arguments for clarity.
-
 ### Default Parameters
 
 Functions can have default values for parameters, which are used if no argument is provided for that parameter.
@@ -300,8 +356,8 @@ The `greet` function has a default parameter `name` with a value of `"World"`.
 Functions can capture variables from their surrounding scope, creating closures.
 
 ```ts
-makeCounter = fn {
-    var count = 0
+fn makeCounter {
+    count: var = 0
     next { count += 1 }
 }
 
@@ -316,7 +372,7 @@ Functions can call themselves recursively.
 
 ```ts
 factorial = fn(n: int): int {
-    next (n <= 1) ? 1 : n * factorial(n - 1)
+    next (n <= 1) ? { 1 } : { n * factorial(n - 1) }
 }
 
 factorial(5)    # Output: 120
@@ -324,9 +380,9 @@ factorial(5)    # Output: 120
 
 The `factorial` function calculates the factorial of a number using recursion.
 
-### Error Handling
+## Error Handling
 
-#### `catch` Block
+### `catch` Block
 
 The `catch` block in a stream pipeline intercepts errors and defines custom error-handling behavior. It can emit new values to replace the error and continue processing the stream.
 
@@ -335,8 +391,15 @@ The `"done"` keyword can be used to signal completion of the stream. This premat
 The code within the `catch` block can choose to re-throw the original error. This allows subsequent parts of the stream or the caller to handle the error in their own way.
 
 The `$` variable will be available inside the catch block and it will contain the caught error.
+Errors are data and are part of the function return type. Errors implement the Error type. The _error_ function can be used to create errors at runtime.
 
-## Blocks
+```ts
+    open('file') >> catch { next open('file2') } >> {
+    	# $ can be File or 'Error!'
+    }
+```
+
+## Code Blocks
 
 -   Blocks are enclosed within curly braces `{}`.
 -   Each block accepts a single parameter, referenced using the `$` symbol.
@@ -349,10 +412,6 @@ The `$` variable will be available inside the catch block and it will contain th
 This block adds its input to itself.
 Output: `2`
 
-### Emitting Values
-
-Blocks have the ability to emit multiple values over time, using the `next` keyword. The `done` keyword is used to indicate that a function has finished emitting values.
-
 ### Emitting Values with `next`
 
 The `next` keyword is used within a block to emit a value to the next function or code block in the chain.
@@ -360,9 +419,7 @@ A block can emit multiple values by calling `next` multiple times.
 
 ```ts
 emitValues = {
-    next(1)
-    next(2)
-    next(3)
+    next(1, 2, 3)
     done()
 }
 
@@ -404,22 +461,27 @@ The above example is equivalent to using the `next` keyword for each expression:
 
 ```ts
 operation = fn {
-	next $ / 2
-	next $ * 2
+	next($ / 2, $ * 2)
 }
 2 >> operation >> @.out
 ```
 
 -   This also emits `1` and `4`.
 
-### Emitting Values
+### Chaining
 
-Code blocks can emit multiple values. The block automatically completes once it reaches the end of the function.
+Functions can be chained to perform multiple operations in sequence.
+
+Example:
 
 ```ts
-    { 1, 2 } >> @.out # Prints 1 and 2
-    { next(1) done next(2) } >> @.out # Unreachable code compiler error.
+fn increment(:number) { $ + 1 }
+fn double(:number) { $ * 2 }
+3 >> increment >> double >> @.out
 ```
+
+-   This chain increments the input by 1 and then doubles the result.
+-   Output: `8`
 
 ## Generics
 
@@ -427,7 +489,7 @@ Generics are defined using angle brackets `<>` with a type parameter.
 The type parameter can be constrained to a certain type or range of types using the `extends` keyword.
 
 ```ts
-add = fn<T extends int>(a: T, b: T): T {
+fn add<T extends int>(a: T, b: T): T {
     next a + b
 }
 
@@ -481,11 +543,11 @@ identity(42)       # Output: 42
 identity("Hello")  # Output: "Hello"
 ```
 
--   The `identity` function returns the input value as-is. The compiler infers the type of `T` based on the argument provided.
+The `identity` function returns the input value as-is. The compiler infers the type of `T` based on the argument provided.
 
 ### Bounded Generics
 
--   Bounded generics restrict the types that can be used as type arguments. This is useful for ensuring type safety.
+Bounded generics restrict the types that can be used as type arguments. This is useful for ensuring type safety.
 
 ```ts
 max = fn<T extends Comparable<T>>(a: T, b: T): T {
@@ -495,82 +557,27 @@ max = fn<T extends Comparable<T>>(a: T, b: T): T {
 max(5, 10)   # Output: 10
 ```
 
--   The `max` function uses a generic type `T` that extends `Comparable<T>`, ensuring that the type can be compared.
-
-## Errors
-
-Errors are data and are part of the function return type. Errors implement the Error type. The _error_ function can be used to create errors at runtime.
-
-```ts
-    open = (filename: string) {
-    	try { f = @.file(filename) } # f type is File | Error
-    }
-
-    open('file') >> catch { = open('file2') } >> {
-    	# $ can be File or 'Error!'
-    }
-```
-
-## Chaining
-
--   Functions can be chained to perform multiple operations in sequence.
-
-Example:
-
-```ts
-increment = { $ + 1 }
-double = { $ * 2 }
-3 >> increment >> double >> @.out
-```
-
--   This chain increments the input by 1 and then doubles the result.
--   Output: `8`
-
-## Macros
-
-Macros allow compile-time code generation. A macro is defined as a special function that takes parameters and has read-only access to the AST node of the statement immediately following it. The macro's body determines how the given AST node is positioned within the generated code.
-
-### Defining a Macro
-
-A macro is declared using the `macro` keyword. It can accept parameters in addition to the AST node it modifies.
-
-```
-macro log(fn: @.ast.Node['fn'], message: string) {
-    'Starting: ${message}` >> @.out
-	(fn)()
-    'Finished: ${message}` >> @.out
-}
-```
-
-### Using a Macro
-
-Macros are applied to statements using the `#` syntax:
-
-```
-#log("Computation")
-fn compute() => 42
-```
-
-### Expansion at Compile-Time
-
-```
-'Starting: Computation` >> @.out
-(fn compute() => 42)()
-'Finished: Computation` >> @.out
-```
-
-### Behavior
-
--   The macro receives the AST node of the statement following it.
--   It can insert the AST node anywhere within its generated code.
--   It cannot modify the AST node itself.
--   Macros **must return valid code**, ensuring correctness.
+The `max` function uses a generic type `T` that extends `Comparable<T>`, ensuring that the type can be compared.
 
 ## Statements
 
 ### loop
 
-Emits void indefinetely.
+Repeats the block indefinitely. The loop block itself does not emit values unless you explicitly call `next`. To exit the loop, use the `done` keyword.
 
-    var i=0
-    loop { i++ } >> @.out
+    i: var = 0
+    loop { next i++ } >> @.out
+
+Example: A while loop
+
+```ts
+fn while(condition: { (): boolean }) {
+	loop { condition() ? next : done }
+}
+
+while { n > 0 } >> { @.out(n); n-- }
+# Prints:
+# 3
+# 2
+# 1
+```

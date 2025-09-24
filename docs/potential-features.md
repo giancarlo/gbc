@@ -31,8 +31,11 @@ module use a, b as B, c use d, e
 
 @module.file use func1, func2
 
-[1]->fn(help, rn)
 [1, 2, 3] >> each >> [ a, b ,c ];
+
+[1, 2, 3] >> { $0, $1, $2 } >> @.out;
+
+[a=1, b=2, c=3] >> { $a, $b, $c } >> @.out;
 
 ```
 
@@ -336,3 +339,43 @@ var x: string | boolean = true;
 vs
 x: var string | boolean = true;
 ```
+
+## Macros
+
+Macros allow compile-time code generation. A macro is defined as a special function that takes parameters and has read-only access to the AST node of the statement immediately following it. The macro's body determines how the given AST node is positioned within the generated code.
+
+### Defining a Macro
+
+A macro is declared using the `macro` keyword. It can accept parameters in addition to the AST node it modifies.
+
+```
+macro log(fn: @.ast.Node['fn'], message: string) {
+    'Starting: ${message}` >> @.out
+	(fn)()
+    'Finished: ${message}` >> @.out
+}
+```
+
+### Using a Macro
+
+Macros are applied to statements using the `#` syntax:
+
+```
+#log("Computation")
+fn compute() => 42
+```
+
+### Expansion at Compile-Time
+
+```
+'Starting: Computation` >> @.out
+(fn compute() => 42)()
+'Finished: Computation` >> @.out
+```
+
+### Behavior
+
+-   The macro receives the AST node of the statement following it.
+-   It can insert the AST node anywhere within its generated code.
+-   It cannot modify the AST node itself.
+-   Macros **must return valid code**, ensuring correctness.
