@@ -1,4 +1,4 @@
-import { CompilerError, InfixNode, text } from 'gbc/sdk/index.js';
+import { CompilerError, InfixNode, text } from '../sdk/index.js';
 import { Flags } from './symbol-table.js';
 
 import { BlockFlags, Node, NodeMap } from './node.js';
@@ -127,7 +127,7 @@ export function compile(node: Node): string {
 		case '>>': {
 			let i = node.children.length,
 				text = `yield(_${i - 1})`;
-				
+
 			while (i--) {
 				const child = node.children[i];
 				if (i === 0) break;
@@ -174,7 +174,6 @@ export function compile(node: Node): string {
 				node.children[1] ? compile(node.children[1]) : ''
 			})`;
 		case 'macro':
-		//	return node.value;
 		case 'comment':
 		case 'type':
 			return '';

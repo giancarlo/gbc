@@ -78,7 +78,6 @@ const notStartInline = (ch: string) =>
 const digit = (ch: string) => ch >= '0' && ch <= '9';
 const uWhiteSpace = /\p{White_Space}/u;
 const uPunctuation = /\p{P}|\p{S}/u;
-//const uAlphanumeric = /\p{Alphabetic}|\p{Number}/u;
 const isUnicodeWhiteSpace = (ch: string) => ch === '' || uWhiteSpace.test(ch);
 
 function countSpaces(
@@ -1672,4 +1671,9 @@ export function program() {
 		compile,
 		parse,
 	};
+}
+
+export function render(src: string) {
+	const md = program();
+	return md.compile(src).output;
 }

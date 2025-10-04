@@ -5,7 +5,7 @@ import {
 	Token,
 	ParserApi,
 	formatError,
-} from 'gbc/sdk/index.js';
+} from '../sdk/index.js';
 
 import { Program } from './program.js';
 import {

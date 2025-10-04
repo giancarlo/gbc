@@ -1,4 +1,4 @@
-import { ParserApi } from 'gbc/sdk/index.js';
+import { ParserApi } from '../sdk/index.js';
 import { ProgramSymbolTable, TypesSymbolTable } from './symbol-table.js';
 import { parse } from './parser.js';
 import { scan } from './scanner.js';

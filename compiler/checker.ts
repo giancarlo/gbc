@@ -1,4 +1,4 @@
-import { CompilerError } from 'gbc/sdk/index.js';
+import { CompilerError } from '../sdk/index.js';
 
 import type { InfixNode, Node, NodeMap, NodeKind } from './node.js';
 import { BaseTypes, Type } from './symbol-table.js';

@@ -1,4 +1,4 @@
-import { SymbolTable as BaseSymbolTable, Position } from 'gbc/sdk/index.js';
+import { SymbolTable as BaseSymbolTable, Position } from '../sdk/index.js';
 import type { Node } from './node.js';
 
 export enum Flags {

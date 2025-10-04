@@ -1,22 +1,17 @@
 #!/usr/bin/env node
-///<amd-module name="@cxl/gbc.cli"/>
 import { readFileSync, writeFileSync, mkdirSync /* existsSync*/ } from 'fs';
 import { basename, extname, join, resolve } from 'path';
 
-import { parseParameters, program } from './program';
-import { Program } from '../compiler';
-import { ast } from '../compiler/debug';
-import { formatError } from '../sdk';
+import { parseParameters, program } from '@cxl/program';
+import { Program } from '../compiler/program.js';
+import { ast } from '../compiler/debug.js';
+import { formatError } from '../sdk/index.js';
 
 export interface Project {
 	files: string[];
 }
 
-/*declare const WebAssembly: {
-	validate(buffer: ArrayBuffer): boolean;
-};*/
-
-export default program('gbc', () => {
+const start = program('gbc', () => {
 	const options = parseParameters(
 		{
 			outdir: {
@@ -77,4 +72,6 @@ export default program('gbc', () => {
 	}
 });
 
-if (!require.main || require.main?.filename === __filename) exports.default();
+export default start;
+
+if (import.meta.main) start();

@@ -1,4 +1,4 @@
-import { ParserApi, Token, text } from 'gbc/sdk/index.js';
+import { ParserApi, Token, text } from '../sdk/index.js';
 
 import { parseExpression } from './parser-expression.js';
 import { parseType } from './parser-type.js';

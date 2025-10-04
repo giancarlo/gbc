@@ -12,10 +12,7 @@
 		"noUnusedParameters": true,
 		"composite": true,
 		"skipLibCheck": true,
-		"typeRoots": [],
-		"paths": {
-			"gbc/*": ["./*"]
-		}
+		"typeRoots": []
 	},
 	"files": []
 }

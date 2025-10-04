@@ -5,9 +5,10 @@
 	"homepage": "undefined/sdk",
 	"description": "GB Compiler SDK",
 	"license": "UNLICENSED",
+	"type": "module",
 	"scripts": {
 		"build": "cxl-build",
-		"test": "npm run build && cd ../dist/sdk && cxl-tester"
+		"test": "cxl-build test"
 	},
 	"dependencies": {}
 }

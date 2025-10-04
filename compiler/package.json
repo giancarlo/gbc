@@ -8,7 +8,7 @@
 	"description": "The GB programming language is a concise and type-safe functional language designed to prioritize immutability and modularity. It uses blocks as its core execution units, which are connected through the `>>` operator to form computation pipelines.",
 	"license": "UNLICENSED",
 	"scripts": {
-		"build": "node build",
+		"build": "cxl-build",
 		"test": "npm run build test"
 	},
 	"dependencies": {}

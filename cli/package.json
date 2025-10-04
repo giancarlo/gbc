@@ -5,12 +5,13 @@
 	"homepage": "undefined/cli",
 	"description": "GB Language CLI",
 	"license": "UNLICENSED",
+	"type": "module",
 	"bin": {
-		"gbc": "gbc.js"
+		"gbc": "index.bundle.js"
 	},
 	"scripts": {
-		"build": "node build",
-		"test": "npm run test"
+		"build": "cxl-build",
+		"test": "cxl-build test"
 	},
 	"dependencies": {}
 }

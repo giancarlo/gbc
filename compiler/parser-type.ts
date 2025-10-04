@@ -1,4 +1,4 @@
-import { ParserApi, Token, parserTable, text } from 'gbc/sdk/index.js';
+import { ParserApi, Token, parserTable, text } from '../sdk/index.js';
 
 import type { NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';

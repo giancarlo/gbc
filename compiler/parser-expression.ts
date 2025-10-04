@@ -1,4 +1,10 @@
-import { ParserApi, UnaryNode, Token, text, parserTable } from 'gbc/sdk/index.js';
+import {
+	ParserApi,
+	UnaryNode,
+	Token,
+	text,
+	parserTable,
+} from '../sdk/index.js';
 import {
 	EmptyFunction,
 	ScopeOwner,

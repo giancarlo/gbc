@@ -1,4 +1,4 @@
-import { MakeNodeMap } from 'gbc/sdk/index.js';
+import { MakeNodeMap } from '../sdk/index.js';
 
 import type { Symbol, SymbolMap, Scope, Type } from './symbol-table.js';
 

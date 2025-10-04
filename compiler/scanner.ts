@@ -1,4 +1,4 @@
-import { ScannerApi, matchers, stringEscape } from 'gbc/sdk/index.js';
+import { ScannerApi, matchers, stringEscape } from '../sdk/index.js';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
@@ -161,7 +161,7 @@ export function scan(source: string) {
 				// Keywords
 				const keywordToken = keywordMatcher();
 				if (keywordToken) return keywordToken;
-				
+
 				// Identifiers
 				if (identFirst(ch)) return tk('ident', matchWhile(ident, 1));
 

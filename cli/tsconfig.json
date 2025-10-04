@@ -5,6 +5,6 @@
 		"typeRoots": ["../node_modules/@types"],
 		"types": ["node"]
 	},
-	"files": ["index.ts", "program.ts"],
+	"files": ["index.ts"],
 	"references": [{ "path": "../compiler" }]
 }
