@@ -5,12 +5,13 @@
 	"homepage": "undefined/gbx",
 	"description": "GB interpreter",
 	"license": "UNLICENSED",
+	"type": "module",
 	"bin": {
-		"gbc": "gbc.js"
+		"gbx": "index.bundle.js"
 	},
 	"scripts": {
-		"build": "node build",
-		"test": "npm run build && cd ../dist/gbx && node cxl-tester"
+		"build": "cxl-build",
+		"test": "cxl-build test"
 	},
 	"dependencies": {}
 }

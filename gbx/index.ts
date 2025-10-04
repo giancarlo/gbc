@@ -1,14 +1,13 @@
-///<amd-module name="@cxl/gbc.gbx"/>
 import { readFileSync } from 'fs';
 
 import { parseParameters, program } from '@cxl/program';
-import { Program } from '../compiler';
+import { Program } from '../compiler/program.js';
 
 export interface Project {
 	files: string[];
 }
 
-export default program('gbx', () => {
+const start = program('gbx', () => {
 	const options = parseParameters({}, process.argv.slice(2).join(' '));
 
 	if (options.$) {
@@ -20,4 +19,6 @@ export default program('gbx', () => {
 	}
 });
 
-if (!require.main || require.main?.filename === __filename) exports.default();
+export default start;
+
+if (import.meta.main) start();

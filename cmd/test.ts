@@ -1,5 +1,5 @@
 import { TestApi, spec } from '@cxl/spec';
-import { each, Token } from '@cxl/gbc.sdk';
+import { each, Token } from '../sdk/index.js';
 
 import { scan, keywords } from './index.js';
 //import { ast } from './debug.js';

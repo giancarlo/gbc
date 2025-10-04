@@ -2,7 +2,9 @@
 	"extends": "../tsconfig.json",
 	"compilerOptions": {
 		"outDir": "../dist/gbx",
-		"allowJs": true
+		"allowJs": true,
+		"typeRoots": ["../node_modules/@types"],
+		"types": ["node"]
 	},
 	"files": ["index.ts"],
 	"references": [{ "path": "../compiler" }]

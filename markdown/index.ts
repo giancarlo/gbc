@@ -5,7 +5,7 @@ import {
 	ParserApi,
 	text,
 	MatchFn,
-} from 'gbc/sdk/index.js';
+} from '../sdk/index.js';
 
 type Children = Node[];
 /* eslint @typescript-eslint/no-empty-object-type: off */

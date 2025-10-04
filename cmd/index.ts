@@ -1,7 +1,4 @@
-///<amd-module name="@cxl/gbc.cmd"/>
-import { ScannerApi, matchers } from '@cxl/gbc.sdk';
-
-//declare const console: { log(...m: unknown[]): void };
+import { ScannerApi, matchers, stringEscape } from '../sdk/index.js';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
@@ -14,7 +11,6 @@ const {
 	hexDigitUnderscore: hexDigit,
 	binaryDigitUnderscore: binaryDigit,
 	ident,
-	stringEscape,
 } = matchers;
 
 const identFirst = (ch: string) => ch === '_' || alpha(ch);
@@ -52,8 +48,8 @@ export function scan(source: string) {
 				return la === '='
 					? tk('==', 2)
 					: la === '>'
-						? tk('=>', 2)
-						: tk('=', 1);
+					? tk('=>', 2)
+					: tk('=', 1);
 			case '|':
 				return la === '|' ? tk('||', 2) : tk('|', 1);
 			case '&':
@@ -62,16 +58,16 @@ export function scan(source: string) {
 				return la === '='
 					? tk('>=', 2)
 					: la === '>'
-						? tk('>>', 2)
-						: tk('>', 1);
+					? tk('>>', 2)
+					: tk('>', 1);
 			case '<':
 				return la === '='
 					? tk('<=', 2)
 					: la === '<'
-						? tk('<<', 2)
-						: la === ':'
-							? tk('<:', 2)
-							: tk('<', 1);
+					? tk('<<', 2)
+					: la === ':'
+					? tk('<:', 2)
+					: tk('<', 1);
 			case '!':
 				return la === '=' ? tk('!=', 2) : tk('!', 1);
 			case '+':
