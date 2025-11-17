@@ -1,8 +1,14 @@
-# GB Compiler Framework
+A modular toolset designed to simplify the creation of compilers, particularly for languages targeting JavaScript and WebAssembly. Work in progress.
 
-The GB Compiler (GBC) framework is a modular toolset that attempts to simplify the creation of compilers, particularly for languages targeting JavaScript and WebAssembly.
+## Packages
 
-## Projects
+| Name           | Version | License | Description                          | Links                                          |
+| -------------- | ------- | ------- | ------------------------------------ | ---------------------------------------------- |
+| @cxl/gbc             | 0.0.1 | GPL-3.0    | GB Language CLI | [Docs](https://cxlio.github.io/docs/@cxl/gbc/0.0.1/) |
+| @cxl/gbc.cmd         | 0.0.1 | GPL-3.0    | A language for IDE commands | [Docs](https://cxlio.github.io/docs/@cxl/gbc.cmd/0.0.1/) |
+| @cxl/gbc             | 0.0.1 | GPL-3.0    | A concise and type-safe functional language designed to prioritize immutability and modularity. It uses blocks as its core execution units to form computation pipelines. | [Docs](https://cxlio.github.io/docs/@cxl/gbc/0.0.1/) |
+| @cxl/gbx             | 0.0.1 | GPL-3.0    | GB interpreter | [Docs](https://cxlio.github.io/docs/@cxl/gbx/0.0.1/) |
+| @cxl/gbc.html        | 0.0.1 | GPL-3.0    | HTML Parser | [Docs](https://cxlio.github.io/docs/@cxl/gbc.html/0.0.1/) |
+| @cxl/gbc.markdown    | 0.0.1-beta.1 | GPL-3.0    | Markdown Parser | [Docs](https://cxlio.github.io/docs/@cxl/gbc.markdown/0.0.1-beta.1/) |
+| @cxl/gbc.sdk         | 0.0.1 | GPL-3.0    | Compiler SDK | [Docs](https://cxlio.github.io/docs/@cxl/gbc.sdk/0.0.1/) |
 
--   [Compiler Framework](https://github.com/giancarlo/gbc/tree/main/sdk): The SDK provides tools for syntax parsing, semantic analysis, and code generation, offering a foundation for building custom compilers.
--   [GB Language](https://github.com/giancarlo/gbc/tree/main/compiler): The GB programming language is a concise, type-safe, and functional language emphasizing immutability, modular design, and streamlined syntax, utilizing block-based execution with pipelines, strong typing with inference, and features like generics, closures, and streams.

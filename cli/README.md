@@ -7,9 +7,9 @@ GB Language CLI
 ## Project Details
 
 -   Branch Version: [0.0.1](https://npmjs.com/package/@cxl/gbc/v/0.0.1)
--   License: UNLICENSED
--   Documentation: [Link](undefined/cli)
--   Report Issues: [Github](undefined)
+-   License: GPL-3.0
+-   Documentation: [Link](https:/github.com/giancarlo/gbc/cli)
+-   Report Issues: [Github](https://github.com/giancarlo/gbc/issues)
 
 ## Installation
 

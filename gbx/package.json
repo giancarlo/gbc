@@ -1,17 +1,22 @@
 {
 	"name": "@cxl/gbx",
 	"version": "0.0.1",
-	"bugs": "undefined",
-	"homepage": "undefined/gbx",
+	"bugs": "https://github.com/giancarlo/gbc/issues",
+	"homepage": "https:/github.com/giancarlo/gbc/gbx",
 	"description": "GB interpreter",
-	"license": "UNLICENSED",
+	"license": "GPL-3.0",
 	"type": "module",
 	"bin": {
 		"gbx": "index.bundle.js"
 	},
 	"scripts": {
 		"build": "cxl-build",
-		"test": "cxl-build test"
+		"test": "npm run build test"
 	},
-	"dependencies": {}
+	"dependencies": {},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/giancarlo/gbc",
+		"directory": "gbx"
+	}
 }

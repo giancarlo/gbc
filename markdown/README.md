@@ -7,8 +7,8 @@ Markdown Parser
 ## Project Details
 
 -   Branch Version: [0.0.1-beta.1](https://npmjs.com/package/@cxl/gbc.markdown/v/0.0.1-beta.1)
--   License: UNLICENSED
--   Documentation: [Link](https://github.com/giancarlo/gbc/tree/main/markdown)
+-   License: GPL-3.0
+-   Documentation: [Link](https:/github.com/giancarlo/gbc/markdown)
 -   Report Issues: [Github](https://github.com/giancarlo/gbc/issues)
 
 ## Installation

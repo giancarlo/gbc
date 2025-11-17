@@ -1,14 +1,18 @@
 {
 	"name": "@cxl/gbc.sdk",
 	"version": "0.0.1",
-	"bugs": "undefined",
-	"homepage": "undefined/sdk",
-	"description": "GB Compiler SDK",
-	"license": "UNLICENSED",
+	"bugs": "https://github.com/giancarlo/gbc/issues",
+	"homepage": "https:/github.com/giancarlo/gbc/sdk",
+	"description": "Compiler SDK",
+	"license": "GPL-3.0",
 	"type": "module",
 	"scripts": {
 		"build": "cxl-build",
-		"test": "cxl-build test"
+		"test": "npm run build test"
 	},
-	"dependencies": {}
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/giancarlo/gbc",
+		"directory": "sdk"
+	}
 }

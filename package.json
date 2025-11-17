@@ -4,7 +4,7 @@
 	"version": "0.0.0",
 	"bugs": "https://github.com/giancarlo/gbc/issues",
 	"homepage": "https://github.com/giancarlo/gbc",
-	"description": "The GB Compiler (GBC) framework is a modular toolset designed to simplify the creation of compilers, particularly for languages targeting JavaScript and WebAssembly. It provides essential components for syntax parsing, semantic analysis, and code generation, enabling developers to focus on high-level logic while relying on built-in low-level functionality.",
+	"description": "A modular toolset designed to simplify the creation of compilers, particularly for languages targeting JavaScript and WebAssembly. Work in progress.",
 	"type": "module",
 	"devDependencies": {
 		"@cxl/build": "^1.0.0-beta",
@@ -13,6 +13,12 @@
 		"@types/node": "^24.6.2"
 	},
 	"scripts": {
-		"build": "npm run build package docs --prefix compiler"
-	}
+		"build": "cxl-build"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/giancarlo/gbc",
+		"directory": "build"
+	},
+	"docs": "https://cxlio.github.io/docs"
 }
