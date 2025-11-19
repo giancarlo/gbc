@@ -1,5 +1,5 @@
 {
-	"name": "@cxl/gbc",
+	"name": "@cxl/gbc.compiler",
 	"version": "0.0.1",
 	"bugs": "https://github.com/giancarlo/gbc/issues",
 	"license": "GPL-3.0",

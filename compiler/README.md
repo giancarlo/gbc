@@ -1,19 +1,19 @@
-# @cxl/gbc 
+# @cxl/gbc.compiler 
 	
-[![npm version](https://badge.fury.io/js/%40cxl%2Fgbc.svg)](https://badge.fury.io/js/%40cxl%2Fgbc)
+[![npm version](https://badge.fury.io/js/%40cxl%2Fgbc.compiler.svg)](https://badge.fury.io/js/%40cxl%2Fgbc.compiler)
 
 A concise and type-safe functional language designed to prioritize immutability and modularity. It uses blocks as its core execution units to form computation pipelines.
 
 ## Project Details
 
--   Branch Version: [0.0.1](https://npmjs.com/package/@cxl/gbc/v/0.0.1)
+-   Branch Version: [0.0.1](https://npmjs.com/package/@cxl/gbc.compiler/v/0.0.1)
 -   License: GPL-3.0
 -   Documentation: [Link](https:/github.com/giancarlo/gbc/compiler)
 -   Report Issues: [Github](https://github.com/giancarlo/gbc/issues)
 
 ## Installation
 
-	npm install @cxl/gbc
+	npm install @cxl/gbc.compiler
 
 ## Hello World
 
