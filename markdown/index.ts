@@ -952,6 +952,8 @@ export function parserInline(
 		i++;
 
 		switch (token.kind) {
+			case 'eof':
+				return;
 			case 'code': {
 				const tokenText = text(token)
 					.slice(token.blockStart, token.blockEnd)
@@ -973,6 +975,11 @@ export function parserInline(
 				if (isEmphasisStart(token, ch)) {
 					let found = false;
 					next();
+
+					/*
+					 * Attempt to parse a sequence of inline tokens as nested emphasis or strong emphasis,
+					 * stopping when a matching closing delimiter is found that satisfies emphasis end conditions.
+					 */
 					const children: Node[] = parseWhile(() => {
 						const newToken = current();
 
@@ -986,7 +993,7 @@ export function parserInline(
 						}
 						return inline();
 					});
-					if (found && children.length) {
+					if ((found as boolean) && children.length) {
 						next();
 						return { ...token, children } as const;
 					}
@@ -1090,7 +1097,7 @@ function parserBlock(
 	function p(parentToken: BlockToken, child = textNode(parentToken)) {
 		let newChild: Node | undefined;
 
-		while (child) {
+		for (;;) {
 			const token = next();
 			if (token.kind === 'eol' && token.count === 1) {
 				const nextToken = next();
@@ -1330,7 +1337,7 @@ function parserBlock(
 		];
 		let pCount = 0;
 
-		while (token) {
+		for (;;) {
 			const nextToken = next();
 			if (nextToken.kind !== 'eol') break;
 
@@ -1506,6 +1513,8 @@ function parserBlock(
 			}
 			case 'eof':
 				return;
+			case 'text':
+				break;
 		}
 
 		return p(token);
@@ -1644,9 +1653,9 @@ export function compiler(node: Node): string {
 				text(node) +
 				(node.block && node.end < node.source.length - 1 ? '\n' : '')
 			);
+		default:
+			return '';
 	}
-
-	return '';
 }
 
 export function program() {

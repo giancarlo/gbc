@@ -96,11 +96,12 @@ export const matchers = {
 	binaryDigit: ch => ch === '0' || ch === '1',
 	binaryDigitUnderscore: ch => ch === '0' || ch === '1' || ch === '_',
 	ident: ch => ch === '_' || alnum(ch),
-	notIdent: ch => ch === undefined && ch !== '_' && !alnum(ch),
+	notIdent: ch => ch !== '_' && !alnum(ch),
 	eol: ch => ch === '\n',
 } as const satisfies Record<string, MatchFn>;
 
-export const stringEscape = (n: number, src: string) => src[n-1]==='\\' && src[n-2]!=='\\'
+export const stringEscape = (n: number, src: string) =>
+	src[n - 1] === '\\' && src[n - 2] !== '\\';
 
 export class CompilerError {
 	constructor(
@@ -317,7 +318,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 	}
 
 	function skipWhile(kind: Node['kind']) {
-		while (token?.kind === kind) next();
+		while (token.kind === kind) next();
 	}
 
 	function optional<K extends Node['kind']>(kind: K) {
@@ -352,9 +353,13 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		while (!condition()) next();
 	}
 
+	/**
+	 * Repeatedly applies the given parser function as long as it continues returning valid nodes,
+	 * collecting the results into an array until no more nodes are produced or end-of-file is reached.
+	 */
 	function parseWhile<C>(parser: () => C | undefined) {
 		const result: C[] = [];
-		while (token?.kind !== 'eof') {
+		while (token.kind !== 'eof') {
 			const node = parser();
 			if (node) result.push(node);
 			else break;
@@ -370,7 +375,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		const result: C[] = [];
 		catchAndRecover(
 			() => {
-				while (token && !condition() && token.kind !== 'eof') {
+				while (!condition() && token.kind !== 'eof') {
 					const node = parser();
 					if (node) result.push(node);
 					else
@@ -414,7 +419,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		parser: () => C | undefined,
 		kind: Node['kind'],
 	) {
-		return parseUntil(parser, () => current()?.kind === kind);
+		return parseUntil(parser, () => current().kind === kind);
 	}
 
 	function parseListWithEmpty<C>(
@@ -423,8 +428,8 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		isItem: (item: C) => boolean,
 	) {
 		const result: (C | undefined)[] = [];
-		let token: Node;
-		while ((token = current())) {
+		do {
+			const token = current();
 			// Handle empty params
 			if (token.kind === separator) {
 				result.push(undefined);
@@ -435,7 +440,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 			if (!item || !isItem(item)) break;
 			result.push(item);
 			if (!optional(separator)) break;
-		}
+		} while (token.kind !== 'eol');
 		return result;
 	}
 
@@ -502,7 +507,7 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 			node.children = [left, right];
 			node.end = right.end;
 			cb?.(node);
-			return node as Node;
+			return node;
 		};
 	}
 
@@ -680,7 +685,7 @@ export function ScannerApi({ source }: { source: string }) {
 	 */
 	function matchEnclosed(
 		match: MatchFn,
-		escape?: (index: number, source: string) => void,
+		escape?: (index: number, source: string) => boolean,
 		n = 1,
 	) {
 		while (
@@ -732,8 +737,8 @@ export function ScannerApi({ source }: { source: string }) {
 		const trie = createTrie(...map);
 		return (consumed = 0) => {
 			let ch = source[index + consumed];
-			let node = trie;
-			while ((node = node[ch])) {
+			let node: TrieNode | undefined = trie;
+			while ((node = node[ch] as TrieNode | undefined)) {
 				consumed++;
 				ch = source[index + consumed];
 				if (node[TrieMatch] && end(ch))
