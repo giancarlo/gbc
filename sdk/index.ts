@@ -222,7 +222,9 @@ export function SymbolTable<S>(
 		if (stack.length === 1) throw new Error('Invalid pop');
 		const popped = stack.pop();
 		if (popped !== expectedScope) throw new Error('Invalid scope popped');
-		scope = stack[stack.length - 1];
+		const newScope = stack[stack.length - 1];
+		if (!newScope) throw new Error('Invalid scope stack');
+		scope = newScope;
 	}
 
 	return {
@@ -236,7 +238,7 @@ export function SymbolTable<S>(
 				i >= 0;
 				scope = stack[--i]
 			)
-				if (scope[id]) return scope[id];
+				if (scope?.[id]) return scope[id];
 		},
 		set<T extends S>(id: string | symbol, symbol: T): T {
 			scope[id] = symbol;
@@ -738,10 +740,10 @@ export function ScannerApi({ source }: { source: string }) {
 		return (consumed = 0) => {
 			let ch = source[index + consumed];
 			let node: TrieNode | undefined = trie;
-			while ((node = node[ch] as TrieNode | undefined)) {
+			while (ch && (node = node[ch] as TrieNode | undefined)) {
 				consumed++;
 				ch = source[index + consumed];
-				if (node[TrieMatch] && end(ch))
+				if (ch && node[TrieMatch] && end(ch))
 					return tk(node[TrieMatch], consumed) as MapToToken<T>;
 			}
 		};

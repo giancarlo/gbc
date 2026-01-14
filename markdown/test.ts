@@ -17,9 +17,9 @@ export default spec('markdown', (a: TestApi) => {
 		testApi.push(test);
 	}
 
-	for (const section in sections) {
+	for (const [section, tests] of Object.entries(sections)) {
 		a.test(section, t => {
-			for (const test of sections[section])
+			for (const test of tests)
 				t.test(JSON.stringify(test.md), t2 => {
 					const { output, errors } = testProgram.compile(test.md);
 					t2.equal(output, test.html, test.md);

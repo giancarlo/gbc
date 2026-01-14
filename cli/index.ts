@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, mkdirSync /* existsSync*/ } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { basename, extname, join, resolve } from 'path';
 
 import { parseParameters, program } from '@cxl/program';
@@ -30,7 +30,7 @@ const start = program('gbc', () => {
 		process.argv.slice(2).join(' '),
 	);
 
-	if (options.$) {
+	if (options.$.length) {
 		const program = Program();
 		let hasErrors = false;
 
@@ -74,4 +74,4 @@ const start = program('gbc', () => {
 
 export default start;
 
-if (import.meta.main) start();
+if (import.meta.main) await start();

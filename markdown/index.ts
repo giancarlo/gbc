@@ -1639,7 +1639,7 @@ export function compiler(node: Node): string {
 			return renderChildren(node.children, `h${node.level}`);
 		case 'block': {
 			const lang = node.info && /\s*([^\s]+)/.exec(node.info);
-			const cls = lang
+			const cls = lang?.[1]
 				? ` class="language-${unescapeText(lang[1])}"`
 				: '';
 			return `<pre><code${cls}>${escapeHtml(node.value)}</code></pre>`;

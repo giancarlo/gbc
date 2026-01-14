@@ -10,6 +10,7 @@
 		"moduleResolution": "Node",
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
+		"noUncheckedIndexedAccess": true,
 		"composite": true,
 		"skipLibCheck": true,
 		"typeRoots": []
