@@ -25,7 +25,7 @@ const {
 } = matchers;
 
 const identFirst = (ch: string) => ch === '_' || alpha(ch);
-const notIdent = (ch: string) => ch === undefined || !ident(ch);
+const notIdent = (ch: string) => !ident(ch);
 const notEol = (ch: string) => ch !== '\n';
 
 const stringCh = (ch: string) => ch !== "'"; // && ch !== '{';
@@ -62,8 +62,8 @@ export function scan(source: string) {
 				return la === '='
 					? tk('==', 2)
 					: la === '>'
-					? tk('=>', 2)
-					: tk('=', 1);
+						? tk('=>', 2)
+						: tk('=', 1);
 			case '|':
 				return la === '|' ? tk('||', 2) : tk('|', 1);
 			case '&':
@@ -72,16 +72,16 @@ export function scan(source: string) {
 				return la === '='
 					? tk('>=', 2)
 					: la === '>'
-					? tk('>>', 2)
-					: tk('>', 1);
+						? tk('>>', 2)
+						: tk('>', 1);
 			case '<':
 				return la === '='
 					? tk('<=', 2)
 					: la === '<'
-					? tk('<<', 2)
-					: la === ':'
-					? tk('<:', 2)
-					: tk('<', 1);
+						? tk('<<', 2)
+						: la === ':'
+							? tk('<:', 2)
+							: tk('<', 1);
 			case '!':
 				return la === '=' ? tk('!=', 2) : tk('!', 1);
 			case '+':

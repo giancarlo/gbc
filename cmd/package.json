@@ -2,7 +2,7 @@
 	"name": "@cxl/gbc.cmd",
 	"version": "0.0.1",
 	"bugs": "https://github.com/giancarlo/gbc/issues",
-	"homepage": "https:/github.com/giancarlo/gbc/cmd",
+	"homepage": "https://github.com/giancarlo/@cxl/gbc.cmd",
 	"description": "A language for IDE commands",
 	"license": "GPL-3.0",
 	"scripts": {

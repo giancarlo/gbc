@@ -738,12 +738,12 @@ export function ScannerApi({ source }: { source: string }) {
 	) {
 		const trie = createTrie(...map);
 		return (consumed = 0) => {
-			let ch = source[index + consumed];
+			let ch = source.at(index + consumed);
 			let node: TrieNode | undefined = trie;
 			while (ch && (node = node[ch] as TrieNode | undefined)) {
 				consumed++;
-				ch = source[index + consumed];
-				if (ch && node[TrieMatch] && end(ch))
+				ch = source.at(index + consumed);
+				if (node[TrieMatch] && (!ch || end(ch)))
 					return tk(node[TrieMatch], consumed) as MapToToken<T>;
 			}
 		};

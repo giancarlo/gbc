@@ -5,12 +5,6 @@ import type { Symbol, SymbolMap, Scope, Type } from './symbol-table.js';
 type Infix = { children: [Node, Node] };
 type MakeInfix<T extends string> = { [K in T]: Infix };
 
-export enum BlockFlags {
-	Default = 0,
-	Lambda = 1,
-	Sequence = 2,
-}
-
 export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[]; scope: Scope };
@@ -24,7 +18,6 @@ export type BaseNodeMap = {
 	loop: { children: [Node] };
 	next: {
 		children?: [Node | undefined];
-		generator?: boolean;
 		owner: SymbolMap['function'];
 	};
 	comment: void;
@@ -52,13 +45,13 @@ export type BaseNodeMap = {
 	'+': { children: [Node] };
 	'++': { children: [Node] };
 	'--': { children: [Node] };
-	'-': { children: [Node] };
+	$: void;
+	negate: { children: [Node] };
 	fn: {
 		parameters?: NodeMap['parameter'][];
 		statements?: Node[];
 		children: Node[];
 		symbol: SymbolMap['function'];
-		flags: BlockFlags;
 		returnType?: Node;
 	};
 	'[': { children: [Node, Node] };

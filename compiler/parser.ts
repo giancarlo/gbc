@@ -28,7 +28,7 @@ export function parse(
 	const expression = parseExpression(api, symbolTable, typeParser);
 
 	function markExported(n: Node) {
-		if (n.kind === 'ident' && n.symbol) n.symbol.flags |= Flags.Export;
+		if (n.kind === 'ident') n.symbol.flags |= Flags.Export;
 		else throw 'Invalid Symbol';
 	}
 

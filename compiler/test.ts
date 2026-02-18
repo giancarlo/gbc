@@ -30,7 +30,11 @@ export default spec('compiler', s => {
 		) {
 			const { next } = scan(src);
 			let i = 0;
-			for (const tk of each(next)) a.equalPartial(tk, expect[i++]);
+			for (const tk of each(next)) {
+				const expected = expect[i++];
+				a.assert(expected);
+				a.equalPartial(tk, expected);
+			}
 		}
 
 		it.should('scan keywords', a => {
@@ -84,7 +88,7 @@ export default spec('compiler', s => {
 		it.should('parse variable types', a => {
 			const { scope } = parse('a: int = 100');
 			a.ok(scope.a);
-			a.equal(scope.a.type?.name, 'int');
+			a.equal(scope.a?.type?.name, 'int');
 		});
 	});
 
@@ -138,8 +142,8 @@ export default spec('compiler', s => {
 				`\n\n'multi\nline\nstring' 'more\nlines'`,
 				`(root 'multi\nline\nstring' 'more\nlines')`,
 			);
-			a.equal(c1[0].line, 2);
-			a.equal(c1[1].line, 4);
+			a.equal(c1[0]?.line, 2);
+			a.equal(c1[1]?.line, 4);
 			matchError(a, `'Unterminated String`);
 		});
 
@@ -186,15 +190,15 @@ export default spec('compiler', s => {
 				'# Comment 1\n#Comment 2\na = 10',
 				'(root comment comment (def :a 10))',
 			);
-			a.equal(c1[0].line, 0);
-			a.equal(c1[2].line, 2);
+			a.equal(c1[0]?.line, 0);
+			a.equal(c1[2]?.line, 2);
 
 			const c2 = match(
 				a,
 				'# Comment\n123\n# Comment 2',
 				'(root comment 123 comment)',
 			);
-			a.equal(c2[1].line, 1);
+			a.equal(c2[1]?.line, 1);
 		});
 
 		it.should('parse definition', a => {
@@ -302,9 +306,9 @@ export default spec('compiler', s => {
 					const sf = parse(src);
 					a.ok(sf.errors.length, 'Expected error but none received');
 					const error = sf.errors[0];
-					a.equal(error.message, msg);
-					a.equal(error.position.start, start, 'Start position');
-					a.equal(error.position.end, end, 'End position');
+					a.equal(error?.message, msg);
+					a.equal(error?.position.start, start, 'Start position');
+					a.equal(error?.position.end, end, 'End position');
 				});
 			}
 
@@ -349,7 +353,7 @@ export default spec('compiler', s => {
 			src: string,
 			astText: string,
 			output: string,
-			test?: (a: TestApi, fn: T) => void,
+			test: (a: TestApi, fn: T) => void,
 			extra = '',
 		) {
 			a.test(testName, a => {
@@ -378,14 +382,16 @@ export default spec('compiler', s => {
 			a.test(testName, a => {
 				const mainSrc = `__main={ ${src} }`;
 				const { ast: rootAst, program } = parse(mainSrc);
-				const expr = validateExpr(rootAst.children[0])?.children[0];
+				const expr =
+					rootAst.children[0] &&
+					validateExpr(rootAst.children[0])?.children[0];
 				if (!expr) throw 'Invalid AST';
 				a.equal(ast(expr), astText);
 				a.equal(expr.source.slice(expr.start, expr.end), src);
 				const code = program.compileAst(expr);
 				const outSrc = code.slice(RUNTIME.length);
 				a.equal(outSrc, output);
-				const fn = new Function(`return ${outSrc}`);
+				const fn = new Function(`${RUNTIME};return ${outSrc}`);
 				test?.(a, fn());
 			});
 		}
@@ -399,7 +405,8 @@ export default spec('compiler', s => {
 			a.test(testName, a => {
 				const program = Program();
 				const out = program.compile(`__main={ ${src} }`);
-				const expr = validateExpr(out.ast.children[0]);
+				const expr =
+					out.ast.children[0] && validateExpr(out.ast.children[0]);
 				if (!expr?.children?.length) {
 					printErrors(out.errors);
 					throw 'Invalid AST';
@@ -412,7 +419,9 @@ export default spec('compiler', s => {
 			});
 		}
 
-		baseline('main - empty', 'main{}', '(root main)', '');
+		baseline('main - empty', 'main{}', '(root main)', '', (a, fn) =>
+			a.equal(fn, undefined),
+		);
 
 		/*baselineExpr(
 			'data - label',
@@ -429,18 +438,6 @@ export default spec('compiler', s => {
 		);*/
 
 		/*
-		baselineExpr<(n: number) => Iterator<number>>(
-			'lambda - multiple emit',
-			'{ $+1, $+2 }',
-			'({ (, (+ $ 1) (+ $ 2)))',
-			'function*($){{const _$=$+1;if(_$ instanceof Iterator)(yield* _$);else (yield _$)};{const _$=$+2;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}}',
-			(a, fn) => {
-				const iter = fn(2);
-				a.equal(iter.next().value, 3);
-				a.equal(iter.next().value, 4);
-			},
-		);
-
 		baselineExpr(
 			'assignment - sequence',
 			`a, b = 2, 1`,
@@ -459,57 +456,69 @@ export default spec('compiler', s => {
 			'value >> fn',
 			'1 >> @.out',
 			'(>> 1 (. @ :out))',
-			'__std.out(1)',
+			'(function*(){const _=1,__=__std.out;if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()',
+			(a, fn) => {
+				a.equalValues(fn, [1]);
+			},
 		);
 
-		/*
 		baselineExpr(
 			'value >> block',
 			'1 >> { $ + 1 }',
-			'(>> 1 ({ (+ $ 1)))',
-			'(function*(){const _=1;const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(1)){yield(_1)}})()',
+			'(>> 1 (fn @sequence (+ $ 1)))',
+			'(function*(){const _=1,__=function*($){{const _$=$+1;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}};if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()',
+			(a, fn) => {
+				a.equalValues(fn, [2]);
+			},
 		);
 
 		baselineExpr(
 			'value >> block(2)',
 			'1 >> { $ + 1, $ + 2 }',
-			'(>> 1 ({ (, (+ $ 1) (+ $ 2))))',
-			'(function*(){const _=1;const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=$+2;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(1)){yield(_1)}})()',
+			'(>> 1 (fn @sequence (, (+ $ 1) (+ $ 2))))',
+			'(function*(){const _=1,__=function*($){{const _$=$+1;if(_$ instanceof Iterator)(yield* _$);else (yield _$)};{const _$=$+2;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}};if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()',
+			(a, fn) => {
+				a.equalValues(fn, [2, 3]);
+			},
 		);
 
 		baselineExpr(
 			'value >> block(2) >> fn',
-			'1 >> { $ + 1, $ + 2 } >> std.out',
-			'(>> 1 ({ (, (+ $ 1) (+ $ 2))) (macro :std :out))',
-			'(function*(){const _=1;const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=$+2;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}}else for(const _1 of __(1)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}})()',
+			'1 >> { $ + 1, $ + 2 } >> @.out',
+			'(>> 1 (fn @sequence (, (+ $ 1) (+ $ 2))) (. @ :out))',
+			'(function*(){const _=1,__=function*($){{const _$=$+1;if(_$ instanceof Iterator)(yield* _$);else (yield _$)};{const _$=$+2;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}};if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()',
+			(a, fn) => {
+				a.equalValues(fn, [2, 3]);
+			},
 		);
 
 		baselineExpr(
-			'value >> block >> fn',
-			'1 >> { $ + 1 } >> std.out',
-			'(>> 1 ({ (+ $ 1)) (macro :std :out))',
-			'(function*(){const _=1;const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}}else for(const _1 of __(1)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}})()',
-		);
-		baselineExpr(
 			'call >> block',
 			'{1,2}() >> { $ + 1 }',
-			'(>> (call ({ (, 1 2)) ?) ({ (+ $ 1)))',
-			'(function*(){const _=function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}();const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __(function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}())){yield(_1)}})()',
+			'(>> (call (fn @sequence (, 1 2)) ?) (fn @sequence (+ $ 1)))',
+			'(function*(){const _=function*($){{const _$=1;if(_$ instanceof Iterator)(yield* _$);else (yield _$)};{const _$=2;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}}(),__=function*($){{const _$=$+1;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}};if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()',
+			(a, fn) => {
+				a.equalValues(fn, [2, 3]);
+			},
 		);
 		baselineExpr(
 			'call >> block >> fn',
-			'{1,2}() >> { $ + 1 } >> std.out',
-			'(>> (call ({ (, 1 2)) ?) ({ (+ $ 1)) (macro :std :out))',
-			'(function*(){const _=function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}();const __=function*($){{const _$=$+1;if(_$ instanceof Iterator)yield*(_$);else yield _$}};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}}else for(const _1 of __(function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}())){for(const _2 of (function*($){console.log($);yield($)})(_1)){yield(_2)}}})()',
+			'{1,2}() >> { $ + 1 } >> @.out',
+			'(>> (call (fn @sequence (, 1 2)) ?) (fn @sequence (+ $ 1)) (. @ :out))',
+			'(function*(){const _=function*($){{const _$=1;if(_$ instanceof Iterator)(yield* _$);else (yield _$)};{const _$=2;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}}(),__=function*($){{const _$=$+1;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}};if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()',
+			(a, fn) => {
+				a.equalValues(fn, [2, 3]);
+			},
 		);
 		baselineExpr(
 			'sequence',
 			'{ 1, 2 }()',
-			'(call ({ (, 1 2)) ?)',
-			'function*($){{const _$=1;if(_$ instanceof Iterator)yield*(_$);else yield _$};{const _$=2;if(_$ instanceof Iterator)yield*(_$);else yield _$}}()',
+			'(call (fn @sequence (, 1 2)) ?)',
+			'function*($){{const _$=1;if(_$ instanceof Iterator)(yield* _$);else (yield _$)};{const _$=2;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}}()',
+			(a, fn) => {
+				a.equalValues(fn, [1, 2]);
+			},
 		);
-
-		*/
 
 		/*
 		baseline(
@@ -525,15 +534,7 @@ export default spec('compiler', s => {
 			(a, r) => a.equalValues(r(), [1, 2]),
 		);
 
-		baseline(
-			`sequence`,
-			`main {
-				var i=0
-				1, 2, 3 >> { i = i + $ }
-			}`,
-			'(root (main (def :i @variable 0) (>> (, 1 2 3) ({ (= :i (+ :i $)))) (return :i)))',
-			'',
-		);*/
+		*/
 
 		baselineExpr(
 			'bitwise',
@@ -551,47 +552,52 @@ export default spec('compiler', s => {
 			(a, r) => a.equal(r, 1),
 		);
 
-		/*
 		baseline(
-			'function call',
-			'a = { 123 } main { a() }',
-			'(root (def :a ({ 123)) (main (call :a ?)))',
-			'const a=()=>{return 123};return a()',
-			(a, r) => a.equal(r(), 123),
-			'return a'
+			'sequence call',
+			'a = { 123 } b = { a() }',
+			'(root (def :a (fn @sequence 123)) (def :b (fn @sequence (call :a ?))))',
+			'const a=function*($){{const _$=123;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}};const b=function*($){{const _$=a();if(_$ instanceof Iterator)(yield* _$);else (yield _$)}}',
+			(a: TestApi, r) => {
+				a.assert(typeof r === 'function');
+				a.equalValues(r(), [123]);
+			},
+			';return b',
 		);
-		baselineExpr(
-			'$ variable',
-			'10.4 >> { $ + 2 } >> { $ * 3 }',
-			'(>> (>> 10.4 ({ (+ $ 2))) ({ (* $ 3)))',
-			'return (($)=>{return $*3})((($)=>{return $+2})(10.4))',
-			(a, r) => a.equal(r(), (10.4 + 2) * 3),
-		);
-		*/
 		baselineExpr(
 			'hello world',
 			`'Hello World!' >> @.out`,
 			"(>> 'Hello World!' (. @ :out))",
-			`(function*(){const _='Hello World!';const __=function*($){__std.out($);yield($)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){yield(_1)}}else for(const _1 of __('Hello World!')){yield(_1)}})()`,
+			`(function*(){const _='Hello World!',__=__std.out;if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()`,
+			(a, fn) => {
+				a.equalValues(fn, ['Hello World!']);
+			},
 		);
-		/*baseline(
+		baseline(
 			'loop',
-			`main { var i=0 loop { i++<2 } >> { i } >> std.out }`,
-			'',
-			'',
+			`a = fn { var i=0 next(loop { i++<2 } >> { i }) }`,
+			'(root (def :a (fn (def :i @variable 0) (next (>> (loop (< (++ :i @variable) 2)) (fn @sequence :i @variable))))))',
+			'const a=()=>{let i=0;return((function*(){const _=(function*(){while(i++<2)yield})(),__=function*($){{const _$=i;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}};if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})())}',
+			(a: TestApi, fn) => {
+				a.assert(typeof fn === 'function');
+				a.equalValues(fn(), [1, 2]);
+			},
+			';return a',
 		);
 		baseline(
 			'loop - 0 to 5',
-			`main { var x=0 loop { x++ == 5 ? done } return x }`,
+			`a = { var x=0 loop { x++ < 5  } >> {} next(x) }`,
 			'(root (main (def :x @variable 0) (loop ({ (? (== (++ :x) 5) done))) (return :x)))',
 			`let x=0;while((()=>{return x++==5 ? done : undefined})()!==done){}return x`,
-			(a, r) => a.equal(r(), 6),
+			(a: TestApi, r) => {
+				a.assert(typeof r === 'function');
+				a.equalValues(r(), [6]);
+			},
+			';return a',
 		);
-		*/
 		baseline<(n: number) => number>(
 			'fibonacci',
 			`fib = fn(n: int) => n <= 1 ? n : fib(n - 1) + fib(n - 2)`,
-			'(root (def :fib (fn (parameter :n typeident) (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))))',
+			'(root (def :fib (fn @lambda (parameter :n typeident) (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))))',
 			'const fib=(n)=>(n<=1 ? n : fib(n-1)+fib(n-2))',
 			(a, fib) => {
 				a.equal(fib(0), 0);
@@ -644,34 +650,23 @@ ackermann = fn(m: int, n:int) {
 			},
 			';return ackermann;',
 		);
-		/*baseline(
-			'build',
-			`
-@cxl.build import buildCxl, tsBundle, minify;
 
-buildCxl([
-	target = 'package',
-	outputDir = '../dist/compiler',
-	tasks = [ tsBundle('tsconfig.json', 'index.bundle.js', true).pipe(minify()) ]
-])
-		`,
-			'',
-			'',
-		);*/
-
-		baselineError('<= operator', 'true <= -1', '(fn (<= :true -1))', [
-			`Operator "<=" cannot be applied to types "boolean" and "int".`,
-		]);
+		baselineError(
+			'<= operator',
+			'true <= -1',
+			'(fn @sequence (<= :true -1))',
+			[`Operator "<=" cannot be applied to types "boolean" and "int".`],
+		);
 		baselineError(
 			'* operator',
 			'fn1=fn():int => 1\nfn1() * true',
-			'(fn (def :fn1 (fn typeident (next 1))) (* (call :fn1 ?) :true))',
+			'(fn @sequence (def :fn1 (fn @lambda typeident (next 1))) (* (call :fn1 ?) :true))',
 			[`Operator "*" cannot be applied to types "int" and "boolean".`],
 		);
 		baselineError(
 			'call - parameter check',
 			'fn1=fn(a:int):int => 1\nfn1(true)',
-			'(fn (def :fn1 (fn (parameter :a typeident) typeident (next 1))) (call :fn1 :true))',
+			'(fn @sequence (def :fn1 (fn @lambda (parameter :a typeident) typeident (next 1))) (call :fn1 :true))',
 			[
 				`Argument of type "boolean' is not assignable to parameter of type "int".`,
 			],

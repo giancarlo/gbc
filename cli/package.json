@@ -2,7 +2,7 @@
 	"name": "@cxl/gbc",
 	"version": "0.0.1",
 	"bugs": "https://github.com/giancarlo/gbc/issues",
-	"homepage": "https:/github.com/giancarlo/gbc/cli",
+	"homepage": "https://github.com/giancarlo/@cxl/gbc",
 	"description": "GB Language CLI",
 	"license": "GPL-3.0",
 	"type": "module",

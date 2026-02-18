@@ -4,41 +4,9 @@
 	},
 	"watch": {
 		"rules": {
-			"basic": {
-				"files": ["basic/*"],
-				"tasks": "npm run build --prefix basic"
-			},
-			"cmd": {
-				"files": ["cmd/*"],
-				"tasks": "npm run build --prefix cmd"
-			},
-			"compiler": {
-				"files": ["compiler/*"],
-				"tasks": "npm run build --prefix compiler"
-			},
-			"std": {
-				"files": ["std/*"],
-				"tasks": "cd std && ./build.sh"
-			},
-			"cli": {
-				"files": ["cli/*"],
-				"tasks": "npm run build --prefix cli"
-			},
-			"gbx": {
-				"files": ["gbx/*"],
-				"tasks": "npm run build --prefix gbx"
-			},
-			"sdk": {
-				"files": ["sdk/*"],
-				"tasks": "npm run build --prefix sdk"
-			},
-			"html": {
-				"files": ["html/*"],
-				"tasks": "npm run build --prefix html"
-			},
-			"markdown": {
-				"files": ["markdown/*"],
-				"tasks": "npm run build --prefix markdown"
+			"build": {
+				"regex": "/([^/]+)/.+",
+				"tasks": "shell.npmBuild $1"
 			}
 		}
 	}

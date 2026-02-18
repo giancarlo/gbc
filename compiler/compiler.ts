@@ -1,11 +1,11 @@
 import { CompilerError, InfixNode, text } from '../sdk/index.js';
 import { Flags } from './symbol-table.js';
 
-import { BlockFlags, Node, NodeMap } from './node.js';
+import { Node, NodeMap } from './node.js';
 
 export const RUNTIME = `"use strict";
 const __std={
-	out: console.log.bind(console)
+	*out(...args){console.log(...args); yield* args}
 };`;
 
 const infix = (n: InfixNode<NodeMap>, op: string = n.kind) =>
@@ -17,7 +17,7 @@ const blockLambda = (n: NodeMap['fn']) => {
 	return expr ? `(${compile(expr)})` : '';
 };
 const block = (n: NodeMap['fn']) =>
-	n.flags & BlockFlags.Lambda
+	n.symbol.flags & Flags.Lambda
 		? blockLambda(n)
 		: `{${n.statements ? compileEach(n.statements) : ''}}`;
 const compileEach = (nodes: Node[], sep = ';') => nodes.map(compile).join(sep);
@@ -25,16 +25,18 @@ function isExpression(n: Node) {
 	return n.kind !== 'next' && n.kind !== 'done';
 }
 function generatorYield(n: Node) {
-	if (n.kind === ',') return n.children.map(next).join(';');
-	return next(n);
+	if (n.kind === ',') return n.children.map(nextGenerator).join(';');
+	return nextGenerator(n);
 }
 function generatorBody(n: NodeMap['fn']) {
 	return n.statements
 		? `${
-				n.kind === 'fn' && n.statements.length === 1 && isExpression(n)
+				n.statements.length === 1 &&
+				n.statements[0] !== undefined &&
+				isExpression(n)
 					? generatorYield(n.statements[0])
 					: compileEach(n.statements)
-		  }`
+			}`
 		: '';
 }
 
@@ -46,7 +48,7 @@ function nextGenerator(child?: Node) {
 	return child
 		? `{const _$=${compile(
 				child,
-		  )};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
+			)};if(_$ instanceof Iterator)(yield* _$);else (yield _$)}`
 		: 'yield';
 }
 
@@ -68,7 +70,7 @@ export function compile(node: Node): string {
 		case '--':
 			return `${compile(node.children[0])}${node.kind}`;
 		case 'next':
-			return node.generator
+			return node.owner.flags & Flags.Sequence
 				? nextGenerator(node.children?.[0])
 				: next(node.children?.[0]);
 		case 'parameter':
@@ -78,9 +80,9 @@ export function compile(node: Node): string {
 		case '!':
 			return text(node);
 		case '-':
-			return node.children[1]
-				? infix(node)
-				: `${node.kind}${compile(node.children[0])}`;
+			return infix(node);
+		case 'negate':
+			return `${node.kind}${compile(node.children[0])}`;
 		case ',':
 			return node.children.map(compile).join(',');
 		case '=': {
@@ -90,11 +92,13 @@ export function compile(node: Node): string {
 					throw new CompilerError('Invalid definition', right);
 				let result = '{';
 				for (let i = 0; i < left.children.length; i++) {
-					result += `const __${i}=${compile(right.children[i])};`;
+					const child = right.children[i];
+					if (child !== undefined)
+						result += `const __${i}=${compile(child)};`;
 				}
 				for (let i = 0; i < left.children.length; i++) {
-					const name = text(left.children[i]);
-					result += `${name}=__${i};`;
+					const child = left.children[i];
+					if (child) result += `${text(child)}=__${i};`;
 				}
 				return result + '}';
 			}
@@ -130,16 +134,14 @@ export function compile(node: Node): string {
 
 			while (i--) {
 				const child = node.children[i];
-				if (i === 0) break;
-
+				if (i === 0 || !child) break;
 				if (i === 1) {
-					text = `(function*(){const _=${compile(
-						node.children[0],
-					)};const __=${compile(
+					const first = node.children[0];
+					if (!first) throw new Error('Invalid Node');
+
+					text = `(function*(){const _=${compile(first)},__=${compile(
 						child,
-					)};if(_ instanceof Iterator)for(const _0 of _){for(const _1 of __(_0)){${text}}}else for(const _1 of __(${compile(
-						node.children[0],
-					)})){${text}}})()`;
+					)};if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()`;
 				} else
 					text = `for(const _${i} of (${compile(child)})(_${
 						i - 1
@@ -150,18 +152,19 @@ export function compile(node: Node): string {
 		case 'def': {
 			const symbol = node.left.symbol;
 			if (symbol.kind !== 'variable') throw 'Invalid node';
-			const isVar =
-				symbol.kind === 'variable' && symbol.flags & Flags.Variable;
+			const isVar = symbol.flags & Flags.Variable;
 			const isExport = symbol.flags & Flags.Export;
 
 			return `${isExport ? 'export ' : ''}${isVar ? 'let' : 'const'} ${
 				symbol.name
 			}=${compile(node.right)}`;
 		}
+		case '$':
+			return '$';
 		case 'fn': {
 			const parameters =
 				node.parameters && compileEach(node.parameters, ',');
-			return node.flags & BlockFlags.Sequence
+			return node.symbol.flags & Flags.Sequence
 				? `function*(${parameters ?? '$'}){${generatorBody(node)}}`
 				: `(${parameters ?? ''})=>${block(node)}`;
 		}

@@ -5,6 +5,8 @@ export enum Flags {
 	None = 0,
 	Variable = 1,
 	Export = 2,
+	Sequence = 4,
+	Lambda = 8,
 }
 
 type BaseSymbol = {
@@ -83,7 +85,7 @@ export function ProgramSymbolTable() {
 	});
 }
 
-export const BaseTypes: Record<string, SymbolMap['type']> = {
+export const BaseTypes = {
 	boolean: { name: 'boolean', kind: 'type', flags: 0 },
 	float: { name: 'float', kind: 'type', flags: 0 },
 	int: { name: 'int', kind: 'type', flags: 0 },
@@ -92,7 +94,7 @@ export const BaseTypes: Record<string, SymbolMap['type']> = {
 	true: { name: 'true', kind: 'type', flags: 0 },
 	false: { name: 'false', kind: 'type', flags: 0 },
 	unknown: { name: 'unknown', kind: 'type', flags: 0 },
-};
+} as const;
 
 export function TypesSymbolTable() {
 	return SymbolTable<Type>(BaseTypes);

@@ -7,9 +7,8 @@
 	"description": "A modular toolset designed to simplify the creation of compilers, particularly for languages targeting JavaScript and WebAssembly. Work in progress.",
 	"type": "module",
 	"devDependencies": {
-		"@cxl/build": "^1.0.0-beta",
+		"@cxl/build": "^1.0.0",
 		"@cxl/program": "^1.0.0",
-		"@cxl/spec": "^1.0.1",
 		"@types/node": "^24.6.2"
 	},
 	"scripts": {

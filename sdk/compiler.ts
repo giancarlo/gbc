@@ -1,4 +1,3 @@
-///<amd-module name="@cxl/gbc.sdk/compiler.js"/>
 import type { Token } from './scanner.js';
 import type { ParentNode } from './parser-table.js';
 import type { MapNode, NodeMap } from './parser-table.js';

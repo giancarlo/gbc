@@ -60,7 +60,7 @@ function resolver(node: CheckedNode) {
 }
 
 function isNumberType(node: Node) {
-	return node.kind === 'ident' && node.symbol?.type === BaseTypes.int;
+	return node.kind === 'ident' && node.symbol.type === BaseTypes.int;
 }
 
 function isNumber(node: Node) {
@@ -72,7 +72,7 @@ function canAssign(to: Type, a: Type): boolean {
 }
 
 function getListTypes(node: NodeMap[',']) {
-	return node.children?.map(resolver);
+	return node.children.map(resolver);
 }
 
 /**
@@ -151,7 +151,7 @@ export function checker({
 				const params = fn.parameters;
 				const paramCount = params?.length ?? 0;
 				const argsCount = args
-					? args?.kind === ','
+					? args.kind === ','
 						? args.children.length
 						: 1
 					: 0;
@@ -169,7 +169,7 @@ export function checker({
 							: [resolver(args)];
 					for (let i = 0; i < argTypes.length; i++) {
 						const typeA = argTypes[i];
-						const typeB = params[i].type;
+						const typeB = params[i]?.type;
 						if (typeA && typeB && !canAssign(typeA, typeB))
 							error(
 								`Argument of type "${typeToStr(
@@ -197,6 +197,7 @@ export function checker({
 			case '/':
 			case '*':
 				return numberBinaryOperator(node);
+			default:
 		}
 	}
 

@@ -13,7 +13,7 @@ import {
 	SymbolTable,
 	Flags,
 } from './symbol-table.js';
-import { BlockFlags, Node, NodeMap } from './node.js';
+import { Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
 
 export function parseExpression(
@@ -52,8 +52,7 @@ export function parseExpression(
 
 	function blockParameters(node: NodeMap['fn']) {
 		node.parameters = parseList(parameter, ',', n => !!n);
-		if (node.symbol)
-			node.symbol.parameters = node.parameters.map(p => p.symbol);
+		node.symbol.parameters = node.parameters.map(p => p.symbol);
 		expect(')');
 		node.children.push(...node.parameters);
 	}
@@ -88,7 +87,6 @@ export function parseExpression(
 				...tk,
 				kind: 'fn',
 				children: [],
-				flags: 0,
 				symbol: EmptyFunction,
 			};
 			const symbol = symbolTable.set(ScopeOwner, {
@@ -171,7 +169,7 @@ export function parseExpression(
 						}
 						const inline = optional('=>');
 						if (inline) {
-							node.flags |= BlockFlags.Lambda;
+							node.symbol.flags |= Flags.Lambda;
 							return [
 								{
 									...inline,
@@ -190,7 +188,7 @@ export function parseExpression(
 			'{': {
 				prefix: tk =>
 					parseBlock(tk, node => {
-						node.flags = BlockFlags.Sequence;
+						node.symbol.flags = Flags.Sequence;
 						const result = parseUntilKind(statement, '}');
 						node.end = expect('}').end;
 						return result;
@@ -223,10 +221,16 @@ export function parseExpression(
 			},
 			'-': {
 				precedence: 11,
-				prefix: prefix(
-					14,
-					prefixNumber(n => -n),
-				),
+				prefix: tk => {
+					const right = expectExpression(14);
+					const result: NodeMap['negate'] = {
+						...tk,
+						kind: 'negate',
+						children: [right],
+						end: right.end,
+					};
+					return prefixNumber(n => -n)(result);
+				},
 				infix: infix(11),
 			},
 			'~': {
@@ -234,6 +238,9 @@ export function parseExpression(
 					14,
 					prefixNumber(n => ~n),
 				),
+			},
+			$: {
+				prefix: n => n,
 			},
 			'!': {
 				prefix: prefix(14),
@@ -265,7 +272,7 @@ export function parseExpression(
 
 					const propSymbol =
 						symbol?.kind === 'data'
-							? symbol?.members?.[prop]
+							? symbol.members[prop]
 							: undefined;
 
 					if (!propSymbol)
