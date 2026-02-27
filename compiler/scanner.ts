@@ -24,7 +24,7 @@ const {
 	ident,
 } = matchers;
 
-const identFirst = (ch: string) => ch === '_' || alpha(ch);
+const identFirst = (ch: string) => alpha(ch);
 const notIdent = (ch: string) => !ident(ch);
 const notEol = (ch: string) => ch !== '\n';
 

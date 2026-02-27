@@ -1,325 +1,477 @@
-import { TestApi, spec } from '@cxl/spec';
-import {
-	CompilerError,
-	each,
-	Token,
-	ParserApi,
-	formatError,
-} from '../sdk/index.js';
+import { spec } from './test-api.js';
 
-import { Program } from './program.js';
-import {
-	Symbol,
-	ProgramSymbolTable,
-	TypesSymbolTable,
-} from './symbol-table.js';
-import { scan } from './scanner.js';
-import { parseExpression } from './parser-expression.js';
-import { parseType } from './parser-type.js';
-import { RUNTIME } from './compiler.js';
-import { ast } from './debug.js';
-import { checker } from './checker.js';
-import type { Node } from './node.js';
+/*
 
-export default spec('compiler', s => {
-	s.test('Scanner', it => {
-		function match(
-			a: TestApi,
-			src: string,
-			...expect: Partial<Token<string>>[]
-		) {
-			const { next } = scan(src);
-			let i = 0;
-			for (const tk of each(next)) {
-				const expected = expect[i++];
-				a.assert(expected);
-				a.equalPartial(tk, expected);
-			}
-		}
+The GB programming language is a concise, type-safe, and functional programming language that
+emphasizes immutability, modularity, and streamlined syntax.
 
-		it.should('scan keywords', a => {
-			match(a, 'main', { kind: 'main', start: 0, end: 4 });
-		});
+## Design Constitution
 
-		/*it.should('detect errors in numbers', a => {
-			a.throws(() => match(a, '0x3h 10'), {
-				position: { start: 0, end: 4 },
-			});
-			a.throws(() => match(a, '0b12'), {
-				position: { start: 0, end: 4 },
-			});
-			a.throws(() => match(a, '  12f2'), {
-				position: { start: 2, end: 5 },
-			});
-		});*/
+Language features must avoid breaking these rules:
+
+1. **One Way:** Restrict multiple ways to accomplish the same task.
+2. **Built-in Best Practices:** Enforce optimal patterns via syntax and types.
+3. **Transparency:** No hidden or implicit behavior.
+4. **No Bloat:** Only essential features.
+5. **Readable:** Prioritize clarity.
+
+*/
+export default spec('Language Reference', ({ h }) => {
+	h('Hello World', ({ p }) => {
+		p(
+			`
+		 This is a sample of a simple "Hello World" program. The _main_ block is our entry point.
+		 No code is allowed outside of it other than type and function definitions.
+		 The standard library is always available through the _@_ operator.
+		 The pipe \`>>\` operator will call the \`@.out\` function passing its left value as an argument.
+		`,
+			({ rule }) => {
+				rule({
+					src: `main { 'Hello World' >> @.out }`,
+					ast: `(root (main (>> 'Hello World' (. @ :out))))`,
+				});
+			},
+		);
 	});
 
-	s.test('Parser - Types', it => {
-		const parse = (src: string) => {
-			const st = ProgramSymbolTable();
-			const tt = TypesSymbolTable();
-			const api = ParserApi(scan);
-			api.start(src);
-			const scope = st.push();
-			const typeParser = parseType(api, tt);
-			const expr = parseExpression(api, st, typeParser);
-			const children = api.parseUntilKind(expr, 'eof');
-			const result = {
-				root: {
-					...api.node('root'),
-					children,
+	h('Comments', ({ p }) => {
+		p(
+			'Comments start with the `#` character and end at the end of line.',
+			({ expr, match, equal, rule }) => {
+				match('# Single Line Comment', 'comment');
+				expr({
+					src: '# Line Comment 1\n  # Line Comment 2\n',
+					ast: 'comment comment',
+				});
+				expr({
+					src: '# Comment 1\n#Comment 2\na = 10',
+					ast: 'comment comment (def :a 10)',
+					test: (_, ast) => {
+						equal(ast.children[0]?.line, 0);
+						equal(ast.children[2]?.line, 2);
+					},
+				});
+
+				rule({
+					src: '# Comment\nmain { }\n# Comment 2',
+					ast: '(root comment main comment)',
+					test: (_, ast) => {
+						equal(ast.children[1]?.line, 1);
+					},
+				});
+			},
+		);
+	});
+
+	h('Identifiers', ({ p }) => {
+		p(
+			'Identifiers must begin with a letter and can include alphanumeric characters or underscores.',
+			({ match, throws }) => {
+				match('ident', { kind: 'ident' });
+				match('ident_2', { kind: 'ident' });
+				match('ident_', { kind: 'ident' });
+
+				throws(() => match('_under'), {
+					position: { start: 0, end: 1 },
+				});
+			},
+		);
+	});
+
+	h('Operators', ({ h, token, expr, match }) => {
+		token('!', 'Boolean NOT', '!');
+		token('~', 'Bitwise NOT', '~');
+		token('&', 'Bitwise AND', '&');
+		token('&&', 'Short-circuiting logical AND', '&&');
+		token('*', 'Arithmetic multiplication', '*');
+		token('+', 'Addition', '+');
+		token('-', 'Arithmetic Negation (Unary)', '-');
+		token('-', 'Arithmetic Substraction', '-');
+		token('.', 'Member access', '.');
+		token('/', 'Arithmetic division', '/');
+		token('<', 'Less than comparison', '<');
+		token('<=', 'Less than or equal comparison', '<=');
+		token('=', 'Assignment', '=');
+		token('==', 'Equality comparison', '==');
+		token('>', 'Greater than comparison', '>');
+		token('>=', 'Greater than or equal comparison', '>=');
+		token('>>', 'Pipe Operator', '>>');
+		token('|', 'Bitwise OR', '|');
+		token('||', 'Short-circuiting logical OR', '||');
+		token('?', 'Conditional Ternary Operator', '?');
+		token(':>', 'Bitwise Shift Right', ':>');
+		token('<:', 'Bitwise Shift Left', '<:');
+		token('++', 'Increase', '++');
+		token('--', 'Decrease', '--');
+
+		expr({ src: '1 > 0 || 2 > 0', ast: '(|| (> 1 0) (> 2 0))' });
+		expr({
+			src: 'true || false && false',
+			ast: '(|| :true (&& :false :false))',
+		});
+		expr({
+			src: 'false || 3 == 4',
+			ast: '(|| :false (== 3 4))',
+		});
+		expr({
+			src: '10 + 5.5 * 20',
+			ast: '(+ 10 (* 5.5 20))',
+		});
+
+		match(
+			'-10 -10_000 -10.53_3',
+			'-',
+			'number',
+			'-',
+			'number',
+			'-',
+			'number',
+		);
+		match('~0b100100, ~0xff', '~', 'number', ',', '~', 'number');
+		expr({
+			src: '!false, !true, !!!!false',
+			ast: '(, (! :false) (! :true) (! (! (! (! :false)))))',
+		});
+
+		expr({
+			src: '(true || false) && false',
+			ast: '(&& (|| :true :false) :false)',
+		});
+		expr({
+			src: '(10 + (10 * 2.4) / (10))',
+			ast: '(+ 10 (/ (* 10 2.4) 10))',
+		});
+
+		h('Bitwise', ({ expr, equalValues }) => {
+			expr({
+				p: 'bitwise',
+				src: `[ ~0, 1 <: (32 - 1), 0xF0 | 0xCC ^ 0xAA & 0xFD ]`,
+				ast: `(data (, -1 (<: 1 (- 32 1)) (| 240 (^ 204 (& 170 253)))))`,
+				test: r => equalValues(r(), [[-1, 1 << (32 - 1), 0xf4]]),
+			});
+		});
+
+		h('Conditional operator', ({ expr }) => {
+			expr({
+				p: 'The ternary operator syntax is `condition ? true_value : false_value`. The `else` part (`: false_value`) is optional. If you omit it, the expression emits a value only when the condition is truthy.',
+				src: '1 > 10 ? { $ + 1 }',
+				ast: '(? (> 1 10) (fn @sequence (+ $ 1)))',
+			});
+			expr({ src: '1 ? 2 : 3', ast: '(? 1 2 3)' });
+		});
+	});
+
+	h('Keywords', ({ p }) => {
+		p('The following keywords are reserved.', ({ token }) => {
+			token('done', 'Mark the function as complete', 'done');
+			token('export', 'Export module symbol', 'export');
+			token('main', 'Source file entry point', 'main');
+			token('next', 'Emit the next value from a function', 'next');
+			token('type', 'Define a type alias or structure', 'type');
+		});
+	});
+
+	/*h('Types', ({ should, parse } ) => {
+		
+			/*should('parse variable types', a => {
+				const { scope } = parse('a: int = 100');
+				a.ok(scope.a);
+				a.equal(scope.a?.type?.name, 'int');
+			});
+
+		})*/
+
+	h('Number Literals', ({ expr, match, throws }) => {
+		match('42 4_2 0600 0_600', 'number', 'number', 'number', 'number');
+		expr({ src: 'NaN', ast: ':NaN' });
+		expr({ src: 'infinity', ast: ':infinity' });
+
+		match(`0b101010110101010 0b_0001101010_101`, 'number', 'number');
+
+		expr({
+			src: `0xBadFace 0xBad_Face 0x_67_7a_2f_cc_40_c6`,
+			ast: '195951310 195951310 113774485586118',
+		});
+		expr({
+			src: '72.40 072.40 2.71828',
+			ast: '72.4 72.4 2.71828',
+		});
+
+		throws(() => match('0.'), {
+			position: { start: 0, end: 2 },
+		});
+		throws(() => match('0x3h 10'), {
+			position: { start: 0, end: 4 },
+		});
+		throws(() => match('0b12'), {
+			position: { start: 0, end: 4 },
+		});
+		throws(() => match('  12f2'), {
+			position: { start: 2, end: 5 },
+		});
+	});
+
+	h('Boolean Literals', ({ expr }) => {
+		expr({ src: 'true', ast: ':true' });
+		expr({ src: 'false', ast: ':false' });
+	});
+
+	h('String Literals', ({ match }) => {
+		match(`'variable length \\'string\\''`, 'string');
+		match(
+			`'
+        Multiline
+        String
+    '`,
+			'string',
+		);
+		match("'${1}+${1}=${1+1}'", 'string');
+	});
+
+	h('Data Blocks', ({ expr }) => {
+		expr({
+			p: `Data blocks are enclosed in brackets '[]' and are zero-indexed.`,
+			src: `[ 'string', 2, true, 4.5 ]`,
+			ast: `(data (, 'string' 2 :true 4.5))`,
+		});
+		expr({
+			p: `Data blocks represent memory, they are not collections. Items can't be added or removed.
+				    Think of them like strings. The first character is the same as the individual character.`,
+			src: `[ 10 ] == 10`,
+			ast: `(== (data 10) 10)`,
+		});
+		expr({
+			p: `Labels can point to locations within data blocks.`,
+			src: `[ label = 'string', 2 ]`,
+			ast: `(data (, (propdef :label 'string') 2))`,
+		});
+		expr({
+			p: `By default data is immutable. The 'var' type modifier can be used to specify variable fields.`,
+			src: `[ :var = 'string', 2 ]`,
+			ast: `(data (, (propdef :label 'string') 2))`,
+		});
+		expr({
+			p: `Data blocks are iterable.`,
+			src: `[ 1, 2 ] >> @.each >> @.out`,
+			ast: `(data (, (propdef :label 'string') 2))`,
+		});
+	});
+
+	h('Code Blocks', ({ expr, h }) => {
+		expr({
+			p: `Code Blocks are defined with \`{}\`. To declare parameters, prepend the block with \`fn\`.`,
+			src: `fn(a) { a }`,
+			ast: `(fn (parameter :a ?) (next :a))`,
+		});
+		expr({
+			p: `Code Blocks accept a single argument. That argument can be a data block, and with \`fn\` syntax its labels are available as individual variables.`,
+			src: `fn(a: int, b: int) { a + b }`,
+			ast: `(fn (parameter :a) (parameter :b) (next (+ :a :b)))`,
+		});
+		expr({
+			p: `Code Blocks can accept other code blocks as parameters or return code blocks.`,
+			src: `fn(f: fn) { { f() } }`,
+			ast: `(fn (parameter :f) (next (fn @sequence (call :f ?))))`,
+		});
+		expr({
+			p: `The code block argument is available as \`$\`. Named arguments can be accessed with the '.' operator.`,
+			src: `{ 10 + $.value }`,
+			ast: `(fn @sequence (+ $ (. $ :value)))`,
+		});
+		expr({
+			p: `One-line code blocks automatically emit the value of the single expression.`,
+			src: `{ 1 + 2 }`,
+			ast: `(fn (next (+ 1 2)))`,
+		});
+		expr({
+			p: 'The call `()` operator groups comma-separated values into a data block.',
+			src: `x = { $ } x(1, 2, 3)`,
+			ast: `(fn (next (+ 1 2)))`,
+		});
+		expr({
+			p: 'If named arguments are used, all arguments must include the name.',
+			src: `add = fn(a: int, b: int): int { a + b } next(add(1, 2), add(b = 1, a = 2))`,
+			ast: `(fn (next (+ 1 2)))`,
+		});
+
+		h('Recursion', ({ expr, equal }) => {
+			expr({
+				p: 'Code Blocks can call themselves recursively.',
+				src: `
+factorial = fn(n: int): int {
+    next (n <= 1) ? 1 : n * factorial(n - 1)
+}
+			`,
+				ast: '(root (def :factorial (fn (parameter :n typeident) typeident (? (next (<= :n 1)) 1 (* :n (call :factorial (- :n 1)))))))',
+				//'const factorial=(n)=>{return(n<=1) ? 1 : n*factorial(n-1)}',
+				test: factorial => {
+					equal(factorial(0), 1);
+					equal(factorial(1), 1);
+					equal(factorial(2), 2);
+					equal(factorial(3), 6);
+					equal(factorial(4), 24);
+					equal(factorial(5), 120);
 				},
-				scope,
-				errors: api.errors,
-			};
-			if (result.errors.length) {
-				result.errors.forEach(e => it.log(formatError(e)));
-				throw 'Parsing Errors';
-			}
-			checker(result).run();
-			if (result.errors.length) {
-				it.log(result.errors);
-				throw 'Checker Errors';
-			}
-			st.pop(scope);
-			return result;
-		};
+			});
 
-		it.should('parse variable types', a => {
-			const { scope } = parse('a: int = 100');
-			a.ok(scope.a);
-			a.equal(scope.a?.type?.name, 'int');
+			expr<(n: number) => number>({
+				p: 'fibonacci',
+				src: `fib = fn(n: int) => n <= 1 ? n : fib(n - 1) + fib(n - 2)`,
+				ast: '(def :fib (fn @lambda (parameter :n typeident) (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2)))))))',
+				test: fib => {
+					equal(fib(0), 0);
+					equal(fib(1), 1);
+					equal(fib(2), 1);
+					equal(fib(3), 2);
+					equal(fib(4), 3);
+					equal(fib(5), 5);
+					equal(fib(6), 8);
+				},
+			});
+
+			expr<(a: number, b: number) => number>({
+				p: 'ackermann',
+				src: `
+ackermann = fn(m: int, n:int) {
+	next(m == 0 ? n + 1 :
+		(n == 0 ? ackermann(m - 1, 1) : (ackermann(m - 1, ackermann(m, n - 1)))))
+}
+		`,
+				ast: `(def :ackermann (fn (parameter :m typeident) (parameter :n typeident) (next (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1))))))))))`,
+				test: ack => {
+					equal(ack(1, 3), 5);
+					equal(ack(2, 3), 9);
+					equal(ack(3, 3), 61);
+					equal(ack(1, 5), 7);
+					equal(ack(2, 5), 13);
+					equal(ack(3, 5), 253);
+				},
+			});
+		});
+
+		h('Emitting Values', ({ expr, equalValues }) => {
+			expr({
+				p: 'The `next` keyword is used within a function to emit a value. A function can emit one, multiple or zero values.',
+				src: `
+emitValues = {
+    next(1, 2, 3)
+    done
+}
+next(emitValues())
+					`,
+				ast: '',
+			});
+			expr({
+				p: 'The `next` keyword is used within a function to emit a value. A function can emit one, multiple or zero values.',
+				src: `
+emitValues = {
+    next(1, 2, 3)
+    done
+}
+next(emitValues())
+					`,
+				ast: '',
+			});
+			expr({
+				p: 'If a stage emits multiple values, each value is passed downstream independently.',
+				src: `
+emit = { next(1, 2) done }
+next(emit() >> { $ + 1 })
+				`,
+				ast: '',
+				test: fn => {
+					equalValues(fn(), [2, 3]);
+				},
+			});
+			expr({
+				p: 'If a stage emits nothing, downstream stages receive nothing for that path.',
+				src: `
+emit = { done }
+next(emit() >> { $ + 1 })
+				`,
+				ast: '',
+				test: fn => {
+					equalValues(fn(), []);
+				},
+			});
+			expr({
+				p: 'The pipeline completes when all upstream emissions are consumed.',
+				src: `
+emit = { next(1, 2) done }
+next(emit() >> { next($, $ + 10) })
+				`,
+				ast: '',
+				test: fn => {
+					equalValues(fn(), [1, 11, 2, 12]);
+				},
+			});
+		});
+
+		h('Chaining', ({ expr, equalValues }) => {
+			expr({
+				p: 'Functions can be chained to perform multiple operations in sequence. The pipe operator `>>` passes the left value into the right stage as its argument. The argument is bound to `$`.chaining',
+				src: `
+a = {
+	add4 = fn(a:int) => a + 4 
+	times2 = fn(a:int) => a * 2 
+	add4times2 = { $ >> add4 >> times2 }
+	next(10 >> add4times2)
+}`,
+				ast: '(root (def :a (fn @sequence (def :add4 (fn @lambda (parameter :a typeident) (next (+ :a 4)))) (def :times2 (fn @lambda (parameter :a typeident) (next (* :a 2)))) (def :add4times2 (fn @sequence (>> $ :add4 :times2))) (next (>> 10 :add4times2)))))',
+				test: fn => {
+					equalValues(fn(), [28]);
+				},
+			});
 		});
 	});
+
+	h('Assignment', ({ expr }) => {
+		expr({ src: "a = 'hello'", ast: "(def :a 'hello')" });
+		expr({ src: 'a = 0', ast: '(def :a 0)' });
+		expr({ src: 'a = true', ast: '(def :a :true)' });
+		expr({
+			src: "var a = 'hello'",
+			ast: "(def :a @variable 'hello')",
+		});
+		expr({ src: 'var a = 1', ast: '(def :a @variable 1)' });
+		expr({ src: 'a = 2', ast: '(def :a 2)' });
+	});
+
+	h('Statements', ({ h }) => {
+		h('loop', ({ expr, equalValues }) => {
+			expr({
+				p: 'loop',
+				src: `var i=0 next(loop { i++<2 } >> { i })`,
+				ast: '(def :i @variable 0) (next (>> (loop (< (++ :i @variable) 2)) (fn @sequence :i @variable)))',
+				test: fn => {
+					equalValues(fn(), [1, 2]);
+				},
+			});
+			expr({
+				p: 'loop - 0 to 5',
+				src: `var x=0 loop { x++ < 5  } >> {} next(x)`,
+				ast: '(def :x @variable 0) (>> (loop (< (++ :x @variable) 5)) fn @sequence) (next :x @variable)',
+				test: r => {
+					equalValues(r(), [6]);
+				},
+			});
+		});
+	});
+});
+
+/*
 
 	s.test('Parser - Expressions', it => {
-		const parse = (src: string, symbols?: Record<string, Symbol>) => {
-			const st = ProgramSymbolTable();
-			const tt = TypesSymbolTable();
-			if (symbols) st.setSymbols(symbols);
-			const api = ParserApi(scan);
-			api.start(src);
-			const scope = st.push();
-			const typeParser = parseType(api, tt);
-			const expr = parseExpression(api, st, typeParser);
-			st.pop(scope);
-			return {
-				root: {
-					...api.node('root'),
-					children: api.parseUntilKind(expr, 'eof'),
-				},
-				scope,
-				errors: api.errors,
-			};
-		};
 
-		function match(
-			a: TestApi,
-			src: string,
-			out: string,
-			symbols?: Record<string, Symbol>,
-		) {
-			const r = parse(src, symbols);
-			if (r.errors?.length) {
-				r.errors.forEach(e => a.log(formatError(e)));
-				throw new Error('Parsing failed');
-			}
-			a.assert(r.root);
-			a.equal(ast(r.root), out);
-			return r.root.children;
-		}
-
-		function matchError(a: TestApi, src: string) {
-			const r = parse(src);
-			a.equal(r.errors?.length, 1);
-		}
-
-		it.should('parse strings', a => {
-			match(a, `'hello \\'world\\''`, `(root 'hello \\'world\\'')`);
-			match(a, `'foo\nbar'`, `(root 'foo\nbar')`);
-			const c1 = match(
-				a,
-				`\n\n'multi\nline\nstring' 'more\nlines'`,
-				`(root 'multi\nline\nstring' 'more\nlines')`,
-			);
-			a.equal(c1[0]?.line, 2);
-			a.equal(c1[1]?.line, 4);
-			matchError(a, `'Unterminated String`);
-		});
-
-		it.should('parse integers', a => {
-			match(a, '42 4_2 0600 0_600', '(root 42 42 600 600)');
-		});
-
-		it.should('parse hex number', a => {
-			match(
-				a,
-				`0xBadFace 0xBad_Face 0x_67_7a_2f_cc_40_c6`,
-				'(root 195951310 195951310 113774485586118)',
-			);
-			matchError(a, '0x');
-		});
-
-		it.should('parse binary number', a => {
-			match(a, `0b101010110101010 0b_0001101010_101`, '(root 21930 853)');
-			matchError(a, '0b');
-		});
-
-		/*it.should('parse bigint', a => {
+		it.should('parse bigint', a => {
 			match(
 				a,
 				'170141183460469231731687303715884105727 170_141183_460469_231731_687303_715884_105727',
 				'(root 170141183460469231731687303715884105727 170_141183_460469_231731_687303_715884_105727)',
 			);
-		});*/
-
-		it.should('parse floats', a => {
-			match(a, '72.40 072.40 2.71828', '(root 72.4 72.4 2.71828)');
-			matchError(a, '0.');
 		});
 
-		it.should('parse comments', a => {
-			match(a, '# Single Line Comment', '(root comment)');
-			match(
-				a,
-				'# Line Comment 1\n  # Line Comment 2',
-				'(root comment comment)',
-			);
-			const c1 = match(
-				a,
-				'# Comment 1\n#Comment 2\na = 10',
-				'(root comment comment (def :a 10))',
-			);
-			a.equal(c1[0]?.line, 0);
-			a.equal(c1[2]?.line, 2);
-
-			const c2 = match(
-				a,
-				'# Comment\n123\n# Comment 2',
-				'(root comment 123 comment)',
-			);
-			a.equal(c2[1]?.line, 1);
-		});
-
-		it.should('parse definition', a => {
-			match(a, "a = 'hello'", "(root (def :a 'hello'))");
-			match(a, 'a = 0', '(root (def :a 0))');
-			match(a, 'a = true', '(root (def :a :true))');
-			/*match(a, 'a, b = c, d', '(root (= (, :a :b) (, :c :d)))');
-			match(
-				a,
-				'a, b, c = d, e, f',
-				'(root (= (, :a :b :c) (, :d :e :f)))',
-			);*/
-		});
-		it.should('parse var definition', a => {
-			match(a, "var a = 'hello'", "(root (def :a @variable 'hello'))");
-			match(a, 'var a = 1', '(root (def :a @variable 1))');
-			match(a, 'a = 2', '(root (def :a 2))');
-			//match(a, 'var a, var b = c, d', '(root (= (, :a :b) (, :c :d)))');
-		});
-
-		it.should('parse function assignment', a => {
-			match(
-				a,
-				`scan = fn(a: string) { }`,
-				'(root (def :scan (fn (parameter :a typeident))))',
-			);
-			/*match(
-				a,
-				`scan = fn(:string) { }`,
-				'(root (def :scan ({ (parameter ? :string))))',
-			);*/
-		});
-
-		it.should('parse ternary ? operator', a => {
-			match(a, 'a = 1 ? 2 : 3', '(root (def :a (? 1 2 3)))');
-		});
-
-		it.should('parse assignment', a => {
-			match(a, 'b = 10 a = b', '(root (= :b 10) (= :a :b))', {
-				a: { name: 'a', kind: 'variable', flags: 0 },
-				b: { name: 'b', kind: 'variable', flags: 0 },
-			});
-		});
-
-		it.should('parse infix operators', a => {
-			match(a, 'a > 0 || b > 0', '(root (|| (> :a 0) (> :b 0)))', {
-				a: { name: 'a', kind: 'variable', flags: 0 },
-				b: { name: 'b', kind: 'variable', flags: 0 },
-			});
-			match(
-				a,
-				'true || false && false',
-				'(root (|| :true (&& :false :false)))',
-			);
-			match(a, 'false || 3 == 4', '(root (|| :false (== 3 4)))');
-			match(a, '10 + 5.5 * 20', '(root (+ 10 (* 5.5 20)))');
-		});
-
-		it.should('parse prefix operators', a => {
-			match(a, '-10, -10_000, -10.53_3', '(root (, -10 -10000 -10.533))');
-			match(a, '~0b100100, ~0xff', '(root (, -37 -256))');
-			match(
-				a,
-				'!false, !true, !!!!false',
-				'(root (, (! :false) (! :true) (! (! (! (! :false))))))',
-			);
-		});
-
-		it.should('parse groups', a => {
-			match(
-				a,
-				'(true || false) && false',
-				'(root (&& (|| :true :false) :false))',
-			);
-			match(
-				a,
-				'(10 + (10 * 2.4) / (10))',
-				'(root (+ 10 (/ (* 10 2.4) 10)))',
-			);
-		});
-
-		it.should('parse data block', a => {
-			match(
-				a,
-				`a = [ 'string', 2, true, 4.5 ]`,
-				`(root (def :a (data (, 'string' 2 :true 4.5))))`,
-			);
-		});
-		/*it.should('parse data block with label', a => {
-			match(
-				a,
-				`b = [ label = 'string', 2 ]`,
-				`(root (def :b (data (, (propdef :label 'string') 2))))`,
-			);
-		});*/
-
-		it.test('errors', a => {
-			function testError(
-				src: string,
-				msg: string,
-				start: number,
-				end: number,
-			) {
-				a.test(src, a => {
-					const sf = parse(src);
-					a.ok(sf.errors.length, 'Expected error but none received');
-					const error = sf.errors[0];
-					a.equal(error?.message, msg);
-					a.equal(error?.position.start, start, 'Start position');
-					a.equal(error?.position.end, end, 'End position');
-				});
-			}
-
-			testError(
-				`(true || false) && false)`,
-				'Unexpected token ")"',
-				24,
-				25,
-			);
-		});
-		/*it.should('parse type definition', a => {
+		it.should('parse type definition', a => {
 			match(
 				a,
 				`
@@ -332,126 +484,15 @@ export default spec('compiler', s => {
 			`,
 				'(root (type :A (data ())))',
 			);
-		});*/
+		});
 	});
 
 	s.test('baselines', a => {
-		function printErrors(errors: CompilerError[]) {
-			errors.forEach(e => a.log(formatError(e)));
-		}
-		function parse(src: string) {
-			const program = Program();
-			const result = program.compile(src);
-			if (result.errors.length) {
-				printErrors(result.errors);
-				throw 'Errors found';
-			}
-			return { ...result, program };
-		}
-		function baseline<T>(
-			testName: string,
-			src: string,
-			astText: string,
-			output: string,
-			test: (a: TestApi, fn: T) => void,
-			extra = '',
-		) {
-			a.test(testName, a => {
-				const { ast: rootAst, output: code } = parse(src);
-				a.equal(ast(rootAst), astText);
-				a.equal(code.slice(RUNTIME.length), output);
-				const fn = new Function(code + extra);
-				test?.(a, fn());
-			});
-		}
-
-		function validateExpr(first: Node) {
-			if (first.kind !== 'def') return;
-			const block = first.right;
-			if (block.kind !== 'fn') return;
-			return block;
-		}
-
-		function baselineExpr<T = unknown>(
-			testName: string,
-			src: string,
-			astText: string,
-			output: string,
-			test?: (a: TestApi, fn: T) => void,
-		) {
-			a.test(testName, a => {
-				const mainSrc = `__main={ ${src} }`;
-				const { ast: rootAst, program } = parse(mainSrc);
-				const expr =
-					rootAst.children[0] &&
-					validateExpr(rootAst.children[0])?.children[0];
-				if (!expr) throw 'Invalid AST';
-				a.equal(ast(expr), astText);
-				a.equal(expr.source.slice(expr.start, expr.end), src);
-				const code = program.compileAst(expr);
-				const outSrc = code.slice(RUNTIME.length);
-				a.equal(outSrc, output);
-				const fn = new Function(`${RUNTIME};return ${outSrc}`);
-				test?.(a, fn());
-			});
-		}
-
-		function baselineError(
-			testName: string,
-			src: string,
-			astText: string,
-			errors: string[],
-		) {
-			a.test(testName, a => {
-				const program = Program();
-				const out = program.compile(`__main={ ${src} }`);
-				const expr =
-					out.ast.children[0] && validateExpr(out.ast.children[0]);
-				if (!expr?.children?.length) {
-					printErrors(out.errors);
-					throw 'Invalid AST';
-				}
-				a.equal(ast(expr), astText);
-				a.equalValues(
-					out.errors.map(e => e.message),
-					errors,
-				);
-			});
-		}
 
 		baseline('main - empty', 'main{}', '(root main)', '', (a, fn) =>
 			a.equal(fn, undefined),
 		);
 
-		/*baselineExpr(
-			'data - label',
-			`[ label:'string', 2 ]`,
-			`(data (, (propdef :label 'string') 2))`,
-			`['string',2]`,
-		);
-
-		baselineExpr(
-			'data - var label',
-			`[ var label=1,2,3 ]`,
-			`(data (, (propdef :label @variable 1) 2 3))`,
-			`[1,2,3]`,
-		);*/
-
-		/*
-		baselineExpr(
-			'assignment - sequence',
-			`a, b = 2, 1`,
-			`(def (, :a :b) (, 2 1))`,
-			`const a=2;const b=1;`,
-		);
-
-		baselineExpr(
-			'assignment - variable assignment',
-			`var a, var b = 2, 1`,
-			`(def (, :a @variable :b @variable) (, 2 1))`,
-			`let a=2;let b=1;`,
-		);
-		*/
 		baselineExpr(
 			'value >> fn',
 			'1 >> @.out',
@@ -534,23 +575,8 @@ export default spec('compiler', s => {
 			(a, r) => a.equalValues(r(), [1, 2]),
 		);
 
-		*/
 
-		baselineExpr(
-			'bitwise',
-			`[ ~0, 1 <: (32 - 1), 0xF0 | 0xCC ^ 0xAA & 0xFD ]`,
-			`(data (, -1 (<: 1 (- 32 1)) (| 240 (^ 204 (& 170 253)))))`,
-			`[-1,1<<32-1,240|204^170&253]`,
-			(a, r) => a.equalValues(r, [-1, 1 << (32 - 1), 0xf4]),
-		);
 
-		baselineExpr(
-			'ternary',
-			'true ? 1 : 0',
-			'(? :true 1 0)',
-			'true ? 1 : 0',
-			(a, r) => a.equal(r, 1),
-		);
 
 		baseline(
 			'sequence call',
@@ -563,94 +589,6 @@ export default spec('compiler', s => {
 			},
 			';return b',
 		);
-		baselineExpr(
-			'hello world',
-			`'Hello World!' >> @.out`,
-			"(>> 'Hello World!' (. @ :out))",
-			`(function*(){const _='Hello World!',__=__std.out;if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()`,
-			(a, fn) => {
-				a.equalValues(fn, ['Hello World!']);
-			},
-		);
-		baseline(
-			'loop',
-			`a = fn { var i=0 next(loop { i++<2 } >> { i }) }`,
-			'(root (def :a (fn (def :i @variable 0) (next (>> (loop (< (++ :i @variable) 2)) (fn @sequence :i @variable))))))',
-			'const a=()=>{let i=0;return((function*(){const _=(function*(){while(i++<2)yield})(),__=function*($){{const _$=i;if(_$ instanceof Iterator)(yield* _$);else (yield _$)}};if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})())}',
-			(a: TestApi, fn) => {
-				a.assert(typeof fn === 'function');
-				a.equalValues(fn(), [1, 2]);
-			},
-			';return a',
-		);
-		baseline(
-			'loop - 0 to 5',
-			`a = { var x=0 loop { x++ < 5  } >> {} next(x) }`,
-			'(root (main (def :x @variable 0) (loop ({ (? (== (++ :x) 5) done))) (return :x)))',
-			`let x=0;while((()=>{return x++==5 ? done : undefined})()!==done){}return x`,
-			(a: TestApi, r) => {
-				a.assert(typeof r === 'function');
-				a.equalValues(r(), [6]);
-			},
-			';return a',
-		);
-		baseline<(n: number) => number>(
-			'fibonacci',
-			`fib = fn(n: int) => n <= 1 ? n : fib(n - 1) + fib(n - 2)`,
-			'(root (def :fib (fn @lambda (parameter :n typeident) (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))))',
-			'const fib=(n)=>(n<=1 ? n : fib(n-1)+fib(n-2))',
-			(a, fib) => {
-				a.equal(fib(0), 0);
-				a.equal(fib(1), 1);
-				a.equal(fib(2), 1);
-				a.equal(fib(3), 2);
-				a.equal(fib(4), 3);
-				a.equal(fib(5), 5);
-				a.equal(fib(6), 8);
-			},
-			';return fib',
-		);
-
-		baseline<(n: number) => number>(
-			'factorial',
-			`
-factorial = fn(n: int): int {
-    next (n <= 1) ? 1 : n * factorial(n - 1)
-}
-			`,
-			'(root (def :factorial (fn (parameter :n typeident) typeident (? (next (<= :n 1)) 1 (* :n (call :factorial (- :n 1)))))))',
-			'const factorial=(n)=>{return(n<=1) ? 1 : n*factorial(n-1)}',
-			(a, factorial) => {
-				a.equal(factorial(0), 1);
-				a.equal(factorial(1), 1);
-				a.equal(factorial(2), 2);
-				a.equal(factorial(3), 6);
-				a.equal(factorial(4), 24);
-				a.equal(factorial(5), 120);
-			},
-			';return factorial',
-		);
-		baseline<(a: number, b: number) => number>(
-			'ackermann',
-			`
-ackermann = fn(m: int, n:int) {
-	next(m == 0 ? n + 1 :
-		(n == 0 ? ackermann(m - 1, 1) : (ackermann(m - 1, ackermann(m, n - 1)))))
-}
-		`,
-			`(root (def :ackermann (fn (parameter :m typeident) (parameter :n typeident) (next (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1)))))))))))`,
-			'const ackermann=(m,n)=>{return(m===0 ? n+1 : n===0 ? ackermann(m-1,1) : ackermann(m-1,ackermann(m,n-1)))}',
-			(a, ack) => {
-				a.equal(ack(1, 3), 5);
-				a.equal(ack(2, 3), 9);
-				a.equal(ack(3, 3), 61);
-				a.equal(ack(1, 5), 7);
-				a.equal(ack(2, 5), 13);
-				a.equal(ack(3, 5), 253);
-			},
-			';return ackermann;',
-		);
-
 		baselineError(
 			'<= operator',
 			'true <= -1',
@@ -672,20 +610,5 @@ ackermann = fn(m: int, n:int) {
 			],
 		);
 
-		/*
 
-		baseline(
-			`repeat`,
-			`repeat = fn(n) { var x=0 loop >> { n-->0 ? next(x++) : done } }`,
-			'',
-			'',
-		);
-		baseline(
-			`while`,
-			`while = fn(condition) { loop >> { condition() ? next : done } }`,
-			'',
-			'',
-		);
 		*/
-	});
-});

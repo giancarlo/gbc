@@ -6,6 +6,9 @@ import { Node, NodeMap } from './node.js';
 export const RUNTIME = `"use strict";
 const __std={
 	*out(...args){console.log(...args); yield* args}
+};
+const __iter= r => {
+	return r instanceof Iterator ? r : [r];
 };`;
 
 const infix = (n: InfixNode<NodeMap>, op: string = n.kind) =>
@@ -129,25 +132,30 @@ export function compile(node: Node): string {
 		case '^':
 			return infix(node);
 		case '>>': {
-			let i = node.children.length,
-				text = `yield(_${i - 1})`;
+			const [first, ...stages] = node.children;
+			if (!first || !stages.length) throw new Error('Invalid Node');
+			const valueId = '_0';
+			const fnIds = stages.map((_, i) => `_f${i}`);
+			let header = `const ${valueId}=${compile(first)}`;
+			for (let i = 0; i < stages.length; i++)
+				header += `,${fnIds[i]}=${compile(stages[i]!)}`;
+			header += ';';
 
-			while (i--) {
-				const child = node.children[i];
-				if (i === 0 || !child) break;
-				if (i === 1) {
-					const first = node.children[0];
-					if (!first) throw new Error('Invalid Node');
+			const build = (i: number, input: string): string => {
+				const result = `_r${i}`;
+				const value = `_v${i + 1}`;
+				const inner =
+					i === stages.length - 1
+						? `yield ${value}`
+						: build(i + 1, value);
+				return `const ${result}=${fnIds[i]}(${input});for(const ${value} of __iter(${result})){${inner}}`;
+			};
 
-					text = `(function*(){const _=${compile(first)},__=${compile(
-						child,
-					)};if(_ instanceof Iterator)for(const _0 of _){yield* __(_0)}else yield* __(_)})()`;
-				} else
-					text = `for(const _${i} of (${compile(child)})(_${
-						i - 1
-					})){${text}}`;
-			}
-			return text;
+			const body = `for(const _v0 of __iter(${valueId})){${build(
+				0,
+				'_v0',
+			)}}`;
+			return `(function*(){${header}${body}})()`;
 		}
 		case 'def': {
 			const symbol = node.left.symbol;

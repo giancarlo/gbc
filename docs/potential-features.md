@@ -455,3 +455,18 @@ max(5, 10)   # Output: 10
 ```
 
 The `max` function uses a generic type `T` that extends `Comparable<T>`, ensuring that the type can be compared.
+
+### Closures
+
+Functions can capture variables from their surrounding scope, creating closures.
+
+```ts
+makeCounter = {
+    count: var = 0
+    next { count += 1 }
+}
+
+counter = makeCounter()
+counter()    # Output: 1
+counter()    # Output: 2
+```

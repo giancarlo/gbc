@@ -93,7 +93,6 @@ export - Export module symbol
     170141183460469231731687303715884105727
     170_141183_460469_231731_687303_715884_105727
 
-    _42         // an identifier, not an integer literal
     42_         // invalid: _ must separate successive digits
     4__2        // invalid: only one _ at a time
     0_xBadFace  // invalid: _ must separate successive digits
@@ -146,7 +145,7 @@ String literals are immutable. All strings are utf8 encoded.
 
 ### Data Blocks
 
-Data blocks are typed structures. Data blocks are enclosed in brackets '[]' and are zero-indexed.
+Data blocks are enclosed in brackets '[]' and are zero-indexed.
 
 ```
 # Creates a list named `a` containing a string 'string' and the integer 2.
@@ -299,6 +298,51 @@ add = fn(a: int, b: int): int {
 
 Functions can take only one argument. The call `()` operator groups comma-separated values into a data block, so `fn(1, 2, 3)` passes `[1, 2, 3]` to the function.
 
+```
+x = { $ }
+x(10)        # $ is [10]
+x(1, 2, 3)   # $ is [1, 2, 3]
+10 >> x.     # $ is 10
+
+y = fn(a: int) { a }
+y(10)        # a is 10
+```
+
+A function call with one argument still wraps the argument into a data block, while the pipe passes the value as-is. That’s why these are not equivalent:
+
+```
+x = { $ }
+
+x(10)        # $ is [10]
+10 >> x      # $ is 10
+```
+
+If the function expects a field-based argument, piping a raw value can error:
+
+```
+z = fn(a: int) { a }
+
+z(10)        # a is 10
+[10] >> z    # a is 10
+10 >> z      # type error
+```
+
+If you want the pipe to behave like a call, wrap the value:
+
+```
+[10] >> z
+```
+
+You can also provide a type for the `$` parameter.
+
+```
+inc = fn($: int) { $ + 1 }
+
+sum = fn($: [a: int, b: int]) { $a + $b }
+
+accept = fn($: int | string) { $ }
+```
+
 ### Named Arguments
 
 If named arguments are used, all arguments must include the name.
@@ -323,21 +367,6 @@ greet("Alice")   # Output: "Hello, Alice!"
 
 The `greet` function has a default parameter `name` with a value of `"World"`.
 
-### Closures
-
-Functions can capture variables from their surrounding scope, creating closures.
-
-```ts
-makeCounter = {
-    count: var = 0
-    next { count += 1 }
-}
-
-counter = makeCounter()
-counter()    # Output: 1
-counter()    # Output: 2
-```
-
 ### Recursion
 
 Functions can call themselves recursively.
@@ -352,7 +381,7 @@ factorial(5)    # Output: 120
 ### Emitting Values with `next`
 
 The `next` keyword is used within a function to emit a value.
-A function can emit multiple values.
+A function can emit one, multiple or zero values.
 
 ```ts
 emitValues = {
@@ -363,7 +392,7 @@ emitValues = {
 { 1, 2, 3 } >> @.out
 
 # Emit the values `1`, `2`, and `3` before calling `done` to signal completion.
-emitValues >> @.out
+emitValues() >> @.out
 ```
 
 #### Comma Operator
@@ -385,27 +414,73 @@ The done keyword can be used to explicitly signal early termination if needed.
 ### Chaining
 
 Functions can be chained to perform multiple operations in sequence.
+The pipe operator `>>` passes the left value into the right stage as its argument. The argument is bound to `$`.
 
 ```ts
-increment = fn (:number) { $ + 1 }
-double = fn (:number) { $ * 2 }
+increment = { $ + 1 }
+double = { $ * 2 }
 3 >> increment >> double >> @.out
+```
+
+#### Value Flow
+
+- If a stage emits multiple values, each value is passed downstream independently.
+- If a stage emits nothing, downstream stages receive nothing for that path.
+- The pipeline completes when all upstream emissions are consumed.
+
+```
+2 >> { $ / 2, $ * 2 } >> { $ + 1 } >> @.out
+# Emits 2 values: 2 >> {1, 4} then +1 => 2 and 5
 ```
 
 ## Error Handling
 
-### `catch` Block
+Errors can be emitted by any stage in a pipeline or from direct function calls. If no `catch` is present, the error propagates to the caller and terminates the current pipeline.
 
-The `catch` block in a stream pipeline intercepts errors and defines custom error-handling behavior. It can emit new values to replace the error and continue processing the stream.
-
-The code within the `catch` block can choose to re-throw the original error. This allows subsequent parts of the stream or the caller to handle the error in their own way.
-
-The `$` keyword will be available inside the catch block and it will contain the caught error.
-Errors are data and are part of the function return type. Errors implement the Error type. The _error_ function can be used to create errors at runtime.
+Errors implement the Error type. The _error_ function can be used to create errors at runtime.
 
 ```ts
-    open('file') >> catch { next open('file2') } >> { ... }
+type Error = [code: string, message: string];
 ```
+
+### `catch` Block
+
+The `catch` block in a stream pipeline intercepts errors and defines custom error-handling behavior. `catch` applies to the nearest upstream pipeline stage that can emit an error.
+
+The `$` keyword will be available inside the catch block and it will contain the caught error.
+
+```ts
+    open('file') >> catch { open('file2') } >> { ... }
+```
+
+Inside a `catch` block, you can rethrow the original error with the `error` keyword. This allows later stages of the stream or the caller to handle it.
+To recover, use `next` to emit a value and continue the pipeline with it as a normal value.
+
+```ts
+fetchUser = fn(id: string) {
+    @db.getUser(id) >> catch {
+        $code == 'not_found'
+            ? { next @cache.getUser(id) }
+            : { error $ }
+    }
+}
+
+fetchUser('u1') >> @.out
+```
+
+You can chain multiple `catch` blocks. The first `catch` that handles the error determines the value passed downstream.
+
+```ts
+readUser = fn(id: string) {
+    @db.getUser(id)
+    >> catch { $code == 'not_found' ? { next @cache.getUser($id) } : { error $ } }
+    >> catch { [ code = 'unknown', message = 'fallback user' ] }
+}
+```
+
+If a `catch` block completes without emitting, downstream stages receive no value. `done` can be used to terminate handling early after recovery logic.
+
+When a function can recover with `next`, its effective output type includes both normal values and recovery values.
 
 ## Statements
 
