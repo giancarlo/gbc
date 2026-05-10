@@ -6,8 +6,11 @@
 		"rules": {
 			"build": {
 				"regex": "/([^/]+)/.+",
-				"tasks": "shell.npmBuild $1"
+				"tasks": "npm run build $1"
 			}
 		}
+	},
+	"ai": {
+		"instructions": ["Run tests: npm test --prefix gbc/dirName"]
 	}
 }

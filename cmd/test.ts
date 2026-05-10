@@ -1,7 +1,7 @@
 import { TestApi, spec } from '@cxl/spec';
 import { each, Token } from '../sdk/index.js';
 
-import { scan, keywords } from './index.js';
+import { scan, keywords, program } from './index.js';
 //import { ast } from './debug.js';
 
 export default spec('cmd', s => {
@@ -13,7 +13,28 @@ export default spec('cmd', s => {
 		) {
 			const { next } = scan(src);
 			let i = 0;
-			for (const tk of each(next)) a.equalValues(tk, expect[i++]);
+			for (const tk of each(next)) {
+				const expected = expect[i++]!;
+				a.equalValues(
+					{
+						kind: tk.kind,
+						start: tk.start,
+						end: tk.end,
+					},
+					{
+						kind: expected.kind,
+						start: expected.start,
+						end: expected.end,
+					},
+				);
+			}
+		}
+
+		function kinds(src: string) {
+			const { next } = scan(src);
+			const result: string[] = [];
+			for (const tk of each(next)) result.push(tk.kind);
+			return result;
 		}
 
 		it.should('scan keywords', a => {
@@ -88,6 +109,65 @@ export default spec('cmd', s => {
 			a.throws(() => match(a, '  12f2'), {
 				position: { start: 2, end: 5 },
 			});
+		});
+
+		it.should('scan command operators', a => {
+			a.equalValues(kinds('echo hello | cat && grep foo || (sed edit)'), [
+				'ident',
+				'ident',
+				'|',
+				'ident',
+				'&&',
+				'ident',
+				'ident',
+				'||',
+				'(',
+				'ident',
+				'ident',
+				')',
+			]);
+		});
+
+		it.should('scan comments and redirects', a => {
+			a.equalValues(kinds('echo hi # note'), ['ident', 'ident', 'comment']);
+			a.equalValues(kinds('cat < in txt > out'), [
+				'ident',
+				'<',
+				'ident',
+				'ident',
+				'>',
+				'ident',
+			]);
+		});
+
+		it.should('compile bash-like commands', a => {
+			const cmd = program();
+			a.equalValues(
+				cmd.compile(`git commit -m 'msg' | cat`).output,
+				`git commit -m 'msg' | cat`,
+			);
+			a.equalValues(
+				cmd.compile(`echo hello > out.txt && cat < out.txt`).output,
+				`echo hello > out.txt && cat < out.txt`,
+			);
+			a.equalValues(
+				cmd.compile(`(echo hello | cat)`).output,
+				`(echo hello | cat)`,
+			);
+		});
+
+		it.should('compile comments, redirects, and groups', a => {
+			const cmd = program();
+			a.equalValues(cmd.compile(`echo hi # note`).output, `echo hi`);
+			a.equalValues(
+				cmd.compile(`cat < in.txt > out.txt`).output,
+				`cat < in.txt > out.txt`,
+			);
+			a.equalValues(
+				cmd.compile(`echo hi\n# note\ncat`).output,
+				`echo hi\ncat`,
+			);
+			a.equalValues(cmd.compile(`{ echo hi }`).output, `{ echo hi ; }`);
 		});
 	});
 });

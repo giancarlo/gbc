@@ -216,7 +216,7 @@ export default spec('Language Reference', ({ h }) => {
 		expr({ src: 'false', ast: ':false' });
 	});
 
-	h('String Literals', ({ match }) => {
+	h('String Literals', ({ h, match }) => {
 		match(`'variable length \\'string\\''`, 'string');
 		match(
 			`'
@@ -226,6 +226,17 @@ export default spec('Language Reference', ({ h }) => {
 			'string',
 		);
 		match("'${1}+${1}=${1+1}'", 'string');
+
+		h('Escape Sequences', ({ expr, equal }) => {
+			expr({
+				p: 'String literals support escape sequences such as newline and unicode code points.',
+				src: `'line\\nA\\u{42}'`,
+				ast: "'line\\nA\\u{42}'",
+				test: fn => {
+					equal(fn(), 'line\nAB');
+				},
+			});
+		});
 	});
 
 	h('Data Blocks', ({ expr }) => {
@@ -403,6 +414,17 @@ next(emit() >> { next($, $ + 10) })
 				ast: '',
 				test: fn => {
 					equalValues(fn(), [1, 11, 2, 12]);
+				},
+			});
+		});
+
+		h('Completion', ({ expr, equalValues }) => {
+			expr({
+				p: 'The `done` keyword explicitly terminates a sequence block and prevents later statements from running.',
+				src: 'next(1) done next(2)',
+				ast: '(next 1) done (next 2)',
+				test: fn => {
+					equalValues(fn(), [1]);
 				},
 			});
 		});

@@ -8,6 +8,7 @@
 	"type": "module",
 	"devDependencies": {
 		"@cxl/build": "^1.0.0",
+		"@cxl/spec": "^1.0.1",
 		"@cxl/program": "^1.0.0",
 		"@types/node": "^24.6.2"
 	},

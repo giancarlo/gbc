@@ -8,7 +8,7 @@ A language for IDE commands
 
 -   Branch Version: [0.0.1](https://npmjs.com/package/@cxl/gbc.cmd/v/0.0.1)
 -   License: GPL-3.0
--   Documentation: [Link](https:/github.com/giancarlo/gbc/cmd)
+-   Documentation: [Link](https://github.com/giancarlo/@cxl/gbc.cmd)
 -   Report Issues: [Github](https://github.com/giancarlo/gbc/issues)
 
 ## Installation
