@@ -25,22 +25,18 @@ const block = (n: NodeMap['fn']) =>
 		: `{${n.statements ? compileEach(n.statements) : ''}}`;
 const compileEach = (nodes: Node[], sep = ';') => nodes.map(compile).join(sep);
 function isExpression(n: Node) {
-	return n.kind !== 'next' && n.kind !== 'done';
+	return n.kind !== 'next' && n.kind !== 'done' && n.kind !== 'def';
 }
 function generatorYield(n: Node) {
 	if (n.kind === ',') return n.children.map(nextGenerator).join(';');
 	return nextGenerator(n);
 }
 function generatorBody(n: NodeMap['fn']) {
-	return n.statements
-		? `${
-				n.statements.length === 1 &&
-				n.statements[0] !== undefined &&
-				isExpression(n)
-					? generatorYield(n.statements[0])
-					: compileEach(n.statements)
-			}`
-		: '';
+	if (!n.statements) return '';
+	const only = n.statements.length === 1 ? n.statements[0] : undefined;
+	return only !== undefined && isExpression(only)
+		? generatorYield(only)
+		: compileEach(n.statements);
 }
 
 function next(child?: Node) {
@@ -61,8 +57,10 @@ export function compile(node: Node): string {
 			return `[${compileEach(node.children)}]`;
 		case 'done':
 			return 'return;';
+		case 'break':
+			return 'break;';
 		case 'loop':
-			return `(function*(){while(${compile(node.children[0])})yield})()`;
+			return `(function*(){let __i=0;while(true)yield __i++})()`;
 		case 'root':
 			return compileEach(node.children);
 		case 'main':
@@ -76,7 +74,10 @@ export function compile(node: Node): string {
 			return node.owner.flags & Flags.Sequence
 				? nextGenerator(node.children?.[0])
 				: next(node.children?.[0]);
-		case 'parameter':
+		case 'parameter': {
+			const name = text(node.label);
+			return node.value ? `${name}=${compile(node.value)}` : name;
+		}
 		case 'ident':
 		case 'string':
 		case '~':
@@ -117,8 +118,18 @@ export function compile(node: Node): string {
 			return infix(node, '===');
 		case '!=':
 			return infix(node, '!==');
+		case '.': {
+			const [left, right] = node.children;
+			if (right.kind === 'number')
+				return `${compile(left)}[${right.value}]`;
+			if (right.kind === 'ident' && left.kind === 'data') {
+				const idx = dataLabelIndex(left, right.symbol.name);
+				if (idx >= 0)
+					return `${compile(left)}[${idx}]`;
+			}
+			return infix(node);
+		}
 		case '+':
-		case '.':
 		case '|':
 		case '&&':
 		case '||':
@@ -158,14 +169,14 @@ export function compile(node: Node): string {
 			return `(function*(){${header}${body}})()`;
 		}
 		case 'def': {
-			const symbol = node.left.symbol;
+			const symbol = node.label.symbol;
 			if (symbol.kind !== 'variable') throw 'Invalid node';
 			const isVar = symbol.flags & Flags.Variable;
 			const isExport = symbol.flags & Flags.Export;
 
 			return `${isExport ? 'export ' : ''}${isVar ? 'let' : 'const'} ${
 				symbol.name
-			}=${compile(node.right)}`;
+			}=${compile(node.value)}`;
 		}
 		case '$':
 			return '$';
@@ -184,13 +195,37 @@ export function compile(node: Node): string {
 			return `${compile(node.children[0])}(${
 				node.children[1] ? compile(node.children[1]) : ''
 			})`;
-		case 'macro':
+		case 'propdef':
+			return node.value ? compile(node.value) : '';
+		case 'is':
+			return `(${compile(node.children[0])} instanceof ${compile(node.children[1])})`;
+		case 'typeident':
+			return text(node);
+		case 'external':
 		case 'comment':
 		case 'type':
 			return '';
 		default:
 			throw new CompilerError(`Unexpected "${node.kind}"`, node);
 	}
+}
+
+function dataLabelIndex(
+	data: NodeMap['data'],
+	name: string | undefined,
+): number {
+	if (!name) return -1;
+	const inner = data.children[0];
+	if (!inner) return -1;
+	if (inner.kind === 'propdef')
+		return inner.label?.symbol.name === name ? 0 : -1;
+	if (inner.kind !== ',') return -1;
+	for (let i = 0; i < inner.children.length; i++) {
+		const item = inner.children[i];
+		if (item?.kind === 'propdef' && item.label?.symbol.name === name)
+			return i;
+	}
+	return -1;
 }
 
 export function compiler(root: Node) {

@@ -6,6 +6,7 @@ import { Flags, SymbolTable, TypesSymbolTable } from './symbol-table.js';
 
 import type { ScannerToken } from './scanner.js';
 import type { Node, NodeMap } from './node.js';
+import type { SymbolMap } from './symbol-table.js';
 
 export type RootNode = ReturnType<typeof parse>;
 
@@ -27,29 +28,90 @@ export function parse(
 	const typeParser = parseType(api, typesTable);
 	const expression = parseExpression(api, symbolTable, typeParser);
 
-	function markExported(n: Node) {
-		if (n.kind === 'ident') n.symbol.flags |= Flags.Export;
+	function markExported(label: Node) {
+		if (label.kind === 'ident' || label.kind === 'typeident')
+			label.symbol.flags |= Flags.Export;
 		else throw 'Invalid Symbol';
 	}
 
-	function typeIdent(tk: Token<'ident'>) {
-		const name = text(tk);
-		const symbol = typesTable.set(name, { name, kind: 'type', flags: 0 });
-		return {
-			...tk,
-			kind: 'typeident',
-			symbol,
-		} as const;
+	function addDataMembers(
+		n: Node,
+		out: Record<string, SymbolMap['variable']>,
+	): void {
+		if (n.kind === 'typeident') {
+			const s = n.symbol;
+			if (s.kind === 'type' && s.family === 'data')
+				Object.assign(out, s.members);
+			return;
+		}
+		if (n.kind === 'data') {
+			const inner = n.children[0];
+			const items =
+				inner?.kind === ','
+					? inner.children
+					: inner
+						? [inner]
+						: [];
+			for (const it of items) {
+				if (it?.kind !== 'propdef' || !it.label) continue;
+				const sym = it.label.symbol;
+				if (sym?.kind === 'variable' && sym.name)
+					out[sym.name] = sym;
+			}
+			return;
+		}
+		if (n.kind === '&') {
+			addDataMembers(n.children[0], out);
+			addDataMembers(n.children[1], out);
+		}
+	}
+
+	function buildTypeSymbol(
+		def: Node,
+		name: string,
+	): SymbolMap['type'] | undefined {
+		if (def.kind === 'typeident' && def.symbol.kind === 'type')
+			return { ...def.symbol, name };
+		if (def.kind === 'data') {
+			const members: Record<string, SymbolMap['variable']> = {};
+			addDataMembers(def, members);
+			return {
+				kind: 'type',
+				flags: 0,
+				name,
+				family: 'data',
+				size: 0,
+				members,
+			};
+		}
+		if (def.kind === '&') {
+			const members: Record<string, SymbolMap['variable']> = {};
+			addDataMembers(def, members);
+			return {
+				kind: 'type',
+				flags: 0,
+				name,
+				family: 'data',
+				size: 4,
+				members,
+			};
+		}
+		return undefined;
 	}
 
 	function typeDefinition(node: Token<'type'>) {
-		const name = typeIdent(expect('ident'));
+		const ident = expect('ident');
+		const name = text(ident);
 		expect('=');
 		const def = expectNode(typeParser(), 'Expected type definition');
+		const symbol = buildTypeSymbol(def, name);
+		if (!symbol) throw api.error('Expected type definition', ident);
+		typesTable.set(name, symbol);
+		const label: NodeMap['ident'] = { ...ident, symbol };
 		const result: NodeMap['type'] = {
 			...node,
-			children: [name, def],
-			symbol: name.symbol,
+			children: [label, def],
+			symbol,
 		};
 		return result;
 	}
@@ -67,22 +129,32 @@ export function parse(
 		return expr;
 	}
 
-	function macro(token: Token<'macro'>): NodeMap['macro'] {
+	function externalDecl(token: Token<'external'>): NodeMap['external'] {
 		next();
-		const nameTk = expect('ident');
-		const macroName = text(nameTk);
-		const symbol = symbolTable.set(macroName, {
-			name: macroName,
-			kind: 'macro',
-			flags: 0,
-			value: '',
+		const ident = expect('ident');
+		expect(':');
+		const type = expectNode(typeParser(), 'Expected type');
+		if (type.kind !== 'typeident' || type.symbol.kind !== 'function')
+			throw api.error(
+				'External must declare a function type',
+				ident,
+			);
+		const name = text(ident);
+		const symbol: SymbolMap['function'] = symbolTable.set(name, {
+			name,
+			kind: 'function',
+			flags: Flags.External,
+			parameters: type.symbol.parameters,
+			returnType: type.symbol.returnType,
 		});
-		const name = { ...nameTk, symbol };
-
+		const label: NodeMap['ident'] = { ...ident, symbol };
 		return {
 			...token,
-			name,
-			children: [name],
+			kind: 'external',
+			label,
+			type,
+			children: [label, type],
+			end: type.end,
 		};
 	}
 
@@ -104,7 +176,7 @@ export function parse(
 		} else if (token.kind === 'comment') {
 			next();
 			return token;
-		} else if (token.kind === 'macro') return macro(token);
+		} else if (token.kind === 'external') return externalDecl(token);
 
 		return definition();
 	}

@@ -15,6 +15,7 @@
 		"parser.ts",
 		"parser-type.ts",
 		"program.ts",
+		"stdlib-source.ts",
 		"symbol-table.ts",
 		"target-wasm.ts",
 		"node.ts"

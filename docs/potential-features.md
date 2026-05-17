@@ -1,21 +1,134 @@
 # Potential Features
 
-## Modules
+## Host Bindings (`external`, curated `@` modules)
 
-### Modules as Functions
+The language needs a way to call host-supplied functions — print to stdout, fetch a URL, read a file, manipulate the DOM, etc. The proposed design layers three mechanisms; v1 ships only the innermost (compiler-internal stdlib use); the outer layers are deferred until demand justifies them.
 
-- Modules act as functions that provide exports.
-- They are designed to be stateless.
+### Layer 1 — Internal `external` (v1, compiler-only)
 
-```ts
-module = {
-	a = { }...
-	export [ a, b c ]
+`external` is a top-level keyword that declares a function whose implementation lives outside gb. In v1, **only the stdlib uses it**; not exposed to user code.
+
+```gb
+# compiler/stdlib.gb (internal)
+external out_str = fn(s: String): Void host {
+    console.log(decodeString(s))
 }
 
-# Translates to
-module = () => { ... return {a,b,c} }
+external out_i32 = fn(n: Int32): Void host {
+    console.log(n)
+}
 ```
+
+- The `host { ... }` body is opaque host-language source (currently JS). Compiler doesn't parse it as gb.
+- The declaration creates a WASM import: `(import "env" "out_str" (func (param i32)))`.
+- The compiler bundles inline-JS bodies of *reachable* externals into the output's host-binding file (`.host.js`). Unused externals are tree-shaken.
+- The compiler injects helpers (`decodeString`, `memory`, etc.) into the JS scope.
+
+User-facing `@.out`, `@.in`, etc. stay compiler-controlled intrinsics that dispatch to the right external by argument type — no language-level overloading needed yet.
+
+### Layer 2 — Curated `@` modules (deferred)
+
+The stdlib grows into vendored, platform-specific modules:
+
+```gb
+@.io.out, @.io.in              # universal stdio
+@.fs.read, @.fs.write          # node target
+@.dom.query, @.dom.addEventListener  # browser target
+@.fetch                         # both
+@.now, @.random, @.sleep        # universal
+```
+
+- Each module is gb code in `compiler/stdlib/<name>.gb` with declared externals + their inline JS impls.
+- Compiler tracks target (browser / node / universal). Using `@.dom` in a node-target build → compile error.
+- Tree-shakable: a Hello World program reachable through `@.io.out` ships ~5 lines of host JS; a DOM-heavy program ships hundreds, only what it calls.
+
+### Layer 3 — User-facing `external` (deferred, escape hatch)
+
+When curated modules don't cover something a user needs (custom hardware, npm packages, novel browser API), the user writes the same `external` decl that stdlib uses:
+
+```gb
+# user's main.gb (deferred)
+external send_to_widget = fn(id: Uint32, payload: String): Void host {
+    document.getElementById(`widget-${id}`).postMessage(decodeString(payload))
+}
+```
+
+CLI shows a portability warning when user code declares externals — "this module ties itself to the host runtime."
+
+### Coverage estimate
+
+| Layer | Coverage of host-FFI needs |
+|---|---|
+| 1 (stdlib internal only) | 100% of language plumbing, 0% of user FFI |
+| 1 + 2 (curated modules) | ~90% of typical user needs (stdio, files, fetch, DOM basics, timers, crypto) |
+| 1 + 2 + 3 (user `external`) | Everything reachable from the host |
+
+### Tree-shaking
+
+The inline-JS body lives in the gb source alongside the declaration. The compiler walks reachable code and emits the JS impl of each reachable external into the output's `.host.js`. Compile-time DCE; no per-build npm-tree-shaker invocation needed.
+
+For precompiled binary modules (future), each module ships its JS payload alongside its WASM:
+
+| Format | Shape | Tree-shake |
+|---|---|---|
+| Source (`.gb`) | one text file | natural (compiler) |
+| WASM + host JS pair | `mod.wasm` + `mod.host.js` | needs `wasm-opt` + JS bundler at link time |
+| Single-file JS bundle | `.gb.js` with base64'd WASM + bundled host fns | needs JS bundler (Rollup, esbuild) |
+| Custom-section embed | `.wasm` with `gb-host` custom section holding the JS | needs custom `gbc-link` tooling |
+
+V1 ships **source distribution only**. Precompiled module formats are added later when build-time becomes a real concern.
+
+### Linking multiple modules
+
+Each module brings its own host bindings. At instantiate time, the `env` namespace is the union of every loaded module's host fns. Standard multi-module WASM linking — the inline-JS pattern doesn't alter this.
+
+### Open questions
+
+- **Syntax for the host body.** Options surveyed: backticks `` ` ``, `js { ... }`, `host { ... }`, string after `=`. `host { ... }` is host-language-agnostic (future-proof if we ever target wasm-with-component-model or a non-JS host) but adds a keyword. `js { ... }` is shorter and accurate for current scope. Picking deferred until user-facing layer 3 ships.
+- **Helper injection.** What variables (`memory`, `decodeString`, `encodeString`, `alloc`, ...) are in scope inside a `host` body. Needs a documented stable API.
+- **Multi-target.** Should one `external` declaration carry multiple `host { ... }` bodies for different targets (browser vs node)? Or one external per target with compile-time selection?
+- **Async externals.** WASM imports are synchronous; async JS values need adapters (JSPI proposal, or polling/promise-handle pattern).
+
+## `=>` Arrow Lambda Form
+
+Concise form for named-parameter functions that auto-emit a single expression.
+
+```
+fib = fn(n: Int) => n <= 1 ? n : fib(n - 1) + fib(n - 2)
+add = fn(a, b) => a + b
+```
+
+Currently rejected (see `decisions.md` D16): there are already two forms — anonymous
+blocks `{ expr }` auto-emit, and `fn(...) { body }` requires explicit `next`. Adding
+`=>` is a third way to express auto-emit with named parameters — a One Way violation
+with only ergonomic gain (~50% character reduction for short helpers).
+
+Could be revisited if short utility functions become common enough that the
+verbosity of `fn(a, b) { next a + b }` becomes a real friction.
+
+## `use` (Import Keyword)
+
+Bring symbols from a module into the current scope.
+
+```
+@module.path use func1, func2
+foo use a, b as renamed
+```
+
+See also: Modules > Object Destructuring below.
+
+## String Encoding (UTF-8)
+
+Commit the language to UTF-8 as the string encoding.
+
+Implications to resolve:
+- Indexing semantics: does `.0` on a string yield a byte, a code point, or a grapheme cluster?
+- Length: is `string.length` bytes or code points?
+- Interop: how do non-UTF-8 sources (e.g., file I/O) enter the type system?
+
+Alternative: leave encoding unspecified at the language level; let stdlib operations declare per-call.
+
+## Modules
 
 ### Main Block
 
@@ -125,40 +238,6 @@ evaluate |= { | :string | $ }
 serialize |= { | :string | ['string', s] }
 ```
 
-### Types are also functions?
-
-```ts
-    type Point = [number, number];
-    a = Point(10, 10)
-    a: Point = [ 10, 10 ];
-
-	type Point = [x:number=0, y:number=0];
-    # Type with constructor
-    type Point {
-    	x = 0;
-    	y = 0;
-    }
-
-    point = { |x: number, y: number| [x, y] }
-	point2 = { | :[number,number] | [$.0, $.1]}
-    a = point(10, 10);
-	b = point(a);
-```
-
-```ts
-type Person {
-	name = '';
-	age = 18;
-}
-
-growUp = { |:Person| $.age++ }
-
-main {
-	me = Person('Name', 20)
-	'I\'m ${me.name} and I\'m ${me.age}' >> std.out:
-}
-```
-
 ## Data Concatenation
 
 ```ts
@@ -181,16 +260,6 @@ concat(a,b);
 
     10 >> is(2, 3, 4) # false
     'foo' >> is(/f../) # true
-
-### switch
-
-```
-    x = expr >> switch {
-        is(3) => 2;
-        is(4) => 3;
-        else => 4;
-    }
-```
 
 ### while
 
@@ -225,6 +294,42 @@ while { x < 2 } >> { x++ } >> std.out # Prints 1
 ### for
 
     10..5 >> std.out # prints [10,9,8,7,6]
+
+## Pattern Matching
+
+Chains + nested ternary + `is` (D21) already cover most of pattern matching's utility:
+
+| PM feature | Existing GB equivalent |
+|---|---|
+| Value cases | `value >> { $ == X ? A : $ == Y ? B : C }` |
+| Type cases | `value >> { $ is T ? A : $ is U ? B : C }` |
+| Type narrowing in arm | D21 — `is` narrows in truthy branch automatically |
+| Guards | nested ternary already takes any Bool expression |
+| Default / catch-all | the final `: default` branch |
+| Multiple alternatives per arm | `$ == X \|\| $ == Y ? ...` |
+
+What chain-based dispatch doesn't cover — and what a future Pattern Matching feature would add:
+
+- **Destructuring patterns** — `[head, ..tail]`, nested struct destructure
+- **Exhaustiveness checking** — needs closed sum types
+
+Sketch (only the parts existing primitives don't cover):
+
+```ts
+result = value match {
+    [head, ..tail]      => head + sum(tail)
+    Error('NOT_FOUND')  => default
+    _                   => 'other'
+}
+```
+
+Open design questions:
+- Whether sum types are added as a distinct feature first
+- Compile-time exhaustiveness — needs closed type sets
+- Compiler lowering — `br_table` for dense int patterns, decision tree otherwise
+- Relationship to D21 narrowing — match arms should produce the same narrowing
+
+Subsumes the retired `### switch` sketch.
 
 ## Tagged Templates
 

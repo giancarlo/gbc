@@ -14,6 +14,7 @@ type NodeMapBase = {
 	em: { children: Children };
 	p: { children: Children };
 	strong: { children: Children };
+	delim: { ch: string; count: number; canOpen: boolean; canClose: boolean };
 	root: {
 		children: Children;
 		pCount: number;
@@ -58,10 +59,18 @@ type InlineBlockToken = Extract<
 		blockIndent: number;
 	}
 >;
-export type LinkDefinition = { href: string; text: string; title?: string };
+export type LinkDefinition = {
+	href: string;
+	title?: string;
+	children: Node[];
+};
 
 const isEol = (c: string) => c === '\n';
 const isSpace = (c: string) => c === ' ' || c === '\t';
+const escape = (i: number, src: string) =>
+	src.charAt(i) !== '\n' &&
+	src.charAt(i - 1) === '\\' &&
+	src.charAt(i - 2) !== '\\';
 const isSpaceOrEol = (c: string) => isSpace(c) || isEol(c);
 const alpha = (ch: string) =>
 	(ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
@@ -74,7 +83,8 @@ const notStartInline = (ch: string) =>
 	ch !== '_' &&
 	ch !== '*' &&
 	ch !== '<' &&
-	ch !== '[';
+	ch !== '[' &&
+	ch !== '!';
 const digit = (ch: string) => ch >= '0' && ch <= '9';
 const uWhiteSpace = /\p{White_Space}/u;
 const uPunctuation = /\p{P}|\p{S}/u;
@@ -95,8 +105,6 @@ function countSpaces(
 	return { indent, textStart };
 }
 
-// turn to matchDelimitedBlock api
-// Optimize this..
 function matchBlock(
 	api: ReturnType<typeof ScannerApi>,
 	ch: string,
@@ -155,12 +163,91 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 			tagNameEnd = start,
 			ch;
 
-		while ((ch = current(tagNameEnd)) && alphaDash(ch)) {
+		while (
+			(ch = current(tagNameEnd)) &&
+			(alphaDash(ch) || (tagName && digit(ch)))
+		) {
 			tagName += ch;
 			tagNameEnd++;
 		}
 
 		return { tagNameEnd, tagName };
+	}
+
+	function matchAttributes(start: number, oneLine: boolean) {
+		let n = start;
+		while (true) {
+			const wsStart = n;
+			let prevNl = false;
+			while (true) {
+				const c = current(n);
+				if (c === ' ' || c === '\t') {
+					n++;
+					prevNl = false;
+				} else if (c === '\n' && !oneLine && !prevNl) {
+					n++;
+					prevNl = true;
+				} else break;
+			}
+			const c = current(n);
+			if (c === '>' || c === '/' || c === '') return n;
+			if (n === wsStart) return -1;
+			if (!alpha(c) && c !== '_' && c !== ':') return -1;
+			n++;
+			while (true) {
+				const a = current(n);
+				if (
+					alpha(a) ||
+					digit(a) ||
+					a === '_' ||
+					a === '.' ||
+					a === ':' ||
+					a === '-'
+				)
+					n++;
+				else break;
+			}
+			let k = n;
+			while (current(k) === ' ' || current(k) === '\t') k++;
+			if (current(k) !== '=') {
+				continue;
+			}
+			k++;
+			while (current(k) === ' ' || current(k) === '\t') k++;
+			const v = current(k);
+			if (v === '"' || v === "'") {
+				k++;
+				while (
+					current(k) &&
+					current(k) !== v &&
+					(!oneLine || current(k) !== '\n')
+				)
+					k++;
+				if (current(k) !== v) return -1;
+				n = k + 1;
+			} else {
+				const vs = k;
+				while (true) {
+					const u = current(k);
+					if (
+						!u ||
+						u === ' ' ||
+						u === '\t' ||
+						u === '\n' ||
+						u === '"' ||
+						u === "'" ||
+						u === '=' ||
+						u === '<' ||
+						u === '>' ||
+						u === '`'
+					)
+						break;
+					k++;
+				}
+				if (k === vs) return -1;
+				n = k;
+			}
+		}
 	}
 
 	function matchTag(start: number, oneLine = false) {
@@ -172,32 +259,51 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 		if (!tagName) return;
 
 		const isRule6 = htmlRule6.test(tagName);
-		const skipSpaces = matchWhile(isSpace, tagNameEnd);
-		const afterTag = current(skipSpaces);
 
-		if (afterTag === '>')
-			return { tagName, tagEnd: skipSpaces + 1, isClosingTag, isRule6 };
-		else if (isClosingTag) {
-			return;
+		if (isClosingTag) {
+			const skipSpaces = matchWhile(isSpace, tagNameEnd);
+			if (current(skipSpaces) !== '>') return;
+			return {
+				tagName,
+				tagEnd: skipSpaces + 1,
+				isClosingTag,
+				isRule6,
+			};
 		}
 
-		let p = '';
-		let tagEnd = matchWhile(c => {
-			const r =
-				c !== '>' &&
-				(oneLine && !isRule6
-					? c !== '\n'
-					: !(c === '\n' && p === '\n'));
-			p = c;
-			return r;
-		}, tagNameEnd + 1);
+		if (oneLine && (isRule6 || htmlRule1.test(tagName))) {
+			const after = current(tagNameEnd);
+			if (
+				after !== ' ' &&
+				after !== '\t' &&
+				after !== '\n' &&
+				after !== '>' &&
+				after !== '/' &&
+				after !== ''
+			)
+				return;
+			let p = '';
+			const tagEnd = matchWhile(c => {
+				const r = c !== '>' && !(c === '\n' && p === '\n');
+				p = c;
+				return r;
+			}, tagNameEnd);
+			if (eof(tagEnd))
+				return { tagName, tagEnd, isClosingTag, isRule6 };
+			return current(tagEnd) === '>'
+				? { tagName, tagEnd: tagEnd + 1, isClosingTag, isRule6 }
+				: 0;
+		}
 
+		const afterAttrs = matchAttributes(tagNameEnd, oneLine);
+		if (afterAttrs < 0) return;
+		let tagEnd = afterAttrs;
+		if (current(tagEnd) === '/') tagEnd++;
+		if (current(tagEnd) === '>')
+			return { tagName, tagEnd: tagEnd + 1, isClosingTag, isRule6 };
 		if (oneLine && eof(tagEnd))
-			return { tagName, tagEnd: tagEnd - 1, isClosingTag, isRule6 };
-
-		return current(tagEnd++) === '>'
-			? { tagName, tagEnd, isClosingTag, isRule6 }
-			: 0;
+			return { tagName, tagEnd, isClosingTag, isRule6 };
+		return 0;
 	}
 
 	function matchComment(start: number, closing: string, block = true) {
@@ -212,6 +318,8 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 		if (current(start) === '!') {
 			if (current(start + 1) === '-' && current(start + 2) === '-')
 				return matchComment(start, '-->', false);
+			if (matchString('[CDATA[', undefined, start + 1))
+				return matchComment(start + 8, ']]>', false);
 			else return matchComment(start + 1, '>', false);
 		} else if (current(start) === '?')
 			return matchComment(start + 1, '?>', false);
@@ -239,10 +347,10 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 
 		if (!openTag) return 0;
 
-		const { tagName, tagEnd, isClosingTag } = openTag;
+		const { tagName, tagEnd, isClosingTag, isRule6 } = openTag;
 		if (eof(tagEnd)) return tagEnd;
 
-		if (!openTag.isRule6) {
+		if (!isRule6) {
 			if (htmlRule1.test(tagName)) {
 				if (isClosingTag) return 0;
 				const closing = `</`;
@@ -271,15 +379,34 @@ function htmlScanner(api: ReturnType<typeof ScannerApi>) {
 
 		return 0;
 	}
-	return { matchHtml, matchInline };
+	function matchHtmlBlock(start: number) {
+		const end = matchHtml(start, true);
+		if (!end) return { end: 0, isRule6: false };
+		// Determine if first tag is rule 6 (can interrupt paragraphs)
+		const first = current(start);
+		const tagStart = first === '/' ? start + 1 : start;
+		const isRule6 =
+			first === '!' || first === '?'
+				? true
+				: htmlRule6.test(matchTagName(tagStart).tagName);
+		return { end, isRule6 };
+	}
+	return { matchHtml: matchHtmlBlock, matchInline };
 }
 
 function matchLink(
 	{ matchEnclosed, current, matchWhile }: ReturnType<typeof ScannerApi>,
-	escape: (n: number) => boolean,
+	escape: (i: number, source: string) => boolean,
 	linkStart: number,
 	closing?: boolean,
 ) {
+	// Inline links allow whitespace (incl. one newline) between `(` and URL
+	if (closing) {
+		linkStart = matchWhileSpaceOrOneLineEnding(matchWhile, linkStart)
+			.consumed;
+	}
+	let parenDepth = 0;
+	let prevCh = '';
 	const linkEnd =
 		current(linkStart) === '<'
 			? matchEnclosed(
@@ -288,11 +415,18 @@ function matchLink(
 					linkStart + 1,
 			  ) + 1
 			: matchEnclosed(
-					c =>
-						(!closing || c !== ')') &&
-						c !== ' ' &&
-						c !== '\t' &&
-						c !== '\n',
+					c => {
+						const escaped = prevCh === '\\';
+						prevCh = escaped ? '' : c;
+						if (c === ' ' || c === '\t' || c === '\n') return false;
+						if (!closing || escaped) return true;
+						if (c === '(') parenDepth++;
+						else if (c === ')') {
+							if (parenDepth === 0) return false;
+							parenDepth--;
+						}
+						return true;
+					},
 					escape,
 					linkStart,
 			  );
@@ -307,33 +441,35 @@ function matchLink(
 
 	const afterLink = current(consumed);
 	let titleEnd: number | undefined, titleStart: number | undefined;
+	const titleClose =
+		afterLink === '(' ? ')' : afterLink === '"' || afterLink === "'" ? afterLink : '';
 
-	if (afterLink === '"' || afterLink === "'") {
-		// possible title
+	if (titleClose) {
 		titleStart = consumed;
 		let p: string;
 		titleEnd = matchEnclosed(
 			c => {
-				const r = c !== afterLink && !(c === '\n' && p === '\n');
+				const r = c !== titleClose && !(c === '\n' && p === '\n');
 				p = c;
 				return r;
 			},
 			escape,
 			titleStart + 1,
 		);
-		if (current(titleEnd++) !== afterLink) return;
+		if (current(titleEnd++) !== titleClose) return;
 	}
-	const end = titleEnd === undefined ? linkEnd : titleEnd;
+	const end = titleEnd ?? linkEnd;
 
-	if (!closing) {
-		const spaces = matchWhile(isSpace, end);
-		// If the title is in a different line, the link can still be valid.
-		if (current(spaces) !== '\n' && current(spaces) !== '')
-			return eol ? { linkEnd, linkStart } : undefined;
+	if (closing) {
+		const trimmed = matchWhile(isSpace, end);
+		if (current(trimmed) !== ')') return;
+		return { titleEnd, titleStart, linkEnd, linkStart, linkClose: trimmed };
 	}
 
-	if (!closing || current(end) === ')')
-		return { titleEnd, titleStart, linkEnd, linkStart };
+	const spaces = matchWhile(isSpace, end);
+	if (current(spaces) !== '\n' && current(spaces) !== '')
+		return eol ? { linkEnd, linkStart } : undefined;
+	return { titleEnd, titleStart, linkEnd, linkStart };
 }
 
 export function scannerInline(src: string) {
@@ -351,11 +487,6 @@ export function scannerInline(src: string) {
 		skip,
 	} = api;
 	const { matchInline } = htmlScanner(api);
-
-	const escape = (i: number) =>
-		current(i) !== '\n' &&
-		current(i - 1) === '\\' &&
-		current(i - 2) !== '\\';
 
 	function next() {
 		if (eof()) return tk('eof', 0);
@@ -385,10 +516,8 @@ export function scannerInline(src: string) {
 			}
 			case '_':
 			case '*': {
-				const la = current(1);
-				const len = la === ch ? 2 : 1;
-
-				return len === 1 ? tk('em', 1) : tk('strong', 2);
+				const count = matchWhile(n => n === ch);
+				return { ...tk('delim', count), ch, count };
 			}
 			case '<': {
 				// Scan Autolink
@@ -399,7 +528,6 @@ export function scannerInline(src: string) {
 						n => n !== '>' && n !== ' ' && n !== '<',
 						scheme + 1,
 					);
-					// Check for invalid URL
 					if (current(host) === '>')
 						return { ...tk('autolink', host + 1), type };
 				}
@@ -409,83 +537,76 @@ export function scannerInline(src: string) {
 
 				return tk('text', scheme);
 			}
-			case '!': {
-				if (current(1) === '[') {
-					const linkTextEnd = matchEnclosed(
-						c => c !== ']',
-						escape,
-						1,
-					);
-					if (current(linkTextEnd) === ']') {
-						const result =
-							current(linkTextEnd + 1) === '('
-								? matchLink(api, escape, linkTextEnd + 2, true)
-								: undefined;
-
-						if (result) {
-							return {
-								...tk(
-									'img',
-									(result.titleEnd ?? result.linkEnd) + 1,
-								),
-								linkTextEnd,
-								linkTextStart: 2,
-								...result,
-							};
-						} else {
-							// Possible link reference
-							return {
-								...tk('img', linkTextEnd + 1),
-								linkTextEnd,
-								linkTextStart: 2,
-								linkStart: 0,
-								titleEnd: 0,
-								titleStart: 0,
-								linkEnd: 0,
-							};
-						}
-					}
-				}
-
-				return tk('text', 1);
-			}
+			case '!':
 			case '[': {
-				const linkTextEnd = matchEnclosed(c => c !== ']', escape, 1);
-				if (current(linkTextEnd) === ']') {
-					if (current(linkTextEnd + 1) === '(') {
-						const result = matchLink(
-							api,
-							escape,
-							linkTextEnd + 2,
-							true,
-						);
-
-						if (result) {
-							return {
-								...tk(
-									'a',
-									(result.titleEnd ?? result.linkEnd) + 1,
-								),
-								linkTextEnd,
-								linkTextStart: 1,
-								...result,
-							};
+				const isImg = ch === '!';
+				if (isImg && current(1) !== '[') return tk('text', 1);
+				const linkTextStart = isImg ? 2 : 1;
+				let depth = 0;
+				let prev = '';
+				const linkTextEnd = matchEnclosed(
+					c => {
+						const esc = prev === '\\';
+						prev = esc ? '' : c;
+						if (esc) return true;
+						if (c === '[') {
+							depth++;
+							return true;
 						}
-					} else {
-						// Possible link reference
+						if (c === ']') {
+							if (depth === 0) return false;
+							depth--;
+						}
+						return true;
+					},
+					escape,
+					linkTextStart,
+				);
+				if (current(linkTextEnd) !== ']') return tk('text', 1);
+
+				const kind = isImg ? 'img' : 'a';
+				const afterText = linkTextEnd + 1;
+				if (current(afterText) === '(') {
+					const result = matchLink(api, escape, afterText + 1, true);
+					if (result) {
 						return {
-							...tk('a', linkTextEnd + 1),
+							...tk(
+								kind,
+								(result.linkClose ?? result.titleEnd ?? result.linkEnd) + 1,
+							),
 							linkTextEnd,
-							linkTextStart: 1,
-							linkStart: 0,
-							titleEnd: 0,
-							titleStart: 0,
-							linkEnd: 0,
+							linkTextStart,
+							...result,
 						};
 					}
 				}
-
-				return tk('text', 1);
+				// Reference link: [foo][bar] (full) or [foo][] (collapsed)
+				let end = afterText;
+				let refStart = 0;
+				let refEnd = 0;
+				if (current(afterText) === '[') {
+					const fullEnd = matchEnclosed(
+						c => c !== ']',
+						escape,
+						afterText + 1,
+					);
+					if (current(fullEnd) === ']') {
+						refStart = afterText + 1;
+						refEnd = fullEnd;
+						end = fullEnd + 1;
+					}
+				}
+				return {
+					...tk(kind, end),
+					linkTextEnd,
+					linkTextStart,
+					refStart,
+					refEnd,
+					linkStart: 0,
+					titleEnd: 0,
+					titleStart: 0,
+					linkEnd: 0,
+				};
 			}
 		}
 
@@ -562,17 +683,11 @@ export function scannerBlock(src: string) {
 	} = api;
 	const { matchHtml } = htmlScanner(api);
 
-	const escape = (i: number) =>
-		current(i) !== '\n' &&
-		current(i - 1) === '\\' &&
-		current(i - 2) !== '\\';
-
 	function thematicBreak(ch: string, n = 1) {
 		const startSpaces = matchWhile(isSpace, n);
 		let count = 1;
 		let i = startSpaces;
 		while (true) {
-			// Accept spaces/tabs
 			i = matchWhile(isSpace, i);
 			if (current(i) !== ch) break;
 			count++;
@@ -605,7 +720,11 @@ export function scannerBlock(src: string) {
 		if (indent < 4 && (afterSpace === '`' || afterSpace === '~')) {
 			const start = matchWhile(n => n === afterSpace, textStart);
 			const len = start - textStart;
-			if (len >= 3) {
+			const infoEnd = matchUntil(isEol, start);
+			const infoHasBacktick =
+				afterSpace === '`' &&
+				matchWhile(c => c !== '`', start) < infoEnd;
+			if (len >= 3 && !infoHasBacktick) {
 				let match,
 					found = false,
 					firstStart = 0,
@@ -690,21 +809,6 @@ export function scannerBlock(src: string) {
 				};
 			}
 		}
-		// setext
-		/*if (current(-1)) {
-			const startChar = current(textStart);
-			if (startChar === '=' || startChar === '-') {
-				const lineLen = matchWhile(c => c === startChar, textStart + 1);
-				const trailing = matchWhile(isSpace, lineLen);
-				if (current(trailing) === '\n')
-					return {
-						...tk('setext', trailing),
-						level: startChar === '=' ? 1 : 2,
-						length: trailing - textStart,
-					};
-			}
-		}*/
-
 		if (afterSpace === '*' || afterSpace === '-' || afterSpace === '_') {
 			const result = thematicBreak(afterSpace);
 			if (result) return { ...tk('hr', result), indent, textStart };
@@ -769,13 +873,19 @@ export function scannerBlock(src: string) {
 		}
 
 		if (afterSpace === '[') {
+			let hasLabel = false;
 			const linkTextEnd = matchEnclosed(
-				c => c !== ']',
+				c => {
+					if (c === ']' || c === '[') return false;
+					if (!isSpaceOrEol(c)) hasLabel = true;
+					return true;
+				},
 				escape,
 				textStart + 1,
 			);
 
 			if (
+				hasLabel &&
 				current(linkTextEnd) === ']' &&
 				current(linkTextEnd + 1) === ':'
 			) {
@@ -807,20 +917,19 @@ export function scannerBlock(src: string) {
 			return {
 				...tk('blockquote', matchUntil(isEol, textStart + 1)),
 				indent,
-				/*level,*/
 				textStart: newStart,
 				textIndent,
 				blockIndent: indent + 1 + hasSpace,
 			};
 		}
 
-		// heading takes precedence
 		if (afterSpace === '<') {
-			const scheme = matchWhile(alpha, textStart + 1);
-			// Ignore Autolink
-			if (current(scheme) !== ':') {
-				const maybeHtml = matchHtml(textStart + 1, true);
-				if (maybeHtml) return tk('html', maybeHtml);
+			const scheme = matchWhile(alphaDashPlus, textStart + 1);
+			const after = current(scheme);
+			// Ignore Autolink (scheme: or @ for email)
+			if (after !== ':' && after !== '@') {
+				const { end, isRule6 } = matchHtml(textStart + 1);
+				if (end) return { ...tk('html', end), isRule6 };
 			}
 		}
 
@@ -863,11 +972,20 @@ export function scannerBlock(src: string) {
 	return { next, backtrack };
 }
 
-/**
- * - Replace all escaped characters with their appropriate text values
- */
 function unescapeText(value: string) {
 	return value.replace(/\\([\\!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~])/g, '$1');
+}
+
+function normalizeLabel(s: string) {
+	return s.toLowerCase().toUpperCase().replace(/\s+/g, ' ').trim();
+}
+
+function decodeEntities(value: string) {
+	return value.replace(/&#[Xx]([0-9a-fA-F]+);|&#([0-9]+);/g, (m, hex, dec) => {
+		const code = hex ? parseInt(hex, 16) : parseInt(dec, 10);
+		if (code > 0x10ffff) return m;
+		return code === 0 ? '�' : String.fromCodePoint(code);
+	});
 }
 
 function getLinkParts(
@@ -878,17 +996,22 @@ function getLinkParts(
 		linkStart: number;
 		titleStart?: number;
 		titleEnd?: number;
+		refStart?: number;
+		refEnd?: number;
 	},
 	linkRefs?: Record<string, LinkDefinition | undefined>,
-) {
+): { href: string; title?: string } | undefined {
 	const src = text(token);
-	const content = unescapeText(
-		src.slice(token.linkTextStart, token.linkTextEnd),
-	);
 
 	if (!token.linkEnd && linkRefs) {
-		const ref = linkRefs[content.toLowerCase()];
-		return ref ? { ...ref, text: content } : undefined;
+		const refRaw =
+			token.refStart && token.refEnd && token.refEnd > token.refStart
+				? src.slice(token.refStart, token.refEnd)
+				: src.slice(token.linkTextStart, token.linkTextEnd);
+		const key = normalizeLabel(refRaw);
+		if (!key) return undefined;
+		const ref = linkRefs[key];
+		return ref ? { href: ref.href, title: ref.title } : undefined;
 	}
 	let href = unescapeText(src.slice(token.linkStart, token.linkEnd));
 	if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1);
@@ -896,7 +1019,7 @@ function getLinkParts(
 		token.titleStart !== undefined && token.titleEnd !== undefined
 			? unescapeText(src.slice(token.titleStart + 1, token.titleEnd - 1))
 			: undefined;
-	return { title, href, text: content };
+	return { title, href };
 }
 
 export function parserInline(
@@ -907,43 +1030,83 @@ export function parserInline(
 
 	let i = 0;
 
-	function isEmphasisStart(token: InlineToken, ch: string) {
+	function emphasisFlanking(token: InlineToken) {
 		const n = token.source.charAt(token.end);
 		const p = token.source.charAt(token.start - 1);
 		const afterIsWhitespace = isUnicodeWhiteSpace(n);
 		const afterIsPunct = uPunctuation.test(n);
 		const beforeIsWhitespace = isUnicodeWhiteSpace(p);
 		const beforeIsPunct = uPunctuation.test(p);
-
 		const leftFlanking =
 			!afterIsWhitespace &&
 			(!afterIsPunct || beforeIsWhitespace || beforeIsPunct);
 		const rightFlanking =
 			!beforeIsWhitespace &&
 			(!beforeIsPunct || afterIsWhitespace || afterIsPunct);
-
-		return ch === '_'
-			? leftFlanking && (!rightFlanking || beforeIsPunct)
-			: leftFlanking;
+		return { leftFlanking, rightFlanking, afterIsPunct, beforeIsPunct };
 	}
-	function isEmphasisEnd(token: InlineToken, ch: string) {
-		const n = token.source.charAt(token.end);
-		const p = token.source.charAt(token.start - 1);
-		const afterIsWhitespace = isUnicodeWhiteSpace(n);
-		const afterIsPunct = uPunctuation.test(n);
-		const beforeIsWhitespace = isUnicodeWhiteSpace(p);
-		const beforeIsPunct = uPunctuation.test(p);
+	function delimToText(d: NodeMap['delim']): NodeMap['text'] {
+		return { ...d, kind: 'text', value: text(d) };
+	}
 
-		const leftFlanking =
-			!afterIsWhitespace &&
-			(!afterIsPunct || beforeIsWhitespace || beforeIsPunct);
-		const rightFlanking =
-			!beforeIsWhitespace &&
-			(!beforeIsPunct || afterIsWhitespace || afterIsPunct);
-
-		return ch === '_'
-			? rightFlanking && (!leftFlanking || afterIsPunct)
-			: rightFlanking;
+	function resolveDelims(nodes: Node[]): Node[] {
+		let i = 0;
+		while (i < nodes.length) {
+			const closer = nodes[i];
+			if (!closer || closer.kind !== 'delim' || !closer.canClose) {
+				i++;
+				continue;
+			}
+			let matched = false;
+			for (let j = i - 1; j >= 0; j--) {
+				const opener = nodes[j];
+				if (
+					!opener ||
+					opener.kind !== 'delim' ||
+					!opener.canOpen ||
+					opener.ch !== closer.ch
+				)
+					continue;
+				if (
+					(opener.canClose || closer.canOpen) &&
+					(opener.count + closer.count) % 3 === 0 &&
+					!(opener.count % 3 === 0 && closer.count % 3 === 0)
+				)
+					continue;
+				const n = opener.count >= 2 && closer.count >= 2 ? 2 : 1;
+				const inner = nodes
+					.slice(j + 1, i)
+					.map(x => (x.kind === 'delim' ? delimToText(x) : x));
+				const wrapped = {
+					kind: n === 2 ? 'strong' : 'em',
+					children: inner,
+					source: opener.source,
+					line: opener.line,
+					start: opener.end - n,
+					end: closer.start + n,
+				} as NodeMap['strong'] | NodeMap['em'];
+				const repl: Node[] = [];
+				if (opener.count - n > 0)
+					repl.push({
+						...opener,
+						count: opener.count - n,
+						end: opener.end - n,
+					});
+				repl.push(wrapped);
+				if (closer.count - n > 0)
+					repl.push({
+						...closer,
+						count: closer.count - n,
+						start: closer.start + n,
+					});
+				nodes.splice(j, i - j + 1, ...repl);
+				i = j + repl.length - 1;
+				matched = true;
+				break;
+			}
+			if (!matched) i++;
+		}
+		return nodes.map(x => (x.kind === 'delim' ? delimToText(x) : x));
 	}
 
 	function inline(): Node | undefined {
@@ -968,40 +1131,19 @@ export function parserInline(
 				next();
 				return { ...token, kind: 'code', value } as const;
 			}
-			case 'em':
-			case 'strong': {
-				const ch = token.source.charAt(token.start);
-
-				if (isEmphasisStart(token, ch)) {
-					let found = false;
-					next();
-
-					/*
-					 * Attempt to parse a sequence of inline tokens as nested emphasis or strong emphasis,
-					 * stopping when a matching closing delimiter is found that satisfies emphasis end conditions.
-					 */
-					const children: Node[] = parseWhile(() => {
-						const newToken = current();
-
-						if (
-							newToken.kind === token.kind &&
-							newToken.source.charAt(newToken.start) === ch &&
-							isEmphasisEnd(newToken, ch)
-						) {
-							found = true;
-							return;
-						}
-						return inline();
-					});
-					if ((found as boolean) && children.length) {
-						next();
-						return { ...token, children } as const;
-					}
-				}
-
-				backtrack(token);
+			case 'delim': {
+				const { leftFlanking, rightFlanking, beforeIsPunct, afterIsPunct } =
+					emphasisFlanking(token);
+				const canOpen =
+					token.ch === '_'
+						? leftFlanking && (!rightFlanking || beforeIsPunct)
+						: leftFlanking;
+				const canClose =
+					token.ch === '_'
+						? rightFlanking && (!leftFlanking || afterIsPunct)
+						: rightFlanking;
 				next();
-				return { ...token, kind: 'text', value: text(token) };
+				return { ...token, canOpen, canClose };
 			}
 			case 'text': {
 				const value = unescapeText(text(token));
@@ -1015,6 +1157,7 @@ export function parserInline(
 					result.end = nextToken.end;
 					nextToken = next();
 				}
+				result.value = result.value.replace(/[ \t]+\n/g, '\n');
 				return result;
 			}
 			case 'tabsBlock': {
@@ -1038,21 +1181,108 @@ export function parserInline(
 				const src = text(token).slice(1, -1);
 				const href = (token.type === '@' ? 'mailto:' : '') + src;
 				next();
-				return { ...token, kind: 'a', href, text: src };
+				return {
+					...token,
+					kind: 'a',
+					href,
+					children: [{ ...token, kind: 'text', value: src }],
+				};
 			}
-			case 'img': {
-				const parts = getLinkParts(token, linkRefs);
-				next();
-				return parts
-					? { ...token, kind: 'img', ...parts }
-					: { ...token, kind: 'text', value: text(token) };
-			}
+			case 'img':
 			case 'a': {
+				const kind = token.kind;
 				const parts = getLinkParts(token, linkRefs);
+				if (
+					!parts &&
+					kind === 'a' &&
+					'refStart' in token &&
+					'refEnd' in token &&
+					token.refEnd > token.refStart
+				) {
+					const src = text(token);
+					const afterX = token.linkTextEnd + 1;
+					const xEnd = token.start + afterX;
+					backtrack({ ...token, end: xEnd });
+					next();
+					return {
+						...token,
+						kind: 'text',
+						value: unescapeText(src.slice(0, afterX)),
+						end: xEnd,
+					};
+				}
+				if (
+					!parts &&
+					kind === 'a' &&
+					'refEnd' in token &&
+					token.refEnd === 0 &&
+					token.linkTextEnd > token.linkTextStart
+				) {
+					const xEnd = token.start + 1;
+					backtrack({ ...token, end: xEnd });
+					next();
+					return {
+						...token,
+						kind: 'text',
+						value: '[',
+						end: xEnd,
+					};
+				}
+				if (parts && kind === 'a' && precedenceOverridesLink(token)) {
+					const xEnd = token.start + 1;
+					backtrack({ ...token, end: xEnd });
+					next();
+					return {
+						...token,
+						kind: 'text',
+						value: '[',
+						end: xEnd,
+					};
+				}
 				next();
-				return parts
-					? { ...token, kind: 'a', ...parts }
-					: { ...token, kind: 'text', value: text(token) };
+				if (!parts) {
+					return {
+						...token,
+						kind: 'text',
+						value: unescapeText(text(token)),
+					};
+				}
+				const linkApi = ParserApi(scannerInline);
+				linkApi.start(
+					text(token).slice(token.linkTextStart, token.linkTextEnd),
+				);
+				const children = parserInline(linkApi, linkRefs);
+				if (kind === 'a' && hasLink(children)) {
+					const src = text(token);
+					const bracketEnd = token.linkTextEnd + 1;
+					const xEnd = token.start + bracketEnd;
+					backtrack({ ...token, end: xEnd });
+					next();
+					return {
+						...token,
+						kind: 'text',
+						value: '',
+						end: xEnd,
+						children: [
+							{
+								...token,
+								kind: 'text',
+								value: unescapeText(
+									src.slice(0, token.linkTextStart),
+								),
+							},
+							...children,
+							{
+								...token,
+								kind: 'text',
+								value: unescapeText(
+									src.slice(token.linkTextEnd, bracketEnd),
+								),
+							},
+						],
+					};
+				}
+				return { ...token, kind, ...parts, children };
 			}
 			case 'html':
 				next();
@@ -1060,7 +1290,7 @@ export function parserInline(
 		}
 	}
 
-	return parseWhile(inline);
+	return resolveDelims(parseWhile(inline));
 }
 
 function parserBlock(
@@ -1076,6 +1306,17 @@ function parserBlock(
 			api.start(node.value);
 			node.children = parserInline(api, linkDefinitions);
 		}
+	}
+
+	function storeLinkDef(tok: Extract<BlockToken, { kind: 'linkdef' }>) {
+		const parts = getLinkParts(tok);
+		if (!parts) return;
+		const rawLabel = tok.source.slice(
+			tok.start + tok.linkTextStart,
+			tok.start + tok.linkTextEnd,
+		);
+		const key = normalizeLabel(rawLabel);
+		if (key) linkDefinitions[key] ??= { ...parts, children: [] };
 	}
 
 	function textNode(
@@ -1176,6 +1417,12 @@ function parserBlock(
 				} else if (nextToken.kind === 'linkdef') {
 					child.value += '\n' + text(nextToken);
 					continue;
+				} else if (
+					nextToken.kind === 'html' &&
+					!nextToken.isRule6
+				) {
+					child.value += '\n' + text(nextToken);
+					continue;
 				}
 			}
 			backtrack(token);
@@ -1202,17 +1449,11 @@ function parserBlock(
 	function ul(token: Token<'li'> & { bullet: string }): NodeMap['ul'] {
 		const bullet = token.bullet;
 		const children = parseWhile(() => li(bullet));
-		const loose = !!children.find((child, i) => {
-			if (child.pCount === 2) return true;
-			else if (child.pCount === 1 && children.length - 1 !== i)
-				return true;
-		});
-
 		return {
 			...token,
 			kind: 'ul',
 			children,
-			loose, //: pCount === 1 ? children.length > 1 : pCount === 2,
+			loose: isLoose(children),
 		};
 	}
 
@@ -1244,17 +1485,11 @@ function parserBlock(
 			);
 		});
 
-		const loose = !!children.find((child, i) => {
-			if (child.pCount === 2) return true;
-			else if (child.pCount === 1 && children.length - 1 !== i)
-				return true;
-		});
-
 		return {
 			...token,
 			kind: 'ol',
 			children,
-			loose, //: pCount === 1 ? children.length > 1 : pCount === 2,
+			loose: isLoose(children),
 			listStart,
 		};
 	}
@@ -1330,12 +1565,12 @@ function parserBlock(
 		token: T,
 		allowP = false,
 	) {
-		// collect all
 		const content: string[] = [
 			' '.repeat(token.textIndent - token.blockIndent) +
 				token.source.slice(token.start + token.textStart, token.end),
 		];
 		let pCount = 0;
+		let prevEmptyBq = false;
 
 		for (;;) {
 			const nextToken = next();
@@ -1348,14 +1583,24 @@ function parserBlock(
 				if (bq.kind === 'blockquote') {
 					token.end = bq.end;
 					content.push(
-						mergeBlock(bq.textIndent - bq.blockIndent, bq),
+						allowP
+							? bq.source.slice(bq.start + bq.indent, bq.end)
+							: mergeBlock(
+									bq.textIndent - bq.blockIndent,
+									bq,
+								),
 					);
+					prevEmptyBq = bq.textStart === bq.end - bq.start;
 				} else if (
 					bq.kind === 'tabsBlock' ||
 					bq.kind === 'li' ||
 					bq.kind === 'ol'
 				) {
-					if (bq.kind === 'tabsBlock' || isPartOfBlock(token, bq)) {
+					const continues =
+						bq.kind === 'tabsBlock'
+							? allowP
+							: isPartOfBlock(token, bq);
+					if (continues) {
 						token.end = bq.end;
 						content.push(
 							mergeBlock(
@@ -1364,6 +1609,7 @@ function parserBlock(
 								bq.blockStart,
 							),
 						);
+						prevEmptyBq = false;
 					} else {
 						backtrack(bq);
 						break;
@@ -1378,6 +1624,7 @@ function parserBlock(
 									bq.end,
 								),
 						);
+						prevEmptyBq = false;
 					} else {
 						backtrack(bq);
 						break;
@@ -1386,39 +1633,64 @@ function parserBlock(
 					bq.kind === 'text' ||
 					(bq.kind === 'setext' && bq.level === 1)
 				) {
+					if (prevEmptyBq) {
+						backtrack(bq);
+						break;
+					}
 					// Lazy continuation
 					token.end = bq.end;
-					content.push(text(bq));
+					const strip =
+						bq.kind === 'text'
+							? Math.min(token.blockIndent, bq.textStart)
+							: 0;
+					content.push(bq.source.slice(bq.start + strip, bq.end));
+				} else if (bq.kind === 'block' && bq.indent >= token.blockIndent) {
+					token.end = bq.end;
+					content.push(
+						text(bq).replace(
+							new RegExp(
+								`^[ \\t]{1,${token.blockIndent}}`,
+								'gm',
+							),
+							'',
+						),
+					);
 				} else {
 					backtrack(bq);
 					break;
 				}
 			} else if (allowP) {
 				const bq = next();
-				pCount = 1;
+				const backtrackOnFail =
+					bq.kind === 'li' || bq.kind === 'ol' ? bq : nextToken;
 				if (
 					token.end - token.start > 1 &&
 					(bq.kind === 'tabsBlock' ||
 						bq.kind === 'li' ||
 						bq.kind === 'ol' ||
-						bq.kind === 'text')
+						bq.kind === 'text') &&
+					isPartOfBlock(token, bq)
 				) {
-					if (isPartOfBlock(token, bq)) {
-						token.end = bq.end;
-						content.push(
-							text(nextToken),
-							mergeBlock(
-								Math.max(bq.indent - token.blockIndent, 0),
-								bq,
-								bq.blockStart,
-							),
-						);
-					} else {
-						backtrack(bq);
-						break;
-					}
+					token.end = bq.end;
+					const newStart =
+						bq.kind === 'text'
+							? Math.min(token.blockIndent, bq.textStart)
+							: bq.blockStart;
+					content.push(
+						text(nextToken),
+						mergeBlock(
+							Math.max(bq.indent - token.blockIndent, 0),
+							bq,
+							newStart,
+						),
+					);
+				} else if (bq.kind === 'linkdef') {
+					storeLinkDef(bq);
+					token.end = bq.end;
+					pCount = 1;
 				} else {
-					backtrack(bq);
+					pCount = 1;
+					backtrack(backtrackOnFail);
 					break;
 				}
 			} else {
@@ -1488,8 +1760,7 @@ function parserBlock(
 				next();
 				return token;
 			case 'linkdef': {
-				const parts = getLinkParts(token);
-				if (parts) linkDefinitions[parts.text.toLowerCase()] ??= parts;
+				storeLinkDef(token);
 				next();
 				return top();
 			}
@@ -1497,9 +1768,6 @@ function parserBlock(
 				if (token.count > 1) pCount = 2;
 				next();
 				return { ...token, kind: 'text', value: '' } as const;
-				/*const after = next();
-				if (after.kind === 'eof') return;
-				return top();*/
 			}
 			case 'setext': {
 				next();
@@ -1554,6 +1822,50 @@ function escapeHtml(str: string) {
 	});
 }
 
+function precedenceOverridesLink(token: {
+	source: string;
+	start: number;
+	linkTextStart: number;
+	linkTextEnd: number;
+}): boolean {
+	const ltStart = token.start + token.linkTextStart;
+	const ltEnd = token.start + token.linkTextEnd;
+	const linkText = token.source.slice(ltStart, ltEnd);
+	const after = token.source.slice(ltEnd);
+	const backticksInText = (linkText.match(/`/g) || []).length;
+	if (backticksInText % 2 === 1 && after.includes('`')) return true;
+	const lt = (linkText.match(/</g) || []).length;
+	const gt = (linkText.match(/>/g) || []).length;
+	if (lt > gt && after.includes('>')) return true;
+	return false;
+}
+
+function isLoose(children: { pCount: number }[]) {
+	return children.some(
+		(child, i) =>
+			child.pCount === 2 ||
+			(child.pCount === 1 && i !== children.length - 1),
+	);
+}
+
+function hasLink(nodes: Node[]): boolean {
+	return nodes.some(
+		n =>
+			n.kind === 'a' ||
+			('children' in n && n.children && hasLink(n.children)),
+	);
+}
+
+function plainText(nodes: Node[]): string {
+	return nodes
+		.map(n => {
+			if ('children' in n && n.children) return plainText(n.children);
+			if (n.kind === 'text') return n.value;
+			return '';
+		})
+		.join('');
+}
+
 function renderList(node: NodeMap['ul'] | NodeMap['ol']) {
 	const result = [];
 	for (const li of node.children) {
@@ -1576,7 +1888,7 @@ export function compiler(node: Node): string {
 	switch (node.kind) {
 		case 'root': {
 			const str = renderChildren(node.children);
-			return str ? str + '\n' : '';
+			return str ? (str.endsWith('\n') ? str : str + '\n') : '';
 		}
 		case 'hr':
 			return `<${node.kind} />`;
@@ -1589,26 +1901,20 @@ export function compiler(node: Node): string {
 			const title = node.title
 				? ` title="${escapeHtml(node.title)}"`
 				: '';
-			return `<img src="${encodeURI(
-				escapeHtml(node.href),
-			)}" alt="${escapeHtml(node.text)}"${title} />`;
+			const alt = plainText(node.children);
+			return `<img src="${escapeHtml(
+				encodeURI(node.href),
+			)}" alt="${escapeHtml(alt)}"${title} />`;
 		}
 		case 'a': {
 			const title = node.title
 				? ` title="${escapeHtml(node.title)}"`
 				: '';
-			return `<a href="${encodeURI(
-				escapeHtml(node.href),
-			)}"${title}>${escapeHtml(node.text)}</a>`;
+			return `<a href="${escapeHtml(
+				encodeURI(node.href),
+			)}"${title}>${renderChildren(node.children)}</a>`;
 		}
 		case 'ol': {
-			//const firstLi = node.children[0];
-			/*if (firstLi.kind === 'li') {
-				const start = firstLi?.bulletOrder;
-				const startStr =
-					start && start !== '1' ? ` start="${start}"` : '';
-				return `<ol${startStr}>${renderChildren(node.children)}</ol>`;
-			}*/
 			const start = node.listStart;
 			const startStr = start && start !== '1' ? ` start="${start}"` : '';
 			return `<ol${startStr}>${renderList(node)}</ol>`;
@@ -1623,18 +1929,6 @@ export function compiler(node: Node): string {
 			return renderChildren(node.children, node.kind);
 		case 'ul':
 			return `<ul>${renderList(node)}</ul>`;
-		/*case 'li':
-			/*if (node.pCount === 0) {
-				const children: string = node.children
-					.map(n =>
-						n.kind === 'p'
-							? renderChildren(n.children)
-							: compiler(n),
-					)
-					.join('');
-				return `<${node.kind}>${children}</${node.kind}>`;
-			}
-			return `<li>${renderList(node)}</li>`;*/
 		case 'heading':
 			return renderChildren(node.children, `h${node.level}`);
 		case 'block': {
@@ -1647,7 +1941,7 @@ export function compiler(node: Node): string {
 		case 'text':
 			return node.children
 				? renderChildren(node.children)
-				: escapeHtml(node.value);
+				: escapeHtml(decodeEntities(node.value));
 		case 'html':
 			return (
 				text(node) +

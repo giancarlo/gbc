@@ -2,16 +2,16 @@ import { text } from '../sdk/index.js';
 import { Flags } from './symbol-table.js';
 import { Node, NodeMap } from './node.js';
 
-function def({ left, right }: NodeMap['def']) {
-	const symbol = left.symbol;
+function def({ label, value }: NodeMap['def']) {
+	const symbol = label.symbol;
 
 	if (!(symbol.flags & Flags.Export)) return '';
 
-	switch (right.kind) {
+	switch (value.kind) {
 		case 'fn': {
 			const params =
-				right.parameters?.map(p => `${p.symbol.name}:any`) ?? '';
-			return `export function ${text(left)}(${params}): any`;
+				value.parameters?.map(p => `${p.label.symbol.name}:any`) ?? '';
+			return `export function ${text(label)}(${params}): any`;
 		}
 	}
 

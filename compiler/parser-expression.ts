@@ -26,33 +26,80 @@ export function parseExpression(
 	function expectType() {
 		return expectNode(typeParser(), 'Expected type expression');
 	}
-	function parameter(): NodeMap['parameter'] | undefined {
-		const ident = optional('ident');
-		if (!ident) return;
-		let type: Node | undefined;
+
+	/**
+	 * After `:` has been consumed, parse the type slot.
+	 * `var` is a slot-level modifier (not a type) — when present it sets
+	 * the Variable flag on the provided slot symbol; otherwise we parse a
+	 * regular type expression.
+	 */
+	function maybeVarType(symbol: SymbolMap['variable']) {
+		if (current().kind === 'var') {
+			api.next();
+			symbol.flags |= Flags.Variable;
+			return undefined;
+		}
+		return expectType();
+	}
+
+	/**
+	 * Parses `ident [: var | type] [= value]` given a pre-consumed ident,
+	 * then hands the slot data to `make` to build the wrapping AST node
+	 * (`parameter`, `propdef`, `def`, ...). Wires the slot symbol's
+	 * `definition` to the produced node.
+	 */
+	function parseSlot<N extends Node>(
+		ident: Token<'ident'>,
+		make: (slot: {
+			start: number;
+			end: number;
+			line: number;
+			source: string;
+			label: NodeMap['ident'];
+			type?: Node;
+			value?: Node;
+		}) => N,
+		valuePrec?: number,
+	): N {
 		const name = text(ident);
-
-		if (optional(':')) type = expectNode(typeParser(), 'Expected type');
-
 		const symbol: SymbolMap['variable'] = symbolTable.set(name, {
 			name,
 			kind: 'variable',
 			flags: 0,
 		});
-		const nameNode = { ...ident, symbol };
-		return (symbol.definition = {
+		const label: NodeMap['ident'] = { ...ident, symbol };
+		const type = optional(':') ? maybeVarType(symbol) : undefined;
+		const value = optional('=')
+			? expectNode(exprParser(valuePrec), 'Expected value')
+			: undefined;
+		const node = make({
 			...ident,
-			kind: 'parameter',
-			symbol,
-			name: nameNode,
+			end: (value ?? type ?? label).end,
+			label,
 			type,
-			children: [nameNode, type],
+			value,
 		});
+		symbol.definition = node;
+		return node;
+	}
+
+	function parameter(): NodeMap['parameter'] | undefined {
+		const ident = optional('ident');
+		if (!ident) return;
+		return parseSlot(
+			ident,
+			slot => ({
+				...slot,
+				kind: 'parameter',
+				children: [slot.label, slot.type, slot.value],
+			}),
+			2,
+		);
 	}
 
 	function blockParameters(node: NodeMap['fn']) {
 		node.parameters = parseList(parameter, ',', n => !!n);
-		node.symbol.parameters = node.parameters.map(p => p.symbol);
+		node.symbol.parameters = node.parameters.map(p => p.label.symbol);
 		expect(')');
 		node.children.push(...node.parameters);
 	}
@@ -107,22 +154,15 @@ export function parseExpression(
 	}
 
 	/**
-	 * Function that defines a variable in the symbol table.
+	 * Throws when a name is already defined in the current scope.
 	 */
-	function define(ident: Token<'ident'>, flags: Flags = 0): NodeMap['ident'] {
+	function checkRedeclare(ident: Token<'ident'>) {
 		const name = text(ident);
-		const existing = symbolTable.get(name);
-		if (existing)
+		if (symbolTable.get(name))
 			throw error(
 				`Cannot redeclare block-scoped variable "${name}".`,
 				ident,
 			);
-		const symbol = symbolTable.set(name, {
-			name,
-			kind: 'variable',
-			flags,
-		});
-		return { ...ident, symbol };
 	}
 
 	function expectScopeOwner(): SymbolMap['function'] {
@@ -130,6 +170,33 @@ export function parseExpression(
 		if (!owner || owner.kind !== 'function')
 			throw error('Invalid function scope.', current());
 		return owner;
+	}
+
+	function parseDataItem(seenLabels: Set<string>): Node {
+		const tk = current();
+		if (tk.kind === 'ident') {
+			api.next();
+			const after = current();
+			if (after.kind === '=' || after.kind === ':') {
+				const name = text(tk);
+				if (seenLabels.has(name))
+					api.pushError(
+						error(`Duplicate label "${name}"`, tk),
+					);
+				else seenLabels.add(name);
+				return parseSlot(
+					tk,
+					slot => ({
+						...slot,
+						kind: 'propdef',
+						children: [slot.label, slot.type, slot.value],
+					}),
+					2,
+				);
+			}
+			api.backtrack(tk);
+		}
+		return expectNode(exprParser(), 'Expected expression');
 	}
 
 	const parser = parserTable<NodeMap, ScannerToken>(
@@ -182,6 +249,11 @@ export function parseExpression(
 						expect('{');
 						const result = parseUntilKind(statement, '}');
 						node.end = expect('}').end;
+						if (!result.length)
+							throw error(
+								'Empty `fn(...) { }` body is not allowed; use `{ }` for a no-op function.',
+								tk,
+							);
 						return result;
 					}),
 			},
@@ -207,6 +279,19 @@ export function parseExpression(
 			'>=': infixOperator(9),
 			'<:': infixOperator(10),
 			':>': infixOperator(10),
+			is: {
+				precedence: 9,
+				infix(tk, left) {
+					const right = expectType();
+					return {
+						...tk,
+						kind: 'is',
+						children: [left, right],
+						start: left.start,
+						end: right.end,
+					};
+				},
+			},
 			'++': {
 				precedence: 15,
 				infix(tk, left) {
@@ -258,15 +343,26 @@ export function parseExpression(
 			'.': {
 				precedence: 17,
 				infix(tk, left) {
+					const numTk = optional('number');
+					if (numTk) {
+						const numNode: NodeMap['number'] = {
+							...numTk,
+							kind: 'number',
+							value: +text(numTk).replace(/_/g, ''),
+						};
+						return {
+							...tk,
+							start: left.start,
+							children: [left, numNode],
+							end: numTk.end,
+						};
+					}
 					const right = expect('ident');
 					const prop = text(right);
 
 					let symbol: Symbol | undefined;
-
-					// Handle module import operator '@'
 					if (left.kind === '@') {
 						const importName = text(left).slice(1);
-						// We'll return a placeholder macro until the standard library is implemented.
 						if (!importName) symbol = symbolTable.get('@');
 					} else if (left.kind === 'ident') symbol = left.symbol;
 
@@ -275,7 +371,7 @@ export function parseExpression(
 							? symbol.members[prop]
 							: undefined;
 
-					if (!propSymbol)
+					if (symbol?.kind === 'data' && !propSymbol)
 						throw error(
 							`Property "${prop}" does not exist in "${text(
 								left,
@@ -283,18 +379,19 @@ export function parseExpression(
 							right,
 						);
 
-					/*if (propSymbol.kind === 'macro')
-						return {
-							...tk,
-							kind: 'macro',
-							end: right.end,
-							value: propSymbol.value,
-						};*/
-
+					const placeholder: SymbolMap['variable'] = {
+						name: prop,
+						kind: 'variable',
+						flags: 0,
+					};
+					const rightNode: NodeMap['ident'] = {
+						...right,
+						symbol: propSymbol ?? placeholder,
+					};
 					return {
 						...tk,
 						start: left.start,
-						children: [left, { ...right, symbol: propSymbol }],
+						children: [left, rightNode],
 						end: right.end,
 						symbol,
 					};
@@ -327,6 +424,39 @@ export function parseExpression(
 					};
 				},
 			},
+			':': {
+				prefix(tk) {
+					// Unlabeled slot: `:type = value` or `:var = value`.
+					// For `var`, synthesize a slot symbol on the propdef
+					// so the Variable flag has a home (parallel to how
+					// labeled propdefs use label.symbol).
+					let type: Node | undefined;
+					let symbol: SymbolMap['variable'] | undefined;
+					if (current().kind === 'var') {
+						api.next();
+						symbol = {
+							kind: 'variable',
+							name: '',
+							flags: Flags.Variable,
+						};
+					} else {
+						type = expectType();
+					}
+					const value = optional('=')
+						? expectNode(exprParser(2), 'Expected value')
+						: undefined;
+					const propdef: NodeMap['propdef'] = {
+						...tk,
+						kind: 'propdef',
+						type,
+						value,
+						symbol,
+						children: [undefined, type, value],
+						end: (value ?? type ?? tk).end,
+					};
+					return propdef;
+				},
+			},
 
 			'(': {
 				precedence: 20,
@@ -349,23 +479,31 @@ export function parseExpression(
 			'[': {
 				precedence: 17,
 				prefix(tk) {
+					const items: Node[] = [];
+					const seenLabels = new Set<string>();
+					if (current().kind !== ']') {
+						do {
+							items.push(parseDataItem(seenLabels));
+						} while (optional(','));
+					}
+					let inner: Node | undefined;
+					const first = items[0];
+					if (items.length === 1 && first) inner = first;
+					else if (items.length > 1) {
+						const comma: NodeMap[','] = {
+							...tk,
+							kind: ',',
+							children: items,
+						};
+						inner = comma;
+					}
 					const result: NodeMap['data'] = {
 						...tk,
 						kind: 'data',
-						children: [expectExpression()],
+						children: inner ? [inner] : [],
 						end: expect(']').end,
 					};
 					return result;
-					/*return symbolTable.withScope(scope => {
-						const result: NodeMap['data'] = {
-							...tk,
-							kind: 'data',
-							scope,
-							children: [expectExpression()],
-							end: expect(']').end,
-						};
-						return result;
-					});*/
 				},
 				infix(tk, left) {
 					return {
@@ -390,27 +528,21 @@ export function parseExpression(
 			},*/
 
 			done: { prefix: n => n },
+			break: { prefix: n => n },
 			next: {
 				prefix(tk) {
 					const owner = expectScopeOwner();
 					const result: NodeMap['next'] = { ...tk, owner };
-					if (optional('(')) {
-						result.children = [expr()];
-						result.end = expect(')').end;
+					const value = expr(0);
+					if (value) {
+						result.children = [value];
+						result.end = value.end;
 					}
 					return result;
 				},
 			},
 			loop: {
-				prefix(tk) {
-					expect('{');
-					const child = expectExpression();
-					return {
-						...tk,
-						children: [child],
-						end: expect('}').end,
-					};
-				},
+				prefix: n => n,
 			},
 			number: {
 				prefix: n => {
@@ -423,8 +555,19 @@ export function parseExpression(
 				prefix: n => {
 					const name = text(n);
 					const symbol = symbolTable.getWithReference(name, n);
-					if (!symbol) throw error('Identifier not defined', n);
-					return { ...n, symbol };
+					if (symbol) return { ...n, symbol };
+					const tk = current();
+					if (tk.kind !== '=' && tk.kind !== ':')
+						throw error('Identifier not defined', n);
+					return parseSlot(
+						n,
+						slot => ({
+							...slot,
+							kind: 'propdef',
+							children: [slot.label, slot.type, slot.value],
+						}),
+						2,
+					);
 				},
 			},
 		}),
@@ -451,8 +594,8 @@ export function parseExpression(
 			flags = Flags.Variable;
 			tk = expect('ident');
 		}
-		const next = optional(':') || optional('=');
-		if (!next) {
+		const nextKind = current().kind;
+		if (nextKind !== ':' && nextKind !== '=') {
 			if (flags) throw api.error('Expected definition', tk);
 			api.backtrack(tk);
 			return;
@@ -461,29 +604,27 @@ export function parseExpression(
 		// Check if a symbol with this identifier already exists in the symbol table.
 		// If it does, and we are not explicitly defining a variable (with 'var'),
 		// this is likely an assignment expression, not a definition.
-		if (next.kind === '=' && !flags && symbolTable.get(text(tk))) {
+		if (nextKind === '=' && !flags && symbolTable.get(text(tk))) {
 			api.backtrack(tk);
 			return;
 		}
 
-		const left = define(tk, flags);
-		let type;
-		if (next.kind === ':') {
-			type = expectNode(typeParser(), 'Expected type');
-			expect('=');
-		}
-		const right = expectNode(exprParser(), 'Expected expression');
-		return {
-			kind: 'def',
-			children: type ? [left, type, right] : [left, right],
-			left,
-			right,
-			type,
-			start: tk.start,
-			end: right.end,
-			source: left.source,
-			line: left.line,
-		};
+		checkRedeclare(tk);
+		return parseSlot(tk, slot => {
+			if (flags) slot.label.symbol.flags |= flags;
+			if (!slot.value)
+				throw api.error(
+					`"${text(tk)}" declaration without value`,
+					tk,
+				);
+			const value = slot.value;
+			return {
+				...slot,
+				kind: 'def',
+				children: [slot.label, slot.type, value],
+				value,
+			};
+		});
 	}
 
 	/**

@@ -4,25 +4,21 @@ export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
 
 export const keywords = [
+	'break',
 	'done',
 	'export',
+	'external',
 	'import',
+	'is',
 	'loop',
 	'main',
 	'next',
 	'type',
 	'fn',
 	'var',
-	'macro',
 ] as const;
 
-const {
-	alpha,
-	digitUnderscore: digit,
-	hexDigitUnderscore: hexDigit,
-	binaryDigitUnderscore: binaryDigit,
-	ident,
-} = matchers;
+const { alpha, digit, hexDigit, binaryDigit, ident } = matchers;
 
 const identFirst = (ch: string) => alpha(ch);
 const notIdent = (ch: string) => !ident(ch);
@@ -46,6 +42,25 @@ export function scan(source: string) {
 	} = ScannerApi({ source });
 
 	const keywordMatcher = createTrieMatcher(keywords, notIdent);
+
+	/**
+	 * Match a digit run with `_` allowed only as a separator between digits.
+	 * Starting position must be a digit. Returns the new consumed count,
+	 * or 0 if invalid (no leading digit, or a stray `_`).
+	 */
+	function digitRun(isDigit: (ch: string) => boolean, consumed = 0) {
+		if (!isDigit(current(consumed))) return 0;
+		let n = consumed + 1;
+		while (!eof(n)) {
+			const ch = current(n);
+			if (isDigit(ch)) n++;
+			else if (ch === '_') {
+				if (!isDigit(current(n + 1))) return 0;
+				n += 2;
+			} else break;
+		}
+		return n;
+	}
 
 	function next() {
 		skipWhitespace();
@@ -124,16 +139,16 @@ export function scan(source: string) {
 
 			// Number
 			case '0':
-				if (la === 'x') {
-					const consumed = matchWhile(hexDigit, 2);
-					if (consumed === 2 || ident(current(consumed)))
-						throw error('Expected hexadecimal digit', consumed + 1);
-					return tk('number', consumed);
-				}
-				if (la === 'b') {
-					const consumed = matchWhile(binaryDigit, 2);
-					if (consumed === 2 || ident(current(consumed)))
-						throw error('Expected binary digit', consumed + 1);
+				if (la === 'x' || la === 'b') {
+					const isRadixDigit = la === 'x' ? hexDigit : binaryDigit;
+					const label =
+						la === 'x' ? 'hexadecimal digit' : 'binary digit';
+					// Allow a single leading `_` after the radix prefix.
+					let start = 2;
+					if (current(start) === '_') start++;
+					const consumed = digitRun(isRadixDigit, start);
+					if (consumed === 0 || ident(current(consumed)))
+						throw error(`Expected ${label}`, (consumed || 2) + 1);
 					return tk('number', consumed);
 				}
 			case '1':
@@ -145,12 +160,21 @@ export function scan(source: string) {
 			case '7':
 			case '8':
 			case '9': {
-				let consumed = matchWhile(digit, 1);
-				if (consumed && current(consumed) === '.') {
-					const decimals = matchWhile(digit, ++consumed);
-					if (decimals === consumed)
-						throw error('Expected digit', consumed);
+				let consumed = digitRun(digit, 0);
+				if (consumed === 0)
+					throw error('Expected digit', 1);
+				if (current(consumed) === '.') {
+					const decimals = digitRun(digit, consumed + 1);
+					if (decimals === 0)
+						throw error('Expected digit', consumed + 1);
 					consumed = decimals;
+				}
+				if (current(consumed) === 'e' || current(consumed) === 'E') {
+					let n = consumed + 1;
+					if (current(n) === '+' || current(n) === '-') n++;
+					const exp = digitRun(digit, n);
+					if (exp === 0) throw error('Expected digit', n + 1);
+					consumed = exp;
 				}
 				if (ident(current(consumed)))
 					throw error('Expected digit', consumed + 1);

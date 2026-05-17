@@ -10,34 +10,52 @@ export type BaseNodeMap = {
 	main: { children: Node[]; statements: Node[]; scope: Scope };
 	type: { children: [Node, Node]; symbol: Symbol };
 	typeident: { symbol: Type };
-	done: void;
+	done: object;
+	break: object;
 	ident: { symbol: Symbol };
-	string: void;
+	string: object;
 	number: { value: number };
 	literal: { value: unknown; references?: Node[] };
-	loop: { children: [Node] };
+	loop: object;
 	next: {
 		children?: [Node | undefined];
 		owner: SymbolMap['function'];
 	};
-	comment: void;
+	comment: object;
 	parameter: {
-		children: [Node, Node | undefined];
-		symbol: Symbol;
-		name: Node;
+		children: [NodeMap['ident'], Node | undefined, Node | undefined];
+		label: NodeMap['ident'];
 		type?: Node;
+		value?: Node;
 	};
-	macro: {
-		children: [Node];
-		name: Node;
+	propdef: {
+		children: [
+			NodeMap['ident'] | undefined,
+			Node | undefined,
+			Node | undefined,
+		];
+		label?: NodeMap['ident'];
+		type?: Node;
+		value?: Node;
+		/**
+		 * Synthetic symbol for an unlabeled position when the slot itself
+		 * carries a modifier (e.g. `:var = 30`). Holds the slot's flags so
+		 * codegen/checker can read mutability uniformly.
+		 */
+		symbol?: SymbolMap['variable'];
 	};
 	def: {
-		children: [NodeMap['ident'], Node] | [NodeMap['ident'], Node, Node];
-		left: NodeMap['ident'];
-		right: Node;
+		children: [NodeMap['ident'], Node | undefined, Node];
+		label: NodeMap['ident'];
+		value: Node;
 		type?: Node;
 	};
-	'@': void;
+	external: {
+		children: [NodeMap['ident'], Node];
+		label: NodeMap['ident'];
+		type: Node;
+	};
+	'@': object;
 	'=': { children: [Node, Node] };
 	'?': { children: [Node, Node, Node | undefined] };
 	'~': { children: [Node] };
@@ -45,7 +63,7 @@ export type BaseNodeMap = {
 	'+': { children: [Node] };
 	'++': { children: [Node] };
 	'--': { children: [Node] };
-	$: void;
+	$: object;
 	negate: { children: [Node] };
 	fn: {
 		parameters?: NodeMap['parameter'][];
@@ -82,6 +100,7 @@ export type BaseNodeMap = {
 	| '<:'
 	| ':>'
 	| '^'
+	| 'is'
 >;
 export type NodeMap = MakeNodeMap<BaseNodeMap>;
 export type Node = NodeMap[keyof NodeMap];

@@ -103,6 +103,29 @@ export const matchers = {
 export const stringEscape = (n: number, src: string) =>
 	src[n - 1] === '\\' && src[n - 2] !== '\\';
 
+/** Append n as unsigned LEB128 to out. */
+export function uleb128(n: number, out: number[]) {
+	do {
+		let b = n & 0x7f;
+		n >>>= 7;
+		if (n !== 0) b |= 0x80;
+		out.push(b);
+	} while (n !== 0);
+}
+
+/** Append n as signed LEB128 to out. */
+export function sleb128(n: number, out: number[]) {
+	let more = true;
+	while (more) {
+		let b = n & 0x7f;
+		n >>= 7;
+		const sign = b & 0x40;
+		if ((n === 0 && !sign) || (n === -1 && sign)) more = false;
+		else b |= 0x80;
+		out.push(b);
+	}
+}
+
 export class CompilerError {
 	constructor(
 		public message: string,
@@ -692,7 +715,7 @@ export function ScannerApi({ source }: { source: string }) {
 	) {
 		while (
 			index + n < length &&
-			(match(source.charAt(index + n)) || escape?.(n, source))
+			(match(source.charAt(index + n)) || escape?.(index + n, source))
 		) {
 			if (source.charAt(index + n) === '\n') endLine++;
 			n++;

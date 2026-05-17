@@ -25,5 +25,6 @@ main { 'Hello World' >> @.out }
 
 ## Links
 
--   [Language Reference](https://github.com/giancarlo/gbc/blob/main/docs/language-reference.md)
--   [Principles](https://github.com/giancarlo/gbc/blob/main/docs/principles.md)
+-   [Language Spec (test.ts)](https://github.com/giancarlo/gbc/blob/main/compiler/test.ts) — the normative spec
+-   [Design Decisions](https://github.com/giancarlo/gbc/blob/main/docs/decisions.md) — rationale behind language design choices
+-   [Potential Features](https://github.com/giancarlo/gbc/blob/main/docs/potential-features.md) — deferred and unsettled designs
