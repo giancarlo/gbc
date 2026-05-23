@@ -384,57 +384,41 @@ Withdrawn with D26. Its only use case (Error's computed fields like auto-`id` an
 
 Withdrawn with D27. Modules return to D22's namespace model: a file is a module, top-level `export` marks public decls, `@module.name` is namespace lookup. The "modules as singleton-instance of an implicit type" formulation depended on type-body form (D27) which is now retired.
 
-## D29: `T[]` — homogeneous variable-length data block
+## D29: `T[]` — homogeneous variable-length data block — RETIRED
 
-Type notation `T[]` is a data block where every element is of type `T`; length is fixed at creation but unknown at the type level. Per D10's named-type exception, when `T` is a named type the nesting is preserved at runtime.
+Retired by **D36**: variable-length collections moved to stdlib `Array<T>`. Data blocks are now strictly fixed-shape tuple storage. The original D29 conflated "fixed tuple" and "variable collection" into one concept; D36 splits them.
 
-Operations reuse existing primitives:
-- `.N` for position access (D5)
-- `@.each` for iteration (D8)
-- `@.len(block)` for runtime length
+Original (for reference): `T[]` was data block syntax for variable-length homogeneous storage.
 
-```
-stack: Frame[] = @.captureStack()
-stack.0.function                        # innermost frame
-stack >> @.each >> { @.log($.file) }    # iterate
-```
-
-- \+ P4 ✓ no new runtime concept; still a data block per D10
-- \+ Captures "homogeneous + variable length" as a type-level distinction from `[T, T]` (known length 2)
-- \+ Necessary for D24's stack frames and any list-like data
-- − Type system tracks "unknown length" as a property
-- × Separate `Array<T>` runtime type — duplicate concept; data blocks already cover the model
-- × Sequences as storage — sequences are emissions, not stored values
-
-## D30: Statement separation — `}` terminates block statements; `;` separates the rest
+## D30: Statement separation — `;` ends every statement except `fn` and `main` blocks
 
 At statement contexts (module body, `fn(){...}` body, `main {...}` body):
-- A statement whose last token is `}` ends there. No `;` follows; writing `};` is a parse error.
-- A statement whose last token is anything else requires `;` to separate it from the next statement. Trailing `;` at end-of-input or end-of-block is allowed but redundant.
+- **Rule**: a statement whose AST node kind is `fn` or `main` is self-terminating; every other statement requires a trailing `;`, including the last statement in a block. Decision is made on AST kind alone — no source/token-history lookup, no recursive walk into the right-most child.
+- `;` after a `fn` or `main` block is a parse error.
+- A `def` whose value is a `fn`/`{}` literal is still a `def` at the statement level, so it ends with `;`. The literal sequence `};` is therefore valid — the `}` belongs to the inner block, the `;` to the outer statement.
 
-`,` continues to separate items in expression contexts (data blocks per D10, function args per D12, `{}` expression list per D16). Newlines have no semantic meaning at any level — the parser treats them as ordinary whitespace.
+`,` continues to separate items in expression contexts (data blocks per D10, function args per D12, `{}` expression list per D16). Newlines have no semantic meaning — the parser treats them as ordinary whitespace.
 
 Examples:
 
 ```
-helper = fn(x) { next x * 2 }       # ends with `}` → no `;`
-a = 10;                               # ends with literal → needs `;`
-b = fn(y) { y + 1 }                   # ends with `}` → no `;`
-c = helper(a) + b(5);                 # ends with `)` → needs `;`
-main { 'hello' >> @.out }             # ends with `}` → no `;`
+helper = fn(x) { next x * 2; };          # def stmt → trailing `;`
+a = 10;                                    # ends with literal → `;`
+b = fn(y) { next y + 1; };                 # def whose value is fn → `;`
+c = helper(a) + b(5);                      # ends with `)` → `;`
+main { 'hello' >> @.out; }                 # main block: no `;` after `}`, but the inner pipe stmt needs `;`
 ```
 
 Supersedes D11's "no required statement delimiters" parenthetical. D11's other points (function-call parens, unambiguous parse) stand.
 
-- \+ P3 ✓ every statement boundary is a visible token (`;` or `}`)
-- \+ P5 ✓ block-ending statements read naturally without `};` noise
+- \+ P1 ✓ one rule — `;` everywhere except `fn`/`main` blocks
+- \+ P3 ✓ every statement boundary is a visible token (`;` or `fn`/`main`'s `}`)
 - \+ Cross-platform consistent — no CRLF/LF/CR variance
 - \+ Auto-formatters and editors can reflow freely without changing semantics
-- \+ Generated code and one-line forms work uniformly
-- \+ Matches the shape of common idioms (top-level fn defs, type defs, main)
-- − Two terminators (`;` and `}`); defensible as "right terminator per shape" — different statement forms have different natural ends, not two ways for the same thing
-- × Strict `;`-always (incl. after `}`) — `};` redundancy at every top-level fn def
-- × Optional `;` (D11's original wording) — ambiguity costs (empirical: JS ASI bugs; grammar-augmentation research, e.g. SynCode showing 96% syntax-error reduction with explicit grammar)
+- \+ Parser-implementable on AST kind alone — no source/token-history coupling
+- − Top-level defs whose values are `fn` literals end with `};` (the `}` is the inner fn's, the `;` is the outer def's)
+- × "Last token is `}`" framing (original D30) — required source-string lookup or a recursive AST walk to decide; messier implementation, no clearer semantics
+- × Optional `;` (D11's original wording) — ambiguity costs (empirical: JS ASI bugs)
 - × Significant newlines as separators — line-ending variance, tooling fragility, Python-style indentation issues
 
 ## D31: Arithmetic safety — Int division returns `T | Error`; Float follows IEEE
@@ -474,24 +458,37 @@ Recursive functions written tail-recursively never stack-overflow, regardless of
 - × Annotation-required TCO (`@tailrec`) — opt-in friction; mistakes silently stack-overflow in unmarked functions
 - × Best-effort TCO — can't rely on it for correctness; users avoid recursion defensively
 
-## D33: `next` is statement-only; ternary branches must be uniform
+## D33: `?:` is a value-ternary; `break`/`done` admitted as bottom-typed branches
 
-`next` is a statement, never an expression — forbidden inside `{}` D16 expression-list and in value-producing contexts.
+`?:` is a value-ternary expression. Both branches are required and must produce values of compatible types. **Exception**: `break` and `done` (control-flow keywords that never return) may appear in either branch. They are bottom-typed — the result type is determined by the non-bottom branch (or is bottom itself if both are).
 
-Ternary branches must be the same kind: both statements or both value-expressions. `next` may appear in a statement-form branch.
+`next` is **not** allowed inside `?:` branches — it is statement-only. For value-choice emission, write `next cond ? X : Y` (the `next` is outside; the ternary is pure value).
 
 Patterns:
-- `cond ? next X` — conditional emission (guard)
-- `cond ? break` / `cond ? done` — control-flow guards
-- `cond ? next X : break` — emit-or-break
-- `next cond ? X : Y` — value-choice emission
+- `cond ? a : b` — pure value-ternary; both branches required.
+- `cond ? break : value` / `cond ? done : value` — control-or-value (bottom branch + value branch).
+- `cond ? break : break` — both bottom; result type bottom (chain stage terminates on either path). Redundant; warn or fold.
+- `cond ? break : done` — both bottom, different exits. Valid.
+- `next cond ? X : Y` — value-choice emission (next outside).
 
-Forbidden: `cond ? next X : next Y` (redundant with `next cond ? X : Y`), mixed-kind branches, `next` inside `{}`.
+Forbidden:
+- Single-branch `cond ? value` with non-bottom value (which branch supplies a value when cond is false?).
+- `cond ? next X : Y` / `cond ? Y : next X` / `cond ? next X : next Y` — mixed-kind or redundant; use `next cond ? X : Y` instead.
+- Mixed-kind without a bottom branch (one branch a statement, the other a value).
+- `next` inside `{}` expression-list (still applies — see D16).
+
+Rationale:
+- The user's range idiom `loop >> { $ >= n ? break : $ }` reads naturally. Allowing `break`/`done` as bottom-typed branches makes this expressible without falling back to chain dispatch or two-statement form.
+- `next` is excluded because, unlike `break`/`done`, it continues after emitting — its "return value" is ambiguous in expression position. The canonical value-choice form `next cond ? X : Y` is unambiguous.
+- Compiler lowering: bottom-branch ternary compiles to `if/end` (no `(result T)` block); pure value-ternary compiles to `if (result T)/else/end`. Different shape, both clean.
 
 - \+ P1 ✓ one form per operation; only the redundant case forbidden
-- \+ P3 ✓ syntactic shape signals intent
-- × Allowing `next` everywhere — redundant forms; P1 violation
-- × Forbidding all statements in ternaries — breaks `cond ? break` and `cond ? next X : break`
+- \+ P3 ✓ syntactic shape signals intent; bottom-typed branches are explicit
+- \+ Range and take-N idioms are concise (`loop >> { cond ? break : $ }`)
+- − Mixed-with-bottom rule needs the type system to know about bottom (small addition)
+- × Allowing `next` in branches — ambiguous semantics; `next cond ? X : Y` is the unambiguous form
+- × Forbidding all statements in ternaries — loses the range/break idiom
+- × Allowing arbitrary mixed-kind — loses transparency; harder to read
 
 ## D34: `error` is a built-in function producing an Error value
 
@@ -540,6 +537,116 @@ Conceptually, built-in types are branded interpretations of byte memory: `Int32`
 - × Error as a one-off nominal exception — would imply nominality is unique to Error rather than the default for built-ins
 - × Fully structural built-ins — would make `Int32` indistinguishable from `Uint32` in unions; arithmetic semantics would break
 - × Fully nominal user types — Rust-style newtype boilerplate without the integrity justification
+
+## D36: Data blocks are fixed-shape tuple storage; Arrays are stdlib collections
+
+Data blocks (`[T1, T2, ...]` and `[a: T, b: U]`) are **fixed-shape tuple storage**. Their structure (arity, slot types, labels) is fully known at compile time. They model "data layout" — structs, records, tuples.
+
+Variable-length homogeneous collections move to **stdlib `Array<T>`**. Arrays are runtime data structures with their own operations (`@.each`, `@.len`, `@.get`, `@.map`, `@.filter`, etc.) and are not pattern-matched by destructure.
+
+| Aspect | Data block | Array |
+|---|---|---|
+| Shape | known at compile time | variable at runtime |
+| Storage | inline tuple (stack/struct) | heap-backed collection |
+| Type expression | `[T, U]`, `[a: T, b: U]` | `Array<T>` |
+| Singleton-collapse (D10) | applies | doesn't apply |
+| Pattern matching | yes — destructure / projection | no — use stdlib transforms |
+| Indexing | `.N` (literal position) or `.label` | `@.get(arr, i)` |
+| Length | known (statically) | `@.len(arr)` |
+| Built-in marker | yes (no stdlib needed for storage) | yes (compiler-aware for codegen) |
+
+This retires D29's `T[]` notation. Array literals use stdlib: `@.array(1, 2, 3)` constructs an `Array<Int32>`. Streaming bridges: `stream >> @.collect` materializes; `arr >> @.each` re-streams.
+
+For example: stack frames (D24) now use `Array<Frame>` instead of `Frame[]`.
+
+- \+ P1 ✓ single rule per kind: data blocks = layout, arrays = collections
+- \+ P3 ✓ static-shape data blocks are fully analyzable; arrays are runtime-clear
+- \+ Pattern matching is tuple-only — no "variable arity" ambiguity
+- \+ Stdlib operations live in stdlib, not bolted onto the core grammar
+- \+ Aligns with the runtime: a data block is a contiguous slot tuple; an array is a length+pointer record
+- − Two kinds where there was conceptually one — users choose the right one
+- − D29-era code with `T[]` annotations needs migration to `Array<T>`
+- × Keep `T[]` as data-block sugar — conflates layout and collection; was D29's compromise
+- × Drop `Array` entirely, force collections through generators — generators are streams, not stored containers; no random access
+
+## D37: Single-item labeled data blocks are forbidden at construction and type level
+
+A data block literal with exactly one item AND that item is labeled is **invalid syntax**. Similarly, a labeled record type with a single field is **not declarable**.
+
+```
+[1]                              # OK — singleton, D10 collapses to scalar 1
+[5]                              # OK — singleton, collapses to scalar 5
+[b = 5]                          # COMPILE ERROR — single labeled item
+[a = 1, b = 2]                   # OK — multi-field labeled record
+
+type Foo = [name: String]        # COMPILE ERROR — single-field labeled type
+type Foo = String                # OK — type alias to a scalar (same semantic)
+type Point = [x: Int32, y: Int32]   # OK — multi-field labeled record
+```
+
+The motivation is removing ambiguity created by the combination of:
+- D10's singleton-collapse rule: `[T]` ≡ `T` (1-element data block collapses to scalar).
+- Labels as metadata (D36): labels don't affect the structural type.
+
+Together these mean `[b = 5]` would be structurally identical to `5` (scalar) — the label `b` is purely decorative and runtime-erased. Three pattern-matching paths could converge here (singleton-collapse, label-projection, scalar match) producing the same result but with confusingly different reasoning. Banning the construct removes this redundancy.
+
+Implications:
+- Named single-arg calls like `f(x = 5)` are **call-site sugar** (not data block construction); the label matches the fn's parameter name to provide intent at the call site. No `[x = 5]` data block is created.
+- Single-field "named types" use scalar type aliases instead: `type Field = Int32`.
+
+- \+ P1 ✓ removes the "three reasoning paths to same result" ambiguity
+- \+ P3 ✓ no ghost labels surviving singleton-collapse
+- \+ Compiler treats all 1-arity values as scalars uniformly (no "decorated scalar" exception)
+- − Single-field "branded" records aren't expressible — but user-branded types are deferred per D35 anyway
+- × Allow but treat `[b = 5]` as scalar with metadata — three reasoning paths leak into user-visible behavior
+- × Allow at construction but ban at type — asymmetric; one is a constructive case, the other definitional; both share the same ambiguity
+
+## D38: Parameter defaults via `void` sentinel
+
+A function parameter may declare a default expression: `(name: T = expr)`. The parameter's call-facing type is effectively `T | Void` (callers may pass `void` to use the default); the body sees the narrowed type `T` because default substitution happens at the param-binding step (before the body runs).
+
+```
+addOne = (n: Int32 = 41): Int32 { n + 1 };
+
+addOne(5)              # n = 5
+addOne(void)           # default 41 substituted at param binding → n = 41
+addOne(n = void)       # named, same effect → n = 41
+addOne(n = 5)          # named, explicit → n = 5
+```
+
+**Default expressions** may reference earlier params (left-to-right order):
+
+```
+relate = (a: Int32, b: Int32 = a + 1): Int32 { a + b };
+relate(3, void)        # b defaults to a + 1 = 4 → a+b = 7
+```
+
+**Call rules**:
+- **Positional call**: every slot must be specified. Pass `void` for defaulted slots to use their defaults.
+- **Named call**: only mention overrides; omitted slots use their defaults.
+- **Empty call `f()`**: passes `[]`; matches only a 0-param fn (no "all defaults" sugar — per D12's strict data-block construction).
+- **`void` on a required (non-defaulted) param**: compile error.
+
+**The `void` sentinel** is the lowercase value of type `Void` — the unique inhabitant of Void. Using it positionally or in named form triggers the default substitution.
+
+**Body's narrowed view**: because the default substitution happens before body execution, the body sees the param as `T` (the declared type), not `T | Void`. No body-level narrowing required — the param is single-typed throughout the body.
+
+```
+# What the user writes:
+addOne = (n: Int32 = 41): Int32 { n + 1 };
+
+# Compiler-internal view at the binding step:
+# (n: Int32 | Void)  →  if n is Void, n := 41  →  body sees n: Int32
+```
+
+- \+ P3 ✓ defaults are visible in the signature; `void` at call site is explicit
+- \+ Body sees concrete `T`, no unions to narrow at every use
+- \+ Defaults at any position — no required-after-default ordering constraint
+- \+ Sparse named calls (`f(b = 99)`) work naturally; positional uses `void`
+- − `f(void, void, ...)` is verbose for "all defaults" — intentional nudge toward named-call form
+- × `f()` as "all defaults" sugar — violates D12 (calls construct a specific-arity data block); would require special-case logic
+- × Trailing-defaults-only (Python/Swift) — forces ordering; gb allows defaults anywhere via explicit `void`
+- × Body sees union `T | Void` — every use site would need narrowing; defeats the ergonomic purpose of defaults
 
 ---
 

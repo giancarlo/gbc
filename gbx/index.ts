@@ -66,11 +66,12 @@ export function makeDefaultRuntime(
 export function run(src: string, opts: RunOptions = {}) {
 	const stdout = opts.stdout ?? defaultStdout;
 	const p = Program();
-	const result = p.compileToWasm(src);
+	const result = p.compile(src);
 	if (result.errors.length) {
 		for (const e of result.errors) process.stderr.write(`${e.message}\n`);
 		throw new Error('Compilation failed');
 	}
+	if (!result.bytes) throw new Error('No wasm output');
 	const mod = new WebAssembly.Module(result.bytes);
 	let memory: WebAssembly.Memory | undefined;
 	const getMemory = () => {

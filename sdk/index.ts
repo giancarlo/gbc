@@ -308,6 +308,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		error,
 		pushError,
 		errors,
+		catchAndRecover,
 		expect,
 		expectNode,
 		expectNodeKind,
@@ -471,17 +472,18 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 
 	function parseList<C>(
 		parseFn: () => C | undefined,
-		separator: Node['kind'],
+		separator: Node['kind'] | ((item: C) => boolean),
 		isItem: (item: C) => boolean,
 	) {
 		const result: C[] = [];
-		do {
-			// Handle empty params
+		const sepIsFn = typeof separator === 'function';
+		while (true) {
 			const item = parseFn();
 			if (!item || !isItem(item)) break;
 			result.push(item);
-		} while (optional(separator));
-
+			const cont = sepIsFn ? separator(item) : !!optional(separator);
+			if (!cont) break;
+		}
 		return result;
 	}
 

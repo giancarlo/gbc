@@ -11,6 +11,7 @@ import {
 	Symbol,
 	SymbolMap,
 	SymbolTable,
+	TypesSymbolTable,
 	Flags,
 } from './symbol-table.js';
 import { Node, NodeMap } from './node.js';
@@ -19,7 +20,12 @@ import type { ScannerToken } from './scanner.js';
 export function parseExpression(
 	api: ParserApi<ScannerToken>,
 	symbolTable: SymbolTable,
+	typesTable: TypesSymbolTable,
 	typeParser: () => Node | undefined,
+	parseStatementBlock: (
+		parser: () => Node | undefined,
+		endKind: ScannerToken['kind'],
+	) => Node[],
 ) {
 	const { current, error, expect, expectNode, optional, parseList } = api;
 
@@ -55,7 +61,8 @@ export function parseExpression(
 			end: number;
 			line: number;
 			source: string;
-			label: NodeMap['ident'];
+			label: Token<'ident'>;
+			symbol: SymbolMap['variable'];
 			type?: Node;
 			value?: Node;
 		}) => N,
@@ -67,15 +74,15 @@ export function parseExpression(
 			kind: 'variable',
 			flags: 0,
 		});
-		const label: NodeMap['ident'] = { ...ident, symbol };
 		const type = optional(':') ? maybeVarType(symbol) : undefined;
 		const value = optional('=')
 			? expectNode(exprParser(valuePrec), 'Expected value')
 			: undefined;
 		const node = make({
 			...ident,
-			end: (value ?? type ?? label).end,
-			label,
+			end: (value ?? type ?? ident).end,
+			label: ident,
+			symbol,
 			type,
 			value,
 		});
@@ -99,9 +106,64 @@ export function parseExpression(
 
 	function blockParameters(node: NodeMap['fn']) {
 		node.parameters = parseList(parameter, ',', n => !!n);
-		node.symbol.parameters = node.parameters.map(p => p.label.symbol);
+		node.symbol.parameters = node.parameters.map(p => p.symbol);
 		expect(')');
 		node.children.push(...node.parameters);
+	}
+
+	function parseLambdaAfterOpenParen(tk: ScannerToken): NodeMap['fn'] {
+		return parseBlock(tk, node => {
+			blockParameters(node);
+			if (optional(':'))
+				node.children.push(
+					(node.returnType = expectType()),
+				);
+			expect('{');
+			return parseFnBody(node);
+		});
+	}
+
+	function parseAnonymousSlotBlock(
+		tk: ScannerToken,
+		typeNode: Node,
+	): NodeMap['fn'] {
+		return parseBlock(tk, node => {
+			const anonSym: SymbolMap['variable'] = {
+				kind: 'variable',
+				name: '',
+				flags: 0,
+			};
+			if (typeNode.kind === 'typeident' && typeNode.symbol.kind === 'type')
+				anonSym.type = typeNode.symbol;
+			const returnTypeNode = optional(':') ? expectType() : undefined;
+			if (returnTypeNode) node.returnType = returnTypeNode;
+			const param: NodeMap['parameter'] = {
+				...tk,
+				kind: 'parameter',
+				symbol: anonSym,
+				type: typeNode,
+				children: [undefined, typeNode, returnTypeNode],
+			};
+			node.parameters = [param];
+			node.children.push(param);
+			expect('{');
+			return parseFnBody(node);
+		});
+	}
+
+	function parseFnBody(node: NodeMap['fn']): Node[] {
+		const stmts = parseStatementBlock(statement, '}');
+		node.end = expect('}').end;
+		const only = stmts.length === 1 ? stmts[0] : undefined;
+		const isAutoEmit =
+			stmts.length === 0 ||
+			(only !== undefined &&
+				only.kind !== 'def' &&
+				only.kind !== 'next' &&
+				only.kind !== 'done' &&
+				only.kind !== 'break');
+		if (isAutoEmit) node.symbol.flags |= Flags.Sequence;
+		return stmts;
 	}
 
 	function prefixNumber(op: (n: number) => number) {
@@ -172,6 +234,42 @@ export function parseExpression(
 		return owner;
 	}
 
+	/**
+	 * Parse a `next <expr>` statement. The statement keywords `next`, `done`,
+	 * and `break` are intentionally absent from the Pratt prefix table — that
+	 * keeps them out of arbitrary expression positions (`x = next 1`,
+	 * `f(next 1)`, `next next 1`, etc.). They reach the AST only through
+	 * `statement()` and through `?:` ternary branches via `parseBranchOrExpr`.
+	 */
+	function parseNextStmt(): NodeMap['next'] {
+		const tk = expect('next');
+		const owner = expectScopeOwner();
+		const value = expectNode(exprParser(), 'Expected expression');
+		return {
+			...tk,
+			owner,
+			children: [value],
+			end: value.end,
+		};
+	}
+
+	function parseSimpleStmt(): Node {
+		const tk = current();
+		api.next();
+		return tk as Node;
+	}
+
+	/**
+	 * Parse a ternary branch: either a statement form (`next X`, `done`,
+	 * `break`) per D33, or a value expression at the ternary precedence.
+	 */
+	function parseBranchOrExpr(prec: number): Node {
+		const k = current().kind;
+		if (k === 'next') return parseNextStmt();
+		if (k === 'done' || k === 'break') return parseSimpleStmt();
+		return expectNode(exprParser(prec), 'Expected expression');
+	}
+
 	function parseDataItem(seenLabels: Set<string>): Node {
 		const tk = current();
 		if (tk.kind === 'ident') {
@@ -201,11 +299,9 @@ export function parseExpression(
 
 	const parser = parserTable<NodeMap, ScannerToken>(
 		({
-			parseUntilKind,
 			expression: expr,
 			infixOperator,
 			infix,
-			ternaryOptional,
 			expectExpression,
 			prefix,
 			current,
@@ -224,47 +320,8 @@ export function parseExpression(
 					return node;
 				},
 			},
-			fn: {
-				prefix: tk =>
-					parseBlock(tk, node => {
-						if (optional('(')) {
-							blockParameters(node);
-							if (optional(':'))
-								node.children.push(
-									(node.returnType = expectType()),
-								);
-						}
-						const inline = optional('=>');
-						if (inline) {
-							node.symbol.flags |= Flags.Lambda;
-							return [
-								{
-									...inline,
-									kind: 'next',
-									owner: expectScopeOwner(),
-									children: [expectExpression()],
-								},
-							];
-						}
-						expect('{');
-						const result = parseUntilKind(statement, '}');
-						node.end = expect('}').end;
-						if (!result.length)
-							throw error(
-								'Empty `fn(...) { }` body is not allowed; use `{ }` for a no-op function.',
-								tk,
-							);
-						return result;
-					}),
-			},
 			'{': {
-				prefix: tk =>
-					parseBlock(tk, node => {
-						node.symbol.flags = Flags.Sequence;
-						const result = parseUntilKind(statement, '}');
-						node.end = expect('}').end;
-						return result;
-					}),
+				prefix: tk => parseBlock(tk, parseFnBody),
 			},
 			'||': infixOperator(3),
 			'&&': infixOperator(4),
@@ -290,14 +347,6 @@ export function parseExpression(
 						start: left.start,
 						end: right.end,
 					};
-				},
-			},
-			'++': {
-				precedence: 15,
-				infix(tk, left) {
-					const result = tk as NodeMap['++'];
-					result.children = [left];
-					return result;
 				},
 			},
 			'+': {
@@ -426,21 +475,29 @@ export function parseExpression(
 			},
 			':': {
 				prefix(tk) {
-					// Unlabeled slot: `:type = value` or `:var = value`.
-					// For `var`, synthesize a slot symbol on the propdef
-					// so the Variable flag has a home (parallel to how
-					// labeled propdefs use label.symbol).
 					let type: Node | undefined;
-					let symbol: SymbolMap['variable'] | undefined;
+					const symbol: SymbolMap['variable'] = {
+						kind: 'variable',
+						name: '',
+						flags: 0,
+					};
 					if (current().kind === 'var') {
 						api.next();
-						symbol = {
-							kind: 'variable',
-							name: '',
-							flags: Flags.Variable,
-						};
+						symbol.flags |= Flags.Variable;
 					} else {
 						type = expectType();
+					}
+					if (type && current().kind === '{') {
+						if (
+							type.kind === 'typeident' &&
+							type.symbol.kind === 'type' &&
+							type.symbol.family !== 'literal'
+						)
+							throw error(
+								`":${type.symbol.name} { ... }" is not a literal-type prefix; use \`${type.symbol.name}\` for Shape 2.`,
+								tk,
+							);
+						return parseAnonymousSlotBlock(tk, type);
 					}
 					const value = optional('=')
 						? expectNode(exprParser(2), 'Expected value')
@@ -460,7 +517,23 @@ export function parseExpression(
 
 			'(': {
 				precedence: 20,
-				prefix() {
+				prefix(tk) {
+					const tk1 = current();
+					let isLambda = tk1.kind === ')';
+					if (tk1.kind === 'ident') {
+						api.next();
+						const tk2 = current();
+						if (tk2.kind === ':' || tk2.kind === ',')
+							isLambda = true;
+						else if (tk2.kind === ')') {
+							api.next();
+							const tk3 = current();
+							isLambda =
+								tk3.kind === '{' || tk3.kind === ':';
+						}
+						api.backtrack(tk1);
+					}
+					if (isLambda) return parseLambdaAfterOpenParen(tk);
 					const node = expectExpression();
 					expect(')');
 					return node as NodeMap['('];
@@ -516,31 +589,24 @@ export function parseExpression(
 
 			'?': {
 				precedence: 2,
-				infix: ternaryOptional(2, ':'),
-			},
-
-			/*$: {
-				prefix: n => {
-					if (!symbolTable.getRef('$', n))
-						throw error('$ not defined', n);
-					return n;
-				},
-			},*/
-
-			done: { prefix: n => n },
-			break: { prefix: n => n },
-			next: {
-				prefix(tk) {
-					const owner = expectScopeOwner();
-					const result: NodeMap['next'] = { ...tk, owner };
-					const value = expr(0);
-					if (value) {
-						result.children = [value];
-						result.end = value.end;
+				infix(tk, left) {
+					const truthy = parseBranchOrExpr(2);
+					const node = {
+						...tk,
+						kind: '?' as const,
+						start: left.start,
+						end: truthy.end,
+						children: [left, truthy] as Node[],
+					};
+					if (optional(':')) {
+						const falsy = parseBranchOrExpr(2);
+						node.children.push(falsy);
+						node.end = falsy.end;
 					}
-					return result;
+					return node as NodeMap['?'];
 				},
 			},
+
 			loop: {
 				prefix: n => n,
 			},
@@ -557,6 +623,17 @@ export function parseExpression(
 					const symbol = symbolTable.getWithReference(name, n);
 					if (symbol) return { ...n, symbol };
 					const tk = current();
+					if (tk.kind === '{' || tk.kind === ':') {
+						const typeSym = typesTable.get(name);
+						if (typeSym) {
+							const typeNode: NodeMap['typeident'] = {
+								...n,
+								kind: 'typeident',
+								symbol: typeSym,
+							};
+							return parseAnonymousSlotBlock(n, typeNode);
+						}
+					}
 					if (tk.kind !== '=' && tk.kind !== ':')
 						throw error('Identifier not defined', n);
 					return parseSlot(
@@ -576,42 +653,34 @@ export function parseExpression(
 	const exprParser = parser(api);
 
 	/**
-	 * Parses a definition statement. A definition statement can be in the form of:
+	 * Parses a definition statement (D6 — `var` is a type modifier, not a
+	 * binding modifier):
 	 *  - `identifier = expression`
-	 *  - `var identifier = expression`
 	 *  - `identifier : type = expression`
-	 *  - `var identifier : type = expression`
+	 *  - `identifier : var = expression`
+	 *  - `identifier : var type = expression`
 	 *
 	 * If the statement does not match a definition pattern, it returns undefined.
 	 * This allows the caller to fallback to parsing a general expression.
 	 */
 	function definition(): NodeMap['def'] | undefined {
-		let tk = current();
-		let flags = 0;
-		if (tk.kind !== 'ident' && tk.kind !== 'var') return;
+		const tk = current();
+		if (tk.kind !== 'ident') return;
 		api.next();
-		if (tk.kind === 'var') {
-			flags = Flags.Variable;
-			tk = expect('ident');
-		}
 		const nextKind = current().kind;
 		if (nextKind !== ':' && nextKind !== '=') {
-			if (flags) throw api.error('Expected definition', tk);
 			api.backtrack(tk);
 			return;
 		}
 
-		// Check if a symbol with this identifier already exists in the symbol table.
-		// If it does, and we are not explicitly defining a variable (with 'var'),
-		// this is likely an assignment expression, not a definition.
-		if (nextKind === '=' && !flags && symbolTable.get(text(tk))) {
+		// Symbol already declared in scope ⇒ this is an assignment, not a def.
+		if (nextKind === '=' && symbolTable.get(text(tk))) {
 			api.backtrack(tk);
 			return;
 		}
 
 		checkRedeclare(tk);
 		return parseSlot(tk, slot => {
-			if (flags) slot.label.symbol.flags |= flags;
 			if (!slot.value)
 				throw api.error(
 					`"${text(tk)}" declaration without value`,
@@ -628,11 +697,15 @@ export function parseExpression(
 	}
 
 	/**
-	 * This is the entry point for parsing a statement.
-	 * It first attempts to parse a definition (e.g., `var x = 5` or `x: number = 5`).
-	 * If a definition is not found, it falls back to parsing a general expression.
+	 * Entry point for parsing a statement. Handles the statement-only
+	 * keywords (`next`, `done`, `break`) explicitly — they are not in the
+	 * Pratt prefix table, so they're unreachable from any expression
+	 * position. Falls back to a definition or a general expression.
 	 */
 	function statement(): Node | undefined {
+		const k = current().kind;
+		if (k === 'next') return parseNextStmt();
+		if (k === 'done' || k === 'break') return parseSimpleStmt();
 		return definition() || exprParser();
 	}
 

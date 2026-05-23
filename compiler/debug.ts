@@ -1,16 +1,18 @@
-import { text } from '../sdk/index.js';
+import { text, Token } from '../sdk/index.js';
 import { Flags } from './symbol-table.js';
 
 import type { Node } from './node.js';
 
-function nodeId(node: Node) {
+type AstNode = Node | Token<'ident'>;
+
+function nodeId(node: AstNode) {
 	switch (node.kind) {
 		case 'string':
 			return text(node);
 		case 'number':
 			return String(node.value);
 		case 'ident':
-			return `:${node.symbol.name || text(node)}`;
+			return `:${text(node)}`;
 		case '@':
 			return text(node);
 		default:
@@ -26,7 +28,7 @@ export function symbolFlags(flags: number) {
 	return result;
 }
 
-export function ast(node: Node): string {
+export function ast(node: AstNode): string {
 	const flags =
 		'symbol' in node && node.symbol?.flags
 			? symbolFlags(node.symbol.flags as number)

@@ -8,7 +8,6 @@ export const keywords = [
 	'done',
 	'export',
 	'external',
-	'import',
 	'is',
 	'loop',
 	'main',
@@ -62,23 +61,45 @@ export function scan(source: string) {
 		return n;
 	}
 
-	function next() {
-		skipWhitespace();
+	function scanRadixNumber(la: string) {
+		const isRadixDigit = la === 'x' ? hexDigit : binaryDigit;
+		const label = la === 'x' ? 'hexadecimal digit' : 'binary digit';
+		let start = 2;
+		if (current(start) === '_') start++;
+		const consumed = digitRun(isRadixDigit, start);
+		if (consumed === 0 || ident(current(consumed)))
+			throw error(`Expected ${label}`, (consumed || 2) + 1);
+		return tk('number', consumed);
+	}
 
-		if (eof()) return tk('eof', 0);
+	function scanDecimalNumber() {
+		let consumed = digitRun(digit, 0);
+		if (consumed === 0) throw error('Expected digit', 1);
+		if (current(consumed) === '.') {
+			const decimals = digitRun(digit, consumed + 1);
+			if (decimals === 0)
+				throw error('Expected digit', consumed + 1);
+			consumed = decimals;
+		}
+		if (current(consumed) === 'e' || current(consumed) === 'E') {
+			let n = consumed + 1;
+			if (current(n) === '+' || current(n) === '-') n++;
+			const exp = digitRun(digit, n);
+			if (exp === 0) throw error('Expected digit', n + 1);
+			consumed = exp;
+		}
+		if (ident(current(consumed)))
+			throw error('Expected digit', consumed + 1);
+		return tk('number', consumed);
+	}
 
-		const ch = current();
-		const la = current(1);
-
-		/* eslint no-fallthrough: off */
+	function scanTwoCharOp(
+		ch: '=' | '|' | '&' | '>' | '<' | '!' | ':',
+		la: string,
+	) {
 		switch (ch) {
-			// 2-char operators
 			case '=':
-				return la === '='
-					? tk('==', 2)
-					: la === '>'
-						? tk('=>', 2)
-						: tk('=', 1);
+				return la === '=' ? tk('==', 2) : tk('=', 1);
 			case '|':
 				return la === '|' ? tk('||', 2) : tk('|', 1);
 			case '&':
@@ -92,20 +113,43 @@ export function scan(source: string) {
 			case '<':
 				return la === '='
 					? tk('<=', 2)
-					: la === '<'
-						? tk('<<', 2)
-						: la === ':'
-							? tk('<:', 2)
-							: tk('<', 1);
+					: la === ':'
+						? tk('<:', 2)
+						: tk('<', 1);
 			case '!':
 				return la === '=' ? tk('!=', 2) : tk('!', 1);
-			case '+':
-				return la === '+' ? tk('++', 2) : tk('+', 1);
-			case '-':
-				return la === '-' ? tk('--', 2) : tk('-', 1);
 			case ':':
 				return la === '>' ? tk(':>', 2) : tk(':', 1);
-			// 1-char operators
+		}
+	}
+
+	function scanString() {
+		let n = matchEnclosed(stringCh, stringEscape);
+		const end = current(n);
+		if (end === '') throw error('Unterminated string', n);
+		else if (end === "'") n += 1;
+		else n -= 1;
+		return tk('string', n);
+	}
+
+	function next() {
+		skipWhitespace();
+
+		if (eof()) return tk('eof', 0);
+
+		const ch = current();
+		const la = current(1);
+
+		/* eslint no-fallthrough: off */
+		switch (ch) {
+			case '=':
+			case '|':
+			case '&':
+			case '>':
+			case '<':
+			case '!':
+			case ':':
+				return scanTwoCharOp(ch, la);
 			case '{':
 			case '}':
 			case '.':
@@ -121,36 +165,16 @@ export function scan(source: string) {
 			case '@':
 			case '[':
 			case ']':
+			case ';':
+			case '+':
+			case '-':
 				return tk(ch, 1);
-			case "'": {
-				let n = matchEnclosed(stringCh, stringEscape);
-				const end = current(n);
-				if (end === '') throw error('Unterminated string', n);
-				else if (end === "'") n += 1;
-				// We have an embedded expression
-				else n -= 1;
-
-				return tk('string', n);
-			}
-			case '#': {
-				const n = matchWhile(notEol, 1);
-				return tk('comment', n);
-			}
-
-			// Number
+			case "'":
+				return scanString();
+			case '#':
+				return tk('comment', matchWhile(notEol, 1));
 			case '0':
-				if (la === 'x' || la === 'b') {
-					const isRadixDigit = la === 'x' ? hexDigit : binaryDigit;
-					const label =
-						la === 'x' ? 'hexadecimal digit' : 'binary digit';
-					// Allow a single leading `_` after the radix prefix.
-					let start = 2;
-					if (current(start) === '_') start++;
-					const consumed = digitRun(isRadixDigit, start);
-					if (consumed === 0 || ident(current(consumed)))
-						throw error(`Expected ${label}`, (consumed || 2) + 1);
-					return tk('number', consumed);
-				}
+				if (la === 'x' || la === 'b') return scanRadixNumber(la);
 			case '1':
 			case '2':
 			case '3':
@@ -159,36 +183,12 @@ export function scan(source: string) {
 			case '6':
 			case '7':
 			case '8':
-			case '9': {
-				let consumed = digitRun(digit, 0);
-				if (consumed === 0)
-					throw error('Expected digit', 1);
-				if (current(consumed) === '.') {
-					const decimals = digitRun(digit, consumed + 1);
-					if (decimals === 0)
-						throw error('Expected digit', consumed + 1);
-					consumed = decimals;
-				}
-				if (current(consumed) === 'e' || current(consumed) === 'E') {
-					let n = consumed + 1;
-					if (current(n) === '+' || current(n) === '-') n++;
-					const exp = digitRun(digit, n);
-					if (exp === 0) throw error('Expected digit', n + 1);
-					consumed = exp;
-				}
-				if (ident(current(consumed)))
-					throw error('Expected digit', consumed + 1);
-
-				return tk('number', consumed);
-			}
+			case '9':
+				return scanDecimalNumber();
 			default: {
-				// Keywords
 				const keywordToken = keywordMatcher();
 				if (keywordToken) return keywordToken;
-
-				// Identifiers
 				if (identFirst(ch)) return tk('ident', matchWhile(ident, 1));
-
 				throw error(`Invalid character "${ch}"`, 1);
 			}
 		}

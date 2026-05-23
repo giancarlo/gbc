@@ -2,20 +2,20 @@ import { text } from '../sdk/index.js';
 import { Flags } from './symbol-table.js';
 import { Node, NodeMap } from './node.js';
 
-function def({ label, value }: NodeMap['def']) {
-	const symbol = label.symbol;
+function def(node: NodeMap['def']) {
+	const symbol = node.symbol;
 
 	if (!(symbol.flags & Flags.Export)) return '';
 
-	switch (value.kind) {
+	switch (node.value.kind) {
 		case 'fn': {
 			const params =
-				value.parameters?.map(p => `${p.label.symbol.name}:any`) ?? '';
-			return `export function ${text(label)}(${params}): any`;
+				node.value.parameters?.map(p => `${p.symbol.name || '$'}:any`) ?? '';
+			return `export function ${text(node.label)}(${params}): any`;
 		}
+		default:
+			return '';
 	}
-
-	return '';
 }
 
 /**
@@ -36,6 +36,7 @@ export function compileTypes(node: Node): string {
 		}
 		case 'root':
 			return node.children.map(compileTypes).join(';\n');
+		default:
+			return '';
 	}
-	return '';
 }

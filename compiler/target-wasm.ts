@@ -108,7 +108,7 @@ function f64le(n: number, out: number[]) {
 	const buf = new ArrayBuffer(8);
 	new DataView(buf).setFloat64(0, n, true);
 	const bytes = new Uint8Array(buf);
-	for (let i = 0; i < 8; i++) out.push(bytes[i]!);
+	for (const b of bytes) out.push(b);
 }
 
 interface ModuleType {
@@ -156,33 +156,103 @@ interface Module {
 	memoryPages: number;
 }
 
+function emitTypesSection(m: Module, out: number[]) {
+	if (!m.types.length) return;
+	const payload: number[] = [];
+	uleb128(m.types.length, payload);
+	for (const t of m.types) {
+		payload.push(0x60);
+		uleb128(t.params.length, payload);
+		for (const p of t.params) payload.push(p);
+		uleb128(t.results.length, payload);
+		for (const r of t.results) payload.push(r);
+	}
+	section(SEC_TYPE, payload, out);
+}
+
+function emitImportsSection(m: Module, out: number[]) {
+	if (!m.imports.length) return;
+	const payload: number[] = [];
+	uleb128(m.imports.length, payload);
+	for (const im of m.imports) {
+		name(im.mod, payload);
+		name(im.field, payload);
+		payload.push(EXTERNAL_FUNC);
+		uleb128(im.typeIdx, payload);
+	}
+	section(SEC_IMPORT, payload, out);
+}
+
+function emitGlobalsSection(m: Module, out: number[]) {
+	if (!m.globals.length) return;
+	const payload: number[] = [];
+	uleb128(m.globals.length, payload);
+	for (const g of m.globals) {
+		payload.push(g.type);
+		payload.push(g.mutable ? 1 : 0);
+		for (const b of g.init) payload.push(b);
+		payload.push(OP_END);
+	}
+	section(SEC_GLOBAL, payload, out);
+}
+
+function emitExportsSection(m: Module, out: number[]) {
+	if (!m.exports.length) return;
+	const payload: number[] = [];
+	uleb128(m.exports.length, payload);
+	for (const e of m.exports) {
+		name(e.name, payload);
+		payload.push(e.kind);
+		uleb128(e.idx, payload);
+	}
+	section(SEC_EXPORT, payload, out);
+}
+
+function emitCodeSection(m: Module, out: number[]) {
+	if (!m.functions.length) return;
+	const payload: number[] = [];
+	uleb128(m.functions.length, payload);
+	for (const f of m.functions) {
+		const body: number[] = [];
+		const groups: { count: number; type: number }[] = [];
+		for (const t of f.locals) {
+			const last = groups[groups.length - 1];
+			if (last?.type === t) last.count++;
+			else groups.push({ count: 1, type: t });
+		}
+		uleb128(groups.length, body);
+		for (const g of groups) {
+			uleb128(g.count, body);
+			body.push(g.type);
+		}
+		for (const b of f.body) body.push(b);
+		body.push(OP_END);
+		uleb128(body.length, payload);
+		for (const b of body) payload.push(b);
+	}
+	section(SEC_CODE, payload, out);
+}
+
+function emitDataSection(m: Module, out: number[]) {
+	if (!m.datas.length) return;
+	const payload: number[] = [];
+	uleb128(m.datas.length, payload);
+	for (const d of m.datas) {
+		payload.push(0x00);
+		payload.push(OP_I32_CONST);
+		sleb128(d.offset, payload);
+		payload.push(OP_END);
+		uleb128(d.bytes.length, payload);
+		for (const b of d.bytes) payload.push(b);
+	}
+	section(SEC_DATA, payload, out);
+}
+
 function emitModule(m: Module): Uint8Array {
 	const out: number[] = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
 
-	if (m.types.length) {
-		const payload: number[] = [];
-		uleb128(m.types.length, payload);
-		for (const t of m.types) {
-			payload.push(0x60);
-			uleb128(t.params.length, payload);
-			for (const p of t.params) payload.push(p);
-			uleb128(t.results.length, payload);
-			for (const r of t.results) payload.push(r);
-		}
-		section(SEC_TYPE, payload, out);
-	}
-
-	if (m.imports.length) {
-		const payload: number[] = [];
-		uleb128(m.imports.length, payload);
-		for (const im of m.imports) {
-			name(im.mod, payload);
-			name(im.field, payload);
-			payload.push(EXTERNAL_FUNC);
-			uleb128(im.typeIdx, payload);
-		}
-		section(SEC_IMPORT, payload, out);
-	}
+	emitTypesSection(m, out);
+	emitImportsSection(m, out);
 
 	if (m.functions.length) {
 		const payload: number[] = [];
@@ -199,66 +269,10 @@ function emitModule(m: Module): Uint8Array {
 		section(SEC_MEMORY, payload, out);
 	}
 
-	if (m.globals.length) {
-		const payload: number[] = [];
-		uleb128(m.globals.length, payload);
-		for (const g of m.globals) {
-			payload.push(g.type);
-			payload.push(g.mutable ? 1 : 0);
-			for (const b of g.init) payload.push(b);
-			payload.push(OP_END);
-		}
-		section(SEC_GLOBAL, payload, out);
-	}
-
-	if (m.exports.length) {
-		const payload: number[] = [];
-		uleb128(m.exports.length, payload);
-		for (const e of m.exports) {
-			name(e.name, payload);
-			payload.push(e.kind);
-			uleb128(e.idx, payload);
-		}
-		section(SEC_EXPORT, payload, out);
-	}
-
-	if (m.functions.length) {
-		const payload: number[] = [];
-		uleb128(m.functions.length, payload);
-		for (const f of m.functions) {
-			const body: number[] = [];
-			const groups: { count: number; type: number }[] = [];
-			for (const t of f.locals) {
-				const last = groups[groups.length - 1];
-				if (last && last.type === t) last.count++;
-				else groups.push({ count: 1, type: t });
-			}
-			uleb128(groups.length, body);
-			for (const g of groups) {
-				uleb128(g.count, body);
-				body.push(g.type);
-			}
-			for (const b of f.body) body.push(b);
-			body.push(OP_END);
-			uleb128(body.length, payload);
-			for (const b of body) payload.push(b);
-		}
-		section(SEC_CODE, payload, out);
-	}
-
-	if (m.datas.length) {
-		const payload: number[] = [];
-		uleb128(m.datas.length, payload);
-		for (const d of m.datas) {
-			payload.push(0x00);
-			payload.push(OP_I32_CONST);
-			sleb128(d.offset, payload);
-			payload.push(OP_END);
-			uleb128(d.bytes.length, payload);
-			for (const b of d.bytes) payload.push(b);
-		}
-		section(SEC_DATA, payload, out);
-	}
+	emitGlobalsSection(m, out);
+	emitExportsSection(m, out);
+	emitCodeSection(m, out);
+	emitDataSection(m, out);
 
 	return new Uint8Array(out);
 }
@@ -278,13 +292,12 @@ function gbcToWasm(type: Type): number {
 		case 'error':
 		case 'data':
 		case 'union':
+		case 'literal':
 			return I32;
 		case 'void':
 			throw new Error('Void has no WASM value type');
 		case 'unknown':
 			throw new Error('Cannot lower unknown type');
-		default:
-			throw new Error(`Unsupported type family: ${type.family}`);
 	}
 }
 
@@ -320,10 +333,9 @@ function findOutExternal(
 ): string | undefined {
 	if (t.kind !== 'type')
 		throw new Error(`Cannot @.out value of kind ${t.kind}`);
-	// data dispatches by family — the payload is an i32 pointer.
 	if (t.family === 'data' && externals.has('out_data')) return 'out_data';
-	// Functions have no out_ equivalent — they pass through @.out as a no-op.
 	if (t.family === 'fn') return undefined;
+	if (t.family === 'error' && externals.has('out_str')) return 'out_str';
 	for (const [name, sym] of externals) {
 		if (!name.startsWith('out_')) continue;
 		const param = sym.parameters?.[0]?.type;
@@ -344,6 +356,11 @@ function findOutExternal(
 	throw new Error(`No host external accepts type ${t.name}`);
 }
 
+interface Fusion {
+	emit: (valueType: Type) => void;
+	targetDepth: number;
+}
+
 interface FuncBuilder {
 	typeIdx: number;
 	body: number[];
@@ -353,10 +370,7 @@ interface FuncBuilder {
 	returnType: Type;
 	callFixups: { offset: number; builderIdx: number; size: number }[];
 	blockDepth: number;
-	fusion?: {
-		emit: (valueType: Type) => void;
-		targetDepth: number;
-	};
+	fusion?: Fusion;
 	/** Local index holding the current pipe-stage input value (`$`). */
 	dollarLocal?: number;
 	/** Type of `$` in the current pipe-stage scope. */
@@ -396,8 +410,9 @@ export function compileWasm(
 
 	function typeIdx(params: number[], results: number[]): number {
 		for (let i = 0; i < types.length; i++) {
-			const t = types[i]!;
+			const t = types[i];
 			if (
+				t &&
 				t.params.length === params.length &&
 				t.results.length === results.length &&
 				t.params.every((p, j) => p === params[j]) &&
@@ -446,6 +461,64 @@ export function compileWasm(
 		return BaseTypes.Unknown;
 	}
 
+	function inferIdentType(node: NodeMap['ident']): Type {
+		const sym = node.symbol;
+		if (sym.kind === 'literal') return sym.type ?? BaseTypes.Unknown;
+		if (sym.kind === 'variable' || sym.kind === 'function')
+			return sym.type ?? globalType.get(sym) ?? BaseTypes.Unknown;
+		return BaseTypes.Unknown;
+	}
+
+	function inferArithType(
+		node: NodeMap['+' | '-' | '*' | '/'],
+		fn?: FuncBuilder,
+	): Type {
+		const lt = inferType(node.children[0], fn);
+		const rt = inferType(node.children[1], fn);
+		if (isFloatType(lt) || isFloatType(rt)) return BaseTypes.Float64;
+		if (isIntType(lt) && isIntType(rt)) return BaseTypes.Int32;
+		return BaseTypes.Unknown;
+	}
+
+	function inferCallType(node: NodeMap['call']): Type {
+		const callee = node.children[0];
+		if (callee.kind !== 'ident') return BaseTypes.Unknown;
+		const sym = callee.symbol;
+		const fnSym =
+			sym.kind === 'function'
+				? sym
+				: sym.type?.kind === 'function'
+					? sym.type
+					: undefined;
+		if (fnSym) return fnSym.returnType ?? BaseTypes.Void;
+		return BaseTypes.Unknown;
+	}
+
+	function inferMemberType(node: NodeMap['.'], fn?: FuncBuilder): Type {
+		const recv = node.children[0];
+		const field = node.children[1];
+		const recvType = inferType(recv, fn);
+		if (recvType.kind === 'type' && (recvType.family === 'data' || recvType.family === 'error')) {
+			if (field.kind === 'number') {
+				const items = dataItems(recv);
+				const item = items[field.value];
+				if (item) return inferType(itemValue(item), fn);
+			}
+			if (field.kind === 'ident') {
+				const items = dataItems(recv);
+				for (const item of items) {
+					if (
+						item.kind === 'propdef' &&
+						item.symbol.name === field.symbol.name
+					) {
+						return inferType(itemValue(item), fn);
+					}
+				}
+			}
+		}
+		return BaseTypes.Int32;
+	}
+
 	/** Infer a node's resulting type (best-effort, no codegen). */
 	function inferType(node: Node, fn?: FuncBuilder): Type {
 		switch (node.kind) {
@@ -455,32 +528,18 @@ export function compileWasm(
 					: BaseTypes.Float64;
 			case 'string':
 				return BaseTypes.String;
-			case 'ident': {
-				const sym = node.symbol;
-				if (sym.kind === 'literal') {
-					return sym.type ?? BaseTypes.Unknown;
-				}
-				if (sym.kind === 'variable' || sym.kind === 'function') {
-					return sym.type ?? globalType.get(sym) ?? BaseTypes.Unknown;
-				}
-				return BaseTypes.Unknown;
-			}
+			case 'ident':
+				return inferIdentType(node);
 			case '+':
 			case '-':
 			case '*':
-			case '/': {
-				const lt = inferType(node.children[0], fn);
-				const rt = inferType(node.children[1], fn);
-				if (isFloatType(lt) || isFloatType(rt)) return BaseTypes.Float64;
-				if (isIntType(lt) && isIntType(rt)) return BaseTypes.Int32;
-				return BaseTypes.Unknown;
-			}
+			case '/':
+				return inferArithType(node, fn);
 			case '|':
 			case '&':
 			case '^':
 			case '<:':
 			case ':>':
-				return BaseTypes.Int32;
 			case '~':
 				return BaseTypes.Int32;
 			case '!':
@@ -499,53 +558,17 @@ export function compileWasm(
 			case '||':
 			case '&&':
 				return inferType(node.children[0], fn);
-			case '?': {
-				const t = node.children[1];
-				return t ? inferType(t, fn) : BaseTypes.Unknown;
-			}
-			case 'call': {
-				const callee = node.children[0];
-				if (callee.kind === 'ident') {
-					const sym = callee.symbol;
-					const fnSym =
-						sym.kind === 'function'
-							? sym
-							: sym.type?.kind === 'function'
-								? sym.type
-								: undefined;
-					if (fnSym) return fnSym.returnType ?? BaseTypes.Void;
-				}
-				return BaseTypes.Unknown;
-			}
-			case '.': {
-				const recv = node.children[0];
-				const field = node.children[1];
-				const recvType = inferType(recv, fn);
-				if (recvType.kind === 'type' && recvType.family === 'data') {
-					if (field.kind === 'number') {
-						const items = dataItems(recv);
-						const item = items[field.value];
-						if (item) return inferType(itemValue(item), fn);
-					}
-					if (field.kind === 'ident') {
-						const items = dataItems(recv);
-						for (const item of items) {
-							if (
-								item?.kind === 'propdef' &&
-								item.label?.symbol.name === field.symbol.name
-							) {
-								return inferType(itemValue(item), fn);
-							}
-						}
-					}
-				}
-				// Non-data receiver: codegen treats `recv.field` as a 4-byte
-				// load / placeholder — type result is Int32.
-				return BaseTypes.Int32;
-			}
+			case '?':
+				return inferType(node.children[1], fn);
+			case 'call':
+				return inferCallType(node);
+			case '.':
+				return inferMemberType(node, fn);
 			case 'data': {
 				const items = dataItems(node);
-				if (items.length === 1) return inferType(itemValue(items[0]!), fn);
+				const first = items[0];
+				if (items.length === 1 && first)
+					return inferType(itemValue(first), fn);
 				return BaseTypes.Unknown;
 			}
 			case 'next': {
@@ -578,94 +601,292 @@ export function compileWasm(
 		if (isIntType(have)) fn.body.push(OP_F64_CONVERT_I32_S);
 	}
 
-	function compileExpr(node: Node, fn: FuncBuilder): Type {
-		switch (node.kind) {
-			case 'string': {
-				const raw = text(node);
-				const decoded = decodeEscapes(raw.slice(1, -1));
-				const ptr = intern(decoded);
-				fn.body.push(OP_I32_CONST);
-				sleb128(ptr, fn.body);
-				return BaseTypes.String;
-			}
-			case 'number': {
-				const value = node.value;
-				if (Number.isInteger(value)) {
+	function compileString(node: NodeMap['string'], fn: FuncBuilder): Type {
+		const raw = text(node);
+		const decoded = decodeEscapes(raw.slice(1, -1));
+		const ptr = intern(decoded);
+		fn.body.push(OP_I32_CONST);
+		sleb128(ptr, fn.body);
+		return BaseTypes.String;
+	}
+
+	function compileNumber(node: NodeMap['number'], fn: FuncBuilder): Type {
+		const value = node.value;
+		if (Number.isInteger(value)) {
+			fn.body.push(OP_I32_CONST);
+			sleb128(value | 0, fn.body);
+			return BaseTypes.Int32;
+		}
+		fn.body.push(OP_F64_CONST);
+		f64le(value, fn.body);
+		return BaseTypes.Float64;
+	}
+
+	function compileIdent(node: NodeMap['ident'], fn: FuncBuilder): Type {
+		const sym = node.symbol;
+		if (sym.kind === 'literal') {
+			const t = sym.type;
+			if (t?.kind === 'type') {
+				if (t.family === 'bool') {
 					fn.body.push(OP_I32_CONST);
-					sleb128(value | 0, fn.body);
-					return BaseTypes.Int32;
+					sleb128(sym.value ? 1 : 0, fn.body);
+					return t;
 				}
-				fn.body.push(OP_F64_CONST);
-				f64le(value, fn.body);
-				return BaseTypes.Float64;
-			}
-			case 'ident': {
-				const sym = node.symbol;
-				if (sym.kind === 'literal') {
-					const t = sym.type;
-					if (t?.kind === 'type') {
-						if (t.family === 'bool') {
-							fn.body.push(OP_I32_CONST);
-							sleb128(sym.value ? 1 : 0, fn.body);
-							return t;
-						}
-						if (t.family === 'float') {
-							fn.body.push(OP_F64_CONST);
-							f64le(sym.value as number, fn.body);
-							return t;
-						}
-					}
+				if (t.family === 'float') {
+					fn.body.push(OP_F64_CONST);
+					f64le(sym.value as number, fn.body);
+					return t;
 				}
-				if (sym.kind === 'variable') {
-					const localIdx = fn.paramMap.get(sym);
-					if (localIdx !== undefined) {
-						fn.body.push(OP_LOCAL_GET);
-						uleb128(localIdx, fn.body);
-						return sym.type ?? BaseTypes.Unknown;
-					}
-					const gIdx = globalIdx.get(sym);
-					if (gIdx !== undefined) {
-						fn.body.push(OP_GLOBAL_GET);
-						uleb128(gIdx, fn.body);
-						return globalType.get(sym) ?? sym.type ?? BaseTypes.Unknown;
-					}
-				}
-				throw new Error(
-					`Unsupported ident reference: "${sym.name ?? '?'}"`,
-				);
 			}
-			case '@': {
-				throw new Error('Bare @ cannot be lowered to a value');
+		}
+		if (sym.kind === 'variable') {
+			const localIdx = fn.paramMap.get(sym);
+			if (localIdx !== undefined) {
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(localIdx, fn.body);
+				return sym.type ?? BaseTypes.Unknown;
 			}
-			case '$': {
-				if (fn.dollarLocal !== undefined) {
-					fn.body.push(OP_LOCAL_GET);
-					uleb128(fn.dollarLocal, fn.body);
-					return fn.dollarType ?? BaseTypes.Int32;
-				}
-				fn.body.push(OP_I32_CONST);
-				sleb128(0, fn.body);
-				return BaseTypes.Int32;
+			const gIdx = globalIdx.get(sym);
+			if (gIdx !== undefined) {
+				fn.body.push(OP_GLOBAL_GET);
+				uleb128(gIdx, fn.body);
+				return globalType.get(sym) ?? sym.type ?? BaseTypes.Unknown;
 			}
-			case 'call': {
-				return compileCall(node, fn);
+		}
+		throw new Error(`Unsupported ident reference: "${sym.name ?? '?'}"`);
+	}
+
+	function compileDollar(fn: FuncBuilder): Type {
+		if (fn.dollarLocal !== undefined) {
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(fn.dollarLocal, fn.body);
+			return fn.dollarType ?? BaseTypes.Int32;
+		}
+		fn.body.push(OP_I32_CONST);
+		sleb128(0, fn.body);
+		return BaseTypes.Int32;
+	}
+
+	function compileNext(node: NodeMap['next'], fn: FuncBuilder): Type {
+		const val = node.children?.[0];
+		if (fn.fusion) {
+			if (!val) return BaseTypes.Void;
+			const t = compileExpr(val, fn);
+			if (
+				t.kind === 'type' &&
+				t.family !== 'void' &&
+				t.family !== 'unknown'
+			)
+				fn.fusion.emit(t);
+			return BaseTypes.Void;
+		}
+		if (val) return compileExpr(val, fn);
+		return BaseTypes.Void;
+	}
+
+	function compileNegate(
+		node: NodeMap['negate'],
+		fn: FuncBuilder,
+	): Type {
+		const child = node.children[0];
+		const t = compileExpr(child, fn);
+		if (isFloatType(t)) {
+			fn.body.push(OP_F64_NEG);
+			return t;
+		}
+		const tmp = allocLocal(fn, I32);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(tmp, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(0, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(tmp, fn.body);
+		fn.body.push(OP_I32_SUB);
+		return BaseTypes.Int32;
+	}
+
+	function compileBitwise(
+		node: NodeMap['|' | '&' | '^' | '<:' | ':>'],
+		fn: FuncBuilder,
+	): Type {
+		const lhs = node.children[0];
+		const rhs = node.children[1];
+		compileExpr(lhs, fn);
+		compileExpr(rhs, fn);
+		const op =
+			node.kind === '|'
+				? OP_I32_OR
+				: node.kind === '&'
+					? OP_I32_AND
+					: node.kind === '^'
+						? OP_I32_XOR
+						: node.kind === '<:'
+							? OP_I32_SHL
+							: OP_I32_SHR_S;
+		fn.body.push(op);
+		return BaseTypes.Int32;
+	}
+
+	function compileLogical(
+		node: NodeMap['||' | '&&'],
+		fn: FuncBuilder,
+	): Type {
+		const lhs = node.children[0];
+		const rhs = node.children[1];
+		const lt = compileExpr(lhs, fn);
+		const tmp = allocLocal(fn, gbcToWasm(lt));
+		fn.body.push(OP_LOCAL_TEE);
+		uleb128(tmp, fn.body);
+		if (node.kind === '||') fn.body.push(OP_I32_EQZ);
+		fn.body.push(OP_IF);
+		fn.body.push(gbcToWasm(lt));
+		fn.blockDepth++;
+		compileExpr(rhs, fn);
+		fn.body.push(OP_ELSE);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(tmp, fn.body);
+		fn.body.push(OP_END);
+		fn.blockDepth--;
+		return lt;
+	}
+
+	function compileIs(node: NodeMap['is'], fn: FuncBuilder): Type {
+		const lhs = node.children[0];
+		const rhs = node.children[1];
+		const valueType = inferType(lhs, fn);
+		const testType =
+			rhs.kind === 'typeident' ? rhs.symbol : BaseTypes.Unknown;
+		const lhsType = compileExpr(lhs, fn);
+		if (
+			lhsType.kind === 'type' &&
+			lhsType.family !== 'void' &&
+			lhsType.family !== 'unknown'
+		)
+			fn.body.push(OP_DROP);
+		const matches =
+			valueType.kind === 'type' &&
+			testType.kind === 'type' &&
+			valueType.family === testType.family &&
+			valueType.size === testType.size;
+		fn.body.push(OP_I32_CONST);
+		sleb128(matches ? 1 : 0, fn.body);
+		return BaseTypes.Bool;
+	}
+
+	function compileTernary(node: NodeMap['?'], fn: FuncBuilder): Type {
+		const cond = node.children[0];
+		const thenBranch = node.children[1];
+		const elseBranch = node.children[2];
+		compileExpr(cond, fn);
+		fn.body.push(OP_IF);
+		if (!elseBranch) {
+			fn.body.push(0x40);
+			fn.blockDepth++;
+			const t = compileExpr(thenBranch, fn);
+			if (
+				t.kind === 'type' &&
+				t.family !== 'void' &&
+				t.family !== 'unknown'
+			)
+				fn.body.push(OP_DROP);
+			fn.body.push(OP_END);
+			fn.blockDepth--;
+			return BaseTypes.Void;
+		}
+		const thenType = inferType(thenBranch, fn);
+		const blockType =
+			thenType.kind === 'type' &&
+			thenType.family !== 'void' &&
+			thenType.family !== 'unknown'
+				? gbcToWasm(thenType)
+				: 0x40;
+		fn.body.push(blockType);
+		fn.blockDepth++;
+		compileExpr(thenBranch, fn);
+		fn.body.push(OP_ELSE);
+		compileExpr(elseBranch, fn);
+		fn.body.push(OP_END);
+		fn.blockDepth--;
+		return thenType;
+	}
+
+	function compileComma(node: NodeMap[','], fn: FuncBuilder): Type {
+		if (fn.fusion) {
+			for (const c of node.children) {
+				const t = compileExpr(c, fn);
+				if (
+					c.kind !== 'next' &&
+					c.kind !== 'break' &&
+					c.kind !== 'done' &&
+					t.kind === 'type' &&
+					t.family !== 'void' &&
+					t.family !== 'unknown'
+				)
+					fn.fusion.emit(t);
 			}
-			case 'next': {
-				const val = node.children?.[0];
-				if (fn.fusion) {
-					if (!val) return BaseTypes.Void;
-					const t = compileExpr(val, fn);
-					if (
-						t.kind === 'type' &&
-						t.family !== 'void' &&
-						t.family !== 'unknown'
-					)
-						fn.fusion.emit(t);
-					return BaseTypes.Void;
-				}
-				if (val) return compileExpr(val, fn);
+			return BaseTypes.Void;
+		}
+		let last: Type = BaseTypes.Void;
+		const children = node.children;
+		for (let i = 0; i < children.length; i++) {
+			const c = children[i];
+			if (!c) continue;
+			const t = compileExpr(c, fn);
+			last = t;
+			if (
+				i < children.length - 1 &&
+				t.kind === 'type' &&
+				t.family !== 'void' &&
+				t.family !== 'unknown'
+			)
+				fn.body.push(OP_DROP);
+		}
+		return last;
+	}
+
+	function compileAssign(node: NodeMap['='], fn: FuncBuilder): Type {
+		const left = node.children[0];
+		const right = node.children[1];
+		if (left.kind !== 'ident')
+			throw new Error('Only ident assignment supported');
+		const sym = left.symbol;
+		const rt = compileExpr(right, fn);
+		if (sym.kind === 'variable') {
+			const localIdx = fn.paramMap.get(sym);
+			if (localIdx !== undefined) {
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(localIdx, fn.body);
 				return BaseTypes.Void;
 			}
+			const gIdx = globalIdx.get(sym);
+			if (gIdx !== undefined) {
+				const gt = globalType.get(sym) ?? rt;
+				if (isFloatType(gt) && !isFloatType(rt))
+					coerceToFloat(rt, fn);
+				fn.body.push(OP_GLOBAL_SET);
+				uleb128(gIdx, fn.body);
+				return BaseTypes.Void;
+			}
+		}
+		throw new Error(`Cannot assign to "${sym.name ?? '?'}" (not bound)`);
+	}
+
+	function compileExpr(node: Node, fn: FuncBuilder): Type {
+		switch (node.kind) {
+			case 'string':
+				return compileString(node, fn);
+			case 'number':
+				return compileNumber(node, fn);
+			case 'ident':
+				return compileIdent(node, fn);
+			case '@':
+				throw new Error('Bare @ cannot be lowered to a value');
+			case '$':
+				return compileDollar(fn);
+			case 'call':
+				return compileCall(node, fn);
+			case 'next':
+				return compileNext(node, fn);
 			case 'break': {
 				if (!fn.fusion) throw new Error('`break` outside pipe stage');
 				fn.body.push(OP_BR);
@@ -684,36 +905,17 @@ export function compileWasm(
 			case '+':
 			case '-':
 			case '*':
-			case '/': {
+			case '/':
 				return compileArith(node, fn);
-			}
-			case 'negate': {
-				const child = node.children[0];
-				const t = compileExpr(child, fn);
-				if (isFloatType(t)) {
-					fn.body.push(OP_F64_NEG);
-					return t;
-				}
-				// integer negation: 0 - x
-				const tmp = allocLocal(fn, I32);
-				fn.body.push(OP_LOCAL_SET);
-				uleb128(tmp, fn.body);
-				fn.body.push(OP_I32_CONST);
-				sleb128(0, fn.body);
-				fn.body.push(OP_LOCAL_GET);
-				uleb128(tmp, fn.body);
-				fn.body.push(OP_I32_SUB);
-				return BaseTypes.Int32;
-			}
+			case 'negate':
+				return compileNegate(node, fn);
 			case '!': {
-				const child = node.children[0];
-				compileExpr(child, fn);
+				compileExpr(node.children[0], fn);
 				fn.body.push(OP_I32_EQZ);
 				return BaseTypes.Bool;
 			}
 			case '~': {
-				const child = node.children[0];
-				compileExpr(child, fn);
+				compileExpr(node.children[0], fn);
 				fn.body.push(OP_I32_CONST);
 				sleb128(-1, fn.body);
 				fn.body.push(OP_I32_XOR);
@@ -723,117 +925,27 @@ export function compileWasm(
 			case '&':
 			case '^':
 			case '<:':
-			case ':>': {
-				const lhs = node.children[0];
-				const rhs = node.children[1];
-				compileExpr(lhs, fn);
-				compileExpr(rhs, fn);
-				const op =
-					node.kind === '|'
-						? OP_I32_OR
-						: node.kind === '&'
-							? OP_I32_AND
-							: node.kind === '^'
-								? OP_I32_XOR
-								: node.kind === '<:'
-									? OP_I32_SHL
-									: OP_I32_SHR_S;
-				fn.body.push(op);
-				return BaseTypes.Int32;
-			}
+			case ':>':
+				return compileBitwise(node, fn);
 			case '||':
-			case '&&': {
-				const lhs = node.children[0];
-				const rhs = node.children[1];
-				const lt = compileExpr(lhs, fn);
-				const tmp = allocLocal(fn, gbcToWasm(lt));
-				fn.body.push(OP_LOCAL_TEE);
-				uleb128(tmp, fn.body);
-				if (node.kind === '||') fn.body.push(OP_I32_EQZ);
-				fn.body.push(OP_IF);
-				fn.body.push(gbcToWasm(lt));
-				fn.blockDepth++;
-				compileExpr(rhs, fn);
-				fn.body.push(OP_ELSE);
-				fn.body.push(OP_LOCAL_GET);
-				uleb128(tmp, fn.body);
-				fn.body.push(OP_END);
-				fn.blockDepth--;
-				return lt;
-			}
+			case '&&':
+				return compileLogical(node, fn);
 			case '==':
 			case '!=':
 			case '<':
 			case '>':
 			case '<=':
-			case '>=': {
+			case '>=':
 				return compileCompare(
 					node.kind,
 					node.children[0],
 					node.children[1],
 					fn,
 				);
-			}
-			case 'is': {
-				const lhs = node.children[0];
-				const rhs = node.children[1];
-				const valueType = inferType(lhs, fn);
-				const testType =
-					rhs.kind === 'typeident' ? rhs.symbol : BaseTypes.Unknown;
-				const lhsType = compileExpr(lhs, fn);
-				if (
-					lhsType.kind === 'type' &&
-					lhsType.family !== 'void' &&
-					lhsType.family !== 'unknown'
-				)
-					fn.body.push(OP_DROP);
-				const matches =
-					valueType.kind === 'type' &&
-					testType.kind === 'type' &&
-					valueType.family === testType.family &&
-					valueType.size === testType.size;
-				fn.body.push(OP_I32_CONST);
-				sleb128(matches ? 1 : 0, fn.body);
-				return BaseTypes.Bool;
-			}
-			case '?': {
-				const cond = node.children[0];
-				const thenBranch = node.children[1];
-				const elseBranch = node.children[2];
-				compileExpr(cond, fn);
-				fn.body.push(OP_IF);
-				if (!elseBranch) {
-					// Optional-else: emit only when truthy. In scalar
-					// context, both branches contribute void.
-					fn.body.push(0x40);
-					fn.blockDepth++;
-					const t = compileExpr(thenBranch, fn);
-					if (
-						t.kind === 'type' &&
-						t.family !== 'void' &&
-						t.family !== 'unknown'
-					)
-						fn.body.push(OP_DROP);
-					fn.body.push(OP_END);
-					fn.blockDepth--;
-					return BaseTypes.Void;
-				}
-				const thenType = inferType(thenBranch, fn);
-				const blockType =
-					thenType.kind === 'type' &&
-					thenType.family !== 'void' &&
-					thenType.family !== 'unknown'
-						? gbcToWasm(thenType)
-						: 0x40;
-				fn.body.push(blockType);
-				fn.blockDepth++;
-				compileExpr(thenBranch, fn);
-				fn.body.push(OP_ELSE);
-				compileExpr(elseBranch, fn);
-				fn.body.push(OP_END);
-				fn.blockDepth--;
-				return thenType;
-			}
+			case 'is':
+				return compileIs(node, fn);
+			case '?':
+				return compileTernary(node, fn);
 			case '>>':
 				return compilePipe(node.children, fn);
 			case 'data':
@@ -842,85 +954,19 @@ export function compileWasm(
 				return compileMember(node, fn);
 			case 'fn':
 				return compileInlineFn(node, fn);
-			case ',': {
-				// In a fusion (pipe stage body) context, each child emits a
-				// value through downstream stages — like JS yield. Otherwise,
-				// comma evaluates each left-to-right and discards all but the
-				// last (matches JS comma operator).
-				if (fn.fusion) {
-					for (const c of node.children) {
-						if (!c) continue;
-						const t = compileExpr(c, fn);
-						// next(c) within fusion already emits; raw exprs do not.
-						// Treat bare expressions as `next` would.
-						if (
-							c.kind !== 'next' &&
-							c.kind !== 'break' &&
-							c.kind !== 'done' &&
-							t.kind === 'type' &&
-							t.family !== 'void' &&
-							t.family !== 'unknown'
-						)
-							fn.fusion.emit(t);
-					}
-					return BaseTypes.Void;
-				}
-				let last: Type = BaseTypes.Void;
-				const children = node.children;
-				for (let i = 0; i < children.length; i++) {
-					const c = children[i];
-					if (!c) continue;
-					const t = compileExpr(c, fn);
-					last = t;
-					if (
-						i < children.length - 1 &&
-						t.kind === 'type' &&
-						t.family !== 'void' &&
-						t.family !== 'unknown'
-					)
-						fn.body.push(OP_DROP);
-				}
-				return last;
-			}
+			case ',':
+				return compileComma(node, fn);
 			case 'propdef': {
 				const v = node.value;
 				if (v) return compileExpr(v, fn);
 				return BaseTypes.Void;
 			}
-			case '=': {
-				const left = node.children[0];
-				const right = node.children[1];
-				if (left.kind !== 'ident')
-					throw new Error('Only ident assignment supported');
-				const sym = left.symbol;
-				const rt = compileExpr(right, fn);
-				if (sym.kind === 'variable') {
-					const localIdx = fn.paramMap.get(sym);
-					if (localIdx !== undefined) {
-						fn.body.push(OP_LOCAL_SET);
-						uleb128(localIdx, fn.body);
-						return BaseTypes.Void;
-					}
-					const gIdx = globalIdx.get(sym);
-					if (gIdx !== undefined) {
-						const gt = globalType.get(sym) ?? rt;
-						if (isFloatType(gt) && !isFloatType(rt))
-							coerceToFloat(rt, fn);
-						fn.body.push(OP_GLOBAL_SET);
-						uleb128(gIdx, fn.body);
-						return BaseTypes.Void;
-					}
-				}
-				throw new Error(
-					`Cannot assign to "${sym.name ?? '?'}" (not bound)`,
-				);
-			}
-			case 'def': {
+			case '=':
+				return compileAssign(node, fn);
+			case 'def':
 				return compileLocalDef(node, fn);
-			}
-			case 'loop': {
+			case 'loop':
 				throw new Error('`loop` outside pipe source not supported');
-			}
 			default:
 				throw new Error(`Unsupported node kind: ${node.kind}`);
 		}
@@ -1022,6 +1068,14 @@ export function compileWasm(
 		if (callee.kind !== 'ident')
 			throw new Error('Indirect call not yet supported');
 		const calleeSym = callee.symbol;
+		if (calleeSym.kind === 'function' && calleeSym.name === 'error') {
+			if (args) compileExpr(args, fn);
+			else {
+				fn.body.push(OP_I32_CONST);
+				sleb128(0, fn.body);
+			}
+			return BaseTypes.Error;
+		}
 		// Template path: callee is a union-param fn. Resolve (or compile)
 		// the per-signature specialization and dispatch to its funcidx.
 		const templateNode = fnTemplates.get(calleeSym);
@@ -1078,8 +1132,9 @@ export function compileWasm(
 		const hasLabels = items.some(
 			it => it.kind === 'propdef' && it.label,
 		);
-		if (items.length === 1 && !hasLabels) {
-			return compileExpr(itemValue(items[0]!), fn);
+		const first = items[0];
+		if (items.length === 1 && !hasLabels && first) {
+			return compileExpr(itemValue(first), fn);
 		}
 		// Multi-item: encode in linear memory as packed array.
 		// Layout: [u32 length][u32 itemSize][items...]
@@ -1109,7 +1164,9 @@ export function compileWasm(
 
 		// Emit code that writes each item at runtime.
 		for (let i = 0; i < items.length; i++) {
-			const itemNode = itemValue(items[i]!);
+			const item = items[i];
+			if (!item) continue;
+			const itemNode = itemValue(item);
 			const addr = slotsOffset + i * slotSize;
 			fn.body.push(OP_I32_CONST);
 			sleb128(addr, fn.body);
@@ -1144,10 +1201,9 @@ export function compileWasm(
 
 	function makeDataType(slotSize: number, items: Node[]): Type {
 		const members: Record<string, GbcSymbol> = {};
-		for (let i = 0; i < items.length; i++) {
-			const item = items[i]!;
+		for (const item of items) {
 			if (item.kind === 'propdef' && item.label) {
-				const sym = item.label.symbol;
+				const sym = item.symbol;
 				if (sym.name) members[sym.name] = sym;
 			}
 		}
@@ -1161,81 +1217,85 @@ export function compileWasm(
 		};
 	}
 
+	function compileMemberData(
+		recv: NodeMap['data'],
+		field: Node,
+		fn: FuncBuilder,
+	): Type {
+		const items = dataItems(recv).flatMap(flattenDataItem);
+		let idx: number | undefined;
+		if (field.kind === 'number') idx = field.value;
+		else if (field.kind === 'ident') {
+			for (let i = 0; i < items.length; i++) {
+				const item = items[i];
+				if (
+					item?.kind === 'propdef' &&
+					item.symbol.name === field.symbol.name
+				) {
+					idx = i;
+					break;
+				}
+			}
+		}
+		if (idx === undefined || idx >= items.length)
+			throw new Error('Member access target not found');
+		const target = items[idx];
+		if (!target) throw new Error('Member access target not found');
+		return compileExpr(itemValue(target), fn);
+	}
+
+	function compileMemberDollar(field: Node, fn: FuncBuilder): Type {
+		if (
+			fn.dollarLocal !== undefined &&
+			fn.dollarType?.kind === 'type' &&
+			(fn.dollarType.family === 'data' || fn.dollarType.family === 'error')
+		) {
+			const slotSize = fn.dollarType.size || 4;
+			let idx = 0;
+			if (field.kind === 'number') idx = field.value;
+			else if (field.kind === 'ident') {
+				const keys = Object.keys(fn.dollarType.members);
+				const i = keys.indexOf(field.symbol.name ?? '');
+				if (i >= 0) idx = i;
+			}
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(fn.dollarLocal, fn.body);
+			fn.body.push(OP_I32_CONST);
+			sleb128(8 + idx * slotSize, fn.body);
+			fn.body.push(OP_I32_ADD);
+			if (slotSize === 8) {
+				fn.body.push(OP_F64_LOAD);
+				uleb128(3, fn.body);
+				uleb128(0, fn.body);
+				return BaseTypes.Float64;
+			}
+			fn.body.push(OP_I32_LOAD);
+			uleb128(2, fn.body);
+			uleb128(0, fn.body);
+			return BaseTypes.Int32;
+		}
+		fn.body.push(OP_I32_CONST);
+		sleb128(0, fn.body);
+		return BaseTypes.Int32;
+	}
+
 	function compileMember(node: NodeMap['.'], fn: FuncBuilder): Type {
 		const recv = node.children[0];
 		const field = node.children[1];
-		// Compile-time index/label access on a literal data block.
-		if (recv.kind === 'data') {
-			const items = dataItems(recv).flatMap(flattenDataItem);
-			let idx: number | undefined;
-			let resultType: Type = BaseTypes.Unknown;
-			if (field.kind === 'number') idx = field.value;
-			else if (field.kind === 'ident') {
-				for (let i = 0; i < items.length; i++) {
-					const item = items[i]!;
-					if (
-						item.kind === 'propdef' &&
-						item.label?.symbol.name === field.symbol.name
-					) {
-						idx = i;
-						break;
-					}
-				}
-			}
-			if (idx === undefined || idx >= items.length)
-				throw new Error('Member access target not found');
-			const target = itemValue(items[idx]!);
-			resultType = compileExpr(target, fn);
-			return resultType;
-		}
-		// Variable reference holding a data block pointer: runtime load.
+		if (recv.kind === 'data') return compileMemberData(recv, field, fn);
 		if (recv.kind === 'ident') {
 			const recvType = inferType(recv, fn);
-			if (recvType.kind === 'type' && recvType.family === 'data') {
+			if (recvType.kind === 'type' && (recvType.family === 'data' || recvType.family === 'error')) {
 				const recvSym = recv.symbol;
 				if (recvSym.kind === 'variable') {
 					return compileMemberLoad(recv, recvType, field, fn);
 				}
 			}
-			// Member access on a non-data ident — push 0 placeholder.
 			fn.body.push(OP_I32_CONST);
 			sleb128(0, fn.body);
 			return BaseTypes.Int32;
 		}
-		if (recv.kind === '$') {
-			if (
-				fn.dollarLocal !== undefined &&
-				fn.dollarType?.kind === 'type' &&
-				fn.dollarType.family === 'data'
-			) {
-				const slotSize = fn.dollarType.size || 4;
-				let idx = 0;
-				if (field.kind === 'number') idx = field.value;
-				else if (field.kind === 'ident') {
-					const keys = Object.keys(fn.dollarType.members ?? {});
-					const i = keys.indexOf(field.symbol.name ?? '');
-					if (i >= 0) idx = i;
-				}
-				fn.body.push(OP_LOCAL_GET);
-				uleb128(fn.dollarLocal, fn.body);
-				fn.body.push(OP_I32_CONST);
-				sleb128(8 + idx * slotSize, fn.body);
-				fn.body.push(OP_I32_ADD);
-				if (slotSize === 8) {
-					fn.body.push(OP_F64_LOAD);
-					uleb128(3, fn.body);
-					uleb128(0, fn.body);
-					return BaseTypes.Float64;
-				}
-				fn.body.push(OP_I32_LOAD);
-				uleb128(2, fn.body);
-				uleb128(0, fn.body);
-				return BaseTypes.Int32;
-			}
-			fn.body.push(OP_I32_CONST);
-			sleb128(0, fn.body);
-			return BaseTypes.Int32;
-		}
+		if (recv.kind === '$') return compileMemberDollar(field, fn);
 		throw new Error(`Unsupported member access target: ${recv.kind}`);
 	}
 
@@ -1248,7 +1308,7 @@ export function compileWasm(
 		if (recvType.kind !== 'type' || recvType.family !== 'data')
 			throw new Error('compileMemberLoad: not a data type');
 		const slotSize = recvType.size || 4;
-		const members = recvType.members ?? {};
+		const members = recvType.members;
 		const keys = Object.keys(members);
 		let idx: number | undefined;
 		let memberType: Type | undefined;
@@ -1295,7 +1355,7 @@ export function compileWasm(
 	}
 
 	function compileLocalDef(node: NodeMap['def'], fn: FuncBuilder): Type {
-		const sym = node.label.symbol;
+		const sym = node.symbol;
 		if (sym.kind !== 'variable')
 			throw new Error('Local def label must be a variable');
 		const rt = compileExpr(node.value, fn);
@@ -1324,7 +1384,9 @@ export function compileWasm(
 			const inlined = tryInlineStreamCall(source, fn);
 			if (!inlined) break;
 			const reflat = flattenPipe([inlined, ...stages]);
-			source = reflat[0]!;
+			const first = reflat[0];
+			if (!first) break;
+			source = first;
 			stages = reflat.slice(1);
 		}
 
@@ -1353,16 +1415,12 @@ export function compileWasm(
 		}
 
 		// Optional-else ternary as pipe source: emit only when truthy.
-		if (
-			source.kind === '?' &&
-			source.children.length >= 2 &&
-			source.children[2] === undefined
-		) {
-			compileExpr(source.children[0]!, fn);
+		if (source.kind === '?' && source.children[2] === undefined) {
+			compileExpr(source.children[0], fn);
 			fn.body.push(OP_IF);
 			fn.body.push(0x40);
 			fn.blockDepth++;
-			const inner = source.children[1]!;
+			const inner = source.children[1];
 			if (inner.kind === 'fn') {
 				compileFnSource(inner, stages, fn);
 			} else {
@@ -1392,7 +1450,7 @@ export function compileWasm(
 		const params = fnNode.parameters ?? [];
 		const p = params[0];
 		if (p) {
-			const pSym = p.label.symbol;
+			const pSym = p.symbol;
 			if (pSym.kind !== 'variable')
 				throw new Error(
 					`Stage parameter "${pSym.name ?? '?'}" is not a variable`,
@@ -1444,12 +1502,8 @@ export function compileWasm(
 			targetDepth: savedFusion?.targetDepth ?? fn.blockDepth,
 		};
 		for (const stmt of stmts) {
-			if (!stmt) continue;
 			if (stmt.kind === ',') {
-				for (const c of stmt.children) {
-					if (!c) continue;
-					emitOne(c, fn);
-				}
+				for (const c of stmt.children) emitOne(c, fn);
 			} else {
 				emitOne(stmt, fn);
 			}
@@ -1495,8 +1549,8 @@ export function compileWasm(
 	function flattenPipe(children: Node[]): Node[] {
 		const out: Node[] = [];
 		for (const c of children) {
-			if (c && c.kind === '>>') out.push(...flattenPipe(c.children));
-			else if (c) out.push(c);
+			if (c.kind === '>>') out.push(...flattenPipe(c.children));
+			else out.push(c);
 		}
 		return out;
 	}
@@ -1514,9 +1568,6 @@ export function compileWasm(
 		const callee = callNode.children[0];
 		if (callee.kind !== 'ident') return false;
 		const sym = callee.symbol;
-		// Union-param fns are monomorphized per call site via compileCall →
-		// getOrCreateSpec, not inlined. Inlining here would compile the body
-		// once with the declared union type, defeating narrowing.
 		if (fnTemplates.has(sym)) return false;
 		const fnDef = sym.definition;
 		if (!fnDef || fnDef.kind !== 'def') return false;
@@ -1525,6 +1576,15 @@ export function compileWasm(
 		if (!(fnNode.symbol.flags & Flags.Sequence)) return false;
 
 		const args = callNode.children[1];
+		const params = fnNode.parameters ?? [];
+
+		if (params.length > 0) {
+			const argList = argListFromCall(args);
+			if (!bindInlineParams(params, argList, fn)) return false;
+			compileFnSource(fnNode, stages, fn);
+			return true;
+		}
+
 		const dataType = buildCallDataBlock(args, fn);
 		const dollarLocal = allocLocal(fn, I32);
 		fn.body.push(OP_LOCAL_SET);
@@ -1555,14 +1615,17 @@ export function compileWasm(
 			return BaseTypes.Unknown;
 		}
 		const argList = args.kind === ',' ? args.children : [args];
-		const items = argList.filter((a): a is Node => !!a);
-		const itemNodes: Node[] = items;
+		const first = argList[0];
+		if (!first) {
+			fn.body.push(OP_I32_CONST);
+			sleb128(0, fn.body);
+			return BaseTypes.Unknown;
+		}
 		const dataNode: NodeMap['data'] = {
-			...items[0]!,
+			...first,
 			kind: 'data',
 			children: [args],
 		};
-		void itemNodes;
 		return compileData(dataNode, fn);
 	}
 
@@ -1571,51 +1634,15 @@ export function compileWasm(
 	 * inlined body in a WASM block so `done` can branch to its end without
 	 * returning from the enclosing function.
 	 */
-	function tryInlineEmittingCall(
-		callNode: NodeMap['call'],
-		stages: Node[],
+	function bindInlineParams(
+		params: NodeMap['parameter'][],
+		argList: Node[],
 		fn: FuncBuilder,
 	): boolean {
-		const callee = callNode.children[0];
-		if (callee.kind !== 'ident') return false;
-		const sym = callee.symbol;
-		const fnDef = sym.definition;
-		if (!fnDef || fnDef.kind !== 'def') return false;
-		const fnNode = fnDef.value;
-		if (fnNode.kind !== 'fn') return false;
-		if (fnNode.symbol.flags & Flags.Sequence) return false;
-		const stmts = fnNode.statements ?? [];
-		// Direct-tier carve-out: single `next val` body. `next(a, b, ...)`
-		// (val is a comma) is multi-emit and belongs in this emitting-tier
-		// inlining path so each comma child emits through fusion.
-		const onlyStmt = stmts.length === 1 ? stmts[0] : undefined;
-		const isDirectTier =
-			onlyStmt?.kind === 'next' &&
-			onlyStmt.children?.[0]?.kind !== ',';
-		if (isDirectTier) return false;
-		const hasEmitting = stmts.some(
-			s => s?.kind === 'next' || s?.kind === 'done',
-		);
-		if (!hasEmitting) return false;
-
-		const params = fnNode.parameters ?? [];
-		const args = callNode.children[1];
-		const argList = args
-			? args.kind === ','
-				? args.children
-				: [args]
-			: [];
-		// Per-call narrowing of union params: while the body compiles
-		// inline for this call site, the param symbol's type is the
-		// concrete arm derived from the arg. Restored before return so
-		// other call sites see the declared union again.
-		const savedParamTypes: (Type | undefined)[] = params.map(
-			p => p.label.symbol.type,
-		);
 		for (let i = 0; i < params.length; i++) {
 			const p = params[i];
 			if (!p) return false;
-			const pSym = p.label.symbol;
+			const pSym = p.symbol;
 			const argNode = argList[i];
 			if (!argNode || pSym.kind !== 'variable') return false;
 			const argType = compileExpr(argNode, fn);
@@ -1633,15 +1660,26 @@ export function compileWasm(
 			uleb128(localIdx, fn.body);
 			fn.paramMap.set(pSym, localIdx);
 		}
+		return true;
+	}
 
-		fn.body.push(OP_BLOCK);
-		fn.body.push(0x40);
-		fn.blockDepth++;
-		const doneDepth = fn.blockDepth;
-		const savedFusion = fn.fusion;
-		const savedDoneDepth = fn.doneDepth;
-		fn.doneDepth = doneDepth;
-		fn.fusion = {
+	function getCallableFn(callNode: NodeMap['call']): NodeMap['fn'] | undefined {
+		const callee = callNode.children[0];
+		if (callee.kind !== 'ident') return;
+		const fnDef = callee.symbol.definition;
+		if (!fnDef || fnDef.kind !== 'def') return;
+		const fnNode = fnDef.value;
+		if (fnNode.kind !== 'fn') return;
+		return fnNode;
+	}
+
+	function argListFromCall(args: Node | undefined): Node[] {
+		if (!args) return [];
+		return args.kind === ',' ? args.children : [args];
+	}
+
+	function makeFusion(stages: Node[], savedFusion: Fusion | undefined, fn: FuncBuilder): Fusion {
+		return {
 			emit: (t: Type) => {
 				if (stages.length === 0) {
 					if (savedFusion) savedFusion.emit(t);
@@ -1657,17 +1695,72 @@ export function compileWasm(
 			},
 			targetDepth: savedFusion?.targetDepth ?? fn.blockDepth,
 		};
-		for (const stmt of stmts) if (stmt) compileExpr(stmt, fn);
+	}
+
+	function tryInlineEmittingCall(
+		callNode: NodeMap['call'],
+		stages: Node[],
+		fn: FuncBuilder,
+	): boolean {
+		const fnNode = getCallableFn(callNode);
+		if (!fnNode) return false;
+		if (fnNode.symbol.flags & Flags.Sequence) return false;
+		const stmts = fnNode.statements ?? [];
+		const onlyStmt = stmts.length === 1 ? stmts[0] : undefined;
+		const isDirectTier =
+			onlyStmt?.kind === 'next' &&
+			onlyStmt.children?.[0]?.kind !== ',';
+		if (isDirectTier) return false;
+		const hasEmitting = stmts.some(
+			s => s.kind === 'next' || s.kind === 'done',
+		);
+		if (!hasEmitting) return false;
+
+		const params = fnNode.parameters ?? [];
+		const argList = argListFromCall(callNode.children[1]);
+		const savedParamTypes: (Type | undefined)[] = params.map(
+			p => p.symbol.type,
+		);
+		if (!bindInlineParams(params, argList, fn)) return false;
+
+		fn.body.push(OP_BLOCK);
+		fn.body.push(0x40);
+		fn.blockDepth++;
+		const doneDepth = fn.blockDepth;
+		const savedFusion = fn.fusion;
+		const savedDoneDepth = fn.doneDepth;
+		fn.doneDepth = doneDepth;
+		fn.fusion = makeFusion(stages, savedFusion, fn);
+		for (const stmt of stmts) compileExpr(stmt, fn);
 		fn.fusion = savedFusion;
 		fn.doneDepth = savedDoneDepth;
 		fn.body.push(OP_END);
 		fn.blockDepth--;
-		// Restore param symbol types so siblings/recursive call sites see
-		// the declared union, not this call's narrowed arm.
 		for (let i = 0; i < params.length; i++) {
 			const p = params[i];
 			const saved = savedParamTypes[i];
-			if (p && saved) p.label.symbol.type = saved;
+			if (p && saved) p.symbol.type = saved;
+		}
+		return true;
+	}
+
+	function bindStreamParams(
+		params: NodeMap['parameter'][],
+		argList: Node[],
+		fn: FuncBuilder,
+	): boolean {
+		for (let i = 0; i < params.length; i++) {
+			const p = params[i];
+			if (!p) return false;
+			const pSym = p.symbol;
+			const argNode = argList[i];
+			if (!argNode || pSym.kind !== 'variable') return false;
+			const argType = compileExpr(argNode, fn);
+			if (!pSym.type) pSym.type = argType;
+			const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(localIdx, fn.body);
+			fn.paramMap.set(pSym, localIdx);
 		}
 		return true;
 	}
@@ -1680,41 +1773,21 @@ export function compileWasm(
 		if (callee.kind !== 'ident') return;
 		const sym = callee.symbol;
 		if (fnTemplates.has(sym)) return;
-		const fnDef = sym.definition;
-		if (!fnDef || fnDef.kind !== 'def') return;
-		const fnNode = fnDef.value;
-		if (fnNode.kind !== 'fn') return;
+		const fnNode = getCallableFn(callNode);
+		if (!fnNode) return;
 		const stmts = fnNode.statements ?? [];
 		const tail = stmts[stmts.length - 1];
 		if (tail?.kind !== 'next') return;
 		const body = tail.children?.[0];
 		if (!body) return;
-		// Only inline when non-tail statements are pure local defs/
-		// reassignments. Multi-emit/done patterns need emit-callback tier.
 		for (let i = 0; i < stmts.length - 1; i++) {
 			const s = stmts[i];
 			if (!s || (s.kind !== 'def' && s.kind !== '=')) return;
 		}
 
 		const params = fnNode.parameters ?? [];
-		const args = callNode.children[1];
-		const argList = args
-			? args.kind === ','
-				? args.children
-				: [args]
-			: [];
-		for (let i = 0; i < params.length; i++) {
-			const p = params[i]!;
-			const pSym = p.label.symbol;
-			const argNode = argList[i];
-			if (!argNode || pSym.kind !== 'variable') return;
-			const argType = compileExpr(argNode, fn);
-			if (!pSym.type) pSym.type = argType;
-			const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
-			fn.body.push(OP_LOCAL_SET);
-			uleb128(localIdx, fn.body);
-			fn.paramMap.set(pSym, localIdx);
-		}
+		const argList = argListFromCall(callNode.children[1]);
+		if (!bindStreamParams(params, argList, fn)) return;
 		for (let i = 0; i < stmts.length - 1; i++) {
 			const s = stmts[i];
 			if (s) compileExpr(s, fn);
@@ -1773,135 +1846,127 @@ export function compileWasm(
 		fn.fusion = savedFusion;
 	}
 
+	function driveStagesEmpty(inputType: Type, fn: FuncBuilder): Type {
+		const hasValue =
+			inputType.kind === 'type' &&
+			inputType.family !== 'void' &&
+			inputType.family !== 'unknown';
+		if (hasValue && fn.fusion) {
+			fn.fusion.emit(inputType);
+			return BaseTypes.Void;
+		}
+		if (hasValue) fn.body.push(OP_DROP);
+		return BaseTypes.Void;
+	}
+
+	function driveFnStage(
+		stage: NodeMap['fn'],
+		inputType: Type,
+		rest: Node[],
+		fn: FuncBuilder,
+	): Type {
+		const params = stage.parameters ?? [];
+		const p = params[0];
+		const savedDollarLocal = fn.dollarLocal;
+		const savedDollarType = fn.dollarType;
+		if (p) {
+			const pSym = p.symbol;
+			if (!pSym.type) pSym.type = inputType;
+			const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(localIdx, fn.body);
+			fn.paramMap.set(pSym, localIdx);
+			if (!p.label) {
+				fn.dollarLocal = localIdx;
+				fn.dollarType = pSym.type ?? inputType;
+			}
+		} else {
+			const localIdx = allocLocal(fn, I32);
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(localIdx, fn.body);
+			fn.dollarLocal = localIdx;
+			fn.dollarType = inputType;
+		}
+
+		const savedFusion = fn.fusion;
+		fn.fusion = makeFusion(rest, savedFusion, fn);
+		const isSequence = !!(stage.symbol.flags & Flags.Sequence);
+		for (const stmt of stage.statements ?? []) {
+			if (isSequence) emitOne(stmt, fn);
+			else compileExpr(stmt, fn);
+		}
+		fn.fusion = savedFusion;
+		fn.dollarLocal = savedDollarLocal;
+		fn.dollarType = savedDollarType;
+		return BaseTypes.Void;
+	}
+
+	function driveIdentStage(
+		stage: NodeMap['ident'],
+		inputType: Type,
+		rest: Node[],
+		fn: FuncBuilder,
+	): Type {
+		const sym = stage.symbol;
+		const builderIdx = fnDefBuilderIdx.get(sym);
+		if (builderIdx !== undefined) {
+			fn.body.push(OP_CALL);
+			const fixupOffset = fn.body.length;
+			for (let i = 0; i < 5; i++) fn.body.push(0);
+			fn.callFixups.push({
+				offset: fixupOffset,
+				builderIdx,
+				size: 5,
+			});
+			const fnSym =
+				sym.kind === 'function'
+					? sym
+					: sym.type?.kind === 'function'
+						? sym.type
+						: undefined;
+			const retType = fnSym?.returnType ?? BaseTypes.Unknown;
+			return driveStages(rest, retType, fn);
+		}
+		const def = sym.definition;
+		if (def?.kind === 'def') {
+			const fnValue = def.value;
+			if (fnValue.kind === 'fn') {
+				if (fnValue.symbol.flags & Flags.Sequence) {
+					const dollarLocal = allocLocal(fn, gbcToWasm(inputType));
+					fn.body.push(OP_LOCAL_SET);
+					uleb128(dollarLocal, fn.body);
+					const savedDollarLocal = fn.dollarLocal;
+					const savedDollarType = fn.dollarType;
+					fn.dollarLocal = dollarLocal;
+					fn.dollarType = inputType;
+					compileFnSource(fnValue, rest, fn);
+					fn.dollarLocal = savedDollarLocal;
+					fn.dollarType = savedDollarType;
+					return BaseTypes.Void;
+				}
+				return inlineDirectFnStage(fnValue, inputType, rest, fn);
+			}
+		}
+		throw new Error(`Unknown pipe-stage ident: "${sym.name ?? '?'}"`);
+	}
+
 	function driveStages(
 		stages: Node[],
 		inputType: Type,
 		fn: FuncBuilder,
 	): Type {
-		if (stages.length === 0) {
-			const hasValue =
-				inputType.kind === 'type' &&
-				inputType.family !== 'void' &&
-				inputType.family !== 'unknown';
-			if (hasValue && fn.fusion) {
-				fn.fusion.emit(inputType);
-				return BaseTypes.Void;
-			}
-			if (hasValue) fn.body.push(OP_DROP);
-			return BaseTypes.Void;
-		}
+		if (stages.length === 0) return driveStagesEmpty(inputType, fn);
 		const [stage, ...rest] = stages;
 		if (!stage) return BaseTypes.Void;
 
 		if (stage.kind === '.') {
-			if (isEachStage(stage)) {
-				// @.each receives a single value here; just pass through.
-				return driveStages(rest, inputType, fn);
-			}
+			if (isEachStage(stage)) return driveStages(rest, inputType, fn);
 			const outType = emitHostStage(stage, inputType, fn);
 			return driveStages(rest, outType, fn);
 		}
 
-		if (stage.kind === 'fn') {
-			const params = stage.parameters ?? [];
-			const p = params[0];
-			const savedDollarLocal = fn.dollarLocal;
-			const savedDollarType = fn.dollarType;
-			if (p) {
-				const pSym = p.label.symbol;
-				if (pSym.kind !== 'variable')
-					throw new Error(
-						`Stage parameter "${pSym.name ?? '?'}" symbol is not a variable`,
-					);
-				if (!pSym.type) pSym.type = inputType;
-				const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
-				fn.body.push(OP_LOCAL_SET);
-				uleb128(localIdx, fn.body);
-				fn.paramMap.set(pSym, localIdx);
-			} else {
-				const localIdx = allocLocal(fn, I32);
-				fn.body.push(OP_LOCAL_SET);
-				uleb128(localIdx, fn.body);
-				fn.dollarLocal = localIdx;
-				fn.dollarType = inputType;
-			}
-
-			const savedFusion = fn.fusion;
-			fn.fusion = {
-				emit: (t: Type) => {
-					if (rest.length === 0) {
-						if (savedFusion) savedFusion.emit(t);
-						else if (
-							t.kind === 'type' &&
-							t.family !== 'void' &&
-							t.family !== 'unknown'
-						)
-							fn.body.push(OP_DROP);
-						return;
-					}
-					driveStages(rest, t, fn);
-				},
-				targetDepth: savedFusion?.targetDepth ?? fn.blockDepth,
-			};
-			const isSequence = !!(stage.symbol.flags & Flags.Sequence);
-			for (const stmt of stage.statements ?? []) {
-				if (isSequence) emitOne(stmt, fn);
-				else compileExpr(stmt, fn);
-			}
-			fn.fusion = savedFusion;
-			fn.dollarLocal = savedDollarLocal;
-			fn.dollarType = savedDollarType;
-			return BaseTypes.Void;
-		}
-
-		if (stage.kind === 'ident') {
-			const sym = stage.symbol;
-			const builderIdx = fnDefBuilderIdx.get(sym);
-			if (builderIdx !== undefined) {
-				fn.body.push(OP_CALL);
-				const fixupOffset = fn.body.length;
-				for (let i = 0; i < 5; i++) fn.body.push(0);
-				fn.callFixups.push({
-					offset: fixupOffset,
-					builderIdx,
-					size: 5,
-				});
-				const fnSym =
-					sym.kind === 'function'
-						? sym
-						: sym.type?.kind === 'function'
-							? sym.type
-							: undefined;
-				const retType = fnSym?.returnType ?? BaseTypes.Unknown;
-				return driveStages(rest, retType, fn);
-			}
-			const def = sym.definition;
-			if (def?.kind === 'def') {
-				const fnValue = def.value;
-				if (fnValue.kind === 'fn') {
-					if (fnValue.symbol.flags & Flags.Sequence) {
-						const dollarLocal = allocLocal(
-							fn,
-							gbcToWasm(inputType),
-						);
-						fn.body.push(OP_LOCAL_SET);
-						uleb128(dollarLocal, fn.body);
-						const savedDollarLocal = fn.dollarLocal;
-						const savedDollarType = fn.dollarType;
-						fn.dollarLocal = dollarLocal;
-						fn.dollarType = inputType;
-						compileFnSource(fnValue, rest, fn);
-						fn.dollarLocal = savedDollarLocal;
-						fn.dollarType = savedDollarType;
-						return BaseTypes.Void;
-					}
-					return inlineDirectFnStage(fnValue, inputType, rest, fn);
-				}
-			}
-			throw new Error(
-				`Unknown pipe-stage ident: "${sym.name ?? '?'}"`,
-			);
-		}
+		if (stage.kind === 'fn') return driveFnStage(stage, inputType, rest, fn);
+		if (stage.kind === 'ident') return driveIdentStage(stage, inputType, rest, fn);
 
 		throw new Error(`Unsupported pipe stage: ${stage.kind}`);
 	}
@@ -1966,13 +2031,9 @@ export function compileWasm(
 		calleeSym: SymbolMap['function'],
 		fn: FuncBuilder,
 	) {
-		const argList = args
-			? args.kind === ','
-				? args.children
-				: [args]
-			: [];
+		const argList = argListFromCall(args);
 		const params = calleeSym.parameters ?? [];
-		const anyNamed = argList.some(a => a?.kind === 'propdef');
+		const anyNamed = argList.some(a => a.kind === 'propdef');
 		const paramDefault = (sym: GbcSymbol | undefined): Node | undefined => {
 			const def = sym?.definition;
 			return def?.kind === 'parameter' ? def.value : undefined;
@@ -1980,8 +2041,8 @@ export function compileWasm(
 		if (anyNamed) {
 			const byName = new Map<string, Node>();
 			for (const a of argList) {
-				if (a?.kind === 'propdef' && a.label && a.value) {
-					const n = a.label.symbol.name;
+				if (a.kind === 'propdef' && a.label && a.value) {
+					const n = a.symbol.name;
 					if (n) byName.set(n, a.value);
 				}
 			}
@@ -2013,63 +2074,67 @@ export function compileWasm(
 	 * `funcBuilders`. Used by both `declareFn` (eager, per source-level fn)
 	 * and `getOrCreateSpec` (per-call-site specialization).
 	 */
-	function allocFuncBuilder(fnNode: NodeMap['fn']): {
-		builder: FuncBuilder;
-		builderIdx: number;
-		returnType: Type;
-	} {
-		const paramSyms = fnNode.parameters ?? [];
+	function buildParamTypes(
+		paramSyms: NodeMap['parameter'][],
+	): { paramTypes: number[]; paramMap: Map<GbcSymbol, number> } {
 		const paramTypes: number[] = [];
 		const paramMap = new Map<GbcSymbol, number>();
 		for (let i = 0; i < paramSyms.length; i++) {
-			const p = paramSyms[i]!;
-			const sym = p.label.symbol;
+			const p = paramSyms[i];
+			if (!p) continue;
+			const sym = p.symbol;
 			if (sym.kind !== 'variable')
 				throw new Error(
 					`Parameter "${sym.name ?? '?'}" symbol is not a variable`,
 				);
-			// Untyped params default to Int32 (i32).
 			if (!sym.type) sym.type = BaseTypes.Int32;
 			paramTypes.push(gbcToWasm(sym.type));
 			paramMap.set(sym, i);
 		}
-		// Return type. Declared annotation wins. For direct-tier fns (single
-		// `next val` body) prefer the checker-resolved type; fall back to a
-		// local `inferType` walk for cases the checker leaves Unknown
-		// (e.g. untyped params don't get their default until below).
-		// Emitting-tier fns have no WASM return value.
-		let returnType: Type = fnNode.returnType
+		return { paramTypes, paramMap };
+	}
+
+	function resolveFnReturnType(fnNode: NodeMap['fn']): Type {
+		const returnType: Type = fnNode.returnType
 			? resolveTypeFromNode(fnNode.returnType)
 			: BaseTypes.Unknown;
 		const stmts = fnNode.statements ?? [];
 		const tail = stmts[0];
 		const isDirectTier = stmts.length === 1 && tail?.kind === 'next';
 		if (
-			isDirectTier &&
-			tail?.kind === 'next' &&
-			returnType.kind === 'type' &&
-			returnType.family === 'unknown'
-		) {
-			const fromChecker = fnNode.symbol.returnType;
+			!isDirectTier ||
+			returnType.kind !== 'type' ||
+			returnType.family !== 'unknown'
+		)
+			return returnType;
+		const fromChecker = fnNode.symbol.returnType;
+		if (
+			fromChecker?.kind === 'type' &&
+			fromChecker.family !== 'unknown' &&
+			fromChecker.family !== 'void'
+		)
+			return fromChecker;
+		const val = tail.children?.[0];
+		if (val) {
+			const inferred = inferType(val);
 			if (
-				fromChecker?.kind === 'type' &&
-				fromChecker.family !== 'unknown' &&
-				fromChecker.family !== 'void'
-			) {
-				returnType = fromChecker;
-			} else {
-				const val = tail.children?.[0];
-				if (val) {
-					const inferred = inferType(val);
-					if (
-						inferred.kind === 'type' &&
-						inferred.family !== 'unknown' &&
-						inferred.family !== 'void'
-					)
-						returnType = inferred;
-				}
-			}
+				inferred.kind === 'type' &&
+				inferred.family !== 'unknown' &&
+				inferred.family !== 'void'
+			)
+				return inferred;
 		}
+		return returnType;
+	}
+
+	function allocFuncBuilder(fnNode: NodeMap['fn']): {
+		builder: FuncBuilder;
+		builderIdx: number;
+		returnType: Type;
+	} {
+		const paramSyms = fnNode.parameters ?? [];
+		const { paramTypes, paramMap } = buildParamTypes(paramSyms);
+		const returnType = resolveFnReturnType(fnNode);
 		const resultTypes: number[] = [];
 		if (
 			returnType.kind === 'type' &&
@@ -2092,26 +2157,22 @@ export function compileWasm(
 		return { builder, builderIdx, returnType };
 	}
 
-	function declareFn(label: NodeMap['ident'], fnNode: NodeMap['fn']) {
+	function declareFn(defSym: SymbolMap['variable'], fnNode: NodeMap['fn']) {
 		const paramSyms = fnNode.parameters ?? [];
 		const fnSym = fnNode.symbol;
-		fnSym.parameters = paramSyms.map(p => p.label.symbol);
-		// Fns with any union-typed parameter are monomorphized per call site.
-		// Skip the eager builder/funcidx allocation; record as a template.
+		fnSym.parameters = paramSyms.map(p => p.symbol);
 		const hasUnionParam = paramSyms.some(p => {
-			const t = p.label.symbol.type;
+			const t = p.symbol.type;
 			return t?.kind === 'type' && t.family === 'union';
 		});
 		if (hasUnionParam) {
-			fnTemplates.set(label.symbol, fnNode);
+			fnTemplates.set(defSym, fnNode);
 			fnTemplates.set(fnSym, fnNode);
 			return null;
 		}
 		const { builder, builderIdx, returnType } = allocFuncBuilder(fnNode);
 		fnSym.returnType = returnType;
-		fnDefBuilderIdx.set(label.symbol, builderIdx);
-		// Also register the fn's own symbol so direct calls to it (without
-		// going via the def-label) resolve.
+		fnDefBuilderIdx.set(defSym, builderIdx);
 		fnDefBuilderIdx.set(fnSym, builderIdx);
 		return { builder, fnNode };
 	}
@@ -2147,9 +2208,9 @@ export function compileWasm(
 		const cached = specCache.get(key);
 		if (cached !== undefined) return cached;
 		const params = template.parameters ?? [];
-		const saved = params.map(p => p.label.symbol.type);
+		const saved = params.map(p => p.symbol.type);
 		params.forEach((p, i) => {
-			const sym = p.label.symbol;
+			const sym = p.symbol;
 			const at = argTypes[i];
 			if (
 				sym.type?.kind === 'type' &&
@@ -2166,7 +2227,8 @@ export function compileWasm(
 		specCache.set(key, builderIdx);
 		compileFnBody(builder, template);
 		params.forEach((p, i) => {
-			p.label.symbol.type = saved[i]!;
+			const t = saved[i];
+			if (t) p.symbol.type = t;
 		});
 		return builderIdx;
 	}
@@ -2184,18 +2246,14 @@ export function compileWasm(
 	): Type[] {
 		if (!args) return [];
 		if (args.kind === ',')
-			return args.children.map(c => (c ? inferType(c, fn) : BaseTypes.Unknown));
+			return args.children.map(c => inferType(c, fn));
 		return [inferType(args, fn)];
 	}
 
 	function compileFnBody(builder: FuncBuilder, fnNode: NodeMap['fn']) {
 		const stmts = fnNode.statements ?? [];
 		// Direct tier: single `next val` at tail. Body compiles to "push val".
-		if (
-			stmts.length === 1 &&
-			stmts[0] !== undefined &&
-			stmts[0].kind === 'next'
-		) {
+		if (stmts.length === 1 && stmts[0]?.kind === 'next') {
 			const val = stmts[0].children?.[0];
 			if (val) {
 				const t = compileExpr(val, builder);
@@ -2239,95 +2297,107 @@ export function compileWasm(
 		}
 	}
 
+	function initNumberGlobal(
+		value: NodeMap['number'],
+		declaredType: Type | undefined,
+	): { initBuf: number[]; wasmType: number; valueType: Type } {
+		const initBuf: number[] = [];
+		let valueType: Type = Number.isInteger(value.value)
+			? BaseTypes.Int32
+			: BaseTypes.Float64;
+		if (declaredType && isFloatType(declaredType)) {
+			valueType = declaredType;
+			initBuf.push(OP_F64_CONST);
+			f64le(value.value, initBuf);
+			return { initBuf, wasmType: F64, valueType };
+		}
+		if (isFloatType(valueType)) {
+			initBuf.push(OP_F64_CONST);
+			f64le(value.value, initBuf);
+			return { initBuf, wasmType: F64, valueType };
+		}
+		initBuf.push(OP_I32_CONST);
+		sleb128(value.value | 0, initBuf);
+		return { initBuf, wasmType: I32, valueType };
+	}
+
+	function initIdentGlobal(
+		value: NodeMap['ident'],
+	): {
+		initBuf: number[];
+		wasmType: number;
+		valueType: Type | undefined;
+		needsRuntimeInit: boolean;
+	} {
+		const initBuf: number[] = [];
+		const idSym = value.symbol;
+		if (idSym.kind === 'literal') {
+			const t = idSym.type;
+			if (t?.kind === 'type') {
+				if (t.family === 'bool') {
+					initBuf.push(OP_I32_CONST);
+					sleb128(idSym.value ? 1 : 0, initBuf);
+					return { initBuf, wasmType: I32, valueType: t, needsRuntimeInit: false };
+				}
+				if (t.family === 'float') {
+					initBuf.push(OP_F64_CONST);
+					f64le(idSym.value as number, initBuf);
+					return { initBuf, wasmType: F64, valueType: t, needsRuntimeInit: false };
+				}
+			}
+		}
+		initBuf.push(OP_I32_CONST);
+		sleb128(0, initBuf);
+		return { initBuf, wasmType: I32, valueType: undefined, needsRuntimeInit: true };
+	}
+
+	function initPlaceholderGlobal(
+		value: Node,
+		declaredType: Type | undefined,
+	): { initBuf: number[]; wasmType: number; valueType: Type } {
+		const initBuf: number[] = [];
+		const inferred = declaredType ?? inferType(value);
+		if (inferred.kind === 'type' && inferred.family === 'float') {
+			initBuf.push(OP_F64_CONST);
+			f64le(0, initBuf);
+			return { initBuf, wasmType: F64, valueType: inferred };
+		}
+		initBuf.push(OP_I32_CONST);
+		sleb128(0, initBuf);
+		return { initBuf, wasmType: I32, valueType: inferred };
+	}
+
 	function compileTopLevelDef(node: NodeMap['def']) {
-		const sym = node.label.symbol;
+		const sym = node.symbol;
 		if (sym.kind !== 'variable') return;
 		const value = node.value;
-		// Top-level fn defs are handled separately via declareFn.
 		if (value.kind === 'fn') return;
 		const isMut = !!(sym.flags & Flags.Variable);
-		// Try to infer the type
 		const declaredType = sym.type;
 		let valueType: Type | undefined = declaredType;
-		// Evaluate in init expression context (must be const at module load).
-		// We support only const-initializable globals here; for non-const init,
-		// store as zero and assign at main start.
-		const initBuf: number[] = [];
+		let initBuf: number[];
 		let wasmType: number;
 		let needsRuntimeInit = true;
 		if (value.kind === 'number') {
-			valueType = Number.isInteger(value.value)
-				? BaseTypes.Int32
-				: BaseTypes.Float64;
-			if (declaredType && isFloatType(declaredType)) {
-				valueType = declaredType;
-				initBuf.push(OP_F64_CONST);
-				f64le(value.value, initBuf);
-				wasmType = F64;
-			} else if (isFloatType(valueType)) {
-				initBuf.push(OP_F64_CONST);
-				f64le(value.value, initBuf);
-				wasmType = F64;
-			} else {
-				initBuf.push(OP_I32_CONST);
-				sleb128(value.value | 0, initBuf);
-				wasmType = I32;
-			}
+			({ initBuf, wasmType, valueType } = initNumberGlobal(value, declaredType));
 			needsRuntimeInit = false;
 		} else if (value.kind === 'string') {
 			const raw = text(value);
 			const decoded = decodeEscapes(raw.slice(1, -1));
 			const ptr = intern(decoded);
-			initBuf.push(OP_I32_CONST);
+			initBuf = [OP_I32_CONST];
 			sleb128(ptr, initBuf);
 			wasmType = I32;
 			valueType = BaseTypes.String;
 			needsRuntimeInit = false;
 		} else if (value.kind === 'ident') {
-			const idSym = value.symbol;
-			if (idSym.kind === 'literal') {
-				const t = idSym.type;
-				if (t?.kind === 'type') {
-					if (t.family === 'bool') {
-						initBuf.push(OP_I32_CONST);
-						sleb128(idSym.value ? 1 : 0, initBuf);
-						wasmType = I32;
-						valueType = t;
-						needsRuntimeInit = false;
-					} else if (t.family === 'float') {
-						initBuf.push(OP_F64_CONST);
-						f64le(idSym.value as number, initBuf);
-						wasmType = F64;
-						valueType = t;
-						needsRuntimeInit = false;
-					} else {
-						initBuf.push(OP_I32_CONST);
-						sleb128(0, initBuf);
-						wasmType = I32;
-					}
-				} else {
-					initBuf.push(OP_I32_CONST);
-					sleb128(0, initBuf);
-					wasmType = I32;
-				}
-			} else {
-				initBuf.push(OP_I32_CONST);
-				sleb128(0, initBuf);
-				wasmType = I32;
-			}
+			const r = initIdentGlobal(value);
+			initBuf = r.initBuf;
+			wasmType = r.wasmType;
+			if (r.valueType) valueType = r.valueType;
+			needsRuntimeInit = r.needsRuntimeInit;
 		} else {
-			// Determine type for placeholder
-			const inferred = valueType ?? inferType(value);
-			valueType = inferred;
-			if (inferred.kind === 'type' && inferred.family === 'float') {
-				initBuf.push(OP_F64_CONST);
-				f64le(0, initBuf);
-				wasmType = F64;
-			} else {
-				initBuf.push(OP_I32_CONST);
-				sleb128(0, initBuf);
-				wasmType = I32;
-			}
+			({ initBuf, wasmType, valueType } = initPlaceholderGlobal(value, valueType));
 		}
 
 		const gIdx = globals.length;
@@ -2351,26 +2421,90 @@ export function compileWasm(
 		expectedType: Type;
 	}[] = [];
 
-	// Phase 1: declare every top-level fn def. Allows forward references.
-	// Union-param templates return null and are compiled lazily per call site.
-	const fnsToCompile: { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] = [];
-	if (root.kind === 'root') {
+	function compileMainStatement(stmt: Node, fn: FuncBuilder) {
+		if (stmt.kind === 'def') {
+			compileLocalDef(stmt, fn);
+			return;
+		}
+		if (stmt.kind === '=') {
+			compileExpr(stmt, fn);
+			return;
+		}
+		const t = compileExpr(stmt, fn);
+		if (
+			t.kind === 'type' &&
+			t.family !== 'void' &&
+			t.family !== 'unknown'
+		)
+			fn.body.push(OP_DROP);
+	}
+
+	function declareTopLevel(): { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] {
+		const fnsToCompile: { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] = [];
+		if (root.kind !== 'root') return fnsToCompile;
 		for (const child of root.children) {
 			if (child.kind === 'def' && child.value.kind === 'fn') {
-				const declared = declareFn(child.label, child.value);
+				const declared = declareFn(child.symbol, child.value);
 				if (declared) fnsToCompile.push(declared);
 			}
 		}
-	}
-
-	// Phase 2: declare top-level non-fn defs as globals.
-	if (root.kind === 'root') {
 		for (const child of root.children) {
 			if (child.kind === 'def' && child.value.kind !== 'fn') {
 				compileTopLevelDef(child);
 			}
 		}
+		return fnsToCompile;
 	}
+
+	function compileRuntimeInits(mainBuilder: FuncBuilder) {
+		for (const init of runtimeInits) {
+			const t = compileExpr(init.value, mainBuilder);
+			if (
+				isFloatType(init.expectedType) &&
+				!isFloatType(t) &&
+				t.kind === 'type' &&
+				isIntType(t)
+			)
+				coerceToFloat(t, mainBuilder);
+			mainBuilder.body.push(OP_GLOBAL_SET);
+			uleb128(init.gIdx, mainBuilder.body);
+		}
+	}
+
+	function compileTopLevelStatements(mainBuilder: FuncBuilder) {
+		if (root.kind !== 'root') return;
+		for (const child of root.children) {
+			if (child.kind === '=' || child.kind === '>>') {
+				compileExpr(child, mainBuilder);
+				continue;
+			}
+			if (child.kind === 'main') {
+				for (const stmt of child.statements)
+					compileMainStatement(stmt, mainBuilder);
+			}
+		}
+	}
+
+	function resolveCallFixups(baseFuncIdx: number) {
+		for (const b of funcBuilders) {
+			for (const fix of b.callFixups) {
+				const funcIdx = baseFuncIdx + fix.builderIdx;
+				const enc: number[] = [];
+				uleb128(funcIdx, enc);
+				while (enc.length < fix.size) {
+					const last = enc[enc.length - 1] ?? 0;
+					enc[enc.length - 1] = (last | 0x80) & 0xff;
+					enc.push(0x00);
+				}
+				for (let i = 0; i < fix.size; i++) {
+					const e = enc[i];
+					if (e !== undefined) b.body[fix.offset + i] = e;
+				}
+			}
+		}
+	}
+
+	const fnsToCompile = declareTopLevel();
 
 	// Phase 3: compile each fn body
 	for (const { builder, fnNode } of fnsToCompile) {
@@ -2391,72 +2525,12 @@ export function compileWasm(
 	const mainBuilderIdx = funcBuilders.length;
 	funcBuilders.push(mainBuilder);
 
-	// Emit runtime initializers for top-level globals before main body.
-	for (const init of runtimeInits) {
-		const t = compileExpr(init.value, mainBuilder);
-		if (
-			isFloatType(init.expectedType) &&
-			!isFloatType(t) &&
-			t.kind === 'type' &&
-			isIntType(t)
-		)
-			coerceToFloat(t, mainBuilder);
-		mainBuilder.body.push(OP_GLOBAL_SET);
-		uleb128(init.gIdx, mainBuilder.body);
-	}
-
-	if (root.kind === 'root') {
-		for (const child of root.children) {
-			if (child.kind === '=') {
-				// Top-level reassignment of mutable global.
-				compileExpr(child, mainBuilder);
-			}
-			if (child.kind === '>>') {
-				compileExpr(child, mainBuilder);
-			}
-			if (child.kind === 'main') {
-				for (const stmt of child.statements)
-					compileMainStatement(stmt, mainBuilder);
-			}
-		}
-	}
-
-	function compileMainStatement(stmt: Node, fn: FuncBuilder) {
-		if (stmt.kind === 'def') {
-			compileLocalDef(stmt, fn);
-			return;
-		}
-		if (stmt.kind === '=') {
-			compileExpr(stmt, fn);
-			return;
-		}
-		const t = compileExpr(stmt, fn);
-		if (
-			t.kind === 'type' &&
-			t.family !== 'void' &&
-			t.family !== 'unknown'
-		)
-			fn.body.push(OP_DROP);
-	}
+	compileRuntimeInits(mainBuilder);
+	compileTopLevelStatements(mainBuilder);
 
 	// Phase 5: resolve funcidx fixups
 	const baseFuncIdx = imports.length;
-	for (const b of funcBuilders) {
-		for (const fix of b.callFixups) {
-			const funcIdx = baseFuncIdx + fix.builderIdx;
-			const enc: number[] = [];
-			uleb128(funcIdx, enc);
-			// Pad to fix.size bytes (5 reserved). Set continuation bit on all
-			// but the last byte for proper LEB128 encoding.
-			while (enc.length < fix.size) {
-				enc[enc.length - 1] = (enc[enc.length - 1]! | 0x80) & 0xff;
-				enc.push(0x00);
-			}
-			for (let i = 0; i < fix.size; i++) {
-				b.body[fix.offset + i] = enc[i]!;
-			}
-		}
-	}
+	resolveCallFixups(baseFuncIdx);
 	const mainFuncIdx = baseFuncIdx + mainBuilderIdx;
 
 	const m: Module = {

@@ -1,4 +1,4 @@
-import { CompilerError, text } from '../sdk/index.js';
+import { CompilerError, Position, text } from '../sdk/index.js';
 
 import type { InfixNode, Node, NodeMap } from './node.js';
 import { BaseTypes as BT, Flags } from './symbol-table.js';
@@ -19,20 +19,79 @@ function resolveReturnType(node: Node) {
 	}
 }
 
+function resolveDataType(node: NodeMap['data']): Type {
+	const inner = node.children[0];
+	const items =
+		inner?.kind === ',' ? inner.children : inner ? [inner] : [];
+	const members: Record<string, Symbol> = {};
+	for (const item of items) {
+		if (item.kind !== 'propdef' || !item.label) continue;
+		resolveType(item);
+		const name = item.symbol.name;
+		if (name) members[name] = item.symbol;
+	}
+	return {
+		kind: 'type',
+		flags: 0,
+		name: '__data',
+		family: 'data',
+		size: 0,
+		members,
+	};
+}
+
+function resolveNumericOp(node: InfixNode): Type | undefined {
+	const lType = resolver(node.children[0]);
+	const rType = resolver(node.children[1]);
+
+	if (!isNumericType(lType) || !isNumericType(rType)) return;
+	if (isFloatType(lType) || isFloatType(rType)) return BT.Float64;
+	return BT.Int32;
+}
+
+function resolveDefType(node: NodeMap['def']): Type | undefined {
+	const sym = node.symbol;
+	if (sym.type) return sym.type;
+	const declared = node.type ? resolveType(node.type) : undefined;
+	const value = resolveType(node.value);
+	const isImmutable = !(sym.flags & Flags.Variable);
+	const t = isImmutable && value ? value : (declared ?? value);
+	if (t) sym.type = t;
+	return t;
+}
+
+function resolveFnType(node: NodeMap['fn']): Type {
+	const sym = node.symbol;
+	if (!sym.returnType && node.returnType)
+		sym.returnType = resolver(node.returnType);
+	if (node.parameters?.length) node.parameters.forEach(resolver);
+	return sym;
+}
+
+function resolveParameterType(node: NodeMap['parameter']): Type | undefined {
+	if (node.symbol.type) return node.symbol.type;
+	if (node.type) {
+		const t = resolver(node.type);
+		node.symbol.type = t;
+		return t;
+	}
+}
+
+function resolvePropdefType(node: NodeMap['propdef']): Type {
+	if (node.symbol.type) return node.symbol.type;
+	const t = node.value ? resolver(node.value) : BT.Unknown;
+	if (t.kind === 'type' && t.family !== 'unknown') node.symbol.type = t;
+	return t;
+}
+
 function resolveType(node: CheckedNode): Type | undefined {
 	switch (node.kind) {
-		case 'def': {
-			const sym = node.label.symbol;
-			if (sym.type) return sym.type;
-			const declared = node.type ? resolveType(node.type) : undefined;
-			const value = resolveType(node.value);
-			const isImmutable = !(sym.flags & Flags.Variable);
-			const t = isImmutable && value ? value : (declared ?? value);
-			if (t) sym.type = t;
-			return t;
-		}
+		case 'def':
+			return resolveDefType(node);
 		case 'ident':
-			return node.symbol.type;
+			return node.symbol.kind === 'function'
+				? node.symbol
+				: node.symbol.type;
 		case 'typeident':
 			return node.symbol;
 		case 'call':
@@ -41,48 +100,12 @@ function resolveType(node: CheckedNode): Type | undefined {
 			return BT[Number.isInteger(node.value) ? 'Int32' : 'Float64'];
 		case 'string':
 			return BT.String;
-		case 'parameter': {
-			const sym = node.label.symbol;
-			if (sym.type) return sym.type;
-			if (node.type) {
-				sym.type = resolver(node.type);
-				return sym.type;
-			}
-			return;
-		}
-		case 'fn': {
-			const sym = node.symbol;
-
-			if (!sym.returnType) {
-				if (node.returnType) sym.returnType = resolver(node.returnType);
-			}
-			if (node.parameters?.length) node.parameters.forEach(resolver);
-
-			return sym;
-		}
-		case 'data': {
-			const inner = node.children[0];
-			const items =
-				inner?.kind === ',' ? inner.children : inner ? [inner] : [];
-			const members: Record<string, Symbol> = {};
-			for (const item of items) {
-				if (item?.kind !== 'propdef' || !item.label) continue;
-				// Resolve so the propdef's label symbol gets its type from
-				// the value (or annotation). Without this, member loads
-				// from the data type would lack type info downstream.
-				resolveType(item);
-				const name = item.label.symbol.name;
-				if (name) members[name] = item.label.symbol;
-			}
-			return {
-				kind: 'type',
-				flags: 0,
-				name: '__data',
-				family: 'data',
-				size: 0,
-				members,
-			};
-		}
+		case 'parameter':
+			return resolveParameterType(node);
+		case 'fn':
+			return resolveFnType(node);
+		case 'data':
+			return resolveDataType(node);
 		case '<=':
 		case '>=':
 		case '<':
@@ -90,30 +113,16 @@ function resolveType(node: CheckedNode): Type | undefined {
 		case '-':
 		case '+':
 		case '/':
-		case '*': {
-			const lType = resolver(node.children[0]);
-			const rType = resolver(node.children[1]);
-
-			if (!isNumericType(lType) || !isNumericType(rType)) return;
-			if (isFloatType(lType) || isFloatType(rType)) return BT.Float64;
-			return BT.Int32;
-		}
+		case '*':
+			return resolveNumericOp(node);
 		case '==':
 		case '!=':
 		case 'is':
 			return BT.Bool;
-		case '?': {
-			const thenBranch = node.children[1];
-			return thenBranch ? resolver(thenBranch) : BT.Unknown;
-		}
-		case 'propdef': {
-			const sym = node.label?.symbol;
-			if (sym?.kind === 'variable' && sym.type) return sym.type;
-			const t = node.value ? resolver(node.value) : BT.Unknown;
-			if (sym?.kind === 'variable' && t.kind === 'type' && t.family !== 'unknown')
-				sym.type = t;
-			return t;
-		}
+		case '?':
+			return resolver(node.children[1]);
+		case 'propdef':
+			return resolvePropdefType(node);
 		default:
 			return BT.Unknown;
 	}
@@ -225,7 +234,7 @@ export function checker({
 		node.forEach(check);
 	}
 
-	function error(message: string, position: Node) {
+	function error(message: string, position: Position) {
 		errors.push({ message, position });
 	}
 
@@ -250,6 +259,93 @@ export function checker({
 	 * operations are performed. Depending on the node kind, it might resolve types, validate parameters, and enforce
 	 * correct usage of operations and calls.
 	 */
+	function checkNext(node: NodeMap['next']) {
+		const fn = node.owner;
+		const val = node.children?.[0];
+		const types: Type[] =
+			val?.kind === ','
+				? val.children
+						.map(c => resolveType(c))
+						.filter((t): t is Type => !!t)
+				: val
+					? [resolveType(val) ?? BT.Unknown]
+					: [BT.Void];
+		const type = unionOf(types);
+
+		if (!fn.returnType) fn.returnType = type;
+		else if (!canAssign(fn.returnType, type))
+			error(
+				`Type "${typeToStr(
+					type,
+				)}" is not assignable to type "${typeToStr(
+					fn.returnType,
+				)}".`,
+				node,
+			);
+	}
+
+	function checkCall(node: NodeMap['call']) {
+		const fn = resolveType(node.children[0]);
+		if (!fn || fn.kind !== 'function') {
+			error(`This expression is not callable`, node);
+			return;
+		}
+
+		const args = node.children[1];
+		const params = fn.parameters;
+
+		if (!params?.length || !args) return;
+
+		const argTypes =
+			args.kind === ',' ? getListTypes(args) : [resolver(args)];
+		for (let i = 0; i < argTypes.length; i++) {
+			const typeA = argTypes[i];
+			const typeB = params[i]?.type;
+			if (typeA && typeB && !canAssign(typeB, typeA))
+				error(
+					`Argument of type "${typeToStr(
+						typeA,
+					)}' is not assignable to parameter of type "${typeToStr(
+						typeB,
+					)}".`,
+					node,
+				);
+		}
+	}
+
+	function checkDef(node: NodeMap['def']) {
+		const sym = node.symbol;
+		resolver(node);
+		if (node.type) {
+			const declared = resolveType(node.type);
+			const vt = valueType(node.value);
+			if (declared && vt && !canAssign(declared, vt))
+				error(
+					`Type "${typeToStr(vt)}" is not assignable to declared type "${typeToStr(declared)}"`,
+					node,
+				);
+		}
+		if (!sym.references?.length && !(sym.flags & Flags.Export))
+			error(
+				`"${sym.name ?? ''}" is declared but never used`,
+				node.label,
+			);
+		check(node.value);
+	}
+
+	function checkAssign(node: NodeMap['=']) {
+		const left = node.children[0];
+		if (left.kind === 'ident') {
+			const sym = left.symbol;
+			if (!(sym.flags & Flags.Variable))
+				error(
+					`Cannot reassign immutable binding "${sym.name ?? ''}"`,
+					left,
+				);
+		}
+		check(node.children[1]);
+	}
+
 	function check(node: Node): void {
 		switch (node.kind) {
 			case 'root':
@@ -265,104 +361,14 @@ export function checker({
 					inner?.kind === ',' ? inner.children : inner ? [inner] : [];
 				return checkEach(items);
 			}
-			case 'next': {
-				const fn = node.owner;
-				const val = node.children?.[0];
-				// `next(a, b, c)` — the comma child enumerates values the fn
-				// emits; the fn's emit type is the union of the children's
-				// types (collapsed when all share one type).
-				const types: Type[] =
-					val?.kind === ','
-						? val.children
-								.map(c => (c ? resolveType(c) : undefined))
-								.filter((t): t is Type => !!t)
-						: val
-							? [resolveType(val) ?? BT.Unknown]
-							: [BT.Void];
-				const type = unionOf(types);
-
-				if (!fn.returnType) fn.returnType = type;
-				else if (type && !canAssign(fn.returnType, type))
-					error(
-						`Type "${typeToStr(
-							type,
-						)}" is not assignable to type "${typeToStr(
-							fn.returnType,
-						)}".`,
-						node,
-					);
-				return;
-			}
-			case 'call': {
-				const fn = resolveType(node.children[0]);
-				if (!fn || fn.kind !== 'function') {
-					error(`This expression is not callable`, node);
-					return;
-				}
-
-				const args = node.children[1];
-				const params = fn.parameters;
-
-				if (params?.length && args) {
-					const argTypes =
-						args.kind === ','
-							? getListTypes(args)
-							: [resolver(args)];
-					for (let i = 0; i < argTypes.length; i++) {
-						const typeA = argTypes[i];
-						const typeB = params[i]?.type;
-						if (typeA && typeB && !canAssign(typeB, typeA))
-							error(
-								`Argument of type "${typeToStr(
-									typeA,
-								)}' is not assignable to parameter of type "${typeToStr(
-									typeB,
-								)}".`,
-								node,
-							);
-					}
-				}
-
-				return;
-			}
-			case 'def': {
-				const sym = node.label.symbol;
-				resolver(node);
-				if (node.type) {
-					const declared = resolveType(node.type);
-					const vt = valueType(node.value);
-					if (declared && vt && !canAssign(declared, vt))
-						error(
-							`Type "${typeToStr(vt)}" is not assignable to declared type "${typeToStr(declared)}"`,
-							node,
-						);
-				}
-				if (
-					!sym.references?.length &&
-					!(sym.flags & Flags.Export)
-				)
-					error(
-						`"${sym.name ?? ''}" is declared but never used`,
-						node.label,
-					);
-				check(node.value);
-				return;
-			}
-			case '=': {
-				const left = node.children[0];
-				if (left.kind === 'ident') {
-					const sym = left.symbol;
-					if (!(sym.flags & Flags.Variable))
-						error(
-							`Cannot reassign immutable binding "${
-								sym.name ?? ''
-							}"`,
-							left,
-						);
-				}
-				check(node.children[1]);
-				return;
-			}
+			case 'next':
+				return checkNext(node);
+			case 'call':
+				return checkCall(node);
+			case 'def':
+				return checkDef(node);
+			case '=':
+				return checkAssign(node);
 			case '<=':
 			case '>=':
 			case '<':
@@ -375,10 +381,12 @@ export function checker({
 			case '>>':
 				inferPipeStageParams(node.children);
 				for (const c of node.children)
-					if (c && c.kind !== 'fn') check(c);
+					if (c.kind !== 'fn') check(c);
 				return;
 			case ',':
-				for (const c of node.children) if (c) check(c);
+				for (const c of node.children) check(c);
+				return;
+			default:
 				return;
 		}
 	}

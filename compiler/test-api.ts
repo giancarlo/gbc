@@ -95,18 +95,21 @@ export class SpecApi extends TestApiBase<SpecApi> {
 	 * On mismatch the captured errors are dumped to the test log.
 	 */
 	compileError = ({
+		pre,
 		src,
 		expected,
 	}: {
 		p?: string;
+		pre?: string;
 		src: string;
 		expected: string;
 	}) => {
+		const wrapped = pre ? `${pre}; ${src}` : src;
 		const program = Program();
-		const result = program.compile(src);
+		const result = program.compile(wrapped);
 		this.assert(
 			result.errors.length > 0,
-			`Expected compile errors for: ${src}`,
+			`Expected compile errors for: ${wrapped}`,
 		);
 		const matched = result.errors.some(e =>
 			e.message.includes(expected),
@@ -156,7 +159,17 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		out?: OutValue[];
 		test?: (result: WasmRunResult) => void;
 	}) => {
-		const wrapped = `${pre ?? ''} main { ${src} >> @.out }`;
+		let depth = 0;
+		let isMulti = false;
+		for (const c of src) {
+			if (c === '{' || c === '[' || c === '(') depth++;
+			else if (c === '}' || c === ']' || c === ')') depth--;
+			else if (c === ';' && depth === 0) {
+				isMulti = true;
+				break;
+			}
+		}
+		const wrapped = `${pre ? pre + '; ' : ''}main { ${src} >> @.out${isMulti ? ';' : ''} }`;
 		const { ast: rootAst } = this.parse(wrapped);
 		const mainNode = rootAst.children.find(
 			(c): c is NodeMap['main'] => c?.kind === 'main',

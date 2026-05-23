@@ -22,16 +22,85 @@ export function parse(
 		expectNodeKind,
 		optional,
 		node,
-		parseUntilKind,
 		next,
+		catchAndRecover,
+		skipUntil,
 	} = api;
 	const typeParser = parseType(api, typesTable);
-	const expression = parseExpression(api, symbolTable, typeParser);
 
-	function markExported(label: Node) {
-		if (label.kind === 'ident' || label.kind === 'typeident')
-			label.symbol.flags |= Flags.Export;
-		else throw 'Invalid Symbol';
+	/**
+	 * D30 statement separator: `fn` and `main` blocks self-terminate; every
+	 * other statement requires `;`. Returns `true` to continue, `false` to
+	 * stop the list. Throws on missing `;` or stray `;` after a block.
+	 */
+	function parseStatementBlock(
+		parser: () => Node | undefined,
+		endKind: ScannerToken['kind'],
+	): Node[] {
+		return catchAndRecover(
+			() => {
+				const result: Node[] = [];
+				let multi = false;
+				let nonBlockCount = 0;
+				while (
+					current().kind !== endKind &&
+					current().kind !== 'eof'
+				) {
+					const stmt = parser();
+					if (!stmt)
+						throw api.error('Unexpected token', current());
+					result.push(stmt);
+					if (stmt.kind === 'main') {
+						if (current().kind === ';')
+							throw api.error(
+								'";" is not allowed after a `main` block statement',
+								current(),
+							);
+						continue;
+					}
+					if (stmt.kind === 'comment') continue;
+					nonBlockCount++;
+					const consumed = optional(';');
+					const after = current().kind;
+					const atEnd = after === endKind || after === 'eof';
+					if (consumed) {
+						if (atEnd && nonBlockCount === 1)
+							throw api.error(
+								'";" is not allowed after a single statement',
+								stmt,
+							);
+						multi = true;
+					} else if (multi)
+						throw api.error(
+							'Expected ";" after statement',
+							current(),
+						);
+					else if (!atEnd)
+						throw api.error('Expected ";"', current());
+				}
+				return result;
+			},
+			() => {
+				skipUntil(
+					() =>
+						current().kind === endKind ||
+						current().kind === 'eof',
+				);
+				return [];
+			},
+		);
+	}
+
+	const expression = parseExpression(
+		api,
+		symbolTable,
+		typesTable,
+		typeParser,
+		parseStatementBlock,
+	);
+
+	function markExported(node: NodeMap['def'] | NodeMap['type']) {
+		node.symbol.flags |= Flags.Export;
 	}
 
 	function addDataMembers(
@@ -53,10 +122,9 @@ export function parse(
 						? [inner]
 						: [];
 			for (const it of items) {
-				if (it?.kind !== 'propdef' || !it.label) continue;
-				const sym = it.label.symbol;
-				if (sym?.kind === 'variable' && sym.name)
-					out[sym.name] = sym;
+				if (it.kind !== 'propdef' || !it.label) continue;
+				const sym = it.symbol;
+				if (sym.name) out[sym.name] = sym;
 			}
 			return;
 		}
@@ -124,7 +192,7 @@ export function parse(
 			? typeDefinition(isType)
 			: expectNodeKind(expression(), 'def', 'Expected definition');
 
-		if (isExport) markExported(expr.children[0]);
+		if (isExport) markExported(expr);
 
 		return expr;
 	}
@@ -147,13 +215,13 @@ export function parse(
 			parameters: type.symbol.parameters,
 			returnType: type.symbol.returnType,
 		});
-		const label: NodeMap['ident'] = { ...ident, symbol };
 		return {
 			...token,
 			kind: 'external',
-			label,
+			label: ident,
+			symbol,
 			type,
-			children: [label, type],
+			children: [ident, type],
 			end: type.end,
 		};
 	}
@@ -164,7 +232,7 @@ export function parse(
 			next();
 			expect('{');
 			return symbolTable.withScope(scope => {
-				const children = parseUntilKind(expression, '}');
+				const children = parseStatementBlock(expression, '}');
 				return {
 					...token,
 					scope,
@@ -183,7 +251,7 @@ export function parse(
 
 	const root = {
 		...node('root'),
-		children: parseUntilKind(topStatement, 'eof'),
+		children: parseStatementBlock(topStatement, 'eof'),
 	};
 	return root;
 }

@@ -34,7 +34,22 @@ export function parseType(
 		({ expect, expression, expectNode }) => ({
 			ident: {
 				prefix(n) {
-					return expectSymbol(text(n), n);
+					const name = text(n);
+					if (name === 'true' || name === 'false') {
+						return {
+							...n,
+							kind: 'typeident',
+							symbol: {
+								kind: 'type',
+								flags: 0,
+								family: 'literal',
+								name,
+								size: 1,
+								value: name === 'true',
+							},
+						};
+					}
+					return expectSymbol(name, n);
 				},
 			},
 			'(': {
@@ -127,23 +142,21 @@ export function parseType(
 								flags: 0,
 								type: pt.symbol,
 							};
-							const label: NodeMap['ident'] = {
-								...ident,
-								symbol: sym,
-							};
 							propdefs.push({
 								...ident,
 								kind: 'propdef',
-								label,
+								label: ident,
+								symbol: sym,
 								type: pt,
-								children: [label, pt, undefined],
+								children: [ident, pt, undefined],
 							});
 						} while (optional(','));
 					}
 					const close = expect(']');
+					const first = propdefs[0];
 					const inner: NodeMap[','] | NodeMap['propdef'] =
-						propdefs.length === 1
-							? propdefs[0]!
+						propdefs.length === 1 && first
+							? first
 							: {
 									...tk,
 									kind: ',',
