@@ -5,7 +5,7 @@ import { BaseTypes as BT, Flags } from './symbol-table.js';
 import type { Symbol, SymbolMap, Type } from './symbol-table.js';
 
 const typeSymbol = Symbol('type');
-export type CheckedNode = Node & { [typeSymbol]?: Type };
+type CheckedNode = Node & { [typeSymbol]?: Type };
 
 function typeToStr(type?: Type) {
 	return type?.name || 'unknown';
@@ -24,12 +24,21 @@ function resolveDataType(node: NodeMap['data']): Type {
 	const items =
 		inner?.kind === ',' ? inner.children : inner ? [inner] : [];
 	const members: Record<string, Symbol> = {};
-	for (const item of items) {
-		if (item.kind !== 'propdef' || !item.label) continue;
-		resolveType(item);
-		const name = item.symbol.name;
-		if (name) members[name] = item.symbol;
-	}
+	items.forEach((item, idx) => {
+		if (item.kind === 'propdef' && item.label) {
+			resolveType(item);
+			const name = item.symbol.name;
+			if (name) members[name] = item.symbol;
+			return;
+		}
+		const t = resolveType(item) ?? BT.Unknown;
+		members[String(idx)] = {
+			kind: 'variable',
+			name: String(idx),
+			flags: 0,
+			type: t,
+		};
+	});
 	return {
 		kind: 'type',
 		flags: 0,
@@ -98,26 +107,61 @@ function resolveType(node: CheckedNode): Type | undefined {
 			return resolveReturnType(node.children[0]);
 		case 'number':
 			return BT[Number.isInteger(node.value) ? 'Int32' : 'Float64'];
-		case 'string':
-			return BT.String;
+		case 'string': {
+			const v = text(node).slice(1, -1);
+			return {
+				kind: 'type',
+				flags: 0,
+				family: 'literal',
+				name: `'${v}'`,
+				size: 0,
+				value: v,
+			};
+		}
 		case 'parameter':
 			return resolveParameterType(node);
 		case 'fn':
 			return resolveFnType(node);
 		case 'data':
 			return resolveDataType(node);
-		case '<=':
-		case '>=':
-		case '<':
-		case '>':
+		case '.': {
+			const left = node.children[0];
+			const right = node.children[1];
+			if (right.kind === 'ident') {
+				const sym = right.symbol;
+				if (sym.kind === 'function') return sym;
+				if (sym.kind === 'variable' && sym.type) return sym.type;
+			}
+			const lt = resolver(left);
+			if (
+				lt.kind === 'type' &&
+				(lt.family === 'data' || lt.family === 'error')
+			) {
+				const keys = Object.keys(lt.members);
+				let key: string | undefined;
+				if (right.kind === 'number') key = keys[right.value];
+				else if (right.kind === 'ident')
+					key = right.symbol.name;
+				const m = key !== undefined ? lt.members[key] : undefined;
+				if (m?.kind === 'variable' && m.type) return m.type;
+			}
+			return BT.Unknown;
+		}
 		case '-':
 		case '+':
 		case '/':
 		case '*':
 			return resolveNumericOp(node);
+		case '<=':
+		case '>=':
+		case '<':
+		case '>':
 		case '==':
 		case '!=':
 		case 'is':
+		case '!':
+		case '&&':
+		case '||':
 			return BT.Bool;
 		case '?':
 			return resolver(node.children[1]);
@@ -145,13 +189,26 @@ function isFloatType(t?: Type) {
 function isNumericType(t?: Type) {
 	return isIntegerType(t) || isFloatType(t);
 }
-function isNumber(node: Node) {
-	return isNumericType(resolver(node));
+
+function paramsMatch(
+	params: Symbol[] | undefined,
+	argTypes: (Type | undefined)[],
+): boolean {
+	const arity = params?.length ?? 0;
+	if (arity !== argTypes.length) return false;
+	for (let i = 0; i < arity; i++) {
+		const want = params?.[i]?.type;
+		const got = argTypes[i];
+		if (!want || !got) continue;
+		if (!canAssign(want, got)) return false;
+	}
+	return true;
 }
 
 function canAssign(to: Type, a: Type): boolean {
 	if (to === a) return true;
 	if (to.kind !== 'type' || a.kind !== 'type') return false;
+	if (to.family === 'unknown') return true;
 	if (to.family === 'union')
 		return to.members.some(m => canAssign(m, a));
 	if (to.family === 'literal' && a.family === 'literal')
@@ -241,13 +298,15 @@ export function checker({
 	function numberBinaryOperator(node: InfixNode) {
 		const left = node.children[0];
 		const right = node.children[1];
-		if (!(isNumber(left) && isNumber(right))) {
+		const lt = resolver(left);
+		const rt = resolver(right);
+		if (!(isNumericType(lt) && isNumericType(rt))) {
 			errors.push({
 				message: `Operator "${
 					node.kind
 				}" cannot be applied to types "${typeToStr(
-					resolver(left),
-				)}" and "${typeToStr(resolver(right))}".`,
+					lt,
+				)}" and "${typeToStr(rt)}".`,
 				position: left,
 			});
 		}
@@ -284,24 +343,61 @@ export function checker({
 			);
 	}
 
-	function checkCall(node: NodeMap['call']) {
-		const fn = resolveType(node.children[0]);
-		if (!fn || fn.kind !== 'function') {
-			error(`This expression is not callable`, node);
-			return;
+	function chooseOverload(
+		fn: SymbolMap['function'],
+		argTypes: Type[],
+		node: NodeMap['call'],
+	): SymbolMap['function'] | undefined {
+		if (fn.overloads) {
+			const match = [fn, ...fn.overloads].find(c =>
+				paramsMatch(c.parameters, argTypes),
+			);
+			if (!match) {
+				error(
+					`No matching overload for ${fn.name ?? '?'}(${argTypes
+						.map(typeToStr)
+						.join(', ')})`,
+					node,
+				);
+				return undefined;
+			}
+			return match;
 		}
+		if (
+			(fn.parameters?.length ?? 0) > 0 &&
+			argTypes.length === 0
+		) {
+			error(
+				`No matching overload for ${fn.name ?? '?'}() — expected ${fn.parameters?.length ?? 0} argument(s)`,
+				node,
+			);
+			return undefined;
+		}
+		return fn;
+	}
 
-		const args = node.children[1];
-		const params = fn.parameters;
+	function checkCallArgs(
+		chosen: SymbolMap['function'],
+		argTypes: Type[],
+		node: NodeMap['call'],
+	) {
+		const params = chosen.parameters;
+		if (!params?.length) return;
+		const fnNode =
+			chosen.definition && chosen.definition.kind === 'fn'
+				? chosen.definition
+				: undefined;
+		const paramNodes = fnNode?.parameters;
 
-		if (!params?.length || !args) return;
-
-		const argTypes =
-			args.kind === ',' ? getListTypes(args) : [resolver(args)];
 		for (let i = 0; i < argTypes.length; i++) {
 			const typeA = argTypes[i];
 			const typeB = params[i]?.type;
-			if (typeA && typeB && !canAssign(typeB, typeA))
+			if (!typeA || !typeB) continue;
+			const isVoidArg =
+				typeA.kind === 'type' && typeA.family === 'void';
+			const hasDefault = !!paramNodes?.[i]?.value;
+			if (isVoidArg && hasDefault) continue;
+			if (!canAssign(typeB, typeA))
 				error(
 					`Argument of type "${typeToStr(
 						typeA,
@@ -311,6 +407,23 @@ export function checker({
 					node,
 				);
 		}
+	}
+
+	function checkCall(node: NodeMap['call']) {
+		const fn = resolveType(node.children[0]);
+		if (!fn || fn.kind !== 'function') {
+			error(`This expression is not callable`, node);
+			return;
+		}
+
+		const args = node.children[1];
+		const argTypes = args
+			? args.kind === ',' ? getListTypes(args) : [resolver(args)]
+			: [];
+
+		const chosen = chooseOverload(fn, argTypes, node);
+		if (!chosen || !args) return;
+		checkCallArgs(chosen, argTypes, node);
 	}
 
 	function checkDef(node: NodeMap['def']) {
@@ -327,7 +440,7 @@ export function checker({
 		}
 		if (!sym.references?.length && !(sym.flags & Flags.Export))
 			error(
-				`"${sym.name ?? ''}" is declared but never used`,
+				`"${sym.name}" is declared but never used`,
 				node.label,
 			);
 		check(node.value);
@@ -346,13 +459,154 @@ export function checker({
 		check(node.children[1]);
 	}
 
+	function checkFnDef(node: NodeMap['fn']) {
+		resolver(node);
+		if (node.symbol.returnType && node.statements?.length === 1) {
+			const stmt = node.statements[0];
+			if (
+				stmt &&
+				stmt.kind !== 'next' &&
+				stmt.kind !== 'done' &&
+				stmt.kind !== 'break'
+			) {
+				const t = resolveType(stmt);
+				if (t && !canAssign(node.symbol.returnType, t))
+					error(
+						`Type "${typeToStr(t)}" is not assignable to return type "${typeToStr(node.symbol.returnType)}"`,
+						stmt,
+					);
+			}
+		}
+		if (node.statements) checkEach(node.statements);
+	}
+
+	function checkStageOnlyStmt(c: NodeMap['fn'], i: number) {
+		const stmts = c.statements;
+		if (stmts?.length !== 1) return;
+		const only = stmts[0];
+		if (only?.kind === 'next')
+			error(
+				'`next` is not allowed in auto-emit body. Use `{ X }` to emit X directly, or `{ next X; }` for a statement body.',
+				only,
+			);
+		else if (
+			only?.kind === 'done' &&
+			i === 0 &&
+			!c.parameters
+		)
+			error(
+				'`done` alone in a block is a no-op and not allowed.',
+				only,
+			);
+		else if (
+			only?.kind === 'break' &&
+			i === 0 &&
+			!c.parameters
+		)
+			error(
+				'`break` alone in a source block is not allowed.',
+				only,
+			);
+	}
+
+	function checkStageReturnType(c: NodeMap['fn']) {
+		if (!c.returnType || c.statements?.length !== 1) return;
+		const stmt = c.statements[0];
+		if (
+			!stmt ||
+			stmt.kind === 'next' ||
+			stmt.kind === 'done' ||
+			stmt.kind === 'break'
+		)
+			return;
+		resolver(c);
+		const t = resolveType(stmt);
+		if (t && c.symbol.returnType && !canAssign(c.symbol.returnType, t))
+			error(
+				`Type "${typeToStr(t)}" is not assignable to return type "${typeToStr(c.symbol.returnType)}"`,
+				stmt,
+			);
+	}
+
+	function checkPipeStageFn(c: NodeMap['fn'], i: number) {
+		const stmts = c.statements;
+		const hasStmts = !!stmts?.length;
+		if (c.parameters?.length === 0 && !hasStmts)
+			error(
+				'Empty `() { }` is not allowed; use `{ }` for a no-op function.',
+				c,
+			);
+		if (c.parameters?.length && !hasStmts)
+			error('empty body in a typed block is invalid', c);
+		checkStageOnlyStmt(c, i);
+		if (
+			!(c.symbol.flags & Flags.Sequence) &&
+			hasStmts &&
+			!c.parameters?.length
+		) {
+			const emits = stmts.some(
+				s =>
+					s.kind === 'next' ||
+					s.kind === 'break' ||
+					s.kind === 'done',
+			);
+			if (!emits)
+				error(
+					'Statement body produces no emission; use `,` for auto-emit or add `next`.',
+					c,
+				);
+		}
+		if (
+			!(c.symbol.flags & Flags.Sequence) &&
+			stmts &&
+			stmts.length > 1 &&
+			c.parameters?.length &&
+			!c.returnType &&
+			stmts.every(
+				s =>
+					s.kind === 'next' &&
+					s.children?.[0]?.kind !== ',',
+			)
+		)
+			error(
+				'Statement body is reducible to comma form `{ X1, X2 }`',
+				c,
+			);
+		checkStageReturnType(c);
+	}
+
+	function checkPipe(node: NodeMap['>>']) {
+		inferPipeStageParams(node.children);
+		for (let i = 0; i < node.children.length; i++) {
+			const c = node.children[i];
+			if (!c) continue;
+			if (c.kind === 'fn') checkPipeStageFn(c, i);
+			else check(c);
+		}
+	}
+
+	function checkTernary(node: NodeMap['?']) {
+		const [cond, truthy, falsy] = node.children;
+		check(cond);
+		check(truthy);
+		if (falsy) check(falsy);
+		if (
+			!falsy &&
+			truthy.kind !== 'break' &&
+			truthy.kind !== 'done'
+		)
+			error(
+				'`?:` requires both branches for value-only forms; use `break`/`done` for control flow.',
+				node,
+			);
+	}
+
 	function check(node: Node): void {
 		switch (node.kind) {
 			case 'root':
 				return checkEach(node.children);
 			case 'fn':
-				resolver(node);
-				return node.statements && checkEach(node.statements);
+				return checkFnDef(node);
 			case 'main':
 				return checkEach(node.statements);
 			case 'data': {
@@ -379,10 +633,9 @@ export function checker({
 			case '*':
 				return numberBinaryOperator(node);
 			case '>>':
-				inferPipeStageParams(node.children);
-				for (const c of node.children)
-					if (c.kind !== 'fn') check(c);
-				return;
+				return checkPipe(node);
+			case '?':
+				return checkTernary(node);
 			case ',':
 				for (const c of node.children) check(c);
 				return;
@@ -391,35 +644,162 @@ export function checker({
 		}
 	}
 
+	function paramDeclaredType(
+		stage: Node,
+		idx: number,
+	): Type | undefined {
+		if (stage.kind !== 'fn') return undefined;
+		const pNode = stage.parameters?.[idx];
+		if (!pNode?.type) return undefined;
+		if (pNode.type.kind !== 'typeident') return undefined;
+		const s = pNode.type.symbol;
+		return s.kind === 'type' ? s : undefined;
+	}
+
+	function checkStageReachable(stage: Node, input: Node) {
+		const prevFn = pipeStageFn(input);
+		if (!prevFn) return;
+		resolver(input);
+		if (
+			prevFn.returnType?.kind !== 'type' ||
+			prevFn.returnType.family !== 'void'
+		)
+			return;
+		const blocked =
+			stage.kind === 'fn' ||
+			(stage.kind === 'ident' &&
+				stage.symbol.kind !== 'function' &&
+				pipeStageFn(stage));
+		if (blocked)
+			error('stage is unreachable: previous stage returns Void', stage);
+	}
+
+	function inferSingleParamStage(
+		stage: Node,
+		p: Symbol,
+		inputType: SymbolMap['type'],
+	) {
+		const declared = paramDeclaredType(stage, 0) ?? p.type;
+		if (
+			declared &&
+			declared.kind === 'type' &&
+			inputType.family === 'data' &&
+			declared.family !== 'data' &&
+			declared.family !== 'union' &&
+			declared.family !== 'unknown'
+		) {
+			error(
+				`no match: stage parameter of type "${typeToStr(declared)}" does not match upstream data-block input`,
+				stage,
+			);
+			return;
+		}
+		if (!p.type) p.type = inputType;
+	}
+
+	function inferMultiParamStage(
+		stage: Node,
+		params: Symbol[],
+		inputType: SymbolMap['type'],
+	) {
+		if (inputType.family !== 'data') {
+			error(
+				`no match: multi-slot stage requires data-block input, got "${typeToStr(inputType)}"`,
+				stage,
+			);
+			return;
+		}
+		const keys = Object.keys(inputType.members);
+		if (keys.length && keys.length !== params.length) {
+			error(
+				`no match: stage with ${params.length} slots does not match upstream data block of arity ${keys.length}`,
+				stage,
+			);
+			return;
+		}
+		params.forEach((p, idx) => {
+			if (p.type) return;
+			const m = inputType.members[keys[idx] ?? ''];
+			if (m?.kind === 'variable' && m.type) p.type = m.type;
+		});
+	}
+
+	function inferPipeStage(stage: Node, input: Node) {
+		checkStageReachable(stage, input);
+		const fnSym = pipeStageFn(stage);
+		if (!fnSym) return;
+		const params = fnSym.parameters;
+		if (!params?.length) return;
+		const inputType = resolver(input);
+		if (inputType.kind !== 'type' || inputType.family === 'unknown')
+			return;
+		if (params.length === 1) {
+			const p = params[0];
+			if (p) inferSingleParamStage(stage, p, inputType);
+			return;
+		}
+		inferMultiParamStage(stage, params, inputType);
+	}
+
 	function inferPipeStageParams(children: Node[]) {
 		for (let i = 1; i < children.length; i++) {
 			const stage = children[i];
 			const input = children[i - 1];
 			if (!stage || !input) continue;
-			const fnSym = pipeStageFn(stage);
-			if (!fnSym) continue;
-			const firstParam = fnSym.parameters?.[0];
-			if (!firstParam || firstParam.type) continue;
-			const inputType = resolver(input);
-			if (
-				inputType.kind === 'type' &&
-				inputType.family !== 'unknown'
-			)
-				firstParam.type = inputType;
+			inferPipeStage(stage, input);
 		}
 	}
 
 	function pipeStageFn(stage: Node): SymbolMap['function'] | undefined {
+		if (stage.kind === 'fn') return stage.symbol;
 		if (stage.kind === 'ident') {
 			const sym = stage.symbol;
 			if (sym.kind === 'function') return sym;
-			if (sym.kind === 'variable' && sym.type?.kind === 'function')
-				return sym.type;
+			if (sym.kind === 'variable') {
+				if (sym.type?.kind === 'function') return sym.type;
+				const def = sym.definition;
+				if (def?.kind === 'def' && def.value.kind === 'fn')
+					return def.value.symbol;
+			}
+		}
+	}
+
+	function walkPipes(node: Node) {
+		if (node.kind === '>>') inferPipeStageParams(node.children);
+		switch (node.kind) {
+			case 'string':
+			case 'number':
+			case 'literal':
+			case 'loop':
+			case 'done':
+			case 'break':
+			case 'comment':
+			case '$':
+			case '@':
+			case 'ident':
+			case 'typeident':
+				return;
+			default: {
+				const children = node.children;
+				if (children)
+					for (let i = 0; i < children.length; i++) {
+						const c = children[i];
+						if (c && c.kind !== 'ident') walkPipes(c);
+					}
+				const statements =
+					node.kind === 'fn' || node.kind === 'main'
+						? node.statements
+						: undefined;
+				if (statements) for (const s of statements) walkPipes(s);
+			}
 		}
 	}
 
 	return {
-		run: () => check(root),
+		run: () => {
+			walkPipes(root);
+			check(root);
+		},
 		resolver,
 	};
 }

@@ -20,7 +20,7 @@ function nodeId(node: AstNode) {
 	}
 }
 
-export function symbolFlags(flags: number) {
+function symbolFlags(flags: number) {
 	const result = [];
 	for (const flag in Flags) {
 		if (flags & +flag) result.push('@' + Flags[flag]?.toLowerCase());
@@ -30,7 +30,7 @@ export function symbolFlags(flags: number) {
 
 export function ast(node: AstNode): string {
 	const flags =
-		'symbol' in node && node.symbol?.flags
+		'symbol' in node && node.symbol.flags
 			? symbolFlags(node.symbol.flags as number)
 			: '';
 	const id = nodeId(node) + (flags ? ` ${flags.join(' ')}` : '');

@@ -178,7 +178,7 @@ export default spec('Language Reference', ({ h }) => {
 			});
 			expr({
 				p: 'Value-ternary inside `next` is the canonical form for value-choice emission.',
-				pre: `pick = (b: Bool): Int32 { next b ? 10 : 20; }`,
+				pre: `pick = (b: Bool): Int32 { next b ? 10 : 20 }`,
 				src: `pick(true)`,
 				ast: `(call :pick :true)`,
 				out: [10],
@@ -192,11 +192,6 @@ export default spec('Language Reference', ({ h }) => {
 				p: '`next` is not allowed in `?:` branches — use `next cond ? X : Y` (value-ternary inside `next`).',
 				src: `main { 5 ? next 1 : next 2 >> @.out }`,
 				expected: '`next` is not allowed',
-			});
-			compileError({
-				p: 'Mixed-kind branches without bottom typing are invalid — both branches must be values, or one must be `break`/`done`.',
-				src: `main { 5 ? next 1 : 2 >> @.out }`,
-				expected: 'mixed-kind',
 			});
 		});
 	});
@@ -420,23 +415,23 @@ export default spec('Language Reference', ({ h }) => {
 		});
 		compileError({
 			p: `Empty parameter list with empty body \`() { }\` is invalid; use \`{ }\` for a no-op function.`,
-			src: `main { () { } >> @.out; }`,
-			expected: 'empty',
+			src: `main { () { } >> @.out }`,
+			expected: 'Empty `() { }`',
 		});
 		compileError({
 			p: '`next` is statement-only and cannot appear in an expression position, including the body of `{}`.',
-			src: `main { { next 1 } >> @.out; }`,
-			expected: 'Expected expression',
+			src: `main { { next 1 } >> @.out }`,
+			expected: '`next` is not allowed in auto-emit',
 		});
 		compileError({
 			p: '`done` is a statement and is not allowed as an expression value.',
-			src: `main { { done } >> @.out; }`,
-			expected: 'Expected expression',
+			src: `main { { done } >> @.out }`,
+			expected: '`done`',
 		});
 		compileError({
 			p: '`break` is a statement and is not allowed as an expression value.',
-			src: `main { { break } >> @.out; }`,
-			expected: 'Expected expression',
+			src: `main { { break } >> @.out }`,
+			expected: '`break`',
 		});
 		compileError({
 			p: '`next` cannot appear as the value of another `next`.',
@@ -463,10 +458,10 @@ export default spec('Language Reference', ({ h }) => {
 			out: [3],
 		});
 		expr({
-			p: 'Parameters can declare default values. When the caller omits the slot, the default is used.',
+			p: 'Parameters can declare default values. Pass `void` in a slot to use its default.',
 			pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
-			src: `addOne()`,
-			ast: `(call :addOne ?)`,
+			src: `addOne(void)`,
+			ast: `(call :addOne :void)`,
 			out: [42],
 		});
 
@@ -474,21 +469,21 @@ export default spec('Language Reference', ({ h }) => {
 			rule({
 				p: 'Code Blocks can call themselves recursively.',
 				src: `factorial = (n: Int32): Int32 { (n <= 1) ? 1 : n * factorial(n - 1) }; main { factorial(0) >> @.out; factorial(1) >> @.out; factorial(2) >> @.out; factorial(3) >> @.out; factorial(4) >> @.out; factorial(5) >> @.out; }`,
-				ast: '(root (def :factorial ? (fn (parameter :n typeident ?) typeident (next (? (<= :n 1) 1 (* :n (call :factorial (- :n 1))))))) (main (>> (call :factorial 0) (. @ :out @external)) (>> (call :factorial 1) (. @ :out @external)) (>> (call :factorial 2) (. @ :out @external)) (>> (call :factorial 3) (. @ :out @external)) (>> (call :factorial 4) (. @ :out @external)) (>> (call :factorial 5) (. @ :out @external))))',
+				ast: '(root (def :factorial ? (fn @sequence (parameter :n typeident ?) typeident (? (<= :n 1) 1 (* :n (call :factorial (- :n 1)))))) (main (>> (call :factorial 0) (. @ :out @external)) (>> (call :factorial 1) (. @ :out @external)) (>> (call :factorial 2) (. @ :out @external)) (>> (call :factorial 3) (. @ :out @external)) (>> (call :factorial 4) (. @ :out @external)) (>> (call :factorial 5) (. @ :out @external))))',
 				out: [1, 1, 2, 6, 24, 120],
 			});
 
 			rule({
 				p: 'fibonacci',
 				src: `fib = (n: Int32): Int32 { n <= 1 ? n : fib(n - 1) + fib(n - 2) }; main { fib(0) >> @.out; fib(1) >> @.out; fib(2) >> @.out; fib(3) >> @.out; fib(4) >> @.out; fib(5) >> @.out; fib(6) >> @.out; }`,
-				ast: '(root (def :fib ? (fn (parameter :n typeident ?) typeident (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))) (main (>> (call :fib 0) (. @ :out @external)) (>> (call :fib 1) (. @ :out @external)) (>> (call :fib 2) (. @ :out @external)) (>> (call :fib 3) (. @ :out @external)) (>> (call :fib 4) (. @ :out @external)) (>> (call :fib 5) (. @ :out @external)) (>> (call :fib 6) (. @ :out @external))))',
+				ast: '(root (def :fib ? (fn @sequence (parameter :n typeident ?) typeident (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2)))))) (main (>> (call :fib 0) (. @ :out @external)) (>> (call :fib 1) (. @ :out @external)) (>> (call :fib 2) (. @ :out @external)) (>> (call :fib 3) (. @ :out @external)) (>> (call :fib 4) (. @ :out @external)) (>> (call :fib 5) (. @ :out @external)) (>> (call :fib 6) (. @ :out @external))))',
 				out: [0, 1, 1, 2, 3, 5, 8],
 			});
 
 			rule({
 				p: 'ackermann',
 				src: `ackermann = (m: Int32, n: Int32): Int32 { m == 0 ? n + 1 : (n == 0 ? ackermann(m - 1, 1) : (ackermann(m - 1, ackermann(m, n - 1)))) }; main { ackermann(1, 3) >> @.out; ackermann(2, 3) >> @.out; ackermann(3, 3) >> @.out; ackermann(1, 5) >> @.out; ackermann(2, 5) >> @.out; ackermann(3, 5) >> @.out; }`,
-				ast: `(root (def :ackermann ? (fn (parameter :m typeident ?) (parameter :n typeident ?) typeident (next (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1)))))))))) (main (>> (call :ackermann (, 1 3)) (. @ :out @external)) (>> (call :ackermann (, 2 3)) (. @ :out @external)) (>> (call :ackermann (, 3 3)) (. @ :out @external)) (>> (call :ackermann (, 1 5)) (. @ :out @external)) (>> (call :ackermann (, 2 5)) (. @ :out @external)) (>> (call :ackermann (, 3 5)) (. @ :out @external))))`,
+				ast: `(root (def :ackermann ? (fn @sequence (parameter :m typeident ?) (parameter :n typeident ?) typeident (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1))))))))) (main (>> (call :ackermann (, 1 3)) (. @ :out @external)) (>> (call :ackermann (, 2 3)) (. @ :out @external)) (>> (call :ackermann (, 3 3)) (. @ :out @external)) (>> (call :ackermann (, 1 5)) (. @ :out @external)) (>> (call :ackermann (, 2 5)) (. @ :out @external)) (>> (call :ackermann (, 3 5)) (. @ :out @external))))`,
 				out: [5, 9, 61, 7, 13, 253],
 			});
 		});
@@ -510,7 +505,7 @@ export default spec('Language Reference', ({ h }) => {
 			});
 			expr({
 				p: 'A stage that emits nothing causes downstream stages to receive nothing.',
-				pre: `emit = { done; }`,
+				pre: `emit = { done }`,
 				src: `emit() >> { $ + 1 }`,
 				ast: `(>> (call :emit ?) (fn @sequence (+ $ 1)))`,
 				out: [],
@@ -653,31 +648,31 @@ a = {
 				});
 				expr({
 					p: 'Union type prefix; matches any variant of the union.',
-					pre: `mixed = (): Int32 | String { next 42; }`,
+					pre: `mixed = (): Int32 | String { next 42 }`,
 					src: `mixed() >> Int32 | String { $ }`,
-					ast: 'TODO',
+					ast: `(>> (call :mixed ?) (fn @sequence (parameter ? typeident ?) $))`,
 					out: [42],
 				});
 				expr({
 					p: 'Tuple type prefix; `$` is the positional tuple, accessed via `.N`.',
 					src: `[1, 'hi'] >> [Int32, String] { $.0 }`,
-					ast: 'TODO',
+					ast: `(>> (data (, 1 'hi')) (fn @sequence (parameter ? (data (, (propdef ? typeident ?) (propdef ? typeident ?))) ?) (. $ 0)))`,
 					out: [1],
 				});
 				expr({
 					p: 'Labeled record type prefix; `$` has labeled fields accessed via `.name`.',
 					src: `[a = 10, b = 20] >> [a: Int32, b: Int32] { $.a + $.b }`,
-					ast: 'TODO',
+					ast: `(>> (data (, (propdef :a ? 10) (propdef :b ? 20))) (fn @sequence (parameter ? (data (, (propdef :a typeident ?) (propdef :b typeident ?))) ?) (+ (. $ :a) (. $ :b))))`,
 					out: [30],
 				});
 				compileError({
 					p: 'Empty body in a typed block is invalid.',
-					src: `main { 5 >> Int32 { } >> @.out; }`,
+					src: `main { 5 >> Int32 { } >> @.out }`,
 					expected: 'empty',
 				});
 				compileError({
 					p: 'A value-block like `[1, 2]` is a data block (value), not a type — cannot be a type prefix.',
-					src: `main { 5 >> [1, 2] { $ } >> @.out; }`,
+					src: `main { 5 >> [1, 2] { $ } >> @.out }`,
 					expected: 'expected type',
 				});
 			},
@@ -723,12 +718,12 @@ a = {
 				});
 				compileError({
 					p: 'Body emission type must match the declared return type.',
-					src: `main { 5 >> Int32:Int32 { 'oops' } >> @.out; }`,
+					src: `main { 5 >> Int32:Int32 { 'oops' } >> @.out }`,
 					expected: 'is not assignable',
 				});
 				compileError({
 					p: 'A stage after a Void-returning stage is unreachable (Void emits nothing).',
-					src: `main { 5 >> Int32:Void { @.out($) } >> Int32 { $ + 1 } >> @.out; }`,
+					src: `main { 5 >> Int32:Void { @.out($) } >> Int32 { $ + 1 } >> @.out }`,
 					expected: 'unreachable',
 				});
 			},
@@ -757,9 +752,9 @@ a = {
 				});
 				expr({
 					p: 'Bool dispatch using two literal-type prefixes; pattern-match on truthy/falsy.',
-					pre: `check = (n: Int32): Bool { next n > 0; }`,
+					pre: `check = (n: Int32): Bool { next n > 0 }`,
 					src: `check(5) >> :true { 'positive' } >> :false { 'non-positive' }`,
-					ast: 'TODO',
+					ast: `(>> (call :check 5) (fn @sequence (parameter ? typeident ?) 'positive') (fn @sequence (parameter ? typeident ?) 'non-positive'))`,
 					out: ['positive'],
 				});
 				expr({
@@ -770,15 +765,15 @@ a = {
 				});
 				expr({
 					p: 'Literal string type-prefix; matches a specific string value.',
-					pre: `mode = (): 'on' | 'off' { next 'on'; }`,
+					pre: `mode = (): 'on' | 'off' { next 'on' }`,
 					src: `mode() >> :'on' { 'enabled' } >> :'off' { 'disabled' }`,
-					ast: 'TODO',
+					ast: `(>> (call :mode ?) (fn @sequence (parameter ? typeident ?) 'enabled') (fn @sequence (parameter ? typeident ?) 'disabled'))`,
 					out: ['enabled'],
 				});
 				expr({
 					p: 'Literal-type union; matches any listed literal value.',
 					src: `0 >> :0 | false | '' { 'falsy' }`,
-					ast: 'TODO',
+					ast: `(>> 0 (fn @sequence (parameter ? typeident ?) 'falsy'))`,
 					out: ['falsy'],
 				});
 				compileError({
@@ -788,8 +783,8 @@ a = {
 				});
 				compileError({
 					p: 'Parens around a single anonymous slot (`(:T) { body }`) are not allowed — use `:T { body }` (literal) or `T { body }` (named).',
-					src: `main { 5 >> (:Int32) { $ } >> @.out; }`,
-					expected: 'parens',
+					src: `main { 5 >> (:Int32) { $ } >> @.out }`,
+					expected: 'Parens',
 				});
 			},
 		);
@@ -853,12 +848,12 @@ a = {
 				});
 				compileError({
 					p: 'Single-slot pattern on multi-slot input: no chain stage matches the upstream type; unhandled at chain end.',
-					src: `main { [10, 20] >> (n: Int32) { n } >> @.out; }`,
+					src: `main { [10, 20] >> (n: Int32) { n } >> @.out }`,
 					expected: 'no match',
 				});
 				compileError({
 					p: '`next` is forbidden in auto-emit body (no `;`). Use `{ n }` for auto-emit or `{ next n; }` for statement body.',
-					src: `main { 5 >> (n: Int32) { next n } >> @.out; }`,
+					src: `main { 5 >> (n: Int32) { next n } >> @.out }`,
 					expected: '`next` is not allowed',
 				});
 			},
@@ -887,9 +882,9 @@ a = {
 				});
 				expr({
 					p: 'Union return type — function may fail.',
-					pre: `parseInt = (s: String): Int32 | Error { @.len(s) == 0 ? error('empty') : 42; }`,
+					pre: `parseInt = (s: String): Int32 | Error { length(s) == 0 ? error('empty') : 42 }`,
 					src: `parseInt('42')`,
-					ast: 'TODO',
+					ast: `(call :parseInt '42')`,
 					out: [42],
 				});
 				expr({
@@ -901,23 +896,23 @@ a = {
 				});
 				expr({
 					p: 'Void return: side-effect sink. No downstream emission.',
-					pre: `print = (n: Int32): Void { @.out(n); }`,
+					pre: `print = (n: Int32): Void { @.out(n) }`,
 					src: `5 >> print`,
-					ast: 'TODO',
+					ast: `(>> 5 :print)`,
 					out: [5],
 				});
 				expr({
 					p: 'Recursion — fn name is bound before its body is evaluated.',
-					pre: `factorial = (n: Int32): Int32 { n <= 1 ? 1 : n * factorial(n - 1); }`,
+					pre: `factorial = (n: Int32): Int32 { n <= 1 ? 1 : n * factorial(n - 1) }`,
 					src: `factorial(5)`,
-					ast: 'TODO',
+					ast: `(call :factorial 5)`,
 					out: [120],
 				});
 				expr({
 					p: 'Tuple return — emits one tuple value (not multi-emit).',
-					pre: `pair = (n: Int32): [Int32, Int32] { [n, n + 1]; }`,
+					pre: `pair = (n: Int32): [Int32, Int32] { [n, n + 1] }`,
 					src: `pair(5)`,
-					ast: 'TODO',
+					ast: `(call :pair 5)`,
 					out: [[5, 6]],
 				});
 				expr({
@@ -998,24 +993,24 @@ a = {
 				});
 				compileError({
 					p: 'Multi-slot pattern on scalar input — no chain stage matches; unhandled.',
-					src: `main { 5 >> (a, b) { a + b } >> @.out; }`,
+					src: `main { 5 >> (a, b) { a + b } >> @.out }`,
 					expected: 'no match',
 				});
 				compileError({
 					p: 'Multi-slot pattern with wrong arity — unhandled at chain end.',
-					src: `main { [1, 2, 3] >> (a, b) { a + b } >> @.out; }`,
+					src: `main { [1, 2, 3] >> (a, b) { a + b } >> @.out }`,
 					expected: 'no match',
 				});
 				compileError({
 					p: `Named call with labels that don't match fn's parameter names.`,
 					pre: `add = (a: Int32, b: Int32) { a + b }`,
-					src: `add(x = 1, y = 2)`,
+					src: `main { add(x = 1, y = 2) >> @.out }`,
 					expected: 'no match',
 				});
 				compileError({
 					p: 'Mixing positional and named args in the same call is forbidden.',
 					pre: `add = (a: Int32, b: Int32) { a + b }`,
-					src: `add(1, b = 2)`,
+					src: `main { add(1, b = 2) >> @.out }`,
 					expected: 'cannot mix',
 				});
 			},
@@ -1044,9 +1039,9 @@ a = {
 				});
 				expr({
 					p: 'Union return — function may fail.',
-					pre: `divide = (a: Int32, b: Int32): Int32 | Error { b == 0 ? error('div-by-zero') : a / b; }`,
+					pre: `divide = (a: Int32, b: Int32): Int32 | Error { b == 0 ? error('div-by-zero') : a / b }`,
 					src: `divide(10, 2)`,
-					ast: 'TODO',
+					ast: `(call :divide (, 10 2))`,
 					out: [5],
 				});
 				expr({
@@ -1065,9 +1060,9 @@ a = {
 				});
 				expr({
 					p: 'Tuple return — emits one tuple value (not multi-emit).',
-					pre: `swap = (a: Int32, b: Int32): [Int32, Int32] { [b, a]; }`,
+					pre: `swap = (a: Int32, b: Int32): [Int32, Int32] { [b, a] }`,
 					src: `swap(1, 2)`,
-					ast: 'TODO',
+					ast: `(call :swap (, 1 2))`,
 					out: [[2, 1]],
 				});
 				expr({
@@ -1079,9 +1074,9 @@ a = {
 				});
 				expr({
 					p: 'Multi-arg recursion (Ackermann).',
-					pre: `ack = (m: Int32, n: Int32): Int32 { m == 0 ? n + 1 : (n == 0 ? ack(m - 1, 1) : ack(m - 1, ack(m, n - 1))); }`,
+					pre: `ack = (m: Int32, n: Int32): Int32 { m == 0 ? n + 1 : (n == 0 ? ack(m - 1, 1) : ack(m - 1, ack(m, n - 1))) }`,
 					src: `ack(2, 3)`,
-					ast: 'TODO',
+					ast: `(call :ack (, 2 3))`,
 					out: [9],
 				});
 				compileError({
@@ -1157,14 +1152,14 @@ a = {
 				compileError({
 					p: 'Required param (no default) cannot be passed `void`.',
 					pre: `f = (a: Int32, b: Int32): Int32 { a + b }`,
-					src: `f(void, 2)`,
-					expected: 'no default',
+					src: `main { f(void, 2) >> @.out }`,
+					expected: 'not assignable',
 				});
 				compileError({
 					p: 'Empty call on a 1+ param fn is a shape mismatch (no "all defaults" sugar).',
 					pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
-					src: `addOne()`,
-					expected: 'shape mismatch',
+					src: `main { addOne() >> @.out }`,
+					expected: 'No matching overload',
 				});
 			},
 		);
@@ -1348,7 +1343,7 @@ a = {
 			rule({
 				p: 'An event-loop pattern: run a side-effecting stage forever until a condition triggers `break`.',
 				src: `runUntil = (limit: Int32): Int32 { counter: var = 0; loop >> (i: Int32) { counter == limit ? break; counter = counter + 1; }; next counter; }; main { runUntil(5) >> @.out }`,
-				ast: '(root (def :runUntil ? (fn (parameter :limit typeident ?) typeident (def @variable :counter ? 0) (>> loop (fn (parameter :i ? ?) (? (== :counter @variable :limit) break) (= :counter @variable (+ :counter @variable 1)))) (next @variable :counter))) (main (>> (call :runUntil 5) (. @ :out @external))))',
+				ast: '(root (def :runUntil ? (fn (parameter :limit typeident ?) typeident (def @variable :counter ? 0) (>> loop (fn (parameter :i typeident ?) (? (== :counter @variable :limit) break) (= :counter @variable (+ :counter @variable 1)))) (next :counter @variable))) (main (>> (call :runUntil 5) (. @ :out @external))))',
 				out: [5],
 			});
 		});

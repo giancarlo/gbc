@@ -7,6 +7,7 @@ export enum Flags {
 	Export = 2,
 	Sequence = 4,
 	External = 16,
+	Intrinsic = 32,
 }
 
 type BaseSymbol = {
@@ -58,7 +59,11 @@ type TypeUnion =
 type SymbolProp = {
 	type: TypeUnion;
 	literal: { value: unknown };
-	function: { parameters?: Symbol[]; returnType?: Type };
+	function: {
+		parameters?: Symbol[];
+		returnType?: Type;
+		overloads?: SymbolMap['function'][];
+	};
 	parameter: unknown;
 	variable: { name: string };
 	data: { members: Record<string, Symbol> };
@@ -109,6 +114,15 @@ function param(name: string, type: Type): SymbolMap['variable'] {
 	return { kind: 'variable', name, flags: 0, type };
 }
 
+export const AnyData: SymbolMap['type'] = {
+	name: '[]',
+	kind: 'type',
+	flags: 0,
+	family: 'data',
+	size: 4,
+	members: {},
+};
+
 export function ProgramSymbolTable() {
 	return SymbolTable<Symbol>({
 		true: literal(true, BaseTypes.Bool),
@@ -119,11 +133,26 @@ export function ProgramSymbolTable() {
 		error: {
 			kind: 'function',
 			name: 'error',
-			flags: 0,
+			flags: Flags.Intrinsic,
 			parameters: [param('id', BaseTypes.String)],
 			returnType: BaseTypes.Error,
 		},
-
+		length: {
+			kind: 'function',
+			name: 'length',
+			flags: Flags.Intrinsic,
+			parameters: [param('s', BaseTypes.String)],
+			returnType: BaseTypes.Int32,
+			overloads: [
+				{
+					kind: 'function',
+					name: 'length',
+					flags: Flags.Intrinsic,
+					parameters: [param('d', AnyData)],
+					returnType: BaseTypes.Int32,
+				},
+			],
+		},
 		'@': {
 			kind: 'data',
 			flags: 0,
@@ -132,7 +161,7 @@ export function ProgramSymbolTable() {
 					name: 'out',
 					flags: Flags.External,
 					kind: 'function',
-					parameters: [param('s', BaseTypes.String)],
+					parameters: [param('s', BaseTypes.Unknown)],
 					returnType: BaseTypes.Void,
 				},
 				each: {

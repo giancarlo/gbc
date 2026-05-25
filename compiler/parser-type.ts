@@ -2,6 +2,7 @@ import { ParserApi, Token, parserTable, text } from '../sdk/index.js';
 
 import type { Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
+import { AnyData } from './symbol-table.js';
 import type {
 	SymbolMap,
 	Type,
@@ -80,6 +81,23 @@ export function parseType(
 					};
 				},
 			},
+			number: {
+				prefix(tk) {
+					const raw = text(tk).replace(/_/g, '');
+					return {
+						...tk,
+						kind: 'typeident',
+						symbol: {
+							kind: 'type',
+							flags: 0,
+							family: 'literal',
+							name: raw,
+							size: 4,
+							value: +raw,
+						},
+					};
+				},
+			},
 			'|': {
 				precedence: 5,
 				infix(tk, left) {
@@ -125,33 +143,47 @@ export function parseType(
 			},
 			'[': {
 				prefix(tk) {
-					const propdefs: NodeMap['propdef'][] = [];
-					if (current().kind !== ']') {
-						do {
-							const ident = expect('ident');
-							expect(':');
-							const pt = expectNode(
-								expression(),
-								'Expected member type',
-							);
-							if (pt.kind !== 'typeident')
-								throw api.error('Expected typeident', ident);
-							const sym: SymbolMap['variable'] = {
-								kind: 'variable',
-								name: text(ident),
-								flags: 0,
-								type: pt.symbol,
-							};
-							propdefs.push({
-								...ident,
-								kind: 'propdef',
-								label: ident,
-								symbol: sym,
-								type: pt,
-								children: [ident, pt, undefined],
-							});
-						} while (optional(','));
+					if (current().kind === ']') {
+						const close = expect(']');
+						return {
+							...tk,
+							kind: 'typeident',
+							symbol: AnyData,
+							end: close.end,
+						};
 					}
+					const propdefs: NodeMap['propdef'][] = [];
+					do {
+						let label: Token<'ident'> | undefined;
+						const first = current();
+						if (first.kind === 'ident') {
+							api.next();
+							if (current().kind === ':') {
+								label = first;
+								api.next();
+							} else api.backtrack(first);
+						}
+						const pt = expectNode(
+							expression(),
+							'Expected member type',
+						);
+						if (pt.kind !== 'typeident')
+							throw api.error('Expected typeident', first);
+						const sym: SymbolMap['variable'] = {
+							kind: 'variable',
+							name: label ? text(label) : '',
+							flags: 0,
+							type: pt.symbol,
+						};
+						propdefs.push({
+							...(label ?? pt),
+							kind: 'propdef',
+							label,
+							symbol: sym,
+							type: pt,
+							children: [label, pt, undefined],
+						});
+					} while (optional(','));
 					const close = expect(']');
 					const first = propdefs[0];
 					const inner: NodeMap[','] | NodeMap['propdef'] =

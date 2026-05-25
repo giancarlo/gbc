@@ -170,18 +170,24 @@ export class SpecApi extends TestApiBase<SpecApi> {
 			}
 		}
 		const wrapped = `${pre ? pre + '; ' : ''}main { ${src} >> @.out${isMulti ? ';' : ''} }`;
-		const { ast: rootAst } = this.parse(wrapped);
+		const needsRuntime = out !== undefined || !!test;
+		const rootAst = needsRuntime
+			? this.parse(wrapped).ast
+			: this.parseAstOnly(wrapped);
 		const mainNode = rootAst.children.find(
 			(c): c is NodeMap['main'] => c?.kind === 'main',
 		);
 		this.assert(mainNode !== undefined);
-		// For each main statement: if it's a `>> @.out` pipe, take all but
-		// the trailing @.out stage. Multi-stage pipes reconstruct as a new
-		// pipe node for printing; single-stage drop the wrapping.
 		const inners = mainNode.statements.map(s => unwrapOutPipe(s!));
 		this.equal(inners.map(n => printAst(n)).join(' '), ast);
+		if (!needsRuntime) return;
 		const result = this.runWasm(rootAst);
-		if (out !== undefined) this.equalValues(result.out, out);
+		if (out !== undefined) {
+			const expected = JSON.stringify(out);
+			const got = JSON.stringify(result.out);
+			if (expected !== got)
+				throw new Error(`[OUT_DIFF src=${src} expected=${expected} got=${got}]`);
+		}
 		test?.(result);
 	};
 

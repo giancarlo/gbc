@@ -12,6 +12,7 @@ import {
 	SymbolMap,
 	SymbolTable,
 	TypesSymbolTable,
+	Type,
 	Flags,
 } from './symbol-table.js';
 import { Node, NodeMap } from './node.js';
@@ -265,7 +266,11 @@ export function parseExpression(
 	 */
 	function parseBranchOrExpr(prec: number): Node {
 		const k = current().kind;
-		if (k === 'next') return parseNextStmt();
+		if (k === 'next')
+			throw api.error(
+				'`next` is not allowed in `?:` branches; use `next cond ? X : Y` instead.',
+				current(),
+			);
 		if (k === 'done' || k === 'break') return parseSimpleStmt();
 		return expectNode(exprParser(prec), 'Expected expression');
 	}
@@ -409,18 +414,18 @@ export function parseExpression(
 					const right = expect('ident');
 					const prop = text(right);
 
-					let symbol: Symbol | undefined;
+					let leftSymbol: Symbol | undefined;
 					if (left.kind === '@') {
 						const importName = text(left).slice(1);
-						if (!importName) symbol = symbolTable.get('@');
-					} else if (left.kind === 'ident') symbol = left.symbol;
+						if (!importName) leftSymbol = symbolTable.get('@');
+					} else if (left.kind === 'ident') leftSymbol = left.symbol;
 
 					const propSymbol =
-						symbol?.kind === 'data'
-							? symbol.members[prop]
+						leftSymbol?.kind === 'data'
+							? leftSymbol.members[prop]
 							: undefined;
 
-					if (symbol?.kind === 'data' && !propSymbol)
+					if (leftSymbol?.kind === 'data' && !propSymbol)
 						throw error(
 							`Property "${prop}" does not exist in "${text(
 								left,
@@ -442,7 +447,6 @@ export function parseExpression(
 						start: left.start,
 						children: [left, rightNode],
 						end: right.end,
-						symbol,
 					};
 				},
 			},
@@ -491,7 +495,8 @@ export function parseExpression(
 						if (
 							type.kind === 'typeident' &&
 							type.symbol.kind === 'type' &&
-							type.symbol.family !== 'literal'
+							type.symbol.family !== 'literal' &&
+							type.symbol.family !== 'union'
 						)
 							throw error(
 								`":${type.symbol.name} { ... }" is not a literal-type prefix; use \`${type.symbol.name}\` for Shape 2.`,
@@ -519,6 +524,11 @@ export function parseExpression(
 				precedence: 20,
 				prefix(tk) {
 					const tk1 = current();
+					if (tk1.kind === ':')
+						throw error(
+							'Parens around a single anonymous slot are not allowed; use `:T { ... }` or `T { ... }`',
+							tk,
+						);
 					let isLambda = tk1.kind === ')';
 					if (tk1.kind === 'ident') {
 						api.next();
@@ -552,6 +562,42 @@ export function parseExpression(
 			'[': {
 				precedence: 17,
 				prefix(tk) {
+					const savedErrors = api.errors.length;
+					api.backtrack(tk);
+					let typeNode: Node | undefined;
+					try {
+						typeNode = typeParser();
+					} catch {
+						typeNode = undefined;
+					}
+					const hasLiteralValueMembers = (() => {
+						if (!typeNode || typeNode.kind !== 'data') return false;
+						const inner = typeNode.children[0];
+						const items =
+							inner?.kind === ',' ? inner.children : inner ? [inner] : [];
+						const ms = items
+							.map(item =>
+								item.kind === 'propdef' ? item.symbol.type : undefined,
+							)
+							.filter((t): t is Type => !!t);
+						if (ms.length === 0) return false;
+						return ms.every(
+							t =>
+								t.kind === 'type' &&
+								t.family === 'literal' &&
+								typeof t.value === 'number',
+						);
+					})();
+					if (typeNode && !hasLiteralValueMembers && current().kind === '{')
+						return parseAnonymousSlotBlock(tk, typeNode);
+					if (hasLiteralValueMembers && current().kind === '{')
+						throw api.error(
+							'expected type, got value-like data block as type prefix',
+							tk,
+						);
+					api.errors.length = savedErrors;
+					api.backtrack(tk);
+					api.next();
 					const items: Node[] = [];
 					const seenLabels = new Set<string>();
 					if (current().kind !== ']') {
@@ -560,8 +606,8 @@ export function parseExpression(
 						} while (optional(','));
 					}
 					let inner: Node | undefined;
-					const first = items[0];
-					if (items.length === 1 && first) inner = first;
+					const itemFirst = items[0];
+					if (items.length === 1 && itemFirst) inner = itemFirst;
 					else if (items.length > 1) {
 						const comma: NodeMap[','] = {
 							...tk,
@@ -622,18 +668,24 @@ export function parseExpression(
 					const name = text(n);
 					const symbol = symbolTable.getWithReference(name, n);
 					if (symbol) return { ...n, symbol };
-					const tk = current();
-					if (tk.kind === '{' || tk.kind === ':') {
-						const typeSym = typesTable.get(name);
-						if (typeSym) {
-							const typeNode: NodeMap['typeident'] = {
-								...n,
-								kind: 'typeident',
-								symbol: typeSym,
-							};
-							return parseAnonymousSlotBlock(n, typeNode);
+					if (typesTable.get(name)) {
+						const savedErrors = api.errors.length;
+						api.backtrack(n);
+						let typeNode: Node | undefined;
+						try {
+							typeNode = typeParser();
+						} catch {
+							typeNode = undefined;
 						}
+						if (typeNode && current().kind === '{')
+							return parseAnonymousSlotBlock(n, typeNode);
+						if (typeNode && current().kind === ':')
+							return parseAnonymousSlotBlock(n, typeNode);
+						api.errors.length = savedErrors;
+						api.backtrack(n);
+						api.next();
 					}
+					const tk = current();
 					if (tk.kind !== '=' && tk.kind !== ':')
 						throw error('Identifier not defined', n);
 					return parseSlot(

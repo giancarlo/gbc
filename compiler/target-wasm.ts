@@ -7,7 +7,16 @@ import type {
 	Symbol as GbcSymbol,
 	SymbolMap,
 	Type,
+	TypeFamily,
 } from './symbol-table.js';
+
+type ValueType = SymbolMap['type'] & {
+	family: Exclude<TypeFamily, 'void' | 'unknown'>;
+};
+
+function hasRuntimeValue(t: Type): t is ValueType {
+	return t.kind === 'type' && t.family !== 'void' && t.family !== 'unknown';
+}
 
 declare class TextEncoder {
 	constructor();
@@ -327,15 +336,36 @@ function isFloatType(t: Type): boolean {
 	return t.kind === 'type' && t.family === 'float';
 }
 
-function findOutExternal(
-	t: Type,
+function findLiteralOut(value: unknown): string | undefined {
+	if (typeof value === 'string') return 'out_str';
+	if (typeof value === 'boolean') return 'out_bool';
+	if (typeof value === 'number')
+		return Number.isInteger(value) ? 'out_i32' : 'out_f64';
+	return undefined;
+}
+
+function findUnionOut(
+	t: SymbolMap['type'] & { family: 'union' },
 	externals: Map<string, SymbolMap['function']>,
 ): string | undefined {
-	if (t.kind !== 'type')
-		throw new Error(`Cannot @.out value of kind ${t.kind}`);
-	if (t.family === 'data' && externals.has('out_data')) return 'out_data';
-	if (t.family === 'fn') return undefined;
-	if (t.family === 'error' && externals.has('out_str')) return 'out_str';
+	const nonError = t.members.filter(
+		m => m.kind === 'type' && m.family !== 'error',
+	);
+	for (const m of nonError) {
+		const r = findOutExternal(m, externals);
+		if (r) return r;
+	}
+	for (const m of t.members) {
+		const r = findOutExternal(m, externals);
+		if (r) return r;
+	}
+	return undefined;
+}
+
+function findOutByShape(
+	t: SymbolMap['type'],
+	externals: Map<string, SymbolMap['function']>,
+): string | undefined {
 	for (const [name, sym] of externals) {
 		if (!name.startsWith('out_')) continue;
 		const param = sym.parameters?.[0]?.type;
@@ -353,6 +383,25 @@ function findOutExternal(
 		if (param && param.kind === 'type' && param.family === t.family)
 			return name;
 	}
+	return undefined;
+}
+
+function findOutExternal(
+	t: Type,
+	externals: Map<string, SymbolMap['function']>,
+): string | undefined {
+	if (t.kind !== 'type')
+		throw new Error(`Cannot @.out value of kind ${t.kind}`);
+	if (t.family === 'data' && externals.has('out_data')) return 'out_data';
+	if (t.family === 'fn' || t.family === 'void') return undefined;
+	if (t.family === 'error' && externals.has('out_str')) return 'out_str';
+	if (t.family === 'literal') {
+		const lit = findLiteralOut(t.value);
+		if (lit) return lit;
+	}
+	if (t.family === 'union') return findUnionOut(t, externals);
+	const byShape = findOutByShape(t, externals);
+	if (byShape) return byShape;
 	throw new Error(`No host external accepts type ${t.name}`);
 }
 
@@ -386,8 +435,11 @@ export function compileWasm(
 	const datas: ModuleData[] = [];
 	const enc = new TextEncoder();
 	let heap = 0;
+	const internCache = new Map<string, number>();
 
 	function intern(s: string): number {
+		const cached = internCache.get(s);
+		if (cached !== undefined) return cached;
 		const utf8 = enc.encode(s);
 		const buf: number[] = [];
 		u32le(utf8.length, buf);
@@ -397,6 +449,7 @@ export function compileWasm(
 		heap += buf.length;
 		// 4-byte align
 		heap = (heap + 3) & ~3;
+		internCache.set(s, offset);
 		return offset;
 	}
 
@@ -528,6 +581,8 @@ export function compileWasm(
 					: BaseTypes.Float64;
 			case 'string':
 				return BaseTypes.String;
+			case '$':
+				return fn?.dollarType ?? BaseTypes.Int32;
 			case 'ident':
 				return inferIdentType(node);
 			case '+':
@@ -673,9 +728,7 @@ export function compileWasm(
 			if (!val) return BaseTypes.Void;
 			const t = compileExpr(val, fn);
 			if (
-				t.kind === 'type' &&
-				t.family !== 'void' &&
-				t.family !== 'unknown'
+				hasRuntimeValue(t)
 			)
 				fn.fusion.emit(t);
 			return BaseTypes.Void;
@@ -758,9 +811,7 @@ export function compileWasm(
 			rhs.kind === 'typeident' ? rhs.symbol : BaseTypes.Unknown;
 		const lhsType = compileExpr(lhs, fn);
 		if (
-			lhsType.kind === 'type' &&
-			lhsType.family !== 'void' &&
-			lhsType.family !== 'unknown'
+			hasRuntimeValue(lhsType)
 		)
 			fn.body.push(OP_DROP);
 		const matches =
@@ -771,6 +822,33 @@ export function compileWasm(
 		fn.body.push(OP_I32_CONST);
 		sleb128(matches ? 1 : 0, fn.body);
 		return BaseTypes.Bool;
+	}
+
+	function unionOfTypes(a: Type, b: Type): Type {
+		if (a.kind !== 'type' || b.kind !== 'type') return a;
+		if (a === b) return a;
+		if (a.name === b.name && a.family === b.family) return a;
+		const members: Type[] = [];
+		const add = (t: Type) => {
+			if (t.kind !== 'type') return;
+			if (t.family === 'union') {
+				for (const m of t.members)
+					if (!members.some(x => x.name === m.name)) members.push(m);
+			} else if (!members.some(x => x.name === t.name)) members.push(t);
+		};
+		add(a);
+		add(b);
+		if (members.length === 1) return members[0] ?? a;
+		let maxSize = 0;
+		for (const m of members) if (m.kind === 'type' && m.size > maxSize) maxSize = m.size;
+		return {
+			kind: 'type',
+			flags: 0,
+			name: members.map(m => m.name).join(' | '),
+			family: 'union',
+			size: maxSize,
+			members,
+		};
 	}
 
 	function compileTernary(node: NodeMap['?'], fn: FuncBuilder): Type {
@@ -784,9 +862,7 @@ export function compileWasm(
 			fn.blockDepth++;
 			const t = compileExpr(thenBranch, fn);
 			if (
-				t.kind === 'type' &&
-				t.family !== 'void' &&
-				t.family !== 'unknown'
+				hasRuntimeValue(t)
 			)
 				fn.body.push(OP_DROP);
 			fn.body.push(OP_END);
@@ -794,11 +870,17 @@ export function compileWasm(
 			return BaseTypes.Void;
 		}
 		const thenType = inferType(thenBranch, fn);
+		const elseType = inferType(elseBranch, fn);
+		const isBottom = (n: Node) =>
+			n.kind === 'break' || n.kind === 'done';
+		const effective = isBottom(thenBranch)
+			? elseType
+			: isBottom(elseBranch)
+				? thenType
+				: unionOfTypes(thenType, elseType);
 		const blockType =
-			thenType.kind === 'type' &&
-			thenType.family !== 'void' &&
-			thenType.family !== 'unknown'
-				? gbcToWasm(thenType)
+			hasRuntimeValue(effective)
+				? gbcToWasm(effective)
 				: 0x40;
 		fn.body.push(blockType);
 		fn.blockDepth++;
@@ -807,7 +889,7 @@ export function compileWasm(
 		compileExpr(elseBranch, fn);
 		fn.body.push(OP_END);
 		fn.blockDepth--;
-		return thenType;
+		return effective;
 	}
 
 	function compileComma(node: NodeMap[','], fn: FuncBuilder): Type {
@@ -818,9 +900,7 @@ export function compileWasm(
 					c.kind !== 'next' &&
 					c.kind !== 'break' &&
 					c.kind !== 'done' &&
-					t.kind === 'type' &&
-					t.family !== 'void' &&
-					t.family !== 'unknown'
+					hasRuntimeValue(t)
 				)
 					fn.fusion.emit(t);
 			}
@@ -835,9 +915,7 @@ export function compileWasm(
 			last = t;
 			if (
 				i < children.length - 1 &&
-				t.kind === 'type' &&
-				t.family !== 'void' &&
-				t.family !== 'unknown'
+				hasRuntimeValue(t)
 			)
 				fn.body.push(OP_DROP);
 		}
@@ -1062,43 +1140,111 @@ export function compileWasm(
 		return BaseTypes.Bool;
 	}
 
-	function compileCall(node: NodeMap['call'], fn: FuncBuilder): Type {
-		const callee = node.children[0];
-		const args = node.children[1];
-		if (callee.kind !== 'ident')
-			throw new Error('Indirect call not yet supported');
-		const calleeSym = callee.symbol;
-		if (calleeSym.kind === 'function' && calleeSym.name === 'error') {
+	function compileIntrinsic(
+		name: string,
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): Type {
+		if (name === 'error') {
 			if (args) compileExpr(args, fn);
 			else {
 				fn.body.push(OP_I32_CONST);
 				sleb128(0, fn.body);
 			}
+			// Tag Error pointers with high bit set so runtime dispatch can
+			// distinguish them from plain Int32 values in unions.
+			fn.body.push(OP_I32_CONST);
+			sleb128(-0x80000000, fn.body);
+			fn.body.push(0x72); // i32.or
 			return BaseTypes.Error;
 		}
-		// Template path: callee is a union-param fn. Resolve (or compile)
-		// the per-signature specialization and dispatch to its funcidx.
-		const templateNode = fnTemplates.get(calleeSym);
-		if (templateNode) {
-			const fnSym = templateNode.symbol;
-			const argTypes = collectArgTypes(args, fn);
-			const builderIdx = getOrCreateSpec(templateNode, argTypes);
-			compileCallArgs(args, fnSym, fn);
-			fn.body.push(OP_CALL);
-			const fixupOffset = fn.body.length;
-			for (let i = 0; i < 5; i++) fn.body.push(0);
-			fn.callFixups.push({
-				offset: fixupOffset,
-				builderIdx,
-				size: 5,
-			});
-			return fnSym.returnType ?? BaseTypes.Void;
+		if (name === 'length') {
+			if (!args) throw new Error('length() requires an argument');
+			const argType = inferType(args, fn);
+			if (
+				argType.kind === 'type' &&
+				argType.family === 'data' &&
+				Object.keys(argType.members).length > 0
+			) {
+				const arity = Object.keys(argType.members).length;
+				fn.body.push(OP_I32_CONST);
+				sleb128(arity, fn.body);
+				return BaseTypes.Int32;
+			}
+			compileExpr(args, fn);
+			fn.body.push(OP_I32_LOAD);
+			uleb128(2, fn.body);
+			uleb128(0, fn.body);
+			return BaseTypes.Int32;
 		}
+		throw new Error(`Unknown intrinsic: "${name}"`);
+	}
+
+	function isHostOutCall(callee: Node): boolean {
+		return (
+			callee.kind === '.' &&
+			callee.children[0].kind === '@' &&
+			callee.children[1].kind === 'ident' &&
+			callee.children[1].symbol.name === 'out'
+		);
+	}
+
+	function emitOutHostCall(inputType: Type, fn: FuncBuilder): Type {
+		let inT = inputType;
+		if (inT.kind !== 'type' || inT.family === 'unknown')
+			inT = BaseTypes.Int32;
+		const hostField = findOutExternal(inT, externals);
+		if (!hostField) {
+			if (inT.family !== 'void') fn.body.push(OP_DROP);
+			return BaseTypes.Void;
+		}
+		const ext = externals.get(hostField);
+		if (!ext)
+			throw new Error(`External "${hostField}" missing from stdlib`);
+		const sig = fnSignature(ext);
+		const idx = importHost(hostField, sig.params, sig.results);
+		fn.body.push(OP_CALL);
+		uleb128(idx, fn.body);
+		return BaseTypes.Void;
+	}
+
+	function compileHostOutCall(
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): Type {
+		if (!args) return BaseTypes.Void;
+		const argType = compileExpr(args, fn);
+		return emitOutHostCall(argType, fn);
+	}
+
+	function emitFixedCall(fn: FuncBuilder, builderIdx: number) {
+		fn.body.push(OP_CALL);
+		const fixupOffset = fn.body.length;
+		for (let i = 0; i < 5; i++) fn.body.push(0);
+		fn.callFixups.push({ offset: fixupOffset, builderIdx, size: 5 });
+	}
+
+	function compileTemplateCall(
+		templateNode: NodeMap['fn'],
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): Type {
+		const fnSym = templateNode.symbol;
+		const argTypes = collectArgTypes(args, fn);
+		const builderIdx = getOrCreateSpec(templateNode, argTypes);
+		compileCallArgs(args, fnSym, fn);
+		emitFixedCall(fn, builderIdx);
+		return fnSym.returnType ?? BaseTypes.Void;
+	}
+
+	function compileDirectCall(
+		calleeSym: GbcSymbol,
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): Type {
 		const builderIdx = fnDefBuilderIdx.get(calleeSym);
 		if (builderIdx === undefined)
-			throw new Error(
-				`Unknown function: "${calleeSym.name ?? '?'}"`,
-			);
+			throw new Error(`Unknown function: "${calleeSym.name ?? '?'}"`);
 		const fnSym =
 			calleeSym.kind === 'function'
 				? calleeSym
@@ -1110,16 +1256,25 @@ export function compileWasm(
 				`"${calleeSym.name ?? '?'}" has no function type`,
 			);
 		compileCallArgs(args, fnSym, fn);
-		fn.body.push(OP_CALL);
-		// Reserve 5-byte placeholder for funcidx (max uleb128 for i32).
-		const fixupOffset = fn.body.length;
-		for (let i = 0; i < 5; i++) fn.body.push(0);
-		fn.callFixups.push({
-			offset: fixupOffset,
-			builderIdx,
-			size: 5,
-		});
+		emitFixedCall(fn, builderIdx);
 		return fnSym.returnType ?? BaseTypes.Void;
+	}
+
+	function compileCall(node: NodeMap['call'], fn: FuncBuilder): Type {
+		const callee = node.children[0];
+		const args = node.children[1];
+		if (isHostOutCall(callee)) return compileHostOutCall(args, fn);
+		if (callee.kind !== 'ident')
+			throw new Error('Indirect call not yet supported');
+		const calleeSym = callee.symbol;
+		if (
+			calleeSym.kind === 'function' &&
+			calleeSym.flags & Flags.Intrinsic
+		)
+			return compileIntrinsic(calleeSym.name ?? '', args, fn);
+		const templateNode = fnTemplates.get(calleeSym);
+		if (templateNode) return compileTemplateCall(templateNode, args, fn);
+		return compileDirectCall(calleeSym, args, fn);
 	}
 
 	function compileData(node: NodeMap['data'], fn: FuncBuilder): Type {
@@ -1248,6 +1403,18 @@ export function compileWasm(
 		if (
 			fn.dollarLocal !== undefined &&
 			fn.dollarType?.kind === 'type' &&
+			fn.dollarType.family === 'error'
+		) {
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(fn.dollarLocal, fn.body);
+			fn.body.push(OP_I32_CONST);
+			sleb128(0x7FFFFFFF, fn.body);
+			fn.body.push(0x71); // i32.and — clear Error tag bit
+			return BaseTypes.String;
+		}
+		if (
+			fn.dollarLocal !== undefined &&
+			fn.dollarType?.kind === 'type' &&
 			(fn.dollarType.family === 'data' || fn.dollarType.family === 'error')
 		) {
 			const slotSize = fn.dollarType.size || 4;
@@ -1305,6 +1472,13 @@ export function compileWasm(
 		field: Node,
 		fn: FuncBuilder,
 	): Type {
+		if (recvType.kind === 'type' && recvType.family === 'error') {
+			compileExpr(recv, fn);
+			fn.body.push(OP_I32_CONST);
+			sleb128(0x7FFFFFFF, fn.body);
+			fn.body.push(0x71); // i32.and — clear Error tag bit
+			return BaseTypes.String;
+		}
 		if (recvType.kind !== 'type' || recvType.family !== 'data')
 			throw new Error('compileMemberLoad: not a data type');
 		const slotSize = recvType.size || 4;
@@ -1356,10 +1530,8 @@ export function compileWasm(
 
 	function compileLocalDef(node: NodeMap['def'], fn: FuncBuilder): Type {
 		const sym = node.symbol;
-		if (sym.kind !== 'variable')
-			throw new Error('Local def label must be a variable');
 		const rt = compileExpr(node.value, fn);
-		const wasmType = rt.kind === 'type' && rt.family !== 'void' && rt.family !== 'unknown'
+		const wasmType = hasRuntimeValue(rt)
 			? gbcToWasm(rt)
 			: I32;
 		const localIdx = allocLocal(fn, wasmType);
@@ -1370,70 +1542,111 @@ export function compileWasm(
 		return BaseTypes.Void;
 	}
 
+	function callReturnUnion(
+		callNode: NodeMap['call'],
+	): SymbolMap['type'] | undefined {
+		const callee = callNode.children[0];
+		if (callee.kind !== 'ident') return undefined;
+		const sym = callee.symbol;
+		const rt =
+			sym.kind === 'function'
+				? sym.returnType
+				: sym.type?.kind === 'function'
+					? sym.type.returnType
+					: undefined;
+		if (rt?.kind === 'type' && rt.family === 'union') return rt;
+		return undefined;
+	}
+
+	type PipeInlineResult =
+		| { kind: 'done' }
+		| { kind: 'continue'; source: Node; stages: Node[] }
+		| { kind: 'stop' };
+
+	function tryInlinePipeCall(
+		source: NodeMap['call'],
+		stages: Node[],
+		fn: FuncBuilder,
+	): PipeInlineResult {
+		if (tryInlineSequenceCall(source, stages, fn)) return { kind: 'done' };
+		if (tryInlineEmittingCall(source, stages, fn)) return { kind: 'done' };
+		const inlined = tryInlineStreamCall(source, fn);
+		if (!inlined) return { kind: 'stop' };
+		const reflat = flattenPipe([inlined, ...stages]);
+		const first = reflat[0];
+		if (!first) return { kind: 'stop' };
+		return { kind: 'continue', source: first, stages: reflat.slice(1) };
+	}
+
+	function compileEachDataSource(
+		source: NodeMap['data'],
+		stages: Node[],
+		fn: FuncBuilder,
+	) {
+		const items = dataItems(source).flatMap(flattenDataItem);
+		const rest = stages.slice(1);
+		for (const item of items) {
+			const v = itemValue(item);
+			const t = compileExpr(v, fn);
+			driveStages(rest, t, fn);
+		}
+	}
+
+	function compileOptionalSource(
+		source: NodeMap['?'],
+		stages: Node[],
+		fn: FuncBuilder,
+	) {
+		compileExpr(source.children[0], fn);
+		fn.body.push(OP_IF);
+		fn.body.push(0x40);
+		fn.blockDepth++;
+		const inner = source.children[1];
+		if (inner.kind === 'fn') {
+			compileFnSource(inner, stages, fn);
+		} else {
+			const t = compileExpr(inner, fn);
+			driveStages(stages, t, fn);
+		}
+		fn.body.push(OP_END);
+		fn.blockDepth--;
+	}
+
 	function compilePipe(children: Node[], fn: FuncBuilder): Type {
 		const flat = flattenPipe(children);
 		let source = flat[0];
 		let stages = flat.slice(1);
 		if (!source) throw new Error('Invalid pipe');
 
+		let originalUnion: SymbolMap['type'] | undefined;
 		while (source.kind === 'call') {
-			const sequenceInlined = tryInlineSequenceCall(source, stages, fn);
-			if (sequenceInlined) return BaseTypes.Void;
-			const emittingInlined = tryInlineEmittingCall(source, stages, fn);
-			if (emittingInlined) return BaseTypes.Void;
-			const inlined = tryInlineStreamCall(source, fn);
-			if (!inlined) break;
-			const reflat = flattenPipe([inlined, ...stages]);
-			const first = reflat[0];
-			if (!first) break;
-			source = first;
-			stages = reflat.slice(1);
+			if (!originalUnion) originalUnion = callReturnUnion(source);
+			const r = tryInlinePipeCall(source, stages, fn);
+			if (r.kind === 'done') return BaseTypes.Void;
+			if (r.kind === 'stop') break;
+			source = r.source;
+			stages = r.stages;
 		}
 
 		if (source.kind === 'loop') {
 			compileLoopSource(stages, fn);
 			return BaseTypes.Void;
 		}
-
-		// Anonymous sequence fn as source — inline body in fusion. Each
-		// top-level expression in the body auto-emits through the stages.
-		if (source.kind === 'fn' && source.symbol.flags & Flags.Sequence) {
+		if (source.kind === 'fn') {
 			compileFnSource(source, stages, fn);
 			return BaseTypes.Void;
 		}
-
-		// Data block source with @.each — emit each item separately.
 		if (source.kind === 'data' && stages[0] && isEachStage(stages[0])) {
-			const items = dataItems(source).flatMap(flattenDataItem);
-			const rest = stages.slice(1);
-			for (const item of items) {
-				const v = itemValue(item);
-				const t = compileExpr(v, fn);
-				driveStages(rest, t, fn);
-			}
+			compileEachDataSource(source, stages, fn);
 			return BaseTypes.Void;
 		}
-
-		// Optional-else ternary as pipe source: emit only when truthy.
 		if (source.kind === '?' && source.children[2] === undefined) {
-			compileExpr(source.children[0], fn);
-			fn.body.push(OP_IF);
-			fn.body.push(0x40);
-			fn.blockDepth++;
-			const inner = source.children[1];
-			if (inner.kind === 'fn') {
-				compileFnSource(inner, stages, fn);
-			} else {
-				const t = compileExpr(inner, fn);
-				driveStages(stages, t, fn);
-			}
-			fn.body.push(OP_END);
-			fn.blockDepth--;
+			compileOptionalSource(source, stages, fn);
 			return BaseTypes.Void;
 		}
 
 		const sourceType = compileExpr(source, fn);
-		return driveStages(stages, sourceType, fn);
+		return driveStages(stages, originalUnion ?? sourceType, fn);
 	}
 
 	/**
@@ -1451,10 +1664,6 @@ export function compileWasm(
 		const p = params[0];
 		if (p) {
 			const pSym = p.symbol;
-			if (pSym.kind !== 'variable')
-				throw new Error(
-					`Stage parameter "${pSym.name ?? '?'}" is not a variable`,
-				);
 			if (!pSym.type) pSym.type = inputType;
 			const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
 			fn.body.push(OP_LOCAL_SET);
@@ -1485,19 +1694,23 @@ export function compileWasm(
 	) {
 		const stmts = source.statements ?? [];
 		const savedFusion = fn.fusion;
+		const declaredReturn = source.symbol.returnType;
+		const broadenForDispatch = (t: Type): Type =>
+			declaredReturn?.kind === 'type' &&
+			declaredReturn.family === 'union'
+				? declaredReturn
+				: t;
 		fn.fusion = {
 			emit: (t: Type) => {
 				if (stages.length === 0) {
 					if (savedFusion) savedFusion.emit(t);
 					else if (
-						t.kind === 'type' &&
-						t.family !== 'void' &&
-						t.family !== 'unknown'
+						hasRuntimeValue(t)
 					)
 						fn.body.push(OP_DROP);
 					return;
 				}
-				driveStages(stages, t, fn);
+				driveStages(stages, broadenForDispatch(t), fn);
 			},
 			targetDepth: savedFusion?.targetDepth ?? fn.blockDepth,
 		};
@@ -1523,15 +1736,11 @@ export function compileWasm(
 		const t = compileExpr(expr, fn);
 		if (
 			fn.fusion &&
-			t.kind === 'type' &&
-			t.family !== 'void' &&
-			t.family !== 'unknown'
+			hasRuntimeValue(t)
 		) {
 			fn.fusion.emit(t);
 		} else if (
-			t.kind === 'type' &&
-			t.family !== 'void' &&
-			t.family !== 'unknown'
+			hasRuntimeValue(t)
 		) {
 			fn.body.push(OP_DROP);
 		}
@@ -1634,17 +1843,40 @@ export function compileWasm(
 	 * inlined body in a WASM block so `done` can branch to its end without
 	 * returning from the enclosing function.
 	 */
+	function isVoidLiteralNode(n: Node | undefined): boolean {
+		return (
+			n?.kind === 'ident' &&
+			n.symbol.kind === 'literal' &&
+			n.symbol.type?.kind === 'type' &&
+			n.symbol.type.family === 'void'
+		);
+	}
+
 	function bindInlineParams(
 		params: NodeMap['parameter'][],
 		argList: Node[],
 		fn: FuncBuilder,
 	): boolean {
+		const byName = new Map<string, Node>();
+		let hasNamed = false;
+		for (const a of argList)
+			if (a.kind === 'propdef' && a.label && a.value) {
+				hasNamed = true;
+				const n = a.symbol.name;
+				if (n && !isVoidLiteralNode(a.value))
+					byName.set(n, a.value);
+			}
 		for (let i = 0; i < params.length; i++) {
 			const p = params[i];
 			if (!p) return false;
 			const pSym = p.symbol;
-			const argNode = argList[i];
-			if (!argNode || pSym.kind !== 'variable') return false;
+			let argNode: Node | undefined;
+			if (hasNamed) argNode = byName.get(p.symbol.name) ?? p.value;
+			else {
+				argNode = argList[i];
+				if (isVoidLiteralNode(argNode) && p.value) argNode = p.value;
+			}
+			if (!argNode) return false;
 			const argType = compileExpr(argNode, fn);
 			if (!pSym.type) pSym.type = argType;
 			if (
@@ -1684,14 +1916,15 @@ export function compileWasm(
 				if (stages.length === 0) {
 					if (savedFusion) savedFusion.emit(t);
 					else if (
-						t.kind === 'type' &&
-						t.family !== 'void' &&
-						t.family !== 'unknown'
+						hasRuntimeValue(t)
 					)
 						fn.body.push(OP_DROP);
 					return;
 				}
+				const cur = fn.fusion;
+				fn.fusion = savedFusion;
 				driveStages(stages, t, fn);
+				fn.fusion = cur;
 			},
 			targetDepth: savedFusion?.targetDepth ?? fn.blockDepth,
 		};
@@ -1753,8 +1986,16 @@ export function compileWasm(
 			const p = params[i];
 			if (!p) return false;
 			const pSym = p.symbol;
-			const argNode = argList[i];
-			if (!argNode || pSym.kind !== 'variable') return false;
+			let argNode = argList[i];
+			if (
+				argNode?.kind === 'ident' &&
+				argNode.symbol.kind === 'literal' &&
+				argNode.symbol.type?.kind === 'type' &&
+				argNode.symbol.type.family === 'void' &&
+				p.value
+			)
+				argNode = p.value;
+			if (!argNode) return false;
 			const argType = compileExpr(argNode, fn);
 			if (!pSym.type) pSym.type = argType;
 			const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
@@ -1813,10 +2054,12 @@ export function compileWasm(
 		const savedFusion = fn.fusion;
 		fn.fusion = {
 			emit: (t: Type) => {
+				if (savedFusion) {
+					savedFusion.emit(t);
+					return;
+				}
 				if (
-					t.kind === 'type' &&
-					t.family !== 'void' &&
-					t.family !== 'unknown'
+					hasRuntimeValue(t)
 				)
 					fn.body.push(OP_DROP);
 			},
@@ -1848,9 +2091,7 @@ export function compileWasm(
 
 	function driveStagesEmpty(inputType: Type, fn: FuncBuilder): Type {
 		const hasValue =
-			inputType.kind === 'type' &&
-			inputType.family !== 'void' &&
-			inputType.family !== 'unknown';
+			hasRuntimeValue(inputType);
 		if (hasValue && fn.fusion) {
 			fn.fusion.emit(inputType);
 			return BaseTypes.Void;
@@ -1866,26 +2107,67 @@ export function compileWasm(
 		fn: FuncBuilder,
 	): Type {
 		const params = stage.parameters ?? [];
-		const p = params[0];
 		const savedDollarLocal = fn.dollarLocal;
 		const savedDollarType = fn.dollarType;
-		if (p) {
-			const pSym = p.symbol;
-			if (!pSym.type) pSym.type = inputType;
-			const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
+		if (params.length > 1) {
+			const dataLocal = allocLocal(fn, I32);
 			fn.body.push(OP_LOCAL_SET);
-			uleb128(localIdx, fn.body);
-			fn.paramMap.set(pSym, localIdx);
-			if (!p.label) {
-				fn.dollarLocal = localIdx;
-				fn.dollarType = pSym.type ?? inputType;
-			}
+			uleb128(dataLocal, fn.body);
+			const itemSize =
+				inputType.kind === 'type' && inputType.size > 0
+					? inputType.size
+					: 4;
+			const inputMembers =
+				inputType.kind === 'type' &&
+				inputType.family === 'data' &&
+				Object.keys(inputType.members).length > 0
+					? Object.keys(inputType.members)
+					: undefined;
+			params.forEach((p, idx) => {
+				const pSym = p.symbol;
+				if (!pSym.type) pSym.type = BaseTypes.Int32;
+				const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
+				const labelIdx =
+					inputMembers && pSym.name
+						? inputMembers.indexOf(pSym.name)
+						: -1;
+				const slotIdx = labelIdx >= 0 ? labelIdx : idx;
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(dataLocal, fn.body);
+				fn.body.push(OP_I32_CONST);
+				sleb128(8 + slotIdx * itemSize, fn.body);
+				fn.body.push(OP_I32_ADD);
+				fn.body.push(OP_I32_LOAD);
+				uleb128(2, fn.body);
+				uleb128(0, fn.body);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(localIdx, fn.body);
+				fn.paramMap.set(pSym, localIdx);
+			});
 		} else {
-			const localIdx = allocLocal(fn, I32);
-			fn.body.push(OP_LOCAL_SET);
-			uleb128(localIdx, fn.body);
-			fn.dollarLocal = localIdx;
-			fn.dollarType = inputType;
+			const p = params[0];
+			if (p) {
+				const pSym = p.symbol;
+				if (!pSym.type) {
+					if (p.type?.kind === 'typeident' && p.type.symbol.kind === 'type')
+						pSym.type = p.type.symbol;
+					else pSym.type = inputType;
+				}
+				const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(localIdx, fn.body);
+				fn.paramMap.set(pSym, localIdx);
+				if (!p.label) {
+					fn.dollarLocal = localIdx;
+					fn.dollarType = pSym.type ?? inputType;
+				}
+			} else {
+				const localIdx = allocLocal(fn, I32);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(localIdx, fn.body);
+				fn.dollarLocal = localIdx;
+				fn.dollarType = inputType;
+			}
 		}
 
 		const savedFusion = fn.fusion;
@@ -1908,16 +2190,30 @@ export function compileWasm(
 		fn: FuncBuilder,
 	): Type {
 		const sym = stage.symbol;
+		const def = sym.definition;
+		const fnValue =
+			def?.kind === 'def' && def.value.kind === 'fn'
+				? def.value
+				: undefined;
+		if (fnValue && fnValue.symbol.flags & Flags.Sequence) {
+			const params = fnValue.parameters ?? [];
+			if (params.length > 0)
+				return driveFnStage(fnValue, inputType, rest, fn);
+			const dollarLocal = allocLocal(fn, gbcToWasm(inputType));
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(dollarLocal, fn.body);
+			const savedDollarLocal = fn.dollarLocal;
+			const savedDollarType = fn.dollarType;
+			fn.dollarLocal = dollarLocal;
+			fn.dollarType = inputType;
+			compileFnSource(fnValue, rest, fn);
+			fn.dollarLocal = savedDollarLocal;
+			fn.dollarType = savedDollarType;
+			return BaseTypes.Void;
+		}
 		const builderIdx = fnDefBuilderIdx.get(sym);
 		if (builderIdx !== undefined) {
-			fn.body.push(OP_CALL);
-			const fixupOffset = fn.body.length;
-			for (let i = 0; i < 5; i++) fn.body.push(0);
-			fn.callFixups.push({
-				offset: fixupOffset,
-				builderIdx,
-				size: 5,
-			});
+			emitFixedCall(fn, builderIdx);
 			const fnSym =
 				sym.kind === 'function'
 					? sym
@@ -1927,27 +2223,40 @@ export function compileWasm(
 			const retType = fnSym?.returnType ?? BaseTypes.Unknown;
 			return driveStages(rest, retType, fn);
 		}
-		const def = sym.definition;
-		if (def?.kind === 'def') {
-			const fnValue = def.value;
-			if (fnValue.kind === 'fn') {
-				if (fnValue.symbol.flags & Flags.Sequence) {
-					const dollarLocal = allocLocal(fn, gbcToWasm(inputType));
-					fn.body.push(OP_LOCAL_SET);
-					uleb128(dollarLocal, fn.body);
-					const savedDollarLocal = fn.dollarLocal;
-					const savedDollarType = fn.dollarType;
-					fn.dollarLocal = dollarLocal;
-					fn.dollarType = inputType;
-					compileFnSource(fnValue, rest, fn);
-					fn.dollarLocal = savedDollarLocal;
-					fn.dollarType = savedDollarType;
-					return BaseTypes.Void;
-				}
-				return inlineDirectFnStage(fnValue, inputType, rest, fn);
-			}
-		}
+		if (fnValue) return inlineDirectFnStage(fnValue, inputType, rest, fn);
 		throw new Error(`Unknown pipe-stage ident: "${sym.name ?? '?'}"`);
+	}
+
+	function stageDispatchType(
+		stage: Node,
+	): SymbolMap['type'] | undefined {
+		if (stage.kind !== 'fn') return undefined;
+		const params = stage.parameters ?? [];
+		const p = params[0];
+		if (params.length !== 1 || !p) return undefined;
+		let t = p.symbol.type;
+		if ((!t || t.kind !== 'type') && p.type?.kind === 'typeident') {
+			const ts = p.type.symbol;
+			if (ts.kind === 'type') t = ts;
+		}
+		if (!t || t.kind !== 'type') return undefined;
+		if (
+			t.family === 'literal' ||
+			t.family === 'error' ||
+			t.family === 'int' ||
+			t.family === 'uint' ||
+			t.family === 'float' ||
+			t.family === 'bool' ||
+			t.family === 'string'
+		)
+			return t;
+		return undefined;
+	}
+
+	function isDispatchedInput(t: Type): boolean {
+		if (t.kind !== 'type') return false;
+		if (t.family === 'union') return true;
+		return false;
 	}
 
 	function driveStages(
@@ -1965,10 +2274,100 @@ export function compileWasm(
 			return driveStages(rest, outType, fn);
 		}
 
+		// Dispatch group: when input is a union and consecutive stages are
+		// typed to discriminate union members.
+		const dispatchOnInput = isDispatchedInput(inputType);
+		const firstDispatchType = stageDispatchType(stage);
+		const useDispatch =
+			(dispatchOnInput && firstDispatchType) ||
+			(firstDispatchType && firstDispatchType.family === 'literal');
+		if (useDispatch) {
+			let n = 0;
+			while (n < stages.length) {
+				const s = stages[n];
+				if (!s || !stageDispatchType(s)) break;
+				n++;
+			}
+			const dispatchStages = stages.slice(0, n);
+			const after = stages.slice(n);
+			return driveDispatch(dispatchStages, after, inputType, fn);
+		}
+
 		if (stage.kind === 'fn') return driveFnStage(stage, inputType, rest, fn);
 		if (stage.kind === 'ident') return driveIdentStage(stage, inputType, rest, fn);
 
 		throw new Error(`Unsupported pipe stage: ${stage.kind}`);
+	}
+
+	function driveDispatch(
+		dispatchStages: Node[],
+		afterStages: Node[],
+		inputType: Type,
+		fn: FuncBuilder,
+	): Type {
+		const inputLocal = allocLocal(fn, gbcToWasm(inputType));
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(inputLocal, fn.body);
+		for (const ds of dispatchStages) {
+			if (ds.kind !== 'fn') continue;
+			const dispatchType = stageDispatchType(ds);
+			if (!dispatchType) continue;
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(inputLocal, fn.body);
+			if (
+				dispatchType.family === 'literal' &&
+				typeof dispatchType.value === 'boolean'
+			) {
+				fn.body.push(OP_I32_CONST);
+				sleb128(dispatchType.value ? 1 : 0, fn.body);
+				fn.body.push(0x46); // i32.eq
+			} else if (
+				dispatchType.family === 'literal' &&
+				typeof dispatchType.value === 'number'
+			) {
+				fn.body.push(OP_I32_CONST);
+				sleb128(dispatchType.value | 0, fn.body);
+				fn.body.push(0x46); // i32.eq
+			} else if (
+				dispatchType.family === 'literal' &&
+				typeof dispatchType.value === 'string'
+			) {
+				const ptr = intern(dispatchType.value);
+				fn.body.push(OP_I32_CONST);
+				sleb128(ptr, fn.body);
+				fn.body.push(0x46); // i32.eq
+			} else if (dispatchType.family === 'error') {
+				// Error variant: tagged with high bit set.
+				fn.body.push(OP_I32_CONST);
+				sleb128(-0x80000000, fn.body);
+				fn.body.push(0x71); // i32.and
+			} else if (
+				dispatchType.family === 'int' ||
+				dispatchType.family === 'uint' ||
+				dispatchType.family === 'float' ||
+				dispatchType.family === 'bool' ||
+				dispatchType.family === 'string'
+			) {
+				// Non-Error variant: dispatch only when Error tag bit is clear.
+				fn.body.push(OP_I32_CONST);
+				sleb128(-0x80000000, fn.body);
+				fn.body.push(0x71); // i32.and
+				fn.body.push(0x45); // i32.eqz — true when high bit is 0
+			} else {
+				fn.body.push(OP_DROP);
+				fn.body.push(OP_I32_CONST);
+				sleb128(0, fn.body);
+			}
+			fn.body.push(OP_IF);
+			fn.body.push(0x40);
+			fn.blockDepth++;
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(inputLocal, fn.body);
+			driveFnStage(ds, inputType, afterStages, fn);
+			fn.body.push(OP_END);
+			fn.blockDepth--;
+		}
+		return BaseTypes.Void;
 	}
 
 	function emitHostStage(
@@ -1987,27 +2386,7 @@ export function compileWasm(
 		const fname = field.symbol.name;
 		if (!fname) throw new Error('Stage member is unnamed');
 
-		if (fname === 'out') {
-			let inT = inputType;
-			if (inT.kind !== 'type' || inT.family === 'unknown') {
-				// Default to Int32 when type is unknown (e.g. ident with no inference).
-				inT = BaseTypes.Int32;
-			}
-			const hostField = findOutExternal(inT, externals);
-			if (!hostField) {
-				// No host external for this type (e.g. fn). Drop the value.
-				fn.body.push(OP_DROP);
-				return BaseTypes.Void;
-			}
-			const ext = externals.get(hostField);
-			if (!ext)
-				throw new Error(`External "${hostField}" missing from stdlib`);
-			const sig = fnSignature(ext);
-			const idx = importHost(hostField, sig.params, sig.results);
-			fn.body.push(OP_CALL);
-			uleb128(idx, fn.body);
-			return BaseTypes.Void;
-		}
+		if (fname === 'out') return emitOutHostCall(inputType, fn);
 
 		if (field.symbol.kind !== 'function')
 			throw new Error(
@@ -2034,16 +2413,23 @@ export function compileWasm(
 		const argList = argListFromCall(args);
 		const params = calleeSym.parameters ?? [];
 		const anyNamed = argList.some(a => a.kind === 'propdef');
+		const anyPositional = argList.some(a => a.kind !== 'propdef');
+		if (anyNamed && anyPositional)
+			throw new Error('cannot mix positional and named arguments');
 		const paramDefault = (sym: GbcSymbol | undefined): Node | undefined => {
 			const def = sym?.definition;
 			return def?.kind === 'parameter' ? def.value : undefined;
 		};
+		const isVoidLiteral = (n: Node | undefined) =>
+			n?.kind === 'ident' &&
+			n.symbol.kind === 'literal' &&
+			n.symbol.name === 'void';
 		if (anyNamed) {
 			const byName = new Map<string, Node>();
 			for (const a of argList) {
 				if (a.kind === 'propdef' && a.label && a.value) {
 					const n = a.symbol.name;
-					if (n) byName.set(n, a.value);
+					if (n && !isVoidLiteral(a.value)) byName.set(n, a.value);
 				}
 			}
 			for (const p of params) {
@@ -2052,14 +2438,16 @@ export function compileWasm(
 				const v = byName.get(n) ?? paramDefault(p);
 				if (!v)
 					throw new Error(
-						`Missing argument for parameter "${n}"`,
+						`no match: missing argument for parameter "${n}"`,
 					);
 				compileExpr(v, fn);
 			}
 		} else {
 			for (let i = 0; i < params.length; i++) {
 				const p = params[i];
-				const a = argList[i] ?? paramDefault(p);
+				let a = argList[i];
+				if (isVoidLiteral(a)) a = paramDefault(p);
+				a ??= paramDefault(p);
 				if (!a)
 					throw new Error(
 						`Missing argument for parameter "${p?.name ?? '?'}"`,
@@ -2083,10 +2471,6 @@ export function compileWasm(
 			const p = paramSyms[i];
 			if (!p) continue;
 			const sym = p.symbol;
-			if (sym.kind !== 'variable')
-				throw new Error(
-					`Parameter "${sym.name ?? '?'}" symbol is not a variable`,
-				);
 			if (!sym.type) sym.type = BaseTypes.Int32;
 			paramTypes.push(gbcToWasm(sym.type));
 			paramMap.set(sym, i);
@@ -2108,21 +2492,11 @@ export function compileWasm(
 		)
 			return returnType;
 		const fromChecker = fnNode.symbol.returnType;
-		if (
-			fromChecker?.kind === 'type' &&
-			fromChecker.family !== 'unknown' &&
-			fromChecker.family !== 'void'
-		)
-			return fromChecker;
+		if (fromChecker && hasRuntimeValue(fromChecker)) return fromChecker;
 		const val = tail.children?.[0];
 		if (val) {
 			const inferred = inferType(val);
-			if (
-				inferred.kind === 'type' &&
-				inferred.family !== 'unknown' &&
-				inferred.family !== 'void'
-			)
-				return inferred;
+			if (hasRuntimeValue(inferred)) return inferred;
 		}
 		return returnType;
 	}
@@ -2137,9 +2511,7 @@ export function compileWasm(
 		const returnType = resolveFnReturnType(fnNode);
 		const resultTypes: number[] = [];
 		if (
-			returnType.kind === 'type' &&
-			returnType.family !== 'void' &&
-			returnType.family !== 'unknown'
+			hasRuntimeValue(returnType)
 		)
 			resultTypes.push(gbcToWasm(returnType));
 		const builder: FuncBuilder = {
@@ -2265,9 +2637,7 @@ export function compileWasm(
 					rt.family === 'unknown';
 				if (
 					fnHasNoResult &&
-					t.kind === 'type' &&
-					t.family !== 'void' &&
-					t.family !== 'unknown'
+					hasRuntimeValue(t)
 				) {
 					builder.body.push(OP_DROP);
 				}
@@ -2279,18 +2649,14 @@ export function compileWasm(
 		// a matching non-void return type (provides the return value).
 		const rt = builder.returnType;
 		const hasReturn =
-			rt.kind === 'type' &&
-			rt.family !== 'void' &&
-			rt.family !== 'unknown';
+			hasRuntimeValue(rt);
 		for (let i = 0; i < stmts.length; i++) {
 			const stmt = stmts[i];
 			if (!stmt) continue;
 			const isTail = i === stmts.length - 1;
 			const t = compileExpr(stmt, builder);
 			const valueOnStack =
-				t.kind === 'type' &&
-				t.family !== 'void' &&
-				t.family !== 'unknown';
+				hasRuntimeValue(t);
 			if (!valueOnStack) continue;
 			if (isTail && hasReturn) continue;
 			builder.body.push(OP_DROP);
@@ -2369,7 +2735,6 @@ export function compileWasm(
 
 	function compileTopLevelDef(node: NodeMap['def']) {
 		const sym = node.symbol;
-		if (sym.kind !== 'variable') return;
 		const value = node.value;
 		if (value.kind === 'fn') return;
 		const isMut = !!(sym.flags & Flags.Variable);
@@ -2432,9 +2797,7 @@ export function compileWasm(
 		}
 		const t = compileExpr(stmt, fn);
 		if (
-			t.kind === 'type' &&
-			t.family !== 'void' &&
-			t.family !== 'unknown'
+			hasRuntimeValue(t)
 		)
 			fn.body.push(OP_DROP);
 	}
