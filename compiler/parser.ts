@@ -1,12 +1,12 @@
 import { ParserApi, Token, text } from '../sdk/index.js';
 
 import { parseExpression } from './parser-expression.js';
-import { parseType } from './parser-type.js';
+import { parseType, typeParameters } from './parser-type.js';
 import { Flags, SymbolTable, TypesSymbolTable } from './symbol-table.js';
 
 import type { ScannerToken } from './scanner.js';
 import type { Node, NodeMap } from './node.js';
-import type { SymbolMap } from './symbol-table.js';
+import type { SymbolMap, Type } from './symbol-table.js';
 
 export type RootNode = ReturnType<typeof parse>;
 
@@ -137,9 +137,20 @@ export function parse(
 	function buildTypeSymbol(
 		def: Node,
 		name: string,
-	): SymbolMap['type'] | undefined {
+	): Type | undefined {
 		if (def.kind === 'typeident' && def.symbol.kind === 'type')
 			return { ...def.symbol, name };
+		if (def.kind === 'fn' && def.symbol.kind === 'function')
+			return { ...def.symbol, name };
+		if (def.kind === '>>')
+			return {
+				kind: 'type',
+				flags: 0,
+				name,
+				family: 'unknown',
+				size: 4,
+				definition: def,
+			};
 		if (def.kind === 'data') {
 			const members: Record<string, SymbolMap['variable']> = {};
 			addDataMembers(def, members);
@@ -170,15 +181,36 @@ export function parse(
 	function typeDefinition(node: Token<'type'>) {
 		const ident = expect('ident');
 		const name = text(ident);
+		const stub: Type = {
+			kind: 'type',
+			flags: 0,
+			name,
+			family: 'unknown',
+			size: 4,
+		};
+		typesTable.set(name, stub);
+		const tp = typeParameters(api, typesTable, typeParser);
+		if (tp)
+			stub.typeParams = tp.params
+				.map(p => p.symbol.type)
+				.filter((t): t is Type => !!t);
 		expect('=');
 		const def = expectNode(typeParser(), 'Expected type definition');
-		const symbol = buildTypeSymbol(def, name);
-		if (!symbol) throw api.error('Expected type definition', ident);
-		typesTable.set(name, symbol);
-		const label: NodeMap['ident'] = { ...ident, symbol };
+		tp?.pop();
+		const built = buildTypeSymbol(def, name);
+		if (!built) throw api.error('Expected type definition', ident);
+		// Mutate the forward-declared stub in place so recursive references
+		// captured during the body parse (e.g. `Reverse<R>`) see the completed
+		// definition. typeParams set on the stub above are preserved.
+		const { typeParams } = stub;
+		Object.assign(stub, built);
+		if (typeParams) stub.typeParams = typeParams;
+		const symbol = stub;
+		const label: NodeMap['label'] = { ...ident, kind: 'label' };
 		const result: NodeMap['type'] = {
 			...node,
-			children: [label, def],
+			children: tp ? [label, tp.list, def] : [label, def],
+			typeParameters: tp?.params,
 			symbol,
 		};
 		return result;
@@ -202,7 +234,7 @@ export function parse(
 		const ident = expect('ident');
 		expect(':');
 		const type = expectNode(typeParser(), 'Expected type');
-		if (type.kind !== 'typeident' || type.symbol.kind !== 'function')
+		if (type.kind !== 'fn' || type.symbol.kind !== 'function')
 			throw api.error(
 				'External must declare a function type',
 				ident,
@@ -215,13 +247,14 @@ export function parse(
 			parameters: type.symbol.parameters,
 			returnType: type.symbol.returnType,
 		});
+		const label: NodeMap['label'] = { ...ident, kind: 'label' };
 		return {
 			...token,
 			kind: 'external',
-			label: ident,
+			label,
 			symbol,
 			type,
-			children: [ident, type],
+			children: [label, type],
 			end: type.end,
 		};
 	}

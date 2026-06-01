@@ -1,8 +1,11 @@
-export const STDLIB_SOURCE = `external out_str: fn(s: String): Void;
-external out_i32: fn(n: Int32): Void;
-external out_i64: fn(n: Int64): Void;
-external out_f32: fn(n: Float32): Void;
-external out_f64: fn(n: Float64): Void;
-external out_bool: fn(b: Bool): Void;
-external out_data: fn(p: Int32): Void;
+export const STDLIB_SOURCE = `external out_str: (s: String): Void;
+external out_i32: (n: Int32): Void;
+external out_i64: (n: Int64): Void;
+external out_f32: (n: Float32): Void;
+external out_f64: (n: Float64): Void;
+external out_bool: (b: Bool): Void;
+external out_data: (p: Int32): Void;
+
+type Each<T> = T >> [H, R] { H | Each<R> };
+each = <T>(t: T): Each<T> { t >> (h, r) { h, each(r) } };
 `;

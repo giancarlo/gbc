@@ -12,6 +12,7 @@ function nodeId(node: AstNode) {
 		case 'number':
 			return String(node.value);
 		case 'ident':
+		case 'label':
 			return `:${text(node)}`;
 		case '@':
 			return text(node);

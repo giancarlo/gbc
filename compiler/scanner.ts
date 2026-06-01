@@ -13,7 +13,6 @@ export const keywords = [
 	'main',
 	'next',
 	'type',
-	'fn',
 	'var',
 ] as const;
 

@@ -69,7 +69,7 @@ Principle refs in parens. Compact intentionally.
 
 ## D6: `var` is a type modifier (not binding modifier)
 
-Form: `x: var = 10`, `fn(p: var Int)`, `[ name: var = 'Alice' ]`.
+Form: `x: var = 10`, `(p: var Int)`, `[ name: var = 'Alice' ]`.
 
 - \+ Subsumes binding/param/field mutability under one concept (P1)
 - \+ Function signatures express mutability contracts (P3)
@@ -89,19 +89,19 @@ Form: `x: var = 10`, `fn(p: var Int)`, `[ name: var = 'Alice' ]`.
 - − Form `:var` reads less naturally than labeled form (minor P5)
 - Note: no atom-literal collision — source has no `:atom` syntax
 
-## D8: `>>` passes data blocks as whole values; `@.each` iterates
+## D8: `>>` passes data blocks as whole values; `each` iterates
 
-`[1, 2] >> f` calls `f([1, 2])`. `[1, 2] >> @.each >> f` calls `f(1)` then `f(2)`.
+`[1, 2] >> f` calls `f([1, 2])`. `[1, 2] >> each >> f` calls `f(1)` then `f(2)`.
 
 - \+ Pipe semantics don't depend on LHS type (P1, P3)
 - \+ Resolves tuple-passing ambiguity (`[1,2] >> processTuple` is unambiguous)
 - \+ Iteration is explicit at call sites (P3)
-- − Slight stdlib bloat (`@.each` exists)
+- − Slight stdlib bloat (`each` exists)
 - × Auto-iterate data blocks through `>>` — would make pipe LHS-type-dependent
 
 ## D9: Labels are erased during iteration
 
-`[ x = 1, y = 2 ] >> @.each` yields 1, 2 (not (label, value) pairs).
+`[ x = 1, y = 2 ] >> each` yields 1, 2 (not (label, value) pairs).
 
 - \+ Labels are compile-time only (D2); runtime sequences carry values
 
@@ -129,7 +129,7 @@ Form: `x: var = 10`, `fn(p: var Int)`, `[ name: var = 'Alice' ]`.
 
 `f(a, b)` is sugar for `f([a, b])`. `f()` passes `[]`. Single-arg `f(x)` passes `[x]`.
 
-- \+ Param destructuring (`fn(a, b)`) reuses data-block label semantics (P1)
+- \+ Param destructuring (`(a, b)`) reuses data-block label semantics (P1)
 - \+ Named args (`f(b = 1, a = 2)`) fall out for free
 - See D8 for relationship to `>>` semantics
 
@@ -154,7 +154,7 @@ Integer types: `Int8`, `Int16`, `Int32`, `Int64`. Unsigned: `Uint8`, `Uint16`, `
 - \+ Avoids "what size is `Int`?" question entirely
 - − Minor verbosity (`Int32` vs `Int`)
 - `Bool` over `Boolean` — shorter, matches Rust/Haskell/Swift
-- Keywords (`fn`, `next`, `done`, `main`, `type`, `var`, `loop`, `break`) stay lowercase — they're not types
+- Keywords are lowercase too but aren't type names (the keyword set is normative in `test.ts`).
 
 ## D15: Built-in special values are lowercase
 
@@ -163,59 +163,35 @@ Integer types: `Int8`, `Int16`, `Int32`, `Int64`. Unsigned: `Uint8`, `Uint16`, `
 - \+ All value-position tokens follow the same case rule (D13)
 - − Breaks JS naming for `NaN`/`Infinity`
 
-## D16: Two block forms — `{}` expression list, `fn(...) { body }` statement body
+## D16: Two body forms — auto-emit expression list vs statement body
 
-**`{ expr [, expr]* }`** — anonymous expression list. Each comma-separated expression auto-emits. Restrictions:
-- Zero or more expressions (empty `{}` is the canonical no-op function).
-- No statements (assignments, declarations, control flow).
-- `next` and `done` are statements; not allowed at top level of `{}`.
-- Logical-line — newlines for layout are fine; structure is a comma-separated expression list, not statements.
-- AST marker: `@sequence`.
+A code block `{ body }` (optionally prefixed with params `(a, b) { body }`, D12) has two non-overlapping forms, distinguished by **content**, not a keyword:
 
-**`fn(...) { body }`** — statement body with destructured params (D12). Statements live here. Emission via explicit `next`. Restrictions:
-- Body must not be empty — use `{}` if you want a no-op.
-- `fn(a, b)` destructures `$` (the call argument, a data block) into named locals.
+- **Auto-emit list** — comma-separated value-expressions, each auto-emits: `{ a, b, c }`. Empty `{}` is the canonical no-op (zero emissions). No statements; `next`/`done` not allowed.
+- **Statement body** — statements separated by `;`, emission via explicit `next`: `{ x = a*2; next x; }`. Must produce at least one emission.
 
-**Conceptually**: `fn(a, b)` is sugar for "destructure `$` into `a, b`, then run this statement body." The `fn` keyword is the marker for the destructuring + body form; without it, you have an expression list.
+(There is no `fn` keyword — D41. The param prefix `(a, b)` destructures `$` into named locals per D12; its presence is orthogonal to which body form is used.)
 
-- \+ One Way ✓ — expression list and statement body are non-overlapping
-- \+ Transparency ✓ — every emission visible (comma in `{}`, `next` in `fn(){}`)
-- \+ No multi-emission surprise — commas in `{}` are explicit; refactoring can't sneak in extra emissions
-- \+ Minimal no-op (`{}`) and minimal function (`fn(){}` rejected — too much ceremony for nothing)
-- × `fn(...) => expr` arrow form (see potential-features.md) — third way to auto-emit, P1 violation
-- × Auto-emit everywhere (also in fn bodies) — multi-emission surprise, implicit behavior P3 ding
-- × `{}` allowing statements — brings back multi-emission surprise; what yields gets ambiguous
+- \+ P1: the two forms are non-overlapping; P3: every emission visible (comma vs `next`)
+- \+ no multi-emission surprise — commas are explicit, refactoring can't sneak in extra emissions
+- × `=> expr` arrow form (potential-features.md) — third auto-emit way, P1; auto-emit inside statement bodies — multi-emission surprise; `{}` allowing statements — ambiguous what yields
 
 ## D17: Unified emission semantics
 
-There are three emission sites:
-- `{}` expression-list: each top-level expression auto-emits when the block runs.
-- `next` in `fn(){}` body: explicitly emits its argument.
-- Pipe stage output: stage's produced values flow downstream.
+Every emission site (auto-emit list, `next` in a statement body, pipe-stage output, D16) follows one rule: if the value is a **sequence** (the output of executing a code block), iterate it and emit each element; otherwise emit it whole. Only sequences are iterable this way — data blocks pass as single values (D8); iterate one with `each`.
 
-All three follow the same rule:
-- If the value is a **sequence** (the runtime value produced by executing a code block — `{}` or `fn(){}`), iterate it and emit each element.
-- Otherwise (number, string, data block, etc.), emit as a single value.
+**`next` syntax**: `next expr` emits one value; `next(a, b, c)` emits each separately. `next` has lowest precedence — it captures the whole following expression.
 
-**Sequences vs data blocks**: only sequences (code-block outputs) are iterable in this sense. Data blocks pass as whole single values. To iterate a data block, use `@.each` (which produces a sequence).
+**Propagation**: `next x` emits to the nearest enclosing function (`?:`/`loop` don't create new targets). Inner calls don't auto-propagate — re-emit a generator's values with `next inner()`. A block nested in a block is a value, not invoked.
 
-**`next` syntax**: `next expr` emits one value. `next(a, b, c)` emits each comma-separated value separately (syntactic sugar for `next a next b next c`). `next` has the lowest precedence — it captures the entire following expression.
-
-**Propagation**:
-- `next x` inside `fn(){}` body emits to that fn's output, the *nearest enclosing fn*. Control flow (`?:`, `loop`) doesn't create new emission targets.
-- Inner `fn` calls don't auto-propagate. To re-emit values from an inner generator: `next inner()` (next iterates iterables).
-- A `{}` block nested inside another `{}` is a function value, not invoked. Outer emits the function value; inner emissions don't propagate unless explicitly invoked (`block()` or `>> block`).
-
-- \+ One rule covers all emission sites (P1)
-- \+ "Iterate sequences, emit everything else as-is" is short and uniform (P3)
-- \+ Data blocks preserve whole-value semantics through pipes (D8 stays intact)
-- \+ `next` low-precedence avoids paren-induced bugs (factorial precedence trap)
+- \+ P1: one rule, all sites; P3: "iterate sequences, emit else whole" is uniform, data blocks keep whole-value semantics (D8)
+- \+ `next` low-precedence avoids paren-induced bugs
 
 ## D18: `loop` is a primitive emitter; `done` and `break` have distinct scopes
 
 **`loop`** — primitive infinite emitter. Yields successive integers (0, 1, 2, ...) at the source level. Used as a pipe source: `loop >> stage1 >> stage2 >> ...`. There is no `loop { body }` block form.
 
-**`done`** — exits the nearest enclosing `fn(){}` body. Ends that fn's emission sequence. Other pipe-stage invocations of this fn still run for subsequent upstream values.
+**`done`** — exits the nearest enclosing statement-body function. Ends that function's emission sequence. Other pipe-stage invocations of it still run for subsequent upstream values.
 
 **`break`** — stops the nearest enclosing *pipe chain*. Upstream emitters (including `loop`) are cancelled; downstream stages stop receiving values. Compile error if `break` appears outside a pipe stage.
 
@@ -224,7 +200,7 @@ All three follow the same rule:
 **Why this design:**
 - \+ One iteration primitive (P1)
 - \+ `done` (sequence-end) and `break` (chain-stop) are non-overlapping scopes (P3)
-- \+ `loop` as emitter composes with stdlib stages (`@.take`, `@.takeWhile`) without special language machinery
+- \+ `loop` as emitter composes with stdlib stages (`take`, `takeWhile`) without special language machinery
 - \+ Pull-based pipeline naturally propagates `break` upstream
 - × Imperative `loop { body }` block — loses the elegance of `loop >> stage`; also forces a "loop" keyword that's both control flow AND value (the emitter), violating P1
 - × Single keyword (`done` = both fn-exit AND chain-stop) — context-dependent meaning, P3 violation
@@ -241,13 +217,11 @@ All three follow the same rule:
 - × `$name` shortcut — two ways to access the same thing (P1 violation)
 - × `$` accessible only via destructured params — too restrictive; kills inline pipe-stage form
 
-## D20: Typed parameters use `fn(name: T)` only
+## D20: No `$: T` parameter form
 
-`fn(a: T)` and `fn(a, b)` are the canonical forms. No `fn($: T)` form.
+Typed params use the named form `(a: T)` / `(a, b)` (D16). There is no `($: T)` form — `$` is always implicitly the call argument (D12), so naming it adds nothing.
 
-- \+ One Way ✓ — single typed-arg syntax (D12 destructuring sugar)
-- \+ `$` is always implicitly available via D12, so explicit `$: T` adds nothing
-- × `fn($: T)` form — duplicate of `fn(name: T)` (P1 violation)
+- \+ P1: one typed-arg syntax; `($: T)` would duplicate `(name: T)`
 
 ## D21: `is` operator for type tests + narrowing
 
@@ -255,7 +229,7 @@ All three follow the same rule:
 
 ```
 v: Int32 | String = ...
-v is Int32 ? next v * 2 : next @.length(v)
+v is Int32 ? next v * 2 : next length(v)
 # In the truthy branch, v has type Int32 (narrowed from Int32 | String).
 ```
 
@@ -264,39 +238,36 @@ v is Int32 ? next v * 2 : next @.length(v)
 - \+ P4 ✓ — one operator covers union narrowing without first-class types or per-type stdlib functions
 - \+ RHS uses type-position syntax (uppercase per D13) — no need for types-as-values
 - × `match` keyword + pattern syntax — bigger surface area, full pattern matching is significant compiler work
-- × Per-type narrow functions (`@.isInt32`, `@.isString`) — fixed-list bloat, doesn't extend to user-defined types
+- × Per-type narrow functions (`isInt32`, `isString`) — fixed-list bloat, doesn't extend to user-defined types
 - × Types as first-class values — large language commitment for marginal additional capability
 
 **Implementation cost**: type-flow analysis in the checker. Required for any union-narrowing approach, not unique to `is`.
 
-## D22: Modules are file-scoped; `export` is an inline modifier; `@` is the namespace operator
+## D22: Modules are file-scoped; `export` is an inline modifier; `@` is the external-module operator
 
 **Module = source file.** Top-level declarations (definitions, type aliases, optional `main` block) live at file scope. No "module-as-code-block" wrapping.
 
 **`export` is an inline modifier** on declarations:
 ```
-export helper = fn(x: Int32) { next x * 2 }
+export helper = (x: Int32) { next x * 2 }
 export type Point = [ x: Int32, y: Int32 ]
 ```
 
-**`@` accesses the module namespace**:
-- `@.name` — stdlib member (dot directly after `@` signals empty path).
-- `@module.name` — external module's exported member (identifier directly after `@` is the module name).
-
-The parser disambiguates the two `@` forms by what follows: `.` → stdlib; identifier → module.
+**`@module.name` accesses an external module's exported member** — the identifier after `@` is the module name. `@` has exactly one meaning: cross-module access. The standard library is *not* under `@` (see D46) — it is a global prelude with bare names.
 
 - \+ Inline `export` is co-located with definitions (P3); refactoring-safe
 - \+ Maps directly to WASM's `(export "name" ...)` per-entry mechanism
 - \+ File-scoped modules avoid block-execution semantics for imports
+- \+ One meaning for `@` (external boundary), no stdlib/module dual-form to disambiguate (P1)
 - × Modules-as-code-blocks — elegant unification, but conflicts with WASM's flat-export model and adds import-memoization complexity
 - × Standalone `export [list]` — redundant naming, drifts independently of definitions
-- × `@modname` without dot ambiguity — disambiguated cleanly by parser (`.` vs identifier after `@`)
+- × `@.name` for stdlib (earlier design) — overloaded `@` with two meanings; superseded by the global prelude (D46)
 
 ## D23: Errors are values; chain-routed propagation
 
 Type `Error` is built-in (D24). Functions emit errors via `next Error('code')`. The pipe `>>` dispatches by stage parameter type:
-- `fn(T)` stage — non-T inputs route past, looking for a stage that accepts them
-- `catch(T) fn(T): U` stage (D25) — consumes T from chain inputs; downstream type replaces T with U
+- `(T)` stage — non-T inputs route past, looking for a stage that accepts them
+- `catch(T) (T): U` stage (D25) — consumes T from chain inputs; downstream type replaces T with U
 
 Errors travel only along `>>` chains — no stack unwinding. The compiler enforces handling: a chain producing a union type must reach a stage that accepts/catches each variant before any consumer that rejects it.
 
@@ -307,7 +278,7 @@ Errors travel only along `>>` chains — no stack unwinding. The compiler enforc
 - − Pipe semantics include param-type routing — slightly richer than plain "call next stage"
 - × Stack-unwound exceptions — invisible control flow
 - × `Result<T, E>` + `?` operator — second control-flow path, boilerplate at every call
-- × Hidden auto-propagation through `fn(T)` stages without a marker — type-signature dishonesty; replaced with explicit `catch` modifier per D25
+- × Hidden auto-propagation through `(T)` stages without a marker — type-signature dishonesty; replaced with explicit `catch` modifier per D25
 
 ## D24: Built-in `Error` type with auto-filled id and stack
 
@@ -315,7 +286,7 @@ Errors travel only along `>>` chains — no stack unwinding. The compiler enforc
 
 ```
 type Frame = [ function: String, file: String, line: Int32 ]
-type Error = [ id: String, stack: Frame[] ]
+type Error = [ id: String, stack: Array<Frame> ]   # Array<T> per D36
 ```
 
 Constructed and emitted via the `error` keyword (D34):
@@ -329,7 +300,7 @@ The compiler synthesizes `id = @.module + '/' + code` and `stack = @.captureStac
 Discrimination is via string equality on `id`:
 
 ```
-catch fn(e: Error): Int32 { next e.id == 'parser/NOT_FOUND' ? 0 : -1 }
+catch (e: Error): Int32 { next e.id == 'parser/NOT_FOUND' ? 0 : -1 }
 ```
 
 - \+ Module-qualified id avoids cross-library code-name collisions
@@ -348,18 +319,18 @@ catch fn(e: Error): Int32 { next e.id == 'parser/NOT_FOUND' ? 0 : -1 }
 `catch(T)` is a type modifier on function types (parallels `var` per D6). It marks a function as a chain handler that consumes type T.
 
 ```
-handler: catch(T) fn(T): U       # full form
-handler: catch fn(Error): U      # `catch` is sugar for `catch(Error)`
+handler: catch(T) (T): U         # full form (function type per D41)
+handler: catch (Error): U        # `catch` is sugar for `catch(Error)`
 handler = catch { body }         # value sugar; type inferred from body
 ```
 
-In a chain, a `catch(T) fn(T): U` stage consumes T values; downstream type loses T and gains U. Non-T inputs route past unchanged.
+In a chain, a `catch(T) (T): U` stage consumes T values; downstream type loses T and gains U. Non-T inputs route past unchanged.
 
 Re-throw via return type:
-- `catch(T) fn(T): U` — always replaces T with U; chain loses T downstream
-- `catch(T) fn(T): U | T` — may re-throw T; chain keeps T downstream, needs another handler
+- `catch(T) (T): U` — always replaces T with U; chain loses T downstream
+- `catch(T) (T): U | T` — may re-throw T; chain keeps T downstream, needs another handler
 
-Plain `fn(T): U` without catch — callable directly, but rejected as a pipe stage when T is live in the chain and no catch handler exists.
+Plain `(T): U` without catch — callable directly, but rejected as a pipe stage when T is live in the chain and no catch handler exists.
 
 - \+ P1 ✓ single mechanism (`catch(T)`) for all chain consumption; Error stops being special
 - \+ P3 ✓ modifier visible in the function's type signature
@@ -372,13 +343,13 @@ Plain `fn(T): U` without catch — callable directly, but rejected as a pipe sta
 
 ## D26: Types are callable as constructors — RETIRED
 
-Withdrawn. Type construction is via typed data blocks: `[args]: T` (positional) or `[x = a, y = b]: T` (named). Factory functions (regular `fn` returning the type) cover construction with logic. The motivating Error case is handled by the `error` keyword (D34).
+Withdrawn. Type construction is via typed data blocks: `[args]: T` (positional) or `[x = a, y = b]: T` (named). Factory functions (a regular function returning the type) cover construction with logic. The motivating Error case is handled by the `error` keyword (D34).
 
 Originally proposed so `Error('code')` and user types like `Point(10, 20)` would share a uniform call syntax. With `error` as a keyword and computed-field user types deferred to factory functions, the type-call form has no remaining use case.
 
 ## D27: Type body block form — RETIRED
 
-Withdrawn with D26. Its only use case (Error's computed fields like auto-`id` and auto-`stack`) is now handled by the compiler-implemented `error` keyword (D34). User-defined types use the short-form data-shape syntax `type T = [fields]`; "construction with logic" is a regular factory `fn` returning the type.
+Withdrawn with D26. Its only use case (Error's computed fields like auto-`id` and auto-`stack`) is now handled by the compiler-implemented `error` keyword (D34). User-defined types use the short-form data-shape syntax `type T = [fields]`; "construction with logic" is a regular factory function returning the type.
 
 ## D28: Modules are types — RETIRED
 
@@ -390,33 +361,29 @@ Retired by **D36**: variable-length collections moved to stdlib `Array<T>`. Data
 
 Original (for reference): `T[]` was data block syntax for variable-length homogeneous storage.
 
-## D30: Statement separation — `;` ends every statement except `fn` and `main` blocks
+## D30: Statement separation — `;` ends every statement except function-literal and `main` blocks
 
-At statement contexts (module body, `fn(){...}` body, `main {...}` body):
-- **Rule**: a statement whose AST node kind is `fn` or `main` is self-terminating; every other statement requires a trailing `;`, including the last statement in a block. Decision is made on AST kind alone — no source/token-history lookup, no recursive walk into the right-most child.
-- `;` after a `fn` or `main` block is a parse error.
-- A `def` whose value is a `fn`/`{}` literal is still a `def` at the statement level, so it ends with `;`. The literal sequence `};` is therefore valid — the `}` belongs to the inner block, the `;` to the outer statement.
+At statement contexts (module body, function body, `main {...}` body):
+- **Rule**: a statement that is itself a function literal (`fn` AST node) or `main` block is self-terminating; every other statement needs a trailing `;`, including the last in a block. Decided on AST kind alone — no source/token-history lookup.
+- `;` after such a block is a parse error.
+- A `def` whose value is a function/`{}` literal is still a `def`, so it ends with `;`. The sequence `};` is valid — the `}` is the inner block's, the `;` the outer statement's.
 
-`,` continues to separate items in expression contexts (data blocks per D10, function args per D12, `{}` expression list per D16). Newlines have no semantic meaning — the parser treats them as ordinary whitespace.
-
-Examples:
+`,` separates items in expression contexts (data blocks D10, args D12, auto-emit list D16). Newlines are insignificant.
 
 ```
-helper = fn(x) { next x * 2; };          # def stmt → trailing `;`
-a = 10;                                    # ends with literal → `;`
-b = fn(y) { next y + 1; };                 # def whose value is fn → `;`
-c = helper(a) + b(5);                      # ends with `)` → `;`
-main { 'hello' >> @.out; }                 # main block: no `;` after `}`, but the inner pipe stmt needs `;`
+helper = (x) { next x * 2; };   # def → trailing `;`
+a = 10;                          # `;`
+c = helper(a) + b(5);            # ends with `)` → `;`
+main { 'hello' >> out; }       # no `;` after `}`; inner pipe stmt needs `;`
 ```
 
-Supersedes D11's "no required statement delimiters" parenthetical. D11's other points (function-call parens, unambiguous parse) stand.
+Supersedes D11's "no required delimiters" parenthetical.
 
-- \+ P1 ✓ one rule — `;` everywhere except `fn`/`main` blocks
-- \+ P3 ✓ every statement boundary is a visible token (`;` or `fn`/`main`'s `}`)
+- \+ P1: one rule; P3: every boundary is a visible token (`;`, or the block's `}`)
 - \+ Cross-platform consistent — no CRLF/LF/CR variance
 - \+ Auto-formatters and editors can reflow freely without changing semantics
 - \+ Parser-implementable on AST kind alone — no source/token-history coupling
-- − Top-level defs whose values are `fn` literals end with `};` (the `}` is the inner fn's, the `;` is the outer def's)
+- − Top-level defs whose values are function literals end with `};` (the `}` is the inner literal's, the `;` is the outer def's)
 - × "Last token is `}`" framing (original D30) — required source-string lookup or a recursive AST walk to decide; messier implementation, no clearer semantics
 - × Optional `;` (D11's original wording) — ambiguity costs (empirical: JS ASI bugs)
 - × Significant newlines as separators — line-ending variance, tooling fragility, Python-style indentation issues
@@ -445,7 +412,7 @@ Overflow on `+`, `-`, `*` is not covered by this decision; see future work.
 ## D32: Tail calls in tail position are guaranteed not to grow the stack
 
 The compiler emits proper tail calls (WASM `return_call` / `return_call_indirect`) for any function call in tail position. Tail position is defined as:
-- The expression argument to the last `next` statement in a `fn(){}` body
+- The expression argument to the last `next` statement in a statement-body function
 - Either branch of a ternary whose result is in tail position
 - The final stage of a pipe chain in tail position
 
@@ -462,25 +429,7 @@ Recursive functions written tail-recursively never stack-overflow, regardless of
 
 `?:` is a value-ternary expression. Both branches are required and must produce values of compatible types. **Exception**: `break` and `done` (control-flow keywords that never return) may appear in either branch. They are bottom-typed — the result type is determined by the non-bottom branch (or is bottom itself if both are).
 
-`next` is **not** allowed inside `?:` branches — it is statement-only. For value-choice emission, write `next cond ? X : Y` (the `next` is outside; the ternary is pure value).
-
-Patterns:
-- `cond ? a : b` — pure value-ternary; both branches required.
-- `cond ? break : value` / `cond ? done : value` — control-or-value (bottom branch + value branch).
-- `cond ? break : break` — both bottom; result type bottom (chain stage terminates on either path). Redundant; warn or fold.
-- `cond ? break : done` — both bottom, different exits. Valid.
-- `next cond ? X : Y` — value-choice emission (next outside).
-
-Forbidden:
-- Single-branch `cond ? value` with non-bottom value (which branch supplies a value when cond is false?).
-- `cond ? next X : Y` / `cond ? Y : next X` / `cond ? next X : next Y` — mixed-kind or redundant; use `next cond ? X : Y` instead.
-- Mixed-kind without a bottom branch (one branch a statement, the other a value).
-- `next` inside `{}` expression-list (still applies — see D16).
-
-Rationale:
-- The user's range idiom `loop >> { $ >= n ? break : $ }` reads naturally. Allowing `break`/`done` as bottom-typed branches makes this expressible without falling back to chain dispatch or two-statement form.
-- `next` is excluded because, unlike `break`/`done`, it continues after emitting — its "return value" is ambiguous in expression position. The canonical value-choice form `next cond ? X : Y` is unambiguous.
-- Compiler lowering: bottom-branch ternary compiles to `if/end` (no `(result T)` block); pure value-ternary compiles to `if (result T)/else/end`. Different shape, both clean.
+`next` is **not** allowed inside `?:` branches (statement-only); for value-choice emission write `next cond ? X : Y` (`next` outside the pure-value ternary). The range idiom `loop >> { $ >= n ? break : $ }` motivates admitting bottom branches. `next` is excluded because, unlike `break`/`done`, it continues after emitting — ambiguous in expression position. (Exact legal/illegal branch combinations: test.ts.)
 
 - \+ P1 ✓ one form per operation; only the redundant case forbidden
 - \+ P3 ✓ syntactic shape signals intent; bottom-typed branches are explicit
@@ -492,23 +441,11 @@ Rationale:
 
 ## D34: `error` is a built-in function producing an Error value
 
-`error: fn(code: String): Error` is a built-in function always in scope. The name `error` is reserved — user code cannot define a local or top-level binding named `error`.
+`error: (code: String): Error` is a built-in function always in scope. The name `error` is reserved — user code cannot define a local or top-level binding named `error`.
 
 When called, returns an `Error` value (D24) with `id = @.module + '/' + code` and `stack = @.captureStack()` — both compiler-synthesized at the call site. That synthesis is the only special behavior; otherwise `error` is a regular function value (lowercase per D13).
 
-Used in any expression position. Emission via `next`:
-
-```
-next error('NOT_FOUND')                        # emit a freshly constructed error
-cond ? error('bad') : someValue                # value-position ternary branch
-next cond ? error('bad') : 42                  # idiomatic emit-or-value choice
-
-parseInt = fn(s: String): Int32 | Error {
-    next @.len(s) == 0 ? error('empty') : 42
-}
-```
-
-For *re-throwing* an existing Error inside a catch handler, use `next e` — `error` constructs a new Error at its call site.
+Used in any expression position (e.g. `next cond ? error('empty') : 42`). For *re-throwing* an existing Error in a catch handler use `next e` — `error` always constructs a *new* Error at its call site.
 
 - \+ No new keyword; just a function value with reserved name
 - \+ Compiler-synthesized id/stack hidden behind the function abstraction
@@ -517,7 +454,7 @@ For *re-throwing* an existing Error inside a catch handler, use `next e` — `er
 - − Ad-hoc reserved name; no general "prelude" mechanism yet — formalize later if more built-ins want top-level visibility
 - × `error` as a keyword — keyword class adds grammar surface for what's just a function call
 - × `Error('X')` type-call — required D26 just for Error
-- × `@.error('X')` stdlib-only — verbose for the common case
+- × `error('X')` stdlib-only — verbose for the common case
 - × Allowing user shadowing of `error` — defeats universal availability and creates surprises
 
 ## D35: Built-in types are nominal; user types are structural
@@ -542,22 +479,7 @@ Conceptually, built-in types are branded interpretations of byte memory: `Int32`
 
 Data blocks (`[T1, T2, ...]` and `[a: T, b: U]`) are **fixed-shape tuple storage**. Their structure (arity, slot types, labels) is fully known at compile time. They model "data layout" — structs, records, tuples.
 
-Variable-length homogeneous collections move to **stdlib `Array<T>`**. Arrays are runtime data structures with their own operations (`@.each`, `@.len`, `@.get`, `@.map`, `@.filter`, etc.) and are not pattern-matched by destructure.
-
-| Aspect | Data block | Array |
-|---|---|---|
-| Shape | known at compile time | variable at runtime |
-| Storage | inline tuple (stack/struct) | heap-backed collection |
-| Type expression | `[T, U]`, `[a: T, b: U]` | `Array<T>` |
-| Singleton-collapse (D10) | applies | doesn't apply |
-| Pattern matching | yes — destructure / projection | no — use stdlib transforms |
-| Indexing | `.N` (literal position) or `.label` | `@.get(arr, i)` |
-| Length | known (statically) | `@.len(arr)` |
-| Built-in marker | yes (no stdlib needed for storage) | yes (compiler-aware for codegen) |
-
-This retires D29's `T[]` notation. Array literals use stdlib: `@.array(1, 2, 3)` constructs an `Array<Int32>`. Streaming bridges: `stream >> @.collect` materializes; `arr >> @.each` re-streams.
-
-For example: stack frames (D24) now use `Array<Frame>` instead of `Frame[]`.
+Variable-length homogeneous collections move to **stdlib `Array<T>`** — a heap-backed, runtime-sized collection with its own operations (`each`/`len`/`get`/`map`/…), not pattern-matched by destructure. Data blocks are the opposite: compile-time-known shape, inline tuple storage, destructurable, D10 singleton-collapse applies. This retires D29's `T[]` (e.g. D24 stack is `Array<Frame>`, not `Frame[]`).
 
 - \+ P1 ✓ single rule per kind: data blocks = layout, arrays = collections
 - \+ P3 ✓ static-shape data blocks are fully analyzable; arrays are runtime-clear
@@ -571,18 +493,7 @@ For example: stack frames (D24) now use `Array<Frame>` instead of `Frame[]`.
 
 ## D37: Single-item labeled data blocks are forbidden at construction and type level
 
-A data block literal with exactly one item AND that item is labeled is **invalid syntax**. Similarly, a labeled record type with a single field is **not declarable**.
-
-```
-[1]                              # OK — singleton, D10 collapses to scalar 1
-[5]                              # OK — singleton, collapses to scalar 5
-[b = 5]                          # COMPILE ERROR — single labeled item
-[a = 1, b = 2]                   # OK — multi-field labeled record
-
-type Foo = [name: String]        # COMPILE ERROR — single-field labeled type
-type Foo = String                # OK — type alias to a scalar (same semantic)
-type Point = [x: Int32, y: Int32]   # OK — multi-field labeled record
-```
+A single-item labeled data block (`[b = 5]`) and a single-field labeled record type (`type Foo = [name: String]`) are **invalid** — use the scalar (`5`) or scalar alias (`type Foo = String`). Unlabeled singletons (`[5]`) are fine (D10 collapses them).
 
 The motivation is removing ambiguity created by the combination of:
 - D10's singleton-collapse rule: `[T]` ≡ `T` (1-element data block collapses to scalar).
@@ -591,7 +502,7 @@ The motivation is removing ambiguity created by the combination of:
 Together these mean `[b = 5]` would be structurally identical to `5` (scalar) — the label `b` is purely decorative and runtime-erased. Three pattern-matching paths could converge here (singleton-collapse, label-projection, scalar match) producing the same result but with confusingly different reasoning. Banning the construct removes this redundancy.
 
 Implications:
-- Named single-arg calls like `f(x = 5)` are **call-site sugar** (not data block construction); the label matches the fn's parameter name to provide intent at the call site. No `[x = 5]` data block is created.
+- Named single-arg calls like `f(x = 5)` are **call-site sugar** (not data block construction); the label matches the function's parameter name to provide intent at the call site. No `[x = 5]` data block is created.
 - Single-field "named types" use scalar type aliases instead: `type Field = Int32`.
 
 - \+ P1 ✓ removes the "three reasoning paths to same result" ambiguity
@@ -603,50 +514,158 @@ Implications:
 
 ## D38: Parameter defaults via `void` sentinel
 
-A function parameter may declare a default expression: `(name: T = expr)`. The parameter's call-facing type is effectively `T | Void` (callers may pass `void` to use the default); the body sees the narrowed type `T` because default substitution happens at the param-binding step (before the body runs).
+A parameter may declare a default: `(name: T = expr)`. Call-facing type is `T | Void` (caller may pass `void`); the body sees `T` because substitution happens at param-binding, before the body runs. Defaults may reference earlier params.
 
 ```
 addOne = (n: Int32 = 41): Int32 { n + 1 };
-
-addOne(5)              # n = 5
-addOne(void)           # default 41 substituted at param binding → n = 41
-addOne(n = void)       # named, same effect → n = 41
-addOne(n = 5)          # named, explicit → n = 5
+addOne(5)        # 5      addOne(void) / addOne(n = void)   # default 41
+relate = (a: Int32, b: Int32 = a + 1): Int32 { a + b };  relate(3, void)  # 7
 ```
 
-**Default expressions** may reference earlier params (left-to-right order):
+Call rules: positional — every slot specified, `void` selects a default; named — mention only overrides; `f()` matches only a 0-param fn (no all-defaults sugar, per D12); `void` on a required param is an error. `void` is the unique inhabitant of `Void` (D15/D40).
+
+- \+ P3: defaults visible in signature, `void` explicit; body sees concrete `T` (no per-use narrowing); defaults at any position; sparse named calls
+- − `f(void, void, …)` verbose for "all defaults" (nudge to named form)
+- × `f()` all-defaults sugar (breaks D12); trailing-defaults-only (forces ordering); body sees `T | Void` (defeats the ergonomics)
+
+## D39: Head-rest pattern semantics
+
+A tuple destructure pattern binds the **last positional slot to the rest** (a sub-tuple, possibly empty = Void per D40). Uniform at value and type level.
 
 ```
-relate = (a: Int32, b: Int32 = a + 1): Int32 { a + b };
-relate(3, void)        # b defaults to a + 1 = 4 → a+b = 7
+[1, 2]    >> (a, b)    { … }   # a=1, b=[2]→2 (D10 collapse)
+[1, 2, 3] >> (a, b)    { … }   # a=1, b=[2,3] (tuple; access b.0, b.1)
+[1, 2, 3] >> (a, b, c) { … }   # a=1, b=2, c=[3]→3
+5         >> (a, b)    { … }   # 5 lifts to [5]: a=5, b=[]=Void
 ```
 
-**Call rules**:
-- **Positional call**: every slot must be specified. Pass `void` for defaulted slots to use their defaults.
-- **Named call**: only mention overrides; omitted slots use their defaults.
-- **Empty call `f()`**: passes `[]`; matches only a 0-param fn (no "all defaults" sugar — per D12's strict data-block construction).
-- **`void` on a required (non-defaulted) param**: compile error.
+- **D10 reconciliation**: single-element rest collapses to its element, so `(a, b)` over `[A, B]` acts like strict 2-arity with `b: B`.
+- **Strict arity via typed slots**: `(a: Int32, b: Int32)` requires the rest assignable to `Int32`; a 2+ rest is `[Int32, …]` (not assignable) → matches only effectively-2-arity input.
+- **Single slot** `(t)` binds the whole input; typed `(n: Int32)` matches scalars / single-element tuples.
+- **Type-level mirror**: the same rule drives type-level chains — `type each<T> = T >> [H, R] { H | each<R> }` binds H=head, R=rest, terminating at Void (D40).
 
-**The `void` sentinel** is the lowercase value of type `Void` — the unique inhabitant of Void. Using it positionally or in named form triggers the default substitution.
+- \+ P1/P4: one rule both levels, no `...rest` operator (implicit in slot position); strict arity recoverable via typed slots
+- − arity mismatch on *untyped* patterns surfaces as a body-level type error, not a destructure "no match"
+- × explicit `...R` spread (same content via D10+head-rest); strict-by-default + `...` variadic (would diverge value vs type level)
 
-**Body's narrowed view**: because the default substitution happens before body execution, the body sees the param as `T` (the declared type), not `T | Void`. No body-level narrowing required — the param is single-typed throughout the body.
+## D40: Void is the absorbing identity for unions and tuples
+
+Void is the identity element for both combinators: `T | Void = T`, `Void | Void = Void`; `[T, Void] → [T]`, `[A, Void, B] → [A, B]`, `[Void, Void] → []`. Tuple reductions chain into D10 collapse (`[T] → T`), so `[5, void] == 5` and `[void, void] == void`.
+
+Rationale: Void means "no emission/no value" (D17), so it contributes nothing to a union and drops out of a tuple slot. Reduce-not-disallow because recursive type computation (D39 + generics) naturally produces `[T, Void]` / `Void | Void` intermediates; auto-reduction lets them finish without explicit base cases. Plays the role TS calls `never` / Haskell `Void` / Scala `Nothing`, while also being the `void` default-sentinel type (D38).
+
+**`[]` is engine-internal, not user-writeable** — canonical spellings are `void` (value) and `Void` (type) at both levels. `[]` arises only as a reduction intermediate (head-rest decomposition). Tuples *with* `void` slots (`[5, void]`) are writeable and reduce per the rule above.
+
+**Implicit Void** — no clause/stage for the Void arm is needed: at the value level a Void pipe-stage is dead code (forbidden); at the type level a missing clause reduces to Void, giving recursion a free base case. So `type each<T> = T >> [H,R] { H | each<R> }` needs no explicit `[]` clause: `each<[Int32]>` → `Int32 | each<[]>` → `Int32 | Void` → `Int32`.
+
+Interacts with: D38 (`void` sentinel is the value, this rule is on the type); Shape 3 unreachability applies *after* reduction (`Int32 | Void → Int32` is reachable; only pure `Void` is dead).
+
+- \+ P1/P3: one identity element, both contexts; algebraic, no special-casing
+- − `Int32 | Void` reads like a 2-arm union but is just `Int32` (but written `T | Void` is a hard error — see D44)
+- × disallow Void (breaks recursive computation); treat as a normal 1-inhabitant type (forces downstream Void-handling, defeats "no emission")
+- Lost: non-Void empty-case results (`IsEmpty<T>`, `Length<T>`) — out of scope per D39 structural-only; reintroduce `[]` patterns if ever needed.
+
+## D41: First-class function types
+
+A function type is a function-value signature **without a body**; the trailing `{ ... }` is the only thing distinguishing a value (`(...): R { ... }`) from a type (`(...): R`). Usable as alias, param type, return type, or tuple field:
 
 ```
-# What the user writes:
-addOne = (n: Int32 = 41): Int32 { n + 1 };
-
-# Compiler-internal view at the binding step:
-# (n: Int32 | Void)  →  if n is Void, n := 41  →  body sees n: Int32
+type BinOp = (Int32, Int32): Int32
+helper = (cb: (Int32, Int32): Int32) { cb(5, 10) }
+type Handlers = [ onClick: (Int32, Int32): Void, onHover: (Int32): Void ]
 ```
 
-- \+ P3 ✓ defaults are visible in the signature; `void` at call site is explicit
-- \+ Body sees concrete `T`, no unions to narrow at every use
-- \+ Defaults at any position — no required-after-default ordering constraint
-- \+ Sparse named calls (`f(b = 99)`) work naturally; positional uses `void`
-- − `f(void, void, ...)` is verbose for "all defaults" — intentional nudge toward named-call form
-- × `f()` as "all defaults" sugar — violates D12 (calls construct a specific-arity data block); would require special-case logic
-- × Trailing-defaults-only (Python/Swift) — forces ordering; gb allows defaults anywhere via explicit `void`
-- × Body sees union `T | Void` — every use site would need narrowing; defeats the ergonomic purpose of defaults
+Param names in type position are optional/documentary (structural equivalence ignores them, per D2). Bare `Fn` (D14) stays the "any function" shorthand. Generics extend the form: `type ReturnType<F: (...): R> = R`.
+
+- \+ P1/P3/P4: one notation for values and types (body present/absent); no `=>` arrow, no `fn(...)` wrapper token; generic fn types fall out free
+- − parser distinguishes value/type by trailing `{` (small lookahead)
+- × `fn(Int32): Int32` keyword wrapper / `=> ` arrow — extra surface, no gain (the `fn` keyword was removed)
+
+## D42: Compilation model — precompile per module, bundle to one WASM per entry point
+
+Two phases: (1) each `.gb` → a `.gbo` artifact, compiled independently; (2) from the entry module (`main`, or a library's pinned exports), the bundler walks imports, monomorphizes generics, tree-shakes, and emits **one WASM module**. No runtime module linking, no lazy loading at v1.
+
+**`.gbo` = a valid WASM module + custom sections.** Standard sections hold pre-compiled non-generic code, host imports, globals/tables. Custom sections: `gb.types` (aliases, export sigs, generic `type`s), `gb.generics` (generic-fn AST for monomorphization), `gb.imports` (`@module.symbol` refs), `gb.tableentries` (funcs put in tables — for DCE through indirect calls), `gb.pinned` (always-kept exports; empty for apps), `gb.meta` (paths/hashes). Loadable as-is; standard WASM tooling inspects it.
+
+**Bundle phase:** resolve dep graph (cycles banned, D22) → monomorphize per `(template, concrete-args)` → tree-shake from `main`/pinned → merge indices, emit one WASM (only host externals remain imports).
+
+**Tree-shaking:** direct calls traced from bodies; indirect calls reachable only if a reachable fn put the target in a reachable table (`gb.tableentries`); first-class module values via escape analysis (per-access; conservative if the value escapes); generics lazy by construction; unused globals/externals dropped. Result: `@module.process` is a direct `call` (no indirection); stdlib is just another module (only used slices ship).
+
+- \+ one artifact per entry; cross-module inline/mono/DCE with full visibility; `.gbo` is WASM (tool reuse); stdlib grows free
+- − no lazy loading (big WASM, DCE-mitigated); whole-program rebuild on interface change (`.gbo` cache); specialization multiplies
+- × multi-WASM host-linking (runtime indirection), un-DCE'd stdlib, runtime-interpreted generics, non-WASM `.gbo` format
+- Open: custom-section serialization format (not JSON); stable specialization symbol names for incremental cache; escape-analysis precision (start permissive).
+
+## D43: Generics
+
+`<T>` type parameters on type and value definitions, same syntax at both levels. Builds on D39 (head-rest), D40 (Void identity), D42 (monomorphization), D13 (case = value-vs-type).
+
+```
+type Pair<T, U> = [T, U]            # generic type alias
+identity = <T>(x: T): T { x }       # generic value fn
+add = <T: Int32 | Int64>(a: T, b: T): T { a + b }  # union constraint
+type First<T> = T >> [H, R] { H }   # type-level chain (Shape-2 dispatch)
+type Reverse<T> = T >> [H, R] { [Reverse<R>, H] }  # recursive
+```
+
+- **Head-rest at type-param level** (D39): last param binds the rest; `<T, U>` = two params via D10 collapse. No `<[H,R]>` nesting — the pattern is the param list.
+- **Type-level chains**: a `type` RHS may use `>>` for structural dispatch (same as value Shape 2); no `is` needed. Empty/no-match → Void (D40), the natural recursion base case. Must be structurally recursive (rest is smaller); enforced.
+- **Inference**: type args inferred from call-site arg types (`identity(42)` → T=Int32). Explicit `f<T>(x)` deferred (`<` ambiguity).
+- **Constraints**: union via `:`; arg must be assignable; monomorphizes per concrete type. Label/method bounds deferred.
+- **Naming** (D13): type-level uppercase (`Each<T>`), value-level lowercase (`each = <T>(t)`) — distinct namespaces, coexist.
+
+- \+ P1/P4: one `<T>` notation both levels; constraints reuse unions, chains reuse `>>`
+- \+ P3: monomorphized — real WASM fn per specialization, no boxing/dynamic dispatch; cross-module at bundle phase (D42)
+- − Specialization proliferation (mitigated by DCE+dedup); per-call reduction cost (bounded by termination)
+- × Erased (Java) / boxed generics — lose numeric precision (D14); reified (C#) — runtime cost; HKT, type-class bounds — deferred
+- Open: labeled-pattern destructure `[L:V, R]`, in-pattern constraints `<V:K>`, default type-args `<T=…>`, runtime reduction engine + generic-param member access (see todo.md).
+
+## D44: Binary verdict — no warnings
+
+The compiler emits no warnings. Code is either valid (accepted silently) or rejected (hard compile error). There is no advisory tier and no "permitted but discouraged" state. This is the enforcement teeth of constitution P2 (Built-in Best Practices) — enforcement means a hard error, not a suggestion the author may ignore — and it removes the third diagnostic state that would otherwise undercut P1.
+
+Already de facto: unused bindings, shadowing, reassigning immutables, and unhandled chain variants are all hard errors, never warnings.
+
+**Consequence for `Void` in written unions (D40):**
+- *Computed* `T | Void` (from type-level reduction or D38 default param typing) silently collapses to `T`. Accepted, no diagnostic.
+- *User-written* `T | Void` in source is a second spelling of `T` (P1 violation) and is therefore a **compile error**: "Void is the union identity; write `T`." Detected on the syntactic union node; computed unions never take that path.
+
+A bare `: Void` return type is unaffected — it is the side-effect sink (D17 / Shape 3), not a union.
+
+- \+ P2: enforcement is unambiguous; nothing is "allowed but flagged"
+- \+ P1: no third verdict state; every pattern is yes or no
+- \+ Forces each design decision to a clear verdict (error vs silent-accept) rather than deferring to an ignorable warning
+- − No gradual-adoption ramp (can't ship a soft-deprecation warning before an error) — acceptable for a language with no external users yet
+- × Advisory warnings / lint tier — reintroduces the discouraged-but-valid state P1/P2 reject
+
+## D45: Function values are non-capturing; no closures
+
+A function value is a reference, carrying no environment. **In-scope lexical reference** (a pipe stage / inlined body mentioning an enclosing binding, run immediately in scope) is allowed and free. **Escaping capture** (a function that outlives a binding it references — returned, stored, deferred) is forbidden:
+
+```
+makeAdder = (x: Int32): ((Int32): Int32) { (y) { x + y } }  # forbidden — escaping
+add(7, 10); configs >> each >> (c) { add(c, input) }      # GB idiom — state is explicit data
+```
+
+Rationale: GB has no ownership system or GC. Rust permits capture only because ownership makes lifetime/allocation predictable; without that, the only predictable rule is "no capture" (the Zig position). An "inlinable-closures-only" rule is an inference cliff (P3/P5); escaping capture needs hidden heap + lifetime machinery (P3/P4). Statically-known fn args (`helper(add)`) monomorphize/inline — no funcref; dynamically-selected fn values (funcref table + `call_indirect`) are deferred, independent of capture.
+
+- \+ P3/P4: no hidden env allocation, no GC; P1/P2: state has one channel (explicit args/pipe data); predictable, no inference cliff
+- − loses currying/factories/capturing callbacks — rare in a pipe/immutable model; explicit-context workarounds exist
+- × full closures (need GC/ownership); "inlinable-only" (unpredictable boundary)
+
+## D46: Standard library is a global prelude; loaded by a general module loader
+
+The stdlib is a single source unit holding both `external` host imports (`out_*`) and gb definitions (`Each`/`each`). Its public symbols form a **global prelude**: `out`, `each`, `error`, `length` are in scope unqualified, like Python builtins or the Haskell `Prelude`. `@` is reserved for cross-module access (D22) and carries no stdlib meaning.
+
+The prefix rule is one bit: a name that **leaves the program** (an external module member) is reached through `@`; everything in-language — pure stdlib included — is bare. `out` ultimately calls a host import but is still spelled bare. Effect-marking, if ever wanted, belongs in the type system (Haskell `IO`, effect rows), not in the spelling of a name — no widely-adopted language name-marks effects, and giving `@` both "module" and "effect" meanings fails P1. `each` is ordinary gb code (a recursive generic, D43), not a hardcoded intrinsic; only `out` stays intrinsic because it needs type-based dispatch to the right `out_*` host import.
+
+The stdlib is loaded by a **general `loadModule(source)`** that parses + type-checks one module and returns its root + symbol scope, with no stdlib-specific logic — the stdlib is merely its first caller, and the same function will load any `@module` once resolution lands. The prelude is made visible by injecting its symbols into every program's global scope and prepending its gb defs to a non-mutating codegen root so the templates inline; imported modules are *not* global — resolved explicitly via `@`.
+
+- \+ P1: one meaning for the prefix (`@` = external boundary); bare = in-language
+- \+ P5: `[1, 2, 3] >> each >> out` reads without ceremony; matches the ergonomic preludes users favor (Python, Clojure, Haskell)
+- \+ module loading is general from day one — no throwaway stdlib special-casing
+- − prelude names occupy the global namespace (mitigated: small surface, shadowable)
+- × `@.name` stdlib namespace — overloaded `@` with two meanings; × uniform `@`-qualified stdlib (Elixir-style) — more ceremony, against GB's terseness
 
 ---
 
@@ -657,13 +676,14 @@ Tracked in `potential-features.md`:
 - UTF-8 string encoding commitment
 - `=>` arrow lambda form
 - Compiler pipeline fusion for `loop` (performance optimization)
+- Dynamic (non-capturing) function values via funcref table + `call_indirect` (only when a real need arises; static cases monomorphize per D45)
 
 Rejected:
-- `as` type-casting operator — replaced by stdlib conversion functions (`@.toInt64`, `@.toFloat32`, `@.parseInt`, etc.) returning `T` for lossless conversions and `T | Error` for lossy ones. Conversions are regular function calls; compiler inlines to WASM conversion instructions.
+- `as` type-casting operator — replaced by stdlib conversion functions (`toInt64`, `toFloat32`, `parseInt`, etc.) returning `T` for lossless conversions and `T | Error` for lossy ones. Conversions are regular function calls; compiler inlines to WASM conversion instructions.
 
 Not yet decided / specced (future waves):
-- Function types beyond bare `Fn` (`fn(Int32, Int32): Int32` style)
 - Module resolution / file paths (compiler/tooling concern)
 - `main` block semantics in non-entry modules
 - Multi-level break (labeled loops)
 - Type narrowing implementation depth
+- Pick-class type operations (labeled-pattern destructure + constraint syntax; substrate landed in D43)

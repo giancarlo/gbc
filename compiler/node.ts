@@ -1,4 +1,4 @@
-import { MakeNodeMap, Token } from '../sdk/index.js';
+import { MakeNodeMap } from '../sdk/index.js';
 
 import type { Symbol, SymbolMap, Scope, Type } from './symbol-table.js';
 
@@ -8,11 +8,16 @@ type MakeInfix<T extends string> = { [K in T]: Infix };
 export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[]; scope: Scope };
-	type: { children: [Node, Node]; symbol: Symbol };
+	type: {
+		children: [Node, Node] | [Node, Node, Node];
+		typeParameters?: NodeMap['parameter'][];
+		symbol: Symbol;
+	};
 	typeident: { symbol: Type };
 	done: object;
 	break: object;
 	ident: { symbol: Symbol };
+	label: object;
 	string: object;
 	number: { value: number };
 	literal: { value: unknown; references?: Node[] };
@@ -23,33 +28,33 @@ export type BaseNodeMap = {
 	};
 	comment: object;
 	parameter: {
-		children: [Token<'ident'> | undefined, Node | undefined, Node | undefined];
-		label?: Token<'ident'>;
+		children: [NodeMap['label'] | undefined, Node | undefined, Node | undefined];
+		label?: NodeMap['label'];
 		symbol: SymbolMap['variable'];
 		type?: Node;
 		value?: Node;
 	};
 	propdef: {
 		children: [
-			Token<'ident'> | undefined,
+			NodeMap['label'] | undefined,
 			Node | undefined,
 			Node | undefined,
 		];
-		label?: Token<'ident'>;
+		label?: NodeMap['label'];
 		symbol: SymbolMap['variable'];
 		type?: Node;
 		value?: Node;
 	};
 	def: {
-		children: [Token<'ident'>, Node | undefined, Node];
-		label: Token<'ident'>;
+		children: [NodeMap['label'], Node | undefined, Node];
+		label: NodeMap['label'];
 		symbol: SymbolMap['variable'];
 		value: Node;
 		type?: Node;
 	};
 	external: {
-		children: [Token<'ident'>, Node];
-		label: Token<'ident'>;
+		children: [NodeMap['label'], Node];
+		label: NodeMap['label'];
 		symbol: SymbolMap['function'];
 		type: Node;
 	};
@@ -63,6 +68,7 @@ export type BaseNodeMap = {
 	negate: { children: [Node] };
 	fn: {
 		parameters?: NodeMap['parameter'][];
+		typeParameters?: NodeMap['parameter'][];
 		statements?: Node[];
 		children: Node[];
 		symbol: SymbolMap['function'];

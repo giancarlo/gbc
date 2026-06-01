@@ -1,5 +1,6 @@
 import { sleb128, text, uleb128 } from '../sdk/index.js';
 
+import { reduceType } from './checker.js';
 import { BaseTypes, Flags } from './symbol-table.js';
 
 import type { Node, NodeMap } from './node.js';
@@ -503,6 +504,22 @@ export function compileWasm(
 	 */
 	const fnTemplates = new Map<GbcSymbol, NodeMap['fn']>();
 	const specCache = new Map<string, number>();
+	// D17: depth guard for inlining emit-position calls (re-emission). Bounded
+	// recursion (e.g. `each` over fixed-arity data) unrolls; unbounded runtime
+	// recursion hits the cap and falls back to a plain call.
+	let emitInlineDepth = 0;
+	const MAX_EMIT_INLINE = 64;
+	// >0 while inlining a generic Sequence template body — gates the per-level
+	// slot re-derivation / scalar-lift in driveFnStage so non-generic stages
+	// keep the checker's slot types.
+	let inTemplateInline = 0;
+	// D43: a spec's actual return type (after type-param/return reduction),
+	// keyed by builder index — used so a template call reports the concrete
+	// result type, not the template's abstract one.
+	const specReturn = new Map<number, Type>();
+	// D45: function-typed params are bound to a concrete function at each call
+	// site (monomorphized, never a runtime funcref). Active during a spec body.
+	const fnArgBindings = new Map<GbcSymbol, SymbolMap['function']>();
 
 	/**
 	 * Resolve a type identifier from a `typeident` node or a defined symbol's
@@ -620,11 +637,33 @@ export function compileWasm(
 			case '.':
 				return inferMemberType(node, fn);
 			case 'data': {
-				const items = dataItems(node);
+				const items = dataItems(node).flatMap(flattenDataItem);
 				const first = items[0];
-				if (items.length === 1 && first)
+				if (
+					items.length === 1 &&
+					first &&
+					!(first.kind === 'propdef' && first.label)
+				)
 					return inferType(itemValue(first), fn);
-				return BaseTypes.Unknown;
+				const members: Record<string, GbcSymbol> = {};
+				items.forEach((it, i) => {
+					const key =
+						it.kind === 'propdef' && it.label ? text(it.label) : String(i);
+					members[key] = {
+						kind: 'variable',
+						name: key,
+						flags: 0,
+						type: inferType(itemValue(it), fn),
+					};
+				});
+				return {
+					kind: 'type',
+					flags: 0,
+					name: '__data',
+					family: 'data',
+					size: 0,
+					members,
+				};
 			}
 			case 'next': {
 				if (fn?.fusion) return BaseTypes.Void;
@@ -722,10 +761,68 @@ export function compileWasm(
 		return BaseTypes.Int32;
 	}
 
+	// D17/D43: inline a generic Sequence template (e.g. `each`) in emit
+	// position — monomorphize the type-params, inline the body driving the
+	// current fusion. Recursive calls re-enter here with a shrunk arg type and
+	// terminate when it reduces to Void / empty data.
+	function tryInlineEmitTemplate(
+		callNode: NodeMap['call'],
+		stages: Node[],
+		fn: FuncBuilder,
+	): boolean {
+		const callee = callNode.children[0];
+		if (callee.kind !== 'ident') return false;
+		const template = fnTemplates.get(callee.symbol);
+		if (!template || !(template.symbol.flags & Flags.Sequence)) return false;
+		const args = callNode.children[1];
+		const argTypes = collectArgTypes(args, fn);
+		const a0 = argTypes[0];
+		if (
+			a0?.kind === 'type' &&
+			(a0.family === 'void' ||
+				(a0.family === 'data' && Object.keys(a0.members).length === 0))
+		)
+			return true; // base case: nothing to emit
+		// Set each value-param's type to its concrete arg type for this level
+		// (save/restore nests across recursive inline levels — unlike in-place
+		// placeholder mutation, which aliases the shared template symbols).
+		const valueParams = template.parameters ?? [];
+		const savedParamTypes = valueParams.map(p => p.symbol.type);
+		valueParams.forEach((p, i) => {
+			const at = argTypes[i];
+			// Leave function-typed params alone — they bind by symbol (D41).
+			if (at && p.symbol.type?.kind !== 'function') p.symbol.type = at;
+		});
+		const ok = bindInlineParams(valueParams, argListFromCall(args), fn);
+		if (ok) {
+			inTemplateInline++;
+			compileFnSource(template, stages, fn);
+			inTemplateInline--;
+		}
+		valueParams.forEach((p, i) => {
+			p.symbol.type = savedParamTypes[i];
+		});
+		return ok;
+	}
+
+	// D17: re-emit a callee's emissions by inlining its body so its `next`s
+	// drive the current fusion (empty stages → emit flows to savedFusion).
+	function tryInlineEmitCall(val: Node, fn: FuncBuilder): boolean {
+		if (val.kind !== 'call' || !fn.fusion) return false;
+		if (emitInlineDepth >= MAX_EMIT_INLINE) return false;
+		emitInlineDepth++;
+		const ok =
+			tryInlineSequenceCall(val, [], fn) ||
+			tryInlineEmitTemplate(val, [], fn);
+		emitInlineDepth--;
+		return ok;
+	}
+
 	function compileNext(node: NodeMap['next'], fn: FuncBuilder): Type {
 		const val = node.children?.[0];
 		if (fn.fusion) {
 			if (!val) return BaseTypes.Void;
+			if (tryInlineEmitCall(val, fn)) return BaseTypes.Void;
 			const t = compileExpr(val, fn);
 			if (
 				hasRuntimeValue(t)
@@ -1145,6 +1242,7 @@ export function compileWasm(
 		args: Node | undefined,
 		fn: FuncBuilder,
 	): Type {
+		if (name === 'out') return compileHostOutCall(args, fn);
 		if (name === 'error') {
 			if (args) compileExpr(args, fn);
 			else {
@@ -1178,15 +1276,6 @@ export function compileWasm(
 			return BaseTypes.Int32;
 		}
 		throw new Error(`Unknown intrinsic: "${name}"`);
-	}
-
-	function isHostOutCall(callee: Node): boolean {
-		return (
-			callee.kind === '.' &&
-			callee.children[0].kind === '@' &&
-			callee.children[1].kind === 'ident' &&
-			callee.children[1].symbol.name === 'out'
-		);
 	}
 
 	function emitOutHostCall(inputType: Type, fn: FuncBuilder): Type {
@@ -1224,17 +1313,58 @@ export function compileWasm(
 		fn.callFixups.push({ offset: fixupOffset, builderIdx, size: 5 });
 	}
 
+	function returnedFnLiteral(
+		callNode: NodeMap['call'],
+	): NodeMap['fn'] | undefined {
+		const callee = callNode.children[0];
+		if (callee.kind !== 'ident') return undefined;
+		const def = callee.symbol.definition;
+		const g =
+			def?.kind === 'def' && def.value.kind === 'fn'
+				? def.value
+				: undefined;
+		const stmts = g?.statements ?? [];
+		if (stmts.length !== 1) return undefined;
+		const s = stmts[0];
+		if (s?.kind === 'fn') return s;
+		if (s?.kind === 'next' && s.children?.[0]?.kind === 'fn')
+			return s.children[0];
+		return undefined;
+	}
+
+	function resolveFnArg(node: Node): SymbolMap['function'] | undefined {
+		if (node.kind !== 'ident') return undefined;
+		const s = node.symbol;
+		if (s.kind === 'function') return s;
+		const bound = fnArgBindings.get(s);
+		if (bound) return bound;
+		if (s.type?.kind === 'function') return s.type;
+		const def = s.definition;
+		if (def?.kind === 'def' && def.value.kind === 'fn')
+			return def.value.symbol;
+		return undefined;
+	}
+
 	function compileTemplateCall(
 		templateNode: NodeMap['fn'],
 		args: Node | undefined,
 		fn: FuncBuilder,
 	): Type {
 		const fnSym = templateNode.symbol;
+		const params = templateNode.parameters ?? [];
+		const argList = argListFromCall(args);
+		const bindings = new Map<GbcSymbol, SymbolMap['function']>();
+		params.forEach((p, i) => {
+			if (p.symbol.type?.kind !== 'function') return;
+			const a = argList[i];
+			const fa = a ? resolveFnArg(a) : undefined;
+			if (fa) bindings.set(p.symbol, fa);
+		});
 		const argTypes = collectArgTypes(args, fn);
-		const builderIdx = getOrCreateSpec(templateNode, argTypes);
-		compileCallArgs(args, fnSym, fn);
+		const builderIdx = getOrCreateSpec(templateNode, argTypes, bindings);
+		compileCallArgs(args, fnSym, fn, bindings);
 		emitFixedCall(fn, builderIdx);
-		return fnSym.returnType ?? BaseTypes.Void;
+		return specReturn.get(builderIdx) ?? fnSym.returnType ?? BaseTypes.Void;
 	}
 
 	function compileDirectCall(
@@ -1263,10 +1393,20 @@ export function compileWasm(
 	function compileCall(node: NodeMap['call'], fn: FuncBuilder): Type {
 		const callee = node.children[0];
 		const args = node.children[1];
-		if (isHostOutCall(callee)) return compileHostOutCall(args, fn);
+		if (callee.kind === 'call') {
+			const innerFn = returnedFnLiteral(callee);
+			if (!innerFn) throw new Error('Indirect call not yet supported');
+			const argTypes = collectArgTypes(args, fn);
+			const idx = getOrCreateSpec(innerFn, argTypes);
+			compileCallArgs(args, innerFn.symbol, fn);
+			emitFixedCall(fn, idx);
+			return specReturn.get(idx) ?? innerFn.symbol.returnType ?? BaseTypes.Void;
+		}
 		if (callee.kind !== 'ident')
 			throw new Error('Indirect call not yet supported');
 		const calleeSym = callee.symbol;
+		const bound = fnArgBindings.get(calleeSym);
+		if (bound) return compileDirectCall(bound, args, fn);
 		if (
 			calleeSym.kind === 'function' &&
 			calleeSym.flags & Flags.Intrinsic
@@ -1356,12 +1496,16 @@ export function compileWasm(
 
 	function makeDataType(slotSize: number, items: Node[]): Type {
 		const members: Record<string, GbcSymbol> = {};
-		for (const item of items) {
-			if (item.kind === 'propdef' && item.label) {
-				const sym = item.symbol;
-				if (sym.name) members[sym.name] = sym;
-			}
-		}
+		items.forEach((it, i) => {
+			const key =
+				it.kind === 'propdef' && it.label ? text(it.label) : String(i);
+			members[key] = {
+				kind: 'variable',
+				name: key,
+				flags: 0,
+				type: inferType(itemValue(it)),
+			};
+		});
 		return {
 			kind: 'type',
 			flags: 0,
@@ -1570,26 +1714,18 @@ export function compileWasm(
 	): PipeInlineResult {
 		if (tryInlineSequenceCall(source, stages, fn)) return { kind: 'done' };
 		if (tryInlineEmittingCall(source, stages, fn)) return { kind: 'done' };
+		if (emitInlineDepth < MAX_EMIT_INLINE) {
+			emitInlineDepth++;
+			const ok = tryInlineEmitTemplate(source, stages, fn);
+			emitInlineDepth--;
+			if (ok) return { kind: 'done' };
+		}
 		const inlined = tryInlineStreamCall(source, fn);
 		if (!inlined) return { kind: 'stop' };
 		const reflat = flattenPipe([inlined, ...stages]);
 		const first = reflat[0];
 		if (!first) return { kind: 'stop' };
 		return { kind: 'continue', source: first, stages: reflat.slice(1) };
-	}
-
-	function compileEachDataSource(
-		source: NodeMap['data'],
-		stages: Node[],
-		fn: FuncBuilder,
-	) {
-		const items = dataItems(source).flatMap(flattenDataItem);
-		const rest = stages.slice(1);
-		for (const item of items) {
-			const v = itemValue(item);
-			const t = compileExpr(v, fn);
-			driveStages(rest, t, fn);
-		}
 	}
 
 	function compileOptionalSource(
@@ -1634,10 +1770,6 @@ export function compileWasm(
 		}
 		if (source.kind === 'fn') {
 			compileFnSource(source, stages, fn);
-			return BaseTypes.Void;
-		}
-		if (source.kind === 'data' && stages[0] && isEachStage(stages[0])) {
-			compileEachDataSource(source, stages, fn);
 			return BaseTypes.Void;
 		}
 		if (source.kind === '?' && source.children[2] === undefined) {
@@ -1733,6 +1865,7 @@ export function compileWasm(
 			compileExpr(expr, fn);
 			return;
 		}
+		if (tryInlineEmitCall(expr, fn)) return;
 		const t = compileExpr(expr, fn);
 		if (
 			fn.fusion &&
@@ -1744,15 +1877,6 @@ export function compileWasm(
 		) {
 			fn.body.push(OP_DROP);
 		}
-	}
-
-	function isEachStage(stage: Node): boolean {
-		return (
-			stage.kind === '.' &&
-			stage.children[0].kind === '@' &&
-			stage.children[1].kind === 'ident' &&
-			stage.children[1].symbol.name === 'each'
-		);
 	}
 
 	function flattenPipe(children: Node[]): Node[] {
@@ -1877,6 +2001,15 @@ export function compileWasm(
 				if (isVoidLiteralNode(argNode) && p.value) argNode = p.value;
 			}
 			if (!argNode) return false;
+			if (pSym.type?.kind === 'function') {
+				// D41: a function-valued argument binds by symbol (like the
+				// monomorphization path) rather than compiling as a value.
+				const fa = resolveFnArg(argNode);
+				if (fa) {
+					fnArgBindings.set(pSym, fa);
+					continue;
+				}
+			}
 			const argType = compileExpr(argNode, fn);
 			if (!pSym.type) pSym.type = argType;
 			if (
@@ -2109,7 +2242,30 @@ export function compileWasm(
 		const params = stage.parameters ?? [];
 		const savedDollarLocal = fn.dollarLocal;
 		const savedDollarType = fn.dollarType;
-		if (params.length > 1) {
+		let savedSlotTypes: (Type | undefined)[] | undefined;
+		const scalarLift =
+			inTemplateInline > 0 &&
+			params.length > 1 &&
+			!(inputType.kind === 'type' && inputType.family === 'data');
+		const isMultiData = params.length > 1 && !scalarLift;
+		if (scalarLift) {
+			// D39: scalar input lifts to [scalar] — head slot = the value (on
+			// stack), remaining slots = Void. Used by recursive generic stages
+			// when the data has collapsed to a scalar (D10).
+			savedSlotTypes = params.map(p => p.symbol.type);
+			params.forEach((p, idx) => {
+				if (!p.type)
+					p.symbol.type = idx === 0 ? inputType : BaseTypes.Void;
+				const localIdx = allocLocal(fn, I32);
+				if (idx !== 0) {
+					fn.body.push(OP_I32_CONST);
+					sleb128(0, fn.body);
+				}
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(localIdx, fn.body);
+				fn.paramMap.set(p.symbol, localIdx);
+			});
+		} else if (isMultiData) {
 			const dataLocal = allocLocal(fn, I32);
 			fn.body.push(OP_LOCAL_SET);
 			uleb128(dataLocal, fn.body);
@@ -2123,10 +2279,109 @@ export function compileWasm(
 				Object.keys(inputType.members).length > 0
 					? Object.keys(inputType.members)
 					: undefined;
+			const headCount = params.length - 1;
+			// D39/D43: when a slot's type is still abstract (a type param, from
+			// inlining a generic stage), derive it from the concrete input via
+			// head-rest, per call (save/restore). Concrete slots are left as the
+			// checker set them.
+			savedSlotTypes = params.map(p => p.symbol.type);
+			const allKeys = inputMembers ?? [];
+			if (inTemplateInline > 0)
+				params.forEach((p, idx) => {
+				// Re-derive unannotated slots from the concrete input every call
+				// (recursion needs the shrinking per-level type); annotated slots
+				// keep their declared type.
+				if (p.type) return;
+				if (idx < headCount) {
+					p.symbol.type =
+						inputType.kind === 'type' && inputType.family === 'data'
+							? (inputType.members[allKeys[idx] ?? '']?.type ?? BaseTypes.Int32)
+							: inputType;
+					return;
+				}
+				if (inputType.kind !== 'type' || inputType.family !== 'data') {
+					p.symbol.type = BaseTypes.Void; // scalar → empty rest
+					return;
+				}
+				const restKeys = allKeys.slice(headCount);
+				if (restKeys.length === 0) p.symbol.type = BaseTypes.Void;
+				else if (restKeys.length === 1)
+					p.symbol.type =
+						inputType.members[restKeys[0] ?? '']?.type ?? BaseTypes.Int32;
+				else {
+					const members: Record<string, GbcSymbol> = {};
+					restKeys.forEach((k, i) => {
+						members[String(i)] = {
+							kind: 'variable',
+							name: String(i),
+							flags: 0,
+							type: inputType.members[k]?.type ?? BaseTypes.Int32,
+						};
+					});
+					p.symbol.type = {
+						kind: 'type',
+						flags: 0,
+						name: '__data',
+						family: 'data',
+						size: 0,
+						members,
+					};
+				}
+			});
 			params.forEach((p, idx) => {
 				const pSym = p.symbol;
 				if (!pSym.type) pSym.type = BaseTypes.Int32;
+				const ptype = pSym.type;
+				const isLast = idx === headCount;
+				// D39: empty rest binds Void.
+				if (isLast && ptype.kind === 'type' && ptype.family === 'void') {
+					const localIdx = allocLocal(fn, I32);
+					fn.body.push(OP_I32_CONST);
+					sleb128(0, fn.body);
+					fn.body.push(OP_LOCAL_SET);
+					uleb128(localIdx, fn.body);
+					fn.paramMap.set(pSym, localIdx);
+					return;
+				}
 				const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
+				// D39: multi-element rest materializes a sub-data-block; a
+				// single-element rest (D10 collapse) falls through to slot read.
+				if (isLast && ptype.kind === 'type' && ptype.family === 'data') {
+					const restCount = Object.keys(ptype.members).length;
+					const header: number[] = [];
+					u32le(restCount, header);
+					u32le(itemSize, header);
+					const restOffset = heap;
+					heap += header.length;
+					datas.push({ offset: restOffset, bytes: header });
+					const slotsOffset = heap;
+					const empty: number[] = [];
+					for (let i = 0; i < restCount * itemSize; i++) empty.push(0);
+					datas.push({ offset: slotsOffset, bytes: empty });
+					heap += empty.length;
+					heap = (heap + 7) & ~7;
+					for (let i = 0; i < restCount; i++) {
+						fn.body.push(OP_I32_CONST);
+						sleb128(slotsOffset + i * itemSize, fn.body);
+						fn.body.push(OP_LOCAL_GET);
+						uleb128(dataLocal, fn.body);
+						fn.body.push(OP_I32_CONST);
+						sleb128(8 + (headCount + i) * itemSize, fn.body);
+						fn.body.push(OP_I32_ADD);
+						fn.body.push(OP_I32_LOAD);
+						uleb128(2, fn.body);
+						uleb128(0, fn.body);
+						fn.body.push(OP_I32_STORE);
+						uleb128(2, fn.body);
+						uleb128(0, fn.body);
+					}
+					fn.body.push(OP_I32_CONST);
+					sleb128(restOffset, fn.body);
+					fn.body.push(OP_LOCAL_SET);
+					uleb128(localIdx, fn.body);
+					fn.paramMap.set(pSym, localIdx);
+					return;
+				}
 				const labelIdx =
 					inputMembers && pSym.name
 						? inputMembers.indexOf(pSym.name)
@@ -2174,12 +2429,54 @@ export function compileWasm(
 		fn.fusion = makeFusion(rest, savedFusion, fn);
 		const isSequence = !!(stage.symbol.flags & Flags.Sequence);
 		for (const stmt of stage.statements ?? []) {
-			if (isSequence) emitOne(stmt, fn);
-			else compileExpr(stmt, fn);
+			if (!isSequence) compileExpr(stmt, fn);
+			else if (stmt.kind === ',')
+				for (const c of stmt.children) emitOne(c, fn);
+			else emitOne(stmt, fn);
 		}
 		fn.fusion = savedFusion;
 		fn.dollarLocal = savedDollarLocal;
 		fn.dollarType = savedDollarType;
+		if (savedSlotTypes)
+			params.forEach((p, i) => {
+				p.symbol.type = savedSlotTypes![i];
+			});
+		return BaseTypes.Void;
+	}
+
+	// D17: drive a generic Sequence template as a pipe stage. The piped value
+	// (already on the stack) becomes the template's first value-param; mirrors
+	// tryInlineEmitTemplate but sources its input from the pipe, not call args.
+	function driveTemplateStage(
+		template: NodeMap['fn'],
+		inputType: Type,
+		rest: Node[],
+		fn: FuncBuilder,
+	): Type {
+		const vparams = template.parameters ?? [];
+		const p0 = vparams[0];
+		if (!p0) return BaseTypes.Void;
+		const isVoid = inputType.kind === 'type' && inputType.family === 'void';
+		const isEmpty =
+			inputType.kind === 'type' &&
+			inputType.family === 'data' &&
+			Object.keys(inputType.members).length === 0;
+		if (isVoid || isEmpty) {
+			if (!isVoid) fn.body.push(OP_DROP);
+			return BaseTypes.Void; // base case: nothing to emit
+		}
+		const saved = vparams.map(p => p.symbol.type);
+		if (p0.symbol.type?.kind !== 'function') p0.symbol.type = inputType;
+		const localIdx = allocLocal(fn, gbcToWasm(inputType));
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(localIdx, fn.body);
+		fn.paramMap.set(p0.symbol, localIdx);
+		inTemplateInline++;
+		compileFnSource(template, rest, fn);
+		inTemplateInline--;
+		vparams.forEach((p, i) => {
+			p.symbol.type = saved[i];
+		});
 		return BaseTypes.Void;
 	}
 
@@ -2190,6 +2487,17 @@ export function compileWasm(
 		fn: FuncBuilder,
 	): Type {
 		const sym = stage.symbol;
+		if (
+			sym.kind === 'function' &&
+			sym.flags & Flags.Intrinsic &&
+			sym.name === 'out'
+		) {
+			emitOutHostCall(inputType, fn);
+			return driveStages(rest, BaseTypes.Void, fn);
+		}
+		const template = fnTemplates.get(sym);
+		if (template && template.symbol.flags & Flags.Sequence)
+			return driveTemplateStage(template, inputType, rest, fn);
 		const def = sym.definition;
 		const fnValue =
 			def?.kind === 'def' && def.value.kind === 'fn'
@@ -2269,8 +2577,7 @@ export function compileWasm(
 		if (!stage) return BaseTypes.Void;
 
 		if (stage.kind === '.') {
-			if (isEachStage(stage)) return driveStages(rest, inputType, fn);
-			const outType = emitHostStage(stage, inputType, fn);
+			const outType = emitHostStage(stage, fn);
 			return driveStages(rest, outType, fn);
 		}
 
@@ -2370,28 +2677,20 @@ export function compileWasm(
 		return BaseTypes.Void;
 	}
 
-	function emitHostStage(
-		stage: Node,
-		inputType: Type,
-		fn: FuncBuilder,
-	): Type {
+	function emitHostStage(stage: Node, fn: FuncBuilder): Type {
 		if (stage.kind !== '.')
 			throw new Error(`Unsupported pipe stage: ${stage.kind}`);
 		const recv = stage.children[0];
 		const field = stage.children[1];
 		if (recv.kind !== '@')
-			throw new Error('Pipe stage must be a stdlib access (@.X)');
+			throw new Error('Pipe stage must be a module access (@module.X)');
 		if (field.kind !== 'ident')
 			throw new Error('Pipe stage must name a member');
 		const fname = field.symbol.name;
 		if (!fname) throw new Error('Stage member is unnamed');
 
-		if (fname === 'out') return emitOutHostCall(inputType, fn);
-
 		if (field.symbol.kind !== 'function')
-			throw new Error(
-				`Pipe stage "@.${fname}" is not a function`,
-			);
+			throw new Error(`Pipe stage member "${fname}" is not a function`);
 		const sig = fnSignature(field.symbol);
 		const idx = importHost(fname, sig.params, sig.results);
 		fn.body.push(OP_CALL);
@@ -2409,6 +2708,7 @@ export function compileWasm(
 		args: Node | undefined,
 		calleeSym: SymbolMap['function'],
 		fn: FuncBuilder,
+		bindings?: Map<GbcSymbol, SymbolMap['function']>,
 	) {
 		const argList = argListFromCall(args);
 		const params = calleeSym.parameters ?? [];
@@ -2433,6 +2733,7 @@ export function compileWasm(
 				}
 			}
 			for (const p of params) {
+				if (bindings?.has(p)) continue;
 				const n = p.name;
 				if (!n) throw new Error('Parameter without a name');
 				const v = byName.get(n) ?? paramDefault(p);
@@ -2445,6 +2746,7 @@ export function compileWasm(
 		} else {
 			for (let i = 0; i < params.length; i++) {
 				const p = params[i];
+				if (p && bindings?.has(p)) continue;
 				let a = argList[i];
 				if (isVoidLiteral(a)) a = paramDefault(p);
 				a ??= paramDefault(p);
@@ -2467,33 +2769,52 @@ export function compileWasm(
 	): { paramTypes: number[]; paramMap: Map<GbcSymbol, number> } {
 		const paramTypes: number[] = [];
 		const paramMap = new Map<GbcSymbol, number>();
+		let local = 0;
 		for (let i = 0; i < paramSyms.length; i++) {
 			const p = paramSyms[i];
 			if (!p) continue;
 			const sym = p.symbol;
+			if (fnArgBindings.has(sym)) continue;
 			if (!sym.type) sym.type = BaseTypes.Int32;
 			paramTypes.push(gbcToWasm(sym.type));
-			paramMap.set(sym, i);
+			paramMap.set(sym, local++);
 		}
 		return { paramTypes, paramMap };
 	}
 
 	function resolveFnReturnType(fnNode: NodeMap['fn']): Type {
-		const returnType: Type = fnNode.returnType
+		let returnType: Type = fnNode.returnType
 			? resolveTypeFromNode(fnNode.returnType)
 			: BaseTypes.Unknown;
-		const stmts = fnNode.statements ?? [];
-		const tail = stmts[0];
-		const isDirectTier = stmts.length === 1 && tail?.kind === 'next';
+		// D43: reduce an applied type-level chain return (e.g. `First<T>`)
+		// using the now-concrete type-param placeholders (getOrCreateSpec
+		// mutated them before this runs).
 		if (
-			!isDirectTier ||
+			returnType.kind === 'type' &&
+			(returnType.application || returnType.family === 'unknown')
+		) {
+			const reduced = reduceType(returnType, new Map());
+			if (reduced.kind === 'type' && reduced.family !== 'unknown')
+				returnType = reduced;
+		}
+		const stmts = fnNode.statements ?? [];
+		const single = stmts.length === 1 ? stmts[0] : undefined;
+		if (
+			!single ||
 			returnType.kind !== 'type' ||
 			returnType.family !== 'unknown'
 		)
 			return returnType;
 		const fromChecker = fnNode.symbol.returnType;
 		if (fromChecker && hasRuntimeValue(fromChecker)) return fromChecker;
-		const val = tail.children?.[0];
+		const val =
+			single.kind === 'next'
+				? single.children?.[0]
+				: single.kind === 'def' ||
+					  single.kind === 'break' ||
+					  single.kind === 'done'
+					? undefined
+					: single;
 		if (val) {
 			const inferred = inferType(val);
 			if (hasRuntimeValue(inferred)) return inferred;
@@ -2533,11 +2854,16 @@ export function compileWasm(
 		const paramSyms = fnNode.parameters ?? [];
 		const fnSym = fnNode.symbol;
 		fnSym.parameters = paramSyms.map(p => p.symbol);
-		const hasUnionParam = paramSyms.some(p => {
-			const t = p.symbol.type;
-			return t?.kind === 'type' && t.family === 'union';
-		});
-		if (hasUnionParam) {
+		const needsSpec =
+			(fnNode.typeParameters?.length ?? 0) > 0 ||
+			paramSyms.some(p => {
+				const t = p.symbol.type;
+				return (
+					t?.kind === 'function' ||
+					(t?.kind === 'type' && t.family === 'union')
+				);
+			});
+		if (needsSpec) {
 			fnTemplates.set(defSym, fnNode);
 			fnTemplates.set(fnSym, fnNode);
 			return null;
@@ -2554,13 +2880,26 @@ export function compileWasm(
 	 * Uses the fn symbol's identity (via a side-table id) and the names of
 	 * the concrete argument types.
 	 */
-	function specKey(template: NodeMap['fn'], argTypes: Type[]): string {
-		let id = specTemplateIds.get(template.symbol);
+	function idOf(sym: GbcSymbol): number {
+		let id = specTemplateIds.get(sym);
 		if (id === undefined) {
 			id = specTemplateIds.size;
-			specTemplateIds.set(template.symbol, id);
+			specTemplateIds.set(sym, id);
 		}
-		return `${id}|${argTypes.map(t => t.name).join(',')}`;
+		return id;
+	}
+
+	function specKey(
+		template: NodeMap['fn'],
+		argTypes: Type[],
+		bindings: Map<GbcSymbol, SymbolMap['function']>,
+	): string {
+		const bk = [...bindings.entries()]
+			.map(([p, f]) => `${idOf(p)}:${idOf(f)}`)
+			.join(',');
+		return `${idOf(template.symbol)}|${argTypes
+			.map(t => t.name)
+			.join(',')}|${bk}`;
 	}
 
 	/**
@@ -2572,11 +2911,52 @@ export function compileWasm(
 	 * sibling specializations and the parent template's declared types
 	 * unaffected.
 	 */
+	/**
+	 * D43: structurally unify a value-param's declared type against the call's
+	 * concrete arg type, binding type-param placeholders (by name) to concrete
+	 * types. Handles direct params (`x: T`) and nested data (`p: [T, U]`).
+	 */
+	function unifyTypeParam(
+		paramType: Type | undefined,
+		argType: Type | undefined,
+		names: Set<string>,
+		out: Map<string, Type>,
+	) {
+		if (!paramType || !argType) return;
+		if (
+			paramType.kind === 'type' &&
+			paramType.family === 'unknown' &&
+			paramType.name &&
+			names.has(paramType.name)
+		) {
+			if (argType.kind === 'type' && !out.has(paramType.name))
+				out.set(paramType.name, argType);
+			return;
+		}
+		if (
+			paramType.kind === 'type' &&
+			paramType.family === 'data' &&
+			argType.kind === 'type' &&
+			argType.family === 'data'
+		) {
+			const pk = Object.keys(paramType.members);
+			const ak = Object.keys(argType.members);
+			for (let i = 0; i < pk.length; i++)
+				unifyTypeParam(
+					paramType.members[pk[i] ?? '']?.type,
+					argType.members[ak[i] ?? '']?.type,
+					names,
+					out,
+				);
+		}
+	}
+
 	function getOrCreateSpec(
 		template: NodeMap['fn'],
 		argTypes: Type[],
+		bindings: Map<GbcSymbol, SymbolMap['function']> = new Map(),
 	): number {
-		const key = specKey(template, argTypes);
+		const key = specKey(template, argTypes, bindings);
 		const cached = specCache.get(key);
 		if (cached !== undefined) return cached;
 		const params = template.parameters ?? [];
@@ -2593,7 +2973,41 @@ export function compileWasm(
 			)
 				sym.type = at;
 		});
-		const { builder, builderIdx } = allocFuncBuilder(template);
+		const prevBindings = new Map<GbcSymbol, SymbolMap['function'] | undefined>();
+		for (const [psym, fnsym] of bindings) {
+			prevBindings.set(psym, fnArgBindings.get(psym));
+			fnArgBindings.set(psym, fnsym);
+		}
+		// D43: bind type-param placeholders to the call's concrete arg types,
+		// mutating each placeholder in place (value params and the return type
+		// all reference it) and restoring after the body compiles.
+		const setType = (target: object, src: object) => {
+			for (const k of Object.keys(target)) delete (target as Record<string, unknown>)[k];
+			Object.assign(target, src);
+		};
+		const tparams = template.typeParameters ?? [];
+		const restorePh: { ph: object; saved: object }[] = [];
+		if (tparams.length) {
+			const names = new Set(
+				tparams.map(tp => tp.symbol.name).filter((n): n is string => !!n),
+			);
+			const subst = new Map<string, Type>();
+			params.forEach((p, i) =>
+				unifyTypeParam(p.symbol.type, argTypes[i], names, subst),
+			);
+			for (const tp of tparams) {
+				const ph = tp.symbol.type;
+				const concrete = tp.symbol.name
+					? subst.get(tp.symbol.name)
+					: undefined;
+				if (ph?.kind === 'type' && concrete?.kind === 'type') {
+					restorePh.push({ ph, saved: { ...ph } });
+					setType(ph, concrete);
+				}
+			}
+		}
+		const { builder, builderIdx, returnType } = allocFuncBuilder(template);
+		specReturn.set(builderIdx, returnType);
 		// Register BEFORE compiling the body so recursive calls inside the
 		// body resolve to this in-progress spec via the cache.
 		specCache.set(key, builderIdx);
@@ -2602,6 +3016,11 @@ export function compileWasm(
 			const t = saved[i];
 			if (t) p.symbol.type = t;
 		});
+		for (const { ph, saved: f } of restorePh) setType(ph, f);
+		for (const [psym, prev] of prevBindings) {
+			if (prev === undefined) fnArgBindings.delete(psym);
+			else fnArgBindings.set(psym, prev);
+		}
 		return builderIdx;
 	}
 

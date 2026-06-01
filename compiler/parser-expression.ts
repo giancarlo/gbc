@@ -16,13 +16,14 @@ import {
 	Flags,
 } from './symbol-table.js';
 import { Node, NodeMap } from './node.js';
+import { typeParameters } from './parser-type.js';
 import type { ScannerToken } from './scanner.js';
 
 export function parseExpression(
 	api: ParserApi<ScannerToken>,
 	symbolTable: SymbolTable,
 	typesTable: TypesSymbolTable,
-	typeParser: () => Node | undefined,
+	typeParser: (precedence?: number) => Node | undefined,
 	parseStatementBlock: (
 		parser: () => Node | undefined,
 		endKind: ScannerToken['kind'],
@@ -31,7 +32,7 @@ export function parseExpression(
 	const { current, error, expect, expectNode, optional, parseList } = api;
 
 	function expectType() {
-		return expectNode(typeParser(), 'Expected type expression');
+		return expectNode(typeParser(2), 'Expected type expression');
 	}
 
 	/**
@@ -62,7 +63,7 @@ export function parseExpression(
 			end: number;
 			line: number;
 			source: string;
-			label: Token<'ident'>;
+			label: NodeMap['label'];
 			symbol: SymbolMap['variable'];
 			type?: Node;
 			value?: Node;
@@ -82,7 +83,7 @@ export function parseExpression(
 		const node = make({
 			...ident,
 			end: (value ?? type ?? ident).end,
-			label: ident,
+			label: { ...ident, kind: 'label' },
 			symbol,
 			type,
 			value,
@@ -335,7 +336,25 @@ export function parseExpression(
 			'&': infixOperator(7),
 			'==': infixOperator(8),
 			'!=': infixOperator(8),
-			'<': infixOperator(9),
+			'<': {
+				...infixOperator(9),
+				prefix(tk: ScannerToken) {
+					api.backtrack(tk);
+					const tp = typeParameters(api, typesTable, typeParser);
+					if (!tp) throw error('Expected type parameters', tk);
+					const val = expectExpression(2);
+					tp.pop();
+					if (val.kind !== 'fn')
+						throw error(
+							'Type parameters must precede a function',
+							tk,
+						);
+					val.typeParameters = tp.params;
+					val.children = [tp.list, ...val.children];
+					val.start = tk.start;
+					return val;
+				},
+			},
 			'>': infixOperator(9),
 			'<=': infixOperator(9),
 			'>=': infixOperator(9),
@@ -566,7 +585,7 @@ export function parseExpression(
 					api.backtrack(tk);
 					let typeNode: Node | undefined;
 					try {
-						typeNode = typeParser();
+						typeNode = typeParser(2);
 					} catch {
 						typeNode = undefined;
 					}
@@ -673,7 +692,7 @@ export function parseExpression(
 						api.backtrack(n);
 						let typeNode: Node | undefined;
 						try {
-							typeNode = typeParser();
+							typeNode = typeParser(2);
 						} catch {
 							typeNode = undefined;
 						}

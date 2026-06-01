@@ -16,6 +16,8 @@ type BaseSymbol = {
 	references?: Position[];
 	type?: Type;
 	flags: Flags;
+	typeParams?: Type[];
+	application?: { fn: Type; argNodes: Node[] };
 };
 export type TypeFamily =
 	| 'int'
@@ -137,6 +139,13 @@ export function ProgramSymbolTable() {
 			parameters: [param('id', BaseTypes.String)],
 			returnType: BaseTypes.Error,
 		},
+		out: {
+			kind: 'function',
+			name: 'out',
+			flags: Flags.Intrinsic,
+			parameters: [param('s', BaseTypes.Unknown)],
+			returnType: BaseTypes.Void,
+		},
 		length: {
 			kind: 'function',
 			name: 'length',
@@ -153,23 +162,12 @@ export function ProgramSymbolTable() {
 				},
 			],
 		},
+		// `@` is the external-module operator (`@module.name`). The standard
+		// library is a global prelude (bare `out`/`each`/…), not under `@`.
 		'@': {
 			kind: 'data',
 			flags: 0,
-			members: {
-				out: {
-					name: 'out',
-					flags: Flags.External,
-					kind: 'function',
-					parameters: [param('s', BaseTypes.Unknown)],
-					returnType: BaseTypes.Void,
-				},
-				each: {
-					name: 'each',
-					flags: 0,
-					kind: 'function',
-				},
-			},
+			members: {},
 		},
 	});
 }

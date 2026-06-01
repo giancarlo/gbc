@@ -7,7 +7,9 @@ import type { Symbol, SymbolMap, Type } from './symbol-table.js';
 const typeSymbol = Symbol('type');
 type CheckedNode = Node & { [typeSymbol]?: Type };
 
-function typeToStr(type?: Type) {
+function typeToStr(type?: Type): string {
+	if (type?.kind === 'type' && type.family === 'union')
+		return type.members.map(m => m.name).join(' | ');
 	return type?.name || 'unknown';
 }
 
@@ -105,6 +107,8 @@ function resolveType(node: CheckedNode): Type | undefined {
 			return node.symbol;
 		case 'call':
 			return resolveReturnType(node.children[0]);
+		case 'loop':
+			return BT.Int32;
 		case 'number':
 			return BT[Number.isInteger(node.value) ? 'Int32' : 'Float64'];
 		case 'string': {
@@ -177,7 +181,76 @@ function resolveType(node: CheckedNode): Type | undefined {
  */
 function resolver(node: CheckedNode): Type {
 	if (node[typeSymbol]) return node[typeSymbol];
-	return (node[typeSymbol] ??= resolveType(node) ?? BT.Unknown);
+	const t = reduceType(resolveType(node) ?? BT.Unknown, EMPTY_BINDINGS);
+	// Don't cache an unresolved result: the walkPipes pre-pass may resolve an
+	// expression whose referenced defs aren't typed yet; caching Unknown would
+	// poison the later check pass. Re-resolving Unknown is idempotent.
+	if (!(t.kind === 'type' && t.family === 'unknown')) node[typeSymbol] = t;
+	return t;
+}
+
+function annotateDollar(node: CheckedNode, type: Type): void {
+	if (node.kind === '$') {
+		node[typeSymbol] = type;
+		return;
+	}
+	if (node.kind === 'fn') return;
+	if (!('children' in node) || !node.children) return;
+	const kids = node.children;
+	for (let i = 0; i < kids.length; i++) {
+		const k = kids[i];
+		if (k) annotateDollar(k, type);
+	}
+}
+
+function isTypeParam(t: Type | undefined): boolean {
+	return (
+		t?.kind === 'type' &&
+		t.family === 'unknown' &&
+		!!t.name &&
+		t.name !== 'Unknown'
+	);
+}
+
+function unifyTP(
+	paramType: Type | undefined,
+	argType: Type | undefined,
+	names: Set<string>,
+	out: Map<string, Type>,
+) {
+	if (!paramType || !argType) return;
+	if (isTypeParam(paramType) && paramType.name && names.has(paramType.name)) {
+		if (!out.has(paramType.name)) out.set(paramType.name, argType);
+		return;
+	}
+	if (
+		paramType.kind === 'type' &&
+		paramType.family === 'data' &&
+		argType.kind === 'type' &&
+		argType.family === 'data'
+	) {
+		const pk = Object.keys(paramType.members);
+		const ak = Object.keys(argType.members);
+		for (let i = 0; i < pk.length; i++)
+			unifyTP(
+				paramType.members[pk[i] ?? '']?.type,
+				argType.members[ak[i] ?? '']?.type,
+				names,
+				out,
+			);
+	}
+}
+
+function refsAny(node: Node, outer: Set<Symbol>): boolean {
+	if (node.kind === 'ident') return outer.has(node.symbol);
+	if ('children' in node && node.children)
+		for (let i = 0; i < node.children.length; i++) {
+			const k = node.children[i];
+			if (k && refsAny(k, outer)) return true;
+		}
+	if (node.kind === 'fn' || node.kind === 'main')
+		for (const s of node.statements ?? []) if (s && refsAny(s, outer)) return true;
+	return false;
 }
 
 function isIntegerType(t?: Type) {
@@ -207,6 +280,19 @@ function paramsMatch(
 
 function canAssign(to: Type, a: Type): boolean {
 	if (to === a) return true;
+	if (to.kind === 'function' && a.kind === 'function') {
+		const tp = to.parameters ?? [];
+		const ap = a.parameters ?? [];
+		if (tp.length !== ap.length) return false;
+		for (let i = 0; i < tp.length; i++) {
+			const tt = tp[i]?.type;
+			const at = ap[i]?.type;
+			if (tt && at && !canAssign(tt, at)) return false;
+		}
+		if (to.returnType && a.returnType)
+			return canAssign(to.returnType, a.returnType);
+		return true;
+	}
 	if (to.kind !== 'type' || a.kind !== 'type') return false;
 	if (to.family === 'unknown') return true;
 	if (to.family === 'union')
@@ -251,7 +337,7 @@ function valueType(node: Node): Type | undefined {
 function unionOf(types: Type[]): Type {
 	const seen = new Map<string, SymbolMap['type']>();
 	for (const t of types) {
-		if (t.kind === 'type') seen.set(t.name, t);
+		if (t.kind === 'type' && t.family !== 'void') seen.set(t.name, t);
 	}
 	const members = Array.from(seen.values());
 	if (members.length === 0) return BT.Void;
@@ -277,6 +363,153 @@ function getListTypes(node: NodeMap[',']) {
 	return node.children.map(resolver);
 }
 
+// --- D43 type-level reduction engine ---
+
+const EMPTY_BINDINGS: Map<string, Type> = new Map();
+const MAX_REDUCE = 256;
+
+function dataTypeOf(members: Type[]): Type {
+	const m: Record<string, Symbol> = {};
+	members.forEach((t, i) => {
+		m[String(i)] = { kind: 'variable', name: String(i), flags: 0, type: t };
+	});
+	return { kind: 'type', flags: 0, name: '__data', family: 'data', size: 0, members: m };
+}
+
+// Head-rest split of a type (D39): scalar lifts to head + Void rest; data
+// peels first member as head, remainder as rest (D10 collapse / Void).
+function headRestOf(t: Type): { head: Type; rest: Type } | undefined {
+	if (t.kind !== 'type' || t.family === 'void' || t.family === 'unknown')
+		return undefined;
+	if (t.family !== 'data') return { head: t, rest: BT.Void };
+	const keys = Object.keys(t.members);
+	if (keys.length === 0) return undefined;
+	const head = t.members[keys[0] ?? '']?.type ?? BT.Unknown;
+	const rest = keys.slice(1);
+	if (rest.length === 0) return { head, rest: BT.Void };
+	if (rest.length === 1)
+		return { head, rest: t.members[rest[0] ?? '']?.type ?? BT.Unknown };
+	return { head, rest: dataTypeOf(rest.map(k => t.members[k]?.type ?? BT.Unknown)) };
+}
+
+function containsApp(t: Type, seen = new Set<Type>()): boolean {
+	if (t.kind !== 'type' || seen.has(t)) return false;
+	seen.add(t);
+	if (t.application) return true;
+	if (t.family === 'union') return t.members.some(m => containsApp(m, seen));
+	if (t.family === 'data' || t.family === 'error')
+		return Object.values(t.members).some(
+			m => m.type !== undefined && containsApp(m.type, seen),
+		);
+	return false;
+}
+
+// Reduce a type under type-variable bindings: substitute bound vars, evaluate
+// applications. Identity for ordinary types when there is nothing to do.
+export function reduceType(t: Type, bindings: Map<string, Type>, depth = 0): Type {
+	if (t.kind !== 'type') return t;
+	if (depth > MAX_REDUCE) return BT.Unknown;
+	if (t.application) return reduceApply(t, bindings, depth);
+	if (t.family === 'unknown' && t.name && bindings.has(t.name))
+		return bindings.get(t.name)!;
+	if (!bindings.size && !containsApp(t)) return t;
+	if (t.family === 'union')
+		return unionOf(t.members.map(m => reduceType(m, bindings, depth + 1)));
+	if (t.family === 'data' || t.family === 'error') {
+		const reduced: Type[] = [];
+		for (const k of Object.keys(t.members)) {
+			const mt = t.members[k]?.type;
+			if (!mt) continue;
+			const r = reduceType(mt, bindings, depth + 1);
+			if (r.kind === 'type' && r.family === 'void') continue; // D40 drop
+			reduced.push(r);
+		}
+		if (reduced.length === 0) return BT.Void;
+		if (reduced.length === 1) return reduced[0]!; // D10 collapse
+		return dataTypeOf(reduced);
+	}
+	return t;
+}
+
+function reduceApply(
+	appSym: Type,
+	bindings: Map<string, Type>,
+	depth: number,
+): Type {
+	const app = appSym.application;
+	if (!app || depth > MAX_REDUCE) return BT.Unknown;
+	const fn = app.fn;
+	const chain = fn.definition;
+	const argTypes = app.argNodes.map(n =>
+		reduceType(resolveType(n) ?? BT.Unknown, bindings, depth + 1),
+	);
+	if (!chain || chain.kind !== '>>') return BT.Unknown;
+	const inner = new Map<string, Type>();
+	(fn.typeParams ?? []).forEach((p, i) => {
+		if (p.name && argTypes[i]) inner.set(p.name, argTypes[i]!);
+	});
+	return reduceChain(chain, inner, depth + 1);
+}
+
+function reduceChain(
+	chain: NodeMap['>>'],
+	bindings: Map<string, Type>,
+	depth: number,
+): Type {
+	const kids = chain.children;
+	const head = kids[0];
+	let input = reduceType(
+		(head && resolveType(head)) || BT.Unknown,
+		bindings,
+		depth + 1,
+	);
+	for (let i = 1; i < kids.length; i++) {
+		const stage = kids[i];
+		if (!stage || stage.kind !== 'fn') continue;
+		const out = applyStage(stage, input, bindings, depth + 1);
+		if (out === undefined)
+			// Indeterminate when the input is an unresolved type param (e.g.
+			// reducing a generic template's declared return); only a concrete
+			// no-match collapses to Void (D40).
+			return input.kind === 'type' && input.family === 'unknown'
+				? BT.Unknown
+				: BT.Void;
+		input = out;
+	}
+	return input;
+}
+
+function applyStage(
+	stage: NodeMap['fn'],
+	input: Type,
+	bindings: Map<string, Type>,
+	depth: number,
+): Type | undefined {
+	const local = new Map(bindings);
+	const pattern = stage.parameters?.[0]?.type;
+	if (pattern?.kind === 'data') {
+		const inner = pattern.children[0];
+		const slots = inner?.kind === ',' ? inner.children : inner ? [inner] : [];
+		const names = slots.map(s =>
+			s?.kind === 'parameter' ? s.symbol.name : undefined,
+		);
+		let cur = input;
+		for (let i = 0; i < names.length; i++) {
+			if (i === names.length - 1) {
+				if (names[i]) local.set(names[i]!, cur);
+				break;
+			}
+			const hr = headRestOf(cur);
+			if (!hr) return undefined; // input doesn't match the pattern
+			if (names[i]) local.set(names[i]!, hr.head);
+			cur = hr.rest;
+		}
+	}
+	const body = stage.statements?.[0];
+	if (!body) return BT.Void;
+	return reduceType(resolveType(body) ?? BT.Unknown, local, depth + 1);
+}
+
 /**
  * Perform semantic analysis
  */
@@ -300,6 +533,7 @@ export function checker({
 		const right = node.children[1];
 		const lt = resolver(left);
 		const rt = resolver(right);
+		if (isTypeParam(lt) || isTypeParam(rt)) return;
 		if (!(isNumericType(lt) && isNumericType(rt))) {
 			errors.push({
 				message: `Operator "${
@@ -423,7 +657,40 @@ export function checker({
 
 		const chosen = chooseOverload(fn, argTypes, node);
 		if (!chosen || !args) return;
+		checkTypeArgConstraints(chosen, argTypes, node);
 		checkCallArgs(chosen, argTypes, node);
+	}
+
+	function checkTypeArgConstraints(
+		chosen: SymbolMap['function'],
+		argTypes: Type[],
+		node: NodeMap['call'],
+	) {
+		const fnNode =
+			chosen.definition?.kind === 'fn' ? chosen.definition : undefined;
+		const tparams = fnNode?.typeParameters;
+		if (!tparams?.length) return;
+		const names = new Set(
+			tparams.map(t => t.symbol.name).filter((n): n is string => !!n),
+		);
+		const subst = new Map<string, Type>();
+		(chosen.parameters ?? []).forEach((p, i) =>
+			unifyTP(p.type, argTypes[i], names, subst),
+		);
+		for (const tp of tparams) {
+			if (!tp.type) continue;
+			const constraint = resolveType(tp.type);
+			const bound = tp.symbol.name ? subst.get(tp.symbol.name) : undefined;
+			if (constraint && bound && !canAssign(constraint, bound))
+				error(
+					`Type argument "${typeToStr(
+						bound,
+					)}" does not satisfy constraint "${typeToStr(
+						constraint,
+					)}" for type parameter "${tp.symbol.name ?? '?'}"`,
+					node,
+				);
+		}
 	}
 
 	function checkDef(node: NodeMap['def']) {
@@ -461,7 +728,11 @@ export function checker({
 
 	function checkFnDef(node: NodeMap['fn']) {
 		resolver(node);
-		if (node.symbol.returnType && node.statements?.length === 1) {
+		if (
+			!node.typeParameters?.length &&
+			node.symbol.returnType &&
+			node.statements?.length === 1
+		) {
 			const stmt = node.statements[0];
 			if (
 				stmt &&
@@ -470,13 +741,33 @@ export function checker({
 				stmt.kind !== 'break'
 			) {
 				const t = resolveType(stmt);
-				if (t && !canAssign(node.symbol.returnType, t))
+				if (t && !isTypeParam(t) && !canAssign(node.symbol.returnType, t))
 					error(
 						`Type "${typeToStr(t)}" is not assignable to return type "${typeToStr(node.symbol.returnType)}"`,
 						stmt,
 					);
 			}
 		}
+		const bindings = new Set<Symbol>();
+		node.parameters?.forEach(p => bindings.add(p.symbol));
+		node.statements?.forEach(s => {
+			if (s?.kind === 'def') bindings.add(s.symbol);
+		});
+		if (bindings.size)
+			node.statements?.forEach(s => {
+				if (!s) return;
+				const emitted =
+					s.kind === 'fn'
+						? s
+						: s.kind === 'next' && s.children?.[0]?.kind === 'fn'
+							? s.children[0]
+							: undefined;
+				if (emitted && refsAny(emitted, bindings))
+					error(
+						'function captures an enclosing binding; closures are not allowed (D45)',
+						emitted,
+					);
+			});
 		if (node.statements) checkEach(node.statements);
 	}
 
@@ -520,8 +811,9 @@ export function checker({
 		)
 			return;
 		resolver(c);
-		const t = resolveType(stmt);
-		if (t && c.symbol.returnType && !canAssign(c.symbol.returnType, t))
+		const t = resolver(stmt);
+		const known = !(t.kind === 'type' && t.family === 'unknown');
+		if (known && c.symbol.returnType && !canAssign(c.symbol.returnType, t))
 			error(
 				`Type "${typeToStr(t)}" is not assignable to return type "${typeToStr(c.symbol.returnType)}"`,
 				stmt,
@@ -679,6 +971,7 @@ export function checker({
 		p: Symbol,
 		inputType: SymbolMap['type'],
 	) {
+		// D39: single slot binds the whole upstream value.
 		const declared = paramDeclaredType(stage, 0) ?? p.type;
 		if (
 			declared &&
@@ -689,7 +982,7 @@ export function checker({
 			declared.family !== 'unknown'
 		) {
 			error(
-				`no match: stage parameter of type "${typeToStr(declared)}" does not match upstream data-block input`,
+				`stage parameter of type "${typeToStr(declared)}" is not assignable from data-block input`,
 				stage,
 			);
 			return;
@@ -697,30 +990,81 @@ export function checker({
 		if (!p.type) p.type = inputType;
 	}
 
+	// D39 rest slot: [] → Void; one → that type (D10 collapse); many → data.
+	function restSlotType(
+		members: Record<string, Symbol>,
+		keys: string[],
+		start: number,
+	): Type {
+		const rest = keys.slice(start);
+		if (rest.length === 0) return BT.Void;
+		if (rest.length === 1)
+			return members[rest[0] ?? '']?.type ?? BT.Unknown;
+		const out: Record<string, Symbol> = {};
+		rest.forEach((k, i) => {
+			out[String(i)] = {
+				kind: 'variable',
+				name: String(i),
+				flags: 0,
+				type: members[k]?.type ?? BT.Unknown,
+			};
+		});
+		return {
+			kind: 'type',
+			flags: 0,
+			name: '__data',
+			family: 'data',
+			size: 0,
+			members: out,
+		};
+	}
+
 	function inferMultiParamStage(
 		stage: Node,
 		params: Symbol[],
 		inputType: SymbolMap['type'],
 	) {
-		if (inputType.family !== 'data') {
+		// D39: last slot binds rest; scalar input lifts to [scalar] (D10).
+		const members: Record<string, Symbol> =
+			inputType.family === 'data'
+				? inputType.members
+				: {
+						'0': {
+							kind: 'variable',
+							name: '0',
+							flags: 0,
+							type: inputType,
+						},
+					};
+		const keys = Object.keys(members);
+		if (keys.length === 0) return; // unknown arity — leave slots uninferred
+		const headCount = params.length - 1;
+		if (keys.length < headCount) {
 			error(
-				`no match: multi-slot stage requires data-block input, got "${typeToStr(inputType)}"`,
-				stage,
-			);
-			return;
-		}
-		const keys = Object.keys(inputType.members);
-		if (keys.length && keys.length !== params.length) {
-			error(
-				`no match: stage with ${params.length} slots does not match upstream data block of arity ${keys.length}`,
+				`no match: stage with ${params.length} slots needs at least ${headCount} input element(s), got ${keys.length}`,
 				stage,
 			);
 			return;
 		}
 		params.forEach((p, idx) => {
-			if (p.type) return;
-			const m = inputType.members[keys[idx] ?? ''];
-			if (m?.kind === 'variable' && m.type) p.type = m.type;
+			const bound =
+				idx < headCount
+					? (members[keys[idx] ?? '']?.type ?? BT.Unknown)
+					: restSlotType(members, keys, headCount);
+			const declared = paramDeclaredType(stage, idx);
+			if (
+				declared &&
+				declared.kind === 'type' &&
+				declared.family !== 'unknown' &&
+				!canAssign(declared, bound)
+			)
+				error(
+					`stage parameter of type "${typeToStr(
+						declared,
+					)}" is not assignable from "${typeToStr(bound)}"`,
+					stage,
+				);
+			if (!p.type) p.type = bound;
 		});
 	}
 
@@ -728,9 +1072,22 @@ export function checker({
 		checkStageReachable(stage, input);
 		const fnSym = pipeStageFn(stage);
 		if (!fnSym) return;
-		const params = fnSym.parameters;
-		if (!params?.length) return;
 		const inputType = resolver(input);
+		const params = fnSym.parameters;
+		if (
+			stage.kind === 'fn' &&
+			stage.statements &&
+			inputType.kind === 'type' &&
+			inputType.family !== 'unknown'
+		) {
+			const p0 = params?.[0];
+			const single = params?.length === 1 && !!p0 && !p0.name;
+			const dollarT = single
+				? (paramDeclaredType(stage, 0) ?? p0.type ?? inputType)
+				: inputType;
+			for (const s of stage.statements) if (s) annotateDollar(s, dollarT);
+		}
+		if (!params?.length) return;
 		if (inputType.kind !== 'type' || inputType.family === 'unknown')
 			return;
 		if (params.length === 1) {
@@ -777,6 +1134,7 @@ export function checker({
 			case '$':
 			case '@':
 			case 'ident':
+			case 'label':
 			case 'typeident':
 				return;
 			default: {

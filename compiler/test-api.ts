@@ -36,7 +36,7 @@ export type RuleDef = {
 	p?: string;
 	src: string;
 	ast: string;
-	/** Expected `@.out` captures when running the compiled WASM module. */
+	/** Expected `out` captures when running the compiled WASM module. */
 	out?: OutValue[];
 	test?: (ast: NodeMap['root']) => void;
 };
@@ -49,17 +49,13 @@ export interface WasmRunResult {
 }
 
 /**
- * Strip a trailing `>> @.out` from a wrapped main statement so the AST
+ * Strip a trailing `>> out` from a wrapped main statement so the AST
  * assertion in `expr()` sees the original src's pipe shape.
  */
 function unwrapOutPipe(stmt: NodeMap[keyof NodeMap]): NodeMap[keyof NodeMap] {
 	if (stmt.kind !== '>>') return stmt;
 	const last = stmt.children[stmt.children.length - 1];
-	const isOutStage =
-		last?.kind === '.' &&
-		last.children[0]?.kind === '@' &&
-		last.children[1]?.kind === 'ident' &&
-		last.children[1].symbol.name === 'out';
+	const isOutStage = last?.kind === 'ident' && last.symbol.name === 'out';
 	if (!isOutStage) return stmt;
 	const inner = stmt.children.slice(0, -1);
 	if (inner.length === 1) return inner[0]!;
@@ -137,13 +133,13 @@ export class SpecApi extends TestApiBase<SpecApi> {
 
 	/**
 	 * Runtime-verified expression test. Wraps `src` as
-	 * `${pre ?? ''} main { ${src} >> @.out }` so the spec stays focused on
+	 * `${pre ?? ''} main { ${src} >> out }` so the spec stays focused on
 	 * the value being demonstrated.
 	 *
 	 * `pre` is optional top-level setup (typically fn defs that the
 	 * expression calls).
 	 * `ast` is the AST of the inner expression only (the lhs of `>>`).
-	 * `out` is the expected sequence of `@.out` captures.
+	 * `out` is the expected sequence of `out` captures.
 	 */
 	expr = ({
 		pre,
@@ -169,7 +165,7 @@ export class SpecApi extends TestApiBase<SpecApi> {
 				break;
 			}
 		}
-		const wrapped = `${pre ? pre + '; ' : ''}main { ${src} >> @.out${isMulti ? ';' : ''} }`;
+		const wrapped = `${pre ? pre + '; ' : ''}main { ${src} >> out${isMulti ? ';' : ''} }`;
 		const needsRuntime = out !== undefined || !!test;
 		const rootAst = needsRuntime
 			? this.parse(wrapped).ast
