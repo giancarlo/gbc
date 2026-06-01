@@ -924,6 +924,21 @@ export function checker({
 			case '/':
 			case '*':
 				return numberBinaryOperator(node);
+			case '==':
+			case '!=': {
+				check(node.children[0]);
+				check(node.children[1]);
+				const isVoid = (n: Node) => {
+					const t = resolver(n);
+					return t.kind === 'type' && t.family === 'void';
+				};
+				if (isVoid(node.children[0]) || isVoid(node.children[1]))
+					error(
+						`void is not comparable; use length(x) == 0 to test for the empty terminal`,
+						node,
+					);
+				return;
+			}
 			case '>>':
 				return checkPipe(node);
 			case '?':

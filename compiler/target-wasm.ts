@@ -554,6 +554,8 @@ export function compileWasm(
 		const callee = node.children[0];
 		if (callee.kind !== 'ident') return BaseTypes.Unknown;
 		const sym = callee.symbol;
+		const bound = fnArgBindings.get(sym);
+		if (bound) return bound.returnType ?? BaseTypes.Void;
 		const fnSym =
 			sym.kind === 'function'
 				? sym
@@ -774,6 +776,15 @@ export function compileWasm(
 		if (callee.kind !== 'ident') return false;
 		const template = fnTemplates.get(callee.symbol);
 		if (!template || !(template.symbol.flags & Flags.Sequence)) return false;
+		const tbody = (template.statements ?? [])[0];
+		if (tbody?.kind === '>>') {
+			const flat = flattenPipe(tbody.children);
+			const last = flat[flat.length - 1];
+			const innerStmts =
+				last?.kind === 'fn' ? last.statements ?? [] : [];
+			if (innerStmts.length === 1 && innerStmts[0]?.kind !== ',')
+				return false;
+		}
 		const args = callNode.children[1];
 		const argTypes = collectArgTypes(args, fn);
 		const a0 = argTypes[0];
@@ -948,10 +959,52 @@ export function compileWasm(
 		};
 	}
 
+	function constEvalInt(node: Node, fn: FuncBuilder): number | undefined {
+		if (node.kind === 'number' && Number.isInteger(node.value))
+			return node.value;
+		if (node.kind === 'call') {
+			const callee = node.children[0];
+			const arg = node.children[1];
+			if (
+				callee.kind === 'ident' &&
+				callee.symbol.kind === 'function' &&
+				callee.symbol.flags & Flags.Intrinsic &&
+				callee.symbol.name === 'length' &&
+				arg
+			) {
+				const t = inferType(arg, fn);
+				if (t.kind === 'type') {
+					if (t.family === 'void') return 0;
+					if (t.family === 'data')
+						return Object.keys(t.members).length;
+					if (t.family === 'string') return undefined;
+					return 1;
+				}
+			}
+		}
+		return undefined;
+	}
+
+	function constEvalBool(node: Node, fn: FuncBuilder): boolean | undefined {
+		if (node.kind === '==' || node.kind === '!=') {
+			const a = constEvalInt(node.children[0], fn);
+			const b = constEvalInt(node.children[1], fn);
+			if (a === undefined || b === undefined) return undefined;
+			return node.kind === '==' ? a === b : a !== b;
+		}
+		return undefined;
+	}
+
 	function compileTernary(node: NodeMap['?'], fn: FuncBuilder): Type {
 		const cond = node.children[0];
 		const thenBranch = node.children[1];
 		const elseBranch = node.children[2];
+		const known = constEvalBool(cond, fn);
+		if (known !== undefined) {
+			const taken = known ? thenBranch : elseBranch;
+			if (!taken) return BaseTypes.Void;
+			return compileExpr(taken, fn);
+		}
 		compileExpr(cond, fn);
 		fn.body.push(OP_IF);
 		if (!elseBranch) {
@@ -1259,14 +1312,20 @@ export function compileWasm(
 		if (name === 'length') {
 			if (!args) throw new Error('length() requires an argument');
 			const argType = inferType(args, fn);
-			if (
+			const isStringLike =
 				argType.kind === 'type' &&
-				argType.family === 'data' &&
-				Object.keys(argType.members).length > 0
-			) {
-				const arity = Object.keys(argType.members).length;
+				(argType.family === 'string' ||
+					(argType.family === 'literal' &&
+						typeof argType.value === 'string'));
+			if (argType.kind === 'type' && !isStringLike) {
+				const n =
+					argType.family === 'void'
+						? 0
+						: argType.family === 'data'
+						? Object.keys(argType.members).length
+						: 1;
 				fn.body.push(OP_I32_CONST);
-				sleb128(arity, fn.body);
+				sleb128(n, fn.body);
 				return BaseTypes.Int32;
 			}
 			compileExpr(args, fn);
@@ -2049,7 +2108,8 @@ export function compileWasm(
 				if (stages.length === 0) {
 					if (savedFusion) savedFusion.emit(t);
 					else if (
-						hasRuntimeValue(t)
+						hasRuntimeValue(t) &&
+						!hasRuntimeValue(fn.returnType)
 					)
 						fn.body.push(OP_DROP);
 					return;
@@ -2889,6 +2949,21 @@ export function compileWasm(
 		return id;
 	}
 
+	function typeKey(t: Type): string {
+		if (t.kind !== 'type') return 'fn';
+		if (t.family === 'data')
+			return (
+				'[' +
+				Object.keys(t.members)
+					.map(k => typeKey(t.members[k]?.type ?? BaseTypes.Unknown))
+					.join(',') +
+				']'
+			);
+		if (t.family === 'union')
+			return '(' + t.members.map(typeKey).join('|') + ')';
+		return t.name;
+	}
+
 	function specKey(
 		template: NodeMap['fn'],
 		argTypes: Type[],
@@ -2898,7 +2973,7 @@ export function compileWasm(
 			.map(([p, f]) => `${idOf(p)}:${idOf(f)}`)
 			.join(',');
 		return `${idOf(template.symbol)}|${argTypes
-			.map(t => t.name)
+			.map(typeKey)
 			.join(',')}|${bk}`;
 	}
 
@@ -2951,14 +3026,40 @@ export function compileWasm(
 		}
 	}
 
+	const inProgressSpecs = new Set<string>();
+
 	function getOrCreateSpec(
 		template: NodeMap['fn'],
 		argTypes: Type[],
 		bindings: Map<GbcSymbol, SymbolMap['function']> = new Map(),
 	): number {
 		const key = specKey(template, argTypes, bindings);
+		const specDesc =
+			(template.symbol.name ?? '?') +
+			'(' +
+			argTypes
+				.map(t =>
+					t.kind === 'type'
+						? t.family +
+							(t.family === 'data'
+								? '[' + Object.keys(t.members).length + ']'
+								: '')
+						: t.kind,
+				)
+				.join(', ') +
+			')';
 		const cached = specCache.get(key);
-		if (cached !== undefined) return cached;
+		if (cached !== undefined) {
+			if (
+				inProgressSpecs.has(key) &&
+				template.symbol.flags & Flags.Sequence
+			)
+				throw new Error(
+					`Recursive generic ${specDesc} does not reduce toward a base case — its recursive call repeats the same argument type, so it would not terminate.`,
+				);
+			return cached;
+		}
+		inProgressSpecs.add(key);
 		const params = template.parameters ?? [];
 		const saved = params.map(p => p.symbol.type);
 		params.forEach((p, i) => {
@@ -3011,7 +3112,19 @@ export function compileWasm(
 		// Register BEFORE compiling the body so recursive calls inside the
 		// body resolve to this in-progress spec via the cache.
 		specCache.set(key, builderIdx);
+		// Return type is now fixed; bind each value param to its concrete arg
+		// type for the body so a recursive generic call sees the shrunk
+		// per-level type (the shared placeholder is mutated in place and cannot
+		// rebind per level). Restored from `saved` after the body compiles.
+		params.forEach((p, i) => {
+			const at = argTypes[i];
+			if (at && at.kind === 'type' && p.symbol.type?.kind !== 'function')
+				p.symbol.type = at;
+		});
+		const seqTemplate = !!(template.symbol.flags & Flags.Sequence);
+		if (seqTemplate) inTemplateInline++;
 		compileFnBody(builder, template);
+		if (seqTemplate) inTemplateInline--;
 		params.forEach((p, i) => {
 			const t = saved[i];
 			if (t) p.symbol.type = t;
@@ -3021,6 +3134,7 @@ export function compileWasm(
 			if (prev === undefined) fnArgBindings.delete(psym);
 			else fnArgBindings.set(psym, prev);
 		}
+		inProgressSpecs.delete(key);
 		return builderIdx;
 	}
 

@@ -150,17 +150,8 @@ export function ProgramSymbolTable() {
 			kind: 'function',
 			name: 'length',
 			flags: Flags.Intrinsic,
-			parameters: [param('s', BaseTypes.String)],
+			parameters: [param('s', BaseTypes.Unknown)],
 			returnType: BaseTypes.Int32,
-			overloads: [
-				{
-					kind: 'function',
-					name: 'length',
-					flags: Flags.Intrinsic,
-					parameters: [param('d', AnyData)],
-					returnType: BaseTypes.Int32,
-				},
-			],
 		},
 		// `@` is the external-module operator (`@module.name`). The standard
 		// library is a global prelude (bare `out`/`each`/…), not under `@`.

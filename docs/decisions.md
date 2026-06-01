@@ -669,6 +669,21 @@ The stdlib is loaded by a **general `loadModule(source)`** that parses + type-ch
 
 ---
 
+## D47: `length(x) == 0` is the canonical emptiness test; `length` is total
+
+`length` returns the element count of any value, total over the collapse hierarchy: `length(void) = 0` (D40 — the empty terminal contributes nothing), `length(scalar) = 1` (D10 — `x ≡ [x]`, a value is a one-element sequence), `length(data)` = slot count, `length(String)` = byte count. Emptiness / end-of-stream is tested with one canonical form, **`length(x) == 0`**.
+
+There is no `x == void`. `void` is not a runtime value (D40 — size 0, no WASM representation); the checker rejects comparison against it and points to `length(x) == 0`.
+
+- \+ P1 ✓ one emptiness test; `== void` would be a second spelling of the same thing
+- \+ More general: correct for runtime-sized `Array<T>` (where `== void` is *wrong* — an empty array is a present value, not the void terminal) and for the compile-time data-block terminal alike
+- \+ P3 ✓ an honest count plus `== 0`, not a type-directed comparison against a valueless thing; `void` never needs value semantics, so "what does `void == void` mean" never arises
+- \+ Gives stream consumers (fold/reduce/count/collect) their end-of-stream check without adding an `onComplete` channel to the pipe
+- × `x == void` — `void` has no runtime value; supporting it would force void to be a comparable zero-sized value and reopen never-vs-unit (D40)
+- × a dedicated `empty(x)`/`end(x)` predicate — `length(x) == 0` already says it, and `length(s) == 0` was already the string idiom
+
+---
+
 ## Open / Deferred
 
 Tracked in `potential-features.md`:

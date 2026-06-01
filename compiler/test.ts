@@ -1404,7 +1404,7 @@ a = {
 			});
 		});
 
-		h('Generic value functions', ({ rule }) => {
+		h('Generic value functions', ({ rule, expr, compileError }) => {
 			rule({
 				p: 'Generic value function — same `<T>` syntax at the value level. The compiler infers the type argument from each call-site value and monomorphizes per concrete type (D42). Two calls with the same arg type share one specialization.',
 				src: `identity = <T>(x: T): T { x }; main { identity(42) >> out; identity(7) >> out; }`,
@@ -1422,6 +1422,19 @@ a = {
 				src: `first = <T>(a: T, b: T): T { a }; main { first(10, 20) >> out }`,
 				ast: `(root (def :first ? (fn @sequence (, (parameter :T ? ?)) (parameter :a typeident ?) (parameter :b typeident ?) typeident :a)) (main (>> (call :first (, 10 20)) :out @intrinsic)))`,
 				out: [10],
+			});
+			expr({
+				p: 'A recursive generic value function reduces a data block to a single value: it destructures head/rest each level (D39), threads an accumulator, and terminates at `length(r) == 0` (D47). The argument type shrinks per level so the recursion monomorphizes to a base case. A function-valued parameter (`f`) is called directly. As a value-returning consumer it also composes as a pipe source.',
+				pre: `reduce = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : reduce(r, f(acc, h), f) } }; add = (a: Int32, b: Int32): Int32 { a + b }`,
+				src: `reduce([1, 2, 3], 0, add)`,
+				ast: `(call :reduce (, (data (, 1 2 3)) 0 :add))`,
+				out: [6],
+			});
+			compileError({
+				p: 'A recursive generic whose recursive call does not shrink its argument toward a base case is rejected — it would never terminate.',
+				pre: `loopy = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : loopy(t, f(acc, h), f) } }; add = (a: Int32, b: Int32): Int32 { a + b }`,
+				src: `main { loopy([1, 2, 3], 0, add) >> out }`,
+				expected: 'does not reduce',
 			});
 		});
 
@@ -1515,10 +1528,28 @@ a = {
 				out: [5],
 			});
 			expr({
-				p: '`length(d)` returns the slot count of a data block (overload).',
+				p: '`length(d)` returns the slot count of a data block.',
 				src: `length([1, 2, 3])`,
 				ast: `(call :length @intrinsic (data (, 1 2 3)))`,
 				out: [3],
+			});
+			expr({
+				p: '`length` is total: a scalar is a one-element sequence (D10: `x ≡ [x]`), so its length is 1.',
+				src: `length(5)`,
+				ast: `(call :length @intrinsic 5)`,
+				out: [1],
+			});
+			expr({
+				p: 'A singleton data block has length 1 (D10 collapses `[x]` to `x`).',
+				src: `length([3])`,
+				ast: `(call :length @intrinsic (data 3))`,
+				out: [1],
+			});
+			expr({
+				p: '`length(void)` is 0 — the empty terminal (D40). This is the canonical emptiness test for stream consumers; `length(x) == 0` replaces any `x == void`.',
+				src: `length(void)`,
+				ast: `(call :length @intrinsic :void)`,
+				out: [0],
 			});
 		});
 	});
