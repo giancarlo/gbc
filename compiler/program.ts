@@ -70,7 +70,10 @@ for (const key of Object.keys(stdlib.scope)) {
 const preludeSymbols: Record<string, Symbol> = {};
 const preludeDefs: NodeMap['def'][] = [];
 for (const child of stdlib.root.children)
-	if (child.kind === 'def' && child.value.kind === 'fn') {
+	if (
+		child.kind === 'def' &&
+		(child.value.kind === 'fn' || child.value.kind === '|')
+	) {
 		if (child.symbol.name) preludeSymbols[child.symbol.name] = child.symbol;
 		preludeDefs.push(child);
 	}

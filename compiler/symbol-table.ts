@@ -139,13 +139,6 @@ export function ProgramSymbolTable() {
 			parameters: [param('id', BaseTypes.String)],
 			returnType: BaseTypes.Error,
 		},
-		out: {
-			kind: 'function',
-			name: 'out',
-			flags: Flags.Intrinsic,
-			parameters: [param('s', BaseTypes.Unknown)],
-			returnType: BaseTypes.Void,
-		},
 		length: {
 			kind: 'function',
 			name: 'length',

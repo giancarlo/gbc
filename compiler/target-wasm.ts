@@ -562,8 +562,26 @@ export function compileWasm(
 				: sym.type?.kind === 'function'
 					? sym.type
 					: undefined;
-		if (fnSym) return fnSym.returnType ?? BaseTypes.Void;
-		return BaseTypes.Unknown;
+		if (!fnSym) return BaseTypes.Unknown;
+		const rt = fnSym.returnType ?? BaseTypes.Void;
+		if (rt.kind === 'type' && rt.family === 'unknown' && rt.name) {
+			const params = fnSym.parameters ?? [];
+			const argNodes = argListFromCall(node.children[1]);
+			for (let i = 0; i < params.length; i++) {
+				const pt = params[i]?.type;
+				const an = argNodes[i];
+				if (
+					pt?.kind === 'type' &&
+					pt.family === 'unknown' &&
+					pt.name === rt.name &&
+					an
+				) {
+					const at = inferType(an);
+					if (at.kind === 'type' && at.family !== 'unknown') return at;
+				}
+			}
+		}
+		return rt;
 	}
 
 	function inferMemberType(node: NodeMap['.'], fn?: FuncBuilder): Type {
@@ -571,6 +589,11 @@ export function compileWasm(
 		const field = node.children[1];
 		const recvType = inferType(recv, fn);
 		if (recvType.kind === 'type' && (recvType.family === 'data' || recvType.family === 'error')) {
+			const members = recvType.members;
+			if (field.kind === 'ident' && members) {
+				const m = members[field.symbol.name ?? ''];
+				if (m && m.kind === 'variable' && m.type) return m.type;
+			}
 			if (field.kind === 'number') {
 				const items = dataItems(recv);
 				const item = items[field.value];
@@ -1473,7 +1496,110 @@ export function compileWasm(
 			return compileIntrinsic(calleeSym.name ?? '', args, fn);
 		const templateNode = fnTemplates.get(calleeSym);
 		if (templateNode) return compileTemplateCall(templateNode, args, fn);
+		const disp = tryCompileDispatch(calleeSym, args, fn);
+		if (disp) return disp;
 		return compileDirectCall(calleeSym, args, fn);
+	}
+
+	function isCatchAllArm(o: SymbolMap['function']): boolean {
+		if (o.parameters?.length !== 1) return false;
+		// A catch-all template's param symbol type gets mutated by monomorphization,
+		// so read the stable node annotation: no `:T` on the sole param.
+		const node = fnTemplates.get(o);
+		if (node && node.kind === 'fn') return !node.parameters?.[0]?.type;
+		const p = o.parameters[0]?.type;
+		return !p || (p.kind === 'type' && p.family === 'unknown');
+	}
+
+	function dispatchArgType(t: Type): Type {
+		if (t.kind === 'type' && t.family === 'union' && t.members) {
+			const m = t.members.find(
+				x => !(x.kind === 'type' && x.family === 'error'),
+			);
+			if (m) return dispatchArgType(m);
+		}
+		if (t.kind === 'type' && t.family === 'literal') {
+			const v = t.value;
+			if (typeof v === 'string') return BaseTypes.String;
+			if (typeof v === 'boolean') return BaseTypes.Bool;
+			if (typeof v === 'number')
+				return Number.isInteger(v) ? BaseTypes.Int32 : BaseTypes.Float64;
+		}
+		return t;
+	}
+
+	function findDispatchArm(
+		overloads: SymbolMap['function'][],
+		argTypes: Type[],
+	): SymbolMap['function'] | undefined {
+		const ats = argTypes.map(dispatchArgType);
+		const typed = overloads.find(o => {
+			if (isCatchAllArm(o)) return false;
+			const ps = o.parameters;
+			if (!ps || ps.length !== ats.length) return false;
+			return ps.every((p, i) => {
+				const pt = p.type;
+				const at = ats[i];
+				return (
+					pt?.kind === 'type' &&
+					pt.family !== 'unknown' &&
+					at?.kind === 'type' &&
+					pt.family === at.family &&
+					pt.name === at.name
+				);
+			});
+		});
+		if (typed) return typed;
+		return overloads.find(isCatchAllArm);
+	}
+
+	// Emit a call to a resolved dispatch arm: a builder call for an inline-fn or
+	// named-fn arm, or a host-import call when the arm is an `external` (e.g.
+	// `out = out_i32 | out_str | …`). Args/input must already be on the stack.
+	function emitArmCall(
+		arm: SymbolMap['function'],
+		dispatchName: string | undefined,
+		fn: FuncBuilder,
+	): void {
+		const builderIdx = fnDefBuilderIdx.get(arm);
+		if (builderIdx !== undefined) {
+			emitFixedCall(fn, builderIdx);
+			return;
+		}
+		if (arm.flags & Flags.External && arm.name) {
+			const sig = fnSignature(arm);
+			const idx = importHost(arm.name, sig.params, sig.results);
+			fn.body.push(OP_CALL);
+			uleb128(idx, fn.body);
+			return;
+		}
+		throw new Error(
+			`dispatch "${dispatchName ?? '?'}": arm "${arm.name ?? '_'}" not compiled`,
+		);
+	}
+
+	function tryCompileDispatch(
+		calleeSym: GbcSymbol,
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): Type | undefined {
+		const dt = calleeSym.kind === 'function' ? calleeSym : calleeSym.type;
+		if (!dt || dt.kind !== 'function' || !dt.overloads) return undefined;
+		const argTypes = collectArgTypes(args, fn);
+		const arm = findDispatchArm(dt.overloads, argTypes);
+		if (!arm)
+			throw new Error(
+				`dispatch "${calleeSym.name ?? '?'}": no arm accepts (${argTypes
+					.map(t => (t.kind === 'type' ? t.name : t.kind))
+					.join(', ')}); arms: ${dt.overloads
+					.map(o => o.parameters?.[0]?.type?.name ?? '_')
+					.join(' | ')}`,
+			);
+		const tmpl = fnTemplates.get(arm);
+		if (tmpl) return compileTemplateCall(tmpl, args, fn);
+		compileCallArgs(args, arm, fn);
+		emitArmCall(arm, calleeSym.name, fn);
+		return arm.returnType ?? BaseTypes.Void;
 	}
 
 	function compileData(node: NodeMap['data'], fn: FuncBuilder): Type {
@@ -1836,7 +1962,16 @@ export function compileWasm(
 			return BaseTypes.Void;
 		}
 
-		const sourceType = compileExpr(source, fn);
+		let sourceType = compileExpr(source, fn);
+		if (
+			source.kind === 'call' &&
+			sourceType.kind === 'type' &&
+			sourceType.family === 'unknown'
+		) {
+			const inferred = inferType(source, fn);
+			if (inferred.kind === 'type' && inferred.family !== 'unknown')
+				sourceType = inferred;
+		}
 		return driveStages(stages, originalUnion ?? sourceType, fn);
 	}
 
@@ -2527,6 +2662,10 @@ export function compileWasm(
 		}
 		const saved = vparams.map(p => p.symbol.type);
 		if (p0.symbol.type?.kind !== 'function') p0.symbol.type = inputType;
+		if (inputType.kind === 'type' && inputType.family === 'unknown')
+			throw new Error(
+				`stage "${template.symbol.name ?? '?'}" received an unresolved (unknown) input type — the upstream value's type could not be inferred (e.g. an unresolved generic return)`,
+			);
 		const localIdx = allocLocal(fn, gbcToWasm(inputType));
 		fn.body.push(OP_LOCAL_SET);
 		uleb128(localIdx, fn.body);
@@ -2592,6 +2731,23 @@ export function compileWasm(
 			return driveStages(rest, retType, fn);
 		}
 		if (fnValue) return inlineDirectFnStage(fnValue, inputType, rest, fn);
+		const dt = sym.kind === 'function' ? sym : sym.type;
+		if (dt && dt.kind === 'function' && dt.overloads) {
+			if (inputType.kind === 'type' && inputType.family === 'void')
+				return driveStages(rest, BaseTypes.Void, fn);
+			const arm = findDispatchArm(dt.overloads, [inputType]);
+			if (arm) {
+				const tmpl = fnTemplates.get(arm);
+				if (tmpl) {
+					const idx = getOrCreateSpec(tmpl, [inputType]);
+					emitFixedCall(fn, idx);
+					const r = specReturn.get(idx) ?? arm.returnType ?? BaseTypes.Void;
+					return driveStages(rest, r, fn);
+				}
+				emitArmCall(arm, sym.name, fn);
+				return driveStages(rest, arm.returnType ?? BaseTypes.Void, fn);
+			}
+		}
 		throw new Error(`Unknown pipe-stage ident: "${sym.name ?? '?'}"`);
 	}
 
@@ -2842,10 +2998,26 @@ export function compileWasm(
 		return { paramTypes, paramMap };
 	}
 
-	function resolveFnReturnType(fnNode: NodeMap['fn']): Type {
+	function resolveFnReturnType(
+		fnNode: NodeMap['fn'],
+		typeArgs?: Map<string, Type>,
+	): Type {
 		let returnType: Type = fnNode.returnType
 			? resolveTypeFromNode(fnNode.returnType)
 			: BaseTypes.Unknown;
+		if (
+			returnType.kind === 'type' &&
+			returnType.family === 'unknown' &&
+			returnType.name
+		) {
+			const concrete = typeArgs?.get(returnType.name);
+			if (
+				concrete &&
+				concrete.kind === 'type' &&
+				concrete.family !== 'unknown'
+			)
+				returnType = concrete;
+		}
 		// D43: reduce an applied type-level chain return (e.g. `First<T>`)
 		// using the now-concrete type-param placeholders (getOrCreateSpec
 		// mutated them before this runs).
@@ -2882,14 +3054,17 @@ export function compileWasm(
 		return returnType;
 	}
 
-	function allocFuncBuilder(fnNode: NodeMap['fn']): {
+	function allocFuncBuilder(
+		fnNode: NodeMap['fn'],
+		typeArgs?: Map<string, Type>,
+	): {
 		builder: FuncBuilder;
 		builderIdx: number;
 		returnType: Type;
 	} {
 		const paramSyms = fnNode.parameters ?? [];
 		const { paramTypes, paramMap } = buildParamTypes(paramSyms);
-		const returnType = resolveFnReturnType(fnNode);
+		const returnType = resolveFnReturnType(fnNode, typeArgs);
 		const resultTypes: number[] = [];
 		if (
 			hasRuntimeValue(returnType)
@@ -2910,7 +3085,7 @@ export function compileWasm(
 		return { builder, builderIdx, returnType };
 	}
 
-	function declareFn(defSym: SymbolMap['variable'], fnNode: NodeMap['fn']) {
+	function declareFn(defSym: GbcSymbol, fnNode: NodeMap['fn']) {
 		const paramSyms = fnNode.parameters ?? [];
 		const fnSym = fnNode.symbol;
 		fnSym.parameters = paramSyms.map(p => p.symbol);
@@ -3088,11 +3263,11 @@ export function compileWasm(
 		};
 		const tparams = template.typeParameters ?? [];
 		const restorePh: { ph: object; saved: object }[] = [];
+		const subst = new Map<string, Type>();
 		if (tparams.length) {
 			const names = new Set(
 				tparams.map(tp => tp.symbol.name).filter((n): n is string => !!n),
 			);
-			const subst = new Map<string, Type>();
 			params.forEach((p, i) =>
 				unifyTypeParam(p.symbol.type, argTypes[i], names, subst),
 			);
@@ -3107,7 +3282,10 @@ export function compileWasm(
 				}
 			}
 		}
-		const { builder, builderIdx, returnType } = allocFuncBuilder(template);
+		const { builder, builderIdx, returnType } = allocFuncBuilder(
+			template,
+			subst,
+		);
 		specReturn.set(builderIdx, returnType);
 		// Register BEFORE compiling the body so recursive calls inside the
 		// body resolve to this in-progress spec via the cache.
@@ -3335,19 +3513,60 @@ export function compileWasm(
 			fn.body.push(OP_DROP);
 	}
 
+	function dispatchArmNodes(node: Node): Node[] | undefined {
+		if (node.kind !== '|') return undefined;
+		const arms: Node[] = [];
+		const walk = (n: Node): boolean => {
+			if (n.kind === '|') return walk(n.children[0]) && walk(n.children[1]);
+			if (n.kind === 'fn') {
+				arms.push(n);
+				return true;
+			}
+			if (n.kind === 'ident') {
+				const s = n.symbol;
+				if (
+					s.kind === 'function' ||
+					(s.definition?.kind === 'def' && s.definition.value.kind === 'fn')
+				) {
+					arms.push(n);
+					return true;
+				}
+			}
+			return false;
+		};
+		return walk(node) ? arms : undefined;
+	}
+
 	function declareTopLevel(): { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] {
 		const fnsToCompile: { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] = [];
 		if (root.kind !== 'root') return fnsToCompile;
 		for (const child of root.children) {
-			if (child.kind === 'def' && child.value.kind === 'fn') {
+			if (child.kind !== 'def') continue;
+			if (child.value.kind === 'fn') {
 				const declared = declareFn(child.symbol, child.value);
 				if (declared) fnsToCompile.push(declared);
+				continue;
 			}
+			const arms = dispatchArmNodes(child.value);
+			if (arms)
+				for (const arm of arms) {
+					if (arm.kind !== 'fn') continue;
+					const p0 = arm.parameters?.[0];
+					if (arm.parameters?.length === 1 && p0 && !p0.type) {
+						fnTemplates.set(arm.symbol, arm);
+						continue;
+					}
+					const declared = declareFn(arm.symbol, arm);
+					if (declared) fnsToCompile.push(declared);
+				}
 		}
 		for (const child of root.children) {
-			if (child.kind === 'def' && child.value.kind !== 'fn') {
+			if (
+				child.kind === 'def' &&
+				child.value.kind !== 'fn' &&
+				!dispatchArmNodes(child.value)
+			)
 				compileTopLevelDef(child);
-			}
 		}
 		return fnsToCompile;
 	}

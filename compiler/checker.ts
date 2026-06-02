@@ -95,6 +95,32 @@ function resolvePropdefType(node: NodeMap['propdef']): Type {
 	return t;
 }
 
+function dispatchArms(node: Node): Node[] | undefined {
+	if (node.kind !== '|') return undefined;
+	const arms: Node[] = [];
+	const walk = (n: Node): boolean => {
+		if (n.kind === '|') return walk(n.children[0]) && walk(n.children[1]);
+		// An arm is an inline fn value, or an ident naming a function (e.g. an
+		// external like `out_i32`) — `out = out_i32 | out_str | …`.
+		if (n.kind === 'fn') {
+			arms.push(n);
+			return true;
+		}
+		if (n.kind === 'ident') {
+			const s = n.symbol;
+			if (
+				s.kind === 'function' ||
+				(s.definition?.kind === 'def' && s.definition.value.kind === 'fn')
+			) {
+				arms.push(n);
+				return true;
+			}
+		}
+		return false;
+	};
+	return walk(node) ? arms : undefined;
+}
+
 function resolveType(node: CheckedNode): Type | undefined {
 	switch (node.kind) {
 		case 'def':
@@ -169,6 +195,51 @@ function resolveType(node: CheckedNode): Type | undefined {
 			return BT.Bool;
 		case '?':
 			return resolver(node.children[1]);
+		case '>>': {
+			const kids = node.children;
+			const last = kids[kids.length - 1];
+			if (!last) return BT.Unknown;
+			if (last.kind === 'fn') {
+				const ft = resolveFnType(last);
+				if (ft.kind === 'function' && ft.returnType)
+					return ft.returnType;
+				const tail =
+					last.statements?.[last.statements.length - 1];
+				return tail ? resolver(tail) : BT.Unknown;
+			}
+			if (last.kind === 'ident')
+				return resolveReturnType(last) ?? resolver(last);
+			return resolver(last);
+		}
+		case '|': {
+			const arms = dispatchArms(node);
+			if (!arms) return BT.Unknown;
+			const overloads: SymbolMap['function'][] = [];
+			for (const a of arms) {
+				if (a.kind === 'ident') {
+					const d = a.symbol.definition;
+					const fs =
+						a.symbol.kind === 'function'
+							? a.symbol
+							: d?.kind === 'def' && d.value.kind === 'fn'
+								? resolveFnType(d.value)
+								: undefined;
+					if (fs && fs.kind === 'function') overloads.push(fs);
+					continue;
+				}
+				if (a.kind !== 'fn') continue;
+				const t = resolveFnType(a);
+				if (t.kind === 'function') overloads.push(t);
+			}
+			if (overloads.length !== arms.length) return BT.Unknown;
+			return {
+				kind: 'function',
+				flags: 0,
+				name: '__dispatch',
+				returnType: unionOf(overloads.map(o => o.returnType ?? BT.Void)),
+				overloads,
+			};
+		}
 		case 'propdef':
 			return resolvePropdefType(node);
 		default:
@@ -943,6 +1014,7 @@ export function checker({
 				return checkPipe(node);
 			case '?':
 				return checkTernary(node);
+			case '|':
 			case ',':
 				for (const c of node.children) check(c);
 				return;
