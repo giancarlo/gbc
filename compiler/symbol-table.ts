@@ -17,6 +17,7 @@ type BaseSymbol = {
 	type?: Type;
 	flags: Flags;
 	typeParams?: Type[];
+	components?: Type[];
 	application?: { fn: Type; argNodes: Node[] };
 };
 export type TypeFamily =
@@ -27,7 +28,6 @@ export type TypeFamily =
 	| 'string'
 	| 'void'
 	| 'fn'
-	| 'error'
 	| 'data'
 	| 'literal'
 	| 'union'
@@ -37,12 +37,12 @@ type TypeUnion =
 	| {
 			name: string;
 			size: number;
-			family: Exclude<TypeFamily, 'data' | 'error' | 'literal' | 'union'>;
+			family: Exclude<TypeFamily, 'data' | 'literal' | 'union'>;
 	  }
 	| {
 			name: string;
 			size: number;
-			family: 'data' | 'error';
+			family: 'data';
 			members: Record<string, Symbol>;
 	  }
 	| {
@@ -132,13 +132,6 @@ export function ProgramSymbolTable() {
 		nan: literal(NaN, BaseTypes.Float64),
 		infinity: literal(Infinity, BaseTypes.Float64),
 		void: literal(undefined, BaseTypes.Void),
-		error: {
-			kind: 'function',
-			name: 'error',
-			flags: Flags.Intrinsic,
-			parameters: [param('id', BaseTypes.String)],
-			returnType: BaseTypes.Error,
-		},
 		length: {
 			kind: 'function',
 			name: 'length',
@@ -171,16 +164,6 @@ export const BaseTypes = {
 	Bool: { name: 'Bool', kind: 'type', flags: 0, family: 'bool', size: 1 },
 	Void: { name: 'Void', kind: 'type', flags: 0, family: 'void', size: 0 },
 	Fn: { name: 'Fn', kind: 'type', flags: 0, family: 'fn', size: 4 },
-	Error: {
-		name: 'Error',
-		kind: 'type',
-		flags: 0,
-		family: 'error',
-		size: 4,
-		members: {
-			id: { kind: 'variable', name: 'id', flags: 0, type: { name: 'String', kind: 'type', flags: 0, family: 'string', size: 4 } as Type },
-		},
-	},
 	Unknown: { name: 'Unknown', kind: 'type', flags: 0, family: 'unknown', size: 0 },
 } as const satisfies Record<string, SymbolMap['type']>;
 

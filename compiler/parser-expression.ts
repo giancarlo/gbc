@@ -69,17 +69,21 @@ export function parseExpression(
 			value?: Node;
 		}) => N,
 		valuePrec?: number,
+		bindAfter?: boolean,
 	): N {
 		const name = text(ident);
-		const symbol: SymbolMap['variable'] = symbolTable.set(name, {
-			name,
-			kind: 'variable',
-			flags: 0,
-		});
+		const symbol: SymbolMap['variable'] = bindAfter
+			? { name, kind: 'variable', flags: 0 }
+			: symbolTable.set(name, {
+					name,
+					kind: 'variable',
+					flags: 0,
+			  });
 		const type = optional(':') ? maybeVarType(symbol) : undefined;
 		const value = optional('=')
 			? expectNode(exprParser(valuePrec), 'Expected value')
 			: undefined;
+		if (bindAfter) symbolTable.set(name, symbol);
 		const node = make({
 			...ident,
 			end: (value ?? type ?? ident).end,
@@ -296,6 +300,7 @@ export function parseExpression(
 						children: [slot.label, slot.type, slot.value],
 					}),
 					2,
+					true,
 				);
 			}
 			api.backtrack(tk);
@@ -700,6 +705,8 @@ export function parseExpression(
 							return parseAnonymousSlotBlock(n, typeNode);
 						if (typeNode && current().kind === ':')
 							return parseAnonymousSlotBlock(n, typeNode);
+						if (typeNode && current().kind === '(')
+							return typeNode;
 						api.errors.length = savedErrors;
 						api.backtrack(n);
 						api.next();

@@ -200,9 +200,26 @@ export default spec('Language Reference', ({ h }) => {
 				out: [10],
 			});
 			compileError({
-				p: 'Single-branch `?:` is invalid for value-only forms — both branches required (or use a bottom-typed control branch like `break`/`done`).',
+				p: 'Single-branch `?:` is invalid where its value is consumed (value-only forms) — both branches required (or a bottom-typed control branch like `break`/`done`). In an emit position it is allowed (conditional emission, below).',
 				src: `main { 1 > 10 ? 'big' >> out }`,
 				expected: 'requires both branches',
+			});
+			expr({
+				p: 'A stage emits its body value for each input, so `>> each >> T { f($) }` is `map` — the chain is the transform; no `map` function is needed.',
+				src: `[1, 2, 3] >> each >> Int32 { $ * 2 }`,
+				ast: `(>> (data (, 1 2 3)) :each (fn @sequence (parameter ? typeident ?) (* $ 2)))`,
+				out: [2, 4, 6],
+			});
+			expr({
+				p: 'In an emit position (a stage body), single-branch `cond ? value` emits `value` when the condition holds and emits nothing when it does not — the chain stops on the false path. This is the canonical filter; no `filter` function is needed.',
+				src: `[1, 2, 3] >> each >> Int32 { $ > 1 ? $ }`,
+				ast: `(>> (data (, 1 2 3)) :each (fn @sequence (parameter ? typeident ?) (? (> $ 1) $)))`,
+				out: [2, 3],
+			});
+			compileError({
+				p: '`void` is not a value and cannot be emitted — a chain stops on void rather than emitting a void value. Use single-branch `cond ? value` for conditional emission.',
+				src: `main { 5 >> Int32 { void } }`,
+				expected: 'cannot be emitted',
 			});
 			compileError({
 				p: '`next` is not allowed in `?:` branches — use `next cond ? X : Y` (value-ternary inside `next`).',
@@ -341,6 +358,13 @@ export default spec('Language Reference', ({ h }) => {
 			p: `A label and its position name the same value.`,
 			src: `[ x = 10, y = 20 ].0`,
 			ast: `(. (data (, (propdef :x ? 10) (propdef :y ? 20))) 0)`,
+			out: [10],
+		});
+		expr({
+			p: `A label may name a function; \`block.label(args)\` calls it. Because the label is a constant function, the call resolves to a direct call at compile time — a record of functions is a static namespace (this is how the prelude exposes \`runtime.trace()\`).`,
+			pre: `double = (n: Int32): Int32 { n + n }; math = [ d = double ]`,
+			src: `math.d(5)`,
+			ast: `(call (. :math :d) 5)`,
 			out: [10],
 		});
 		expr({
@@ -652,11 +676,11 @@ a = {
 					out: [1, 2, 3],
 				});
 				expr({
-					p: 'Type prefix `Error` acts as a "catch" for the Error variant in the chain.',
-					pre: `failing = (): Int32 | Error { next error('oops') }`,
-					src: `failing() >> Int32 { $ + 1 } >> Error { out($.id) }`,
-					ast: `(>> (call :failing ?) (fn @sequence (parameter ? typeident ?) (+ $ 1)) (fn @sequence (parameter ? typeident ?) (call :out (. $ :id))))`,
-					out: ['oops'],
+					p: 'Type prefix `Error` is a catch-all for any error variant — it matches by composition, since every error type composes `Error` (D50).',
+					pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { next n > 0 ? n : fail() }`,
+					src: `risky(0) >> Int32 { $ + 1 } >> Error { 99 }`,
+					ast: `(>> (call :risky 0) (fn @sequence (parameter ? typeident ?) (+ $ 1)) (fn @sequence (parameter ? typeident ?) 99))`,
+					out: [99],
 				});
 				expr({
 					p: 'Bool prefix; `$` is the bool value (passthrough).',
@@ -826,11 +850,11 @@ a = {
 					out: [6],
 				});
 				expr({
-					p: 'Built-in type match: Error (nominal per D35). Whole Error bound to `e`; access fields via `e.id`.',
-					pre: `failing = (): Int32 | Error { next error('oops') }`,
-					src: `failing() >> Int32 { $ } >> (e: Error) { e.id }`,
-					ast: `(>> (call :failing ?) (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter :e typeident ?) (. :e :id)))`,
-					out: ['oops'],
+					p: 'Named-slot match on an error type: the whole error binds to `e`; access its structured fields via `e.field` (D50 — errors carry typed fields, not a string id).',
+					pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { next n > 0 ? n : fail() }`,
+					src: `risky(0) >> Int32 { $ } >> (e: Fail) { e.code }`,
+					ast: `(>> (call :risky 0) (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter :e typeident ?) (. :e :code)))`,
+					out: [7],
 				});
 				expr({
 					p: 'User-type match: Point (structural per D35). Whole Point bound to `p`.',
@@ -900,7 +924,7 @@ a = {
 				});
 				expr({
 					p: 'Union return type — function may fail.',
-					pre: `parseInt = (s: String): Int32 | Error { length(s) == 0 ? error('empty') : 42 }`,
+					pre: `type ParseErr = Error & [ code: Int32 ]; parseErr = (): ParseErr { [ code = 0 ] }; parseInt = (s: String): Int32 | Error { length(s) == 0 ? parseErr() : 42 }`,
 					src: `parseInt('42')`,
 					ast: `(call :parseInt '42')`,
 					out: [42],
@@ -1079,7 +1103,7 @@ a = {
 				});
 				expr({
 					p: 'Union return — function may fail.',
-					pre: `divide = (a: Int32, b: Int32): Int32 | Error { b == 0 ? error('div-by-zero') : a / b }`,
+					pre: `type DivErr = Error & [ code: Int32 ]; divErr = (): DivErr { [ code = 0 ] }; divide = (a: Int32, b: Int32): Int32 | Error { b == 0 ? divErr() : a / b }`,
 					src: `divide(10, 2)`,
 					ast: `(call :divide (, 10 2))`,
 					out: [5],
@@ -1273,6 +1297,40 @@ a = {
 			ast: `(root (def :name typeident 'Alice') (main (>> :name :out)))`,
 			out: ['Alice'],
 		});
+		expr({
+			p: 'A `String` is a sequence of `Uint8` bytes interpreted as UTF-8 — `String = [Uint8]` (D51). A `String` and a `[Uint8]` byte block share the same byte-buffer representation, so the `String(...)` constructor (D26) brands a byte block as text with no conversion: `String([Uint8(72), Uint8(105)])` is the string `Hi`.',
+			src: `String([Uint8(72), Uint8(105)])`,
+			ast: `(call typeident (data (, (call typeident 72) (call typeident 105))))`,
+			out: ['Hi'],
+		});
+		expr({
+			p: '`String([...])` concatenates byte-buffer parts (each a `String` or a `Uint8`) into one new buffer — the allocation and copy *is* the explicit construction (D52). Two strings concatenate:',
+			src: `String(['foo', 'bar'])`,
+			ast: `(call typeident (data (, 'foo' 'bar')))`,
+			out: ['foobar'],
+		});
+		expr({
+			p: 'A `String([...])` may mix strings and bytes; a `Uint8` part contributes its single byte. `Uint8(33)` is `!`, so this appends it:',
+			src: `String(['Hi', Uint8(33)])`,
+			ast: `(call typeident (data (, 'Hi' (call typeident 33))))`,
+			out: ['Hi!'],
+		});
+		compileError({
+			p: 'A `String([...])` part is a `Uint8` (one byte) or a `String` — a wider integer like `Uint16` is rejected. It is ambiguous (raw bytes vs a codepoint), and a codepoint must be UTF-8-*encoded* to its bytes, never stored raw (that would break the UTF-8 invariant). Codepoint→bytes encoding is a future explicit operation, not a constructor part; non-ASCII is written as a string literal.',
+			src: `main { String([Uint16(233)]) >> out }`,
+			expected: 'must be String or Uint8',
+		});
+		expr({
+			p: 'A bare data block of `Uint8` is a byte *tuple*, not a `String` (D36/D49) — it stays addressable by position, and is branded as text only via the explicit `String(...)` constructor. Here the block keeps tuple semantics: `.1` reads the second byte.',
+			src: `[Uint8(72), Uint8(105)].1`,
+			ast: `(. (data (, (call typeident 72) (call typeident 105))) 1)`,
+			out: [105],
+		});
+		compileError({
+			p: 'Constructing a `String` is explicit (D52): a data block is never *implicitly* a `String`, because turning bytes into text can allocate and copy, and that work must be visible — not hidden behind a `: String` annotation. Even a contiguous all-`Uint8` block must go through the `String(...)` constructor. Only a string literal and another `String` assign to `String` directly.',
+			src: `s: String = [Uint8(72), Uint8(105)]`,
+			expected: 'not assignable',
+		});
 		rule({
 			p: '`Bool` for `true`/`false` values.',
 			src: `flag: Bool = true; main { flag >> out }`,
@@ -1310,16 +1368,33 @@ a = {
 			out: [true, false, false, true],
 		});
 		rule({
-			p: 'A `type` declaration creates a named type alias.',
+			p: 'A `type` declaration creates a named type alias. A bare data block coerces structurally into it (D49): the literal `[ x = 10, y = 20 ]` acquires the `Point` identity by matching its members.',
 			src: `type Point = [ x: Int32, y: Int32 ]; p: Point = [ x = 10, y = 20 ]; main { p.x >> out }`,
 			ast: `(root (type :Point (data (, (propdef :x typeident ?) (propdef :y typeident ?)))) (def :p typeident (data (, (propdef :x ? 10) (propdef :y ? 20)))) (main (>> (. :p :x) :out)))`,
 			out: [10],
+		});
+		compileError({
+			p: 'Named types are nominal (D49): a type’s identity is its declaration instance, not its structure. Two distinct named types with identical members are not interchangeable — a value already typed as one (here `Celsius`, via the return type of `freezing`) never assigns to the other (`Fahrenheit`), even though both are `[ deg: Int32 ]`. The one-way coercion above only applies to a bare block that has no declared identity yet.',
+			src: `type Celsius = [ deg: Int32 ]; type Fahrenheit = [ deg: Int32 ]; freezing = (): Celsius { [ deg = 0 ] }; f: Fahrenheit = freezing();`,
+			expected: 'not assignable',
 		});
 		rule({
 			p: 'Intersection types (`A & B`) combine fields of both types. A value must satisfy all members.',
 			src: `type Named = [ name: String ]; type Aged = [ age: Int32 ]; type Person = Named & Aged; person: Person = [ name = 'Alice', age = 30 ]; main { person.name >> out }`,
 			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Aged (data (propdef :age typeident ?))) (type :Person (& typeident typeident)) (def :person typeident (data (, (propdef :name ? 'Alice') (propdef :age ? 30)))) (main (>> (. :person :name) :out)))`,
 			out: ['Alice'],
+		});
+		rule({
+			p: 'Composition is **subtyping**: a value of `A & B` is-a `A` and is-a `B`, so it may be used wherever either component is expected. The relation is one-way — a plain `A` is not an `A & B`. Here `Stamped` composes `Named`, so a `Stamped` value is accepted by a function taking a `Named`.',
+			src: `type Named = [ name: String ]; type Stamped = Named & [ id: Int32 ]; mk = (): Stamped { [ name = 'Ada', id = 7 ] }; nameOf = (n: Named): String { n.name }; main { nameOf(mk()) >> out }`,
+			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Stamped (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence typeident (data (, (propdef :name ? 'Ada') (propdef :id ? 7))))) (def :nameOf ? (fn @sequence (parameter :n typeident ?) typeident (. :n :name))) (main (>> (call :nameOf (call :mk ?)) :out)))`,
+			out: ['Ada'],
+		});
+		rule({
+			p: 'A chain over a union routes each value to the stage whose type it is-a — discrimination is by nominal type, with no tag written by the user. This is general, not an error feature: any union of named types dispatches the same way.',
+			src: `type Point = [ x: Int32 ]; type Circle = [ r: Int32 ]; mp = (): Point { [ x = 1 ] }; mc = (): Circle { [ r = 9 ] }; shape = (n: Int32): Point | Circle { next n > 0 ? mp() : mc() }; main { shape(0 - 1) >> Point { 1 } >> Circle { 2 } >> out }`,
+			ast: `(root (type :Point (data (propdef :x typeident ?))) (type :Circle (data (propdef :r typeident ?))) (def :mp ? (fn @sequence typeident (data (propdef :x ? 1)))) (def :mc ? (fn @sequence typeident (data (propdef :r ? 9)))) (def :shape ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :mp ?) (call :mc ?))))) (main (>> (call :shape (- 0 1)) (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 2) :out)))`,
+			out: [2],
 		});
 		rule({
 			p: '`Void` return type is the side-effect sink: the function consumes its input and emits nothing (D17). It is meaningful and distinct from a value return.',
@@ -1331,6 +1406,38 @@ a = {
 			p: 'Void is the absorbing identity for unions (D40): `T | Void` equals `T`. A written `T | Void` is therefore a redundant second spelling of `T` and is a compile error (D44 — no warnings; redundancy is rejected, not flagged). Computed `T | Void` (type-level reduction, default-param typing) collapses silently; only the user-written form errors.',
 			src: `emit = (n: Int32): Int32 | Void { next n }; main { emit(7) >> out }`,
 			expected: 'union identity',
+		});
+	});
+
+	h('Errors', ({ rule, compileError }) => {
+		rule({
+			p: 'An error is an ordinary nominal type that composes the standard library’s `Error` (D50): `type NotFound = Error & [ resource: String ]` is a plain `&` composition, not a special form. There is no `error` keyword and no built-in error type beyond the `Error` marker. An error’s information is its *type* and its *structured fields* — there is deliberately no string id or message, because the type itself is the identity.',
+			src: `type NotFound = Error & [ resource: String ]; notFound = (r: String): NotFound { [ resource = r ] }; main { notFound('/x') >> Error { 1 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :notFound ? (fn @sequence (parameter :r typeident ?) typeident (data (propdef :resource ? :r)))) (main (>> (call :notFound '/x') (fn @sequence (parameter ? typeident ?) 1) :out)))`,
+			out: [1],
+		});
+		rule({
+			p: 'Errors are values. A function that may fail returns a union of its success type and the error type — `T | NotFound`, or the catch-all `T | Error`. The error variant is produced by an ordinary constructor call, with no exception machinery, and travels along the chain like any other value.',
+			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } >> NotFound { 0 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 5) (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0) :out)))`,
+			out: [5],
+		});
+		rule({
+			p: 'A chain discriminates errors by type: each typed stage `>> T { … }` consumes the variant whose type the value *is-a*, and the success variant flows to its own stage. Two error types with identical structure are told apart by nominal identity, not by shape.',
+			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; fb = (): Forbidden { [ resource = 'y' ] }; pick = (n: Int32): Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(0 - 1) >> Int32 { 1 } >> NotFound { 2 } >> Forbidden { 3 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (type :Forbidden (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :fb ? (fn @sequence typeident (data (propdef :resource ? 'y')))) (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :nf ?) (call :fb ?))))) (main (>> (call :pick (- 0 1)) (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 2) (fn @sequence (parameter ? typeident ?) 3) :out)))`,
+			out: [3],
+		});
+		rule({
+			p: 'A `>> Error { … }` stage is a catch-all: since every error type composes `Error`, it matches *any* error variant. A chain matches the first stage a value is-a, so specific handlers must precede the `Error` catch-all.',
+			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(0) >> Int32 { 1 } >> Error { 9 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 0) (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 9) :out)))`,
+			out: [9],
+		});
+		compileError({
+			p: 'Errors obey nominal identity (D49): two error types with the same fields stay distinct. A `Forbidden` is not a `NotFound`, so a value of one is never assignable to the other — the very property that lets a chain tell them apart.',
+			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; fb = (): Forbidden { [ resource = 'y' ] }; n: NotFound = fb();`,
+			expected: 'not assignable',
 		});
 	});
 
@@ -1374,10 +1481,10 @@ a = {
 					ast: `(type :Handler (data (, (propdef :name typeident ?) (propdef :fn (fn (parameter ? typeident ?) typeident) ?))))`,
 				});
 				compileError({
-					p: 'A type name is not a value and cannot be used as a call target. Function types describe a signature, not a constructor (D26 retired type-as-constructor).',
+					p: 'A function type is not a constructor — it describes a signature, not a value to construct. (Scalar and data types are callable as constructors; function types are not.)',
 					pre: `type Adder = (Int32): Int32`,
 					src: `main { Adder(5) >> out }`,
-					expected: 'not defined',
+					expected: 'not callable',
 				});
 				compileError({
 					p: 'The trailing `{ ... }` is the only thing distinguishing a function value from a function type. In value position a signature without a body has no body to parse — error.',
@@ -1506,19 +1613,6 @@ a = {
 	});
 
 	h('Built-in identifiers', ({ h }) => {
-		h('error', ({ compileError }) => {
-			compileError({
-				p: '`error` is reserved — user code cannot rebind it at top level (D34).',
-				src: `error = 5; main { 1 >> out }`,
-				expected: 'Expected definition',
-			});
-			compileError({
-				p: '`error` is reserved — user code cannot reassign it inside `main` either (D34).',
-				src: `main { error = 5; error >> out; }`,
-				expected: 'Cannot reassign immutable binding',
-			});
-		});
-
 		h('length', ({ expr }) => {
 			expr({
 				p: '`length(s)` returns the character length of a string.',

@@ -341,11 +341,11 @@ Plain `(T): U` without catch — callable directly, but rejected as a pipe stage
 - × Stdlib `@.catch(handler)` as canonical — works but requires the helper for the inline case
 - × Error-specific catch with no parameterization — Error special-cased; not extensible
 
-## D26: Types are callable as constructors — RETIRED
+## D26: Types are callable as constructors — REVIVED (2026-06-03)
 
-Withdrawn. Type construction is via typed data blocks: `[args]: T` (positional) or `[x = a, y = b]: T` (named). Factory functions (a regular function returning the type) cover construction with logic. The motivating Error case is handled by the `error` keyword (D34).
+A type used as a call target is a **constructor**: `T(x)` converts/constructs a `T`. Restored after being retired — the retirement rationale (the `error` keyword, D34) is itself superseded (errors are now structural-nominal, D50; `error` retired), and a new use case is decisive: **scalar narrowing**. `Uint8(48 + n)` produces a byte with no ascription syntax and no special coercion rule — you call the type. It's the general mechanism the byte-block string model needs (`char` is just `Uint8`; `'h'` ≡ `Uint8`).
 
-Originally proposed so `Error('code')` and user types like `Point(10, 20)` would share a uniform call syntax. With `error` as a keyword and computed-field user types deferred to factory functions, the type-call form has no remaining use case.
+Scope: **scalar types** convert/narrow (`Uint8(x)` = `x & 0xFF`, `Int8(x)` sign-extends via `<<`/`>>`, `Float64(n)` widens, `Int32(f)` truncs). **Function types are NOT constructors** — a signature describes shape, not a value (`Adder(5)` → "not callable"). **Data/nominal types** (`Point(x, y)`, error ctors) construct + stamp identity — the natural generalization (codegen pending). Mechanism (no D26-era ambiguity): a type-name callee parses as a `typeident` (kept *out* of the value namespace, so no collision with type-prefix syntax `T { body }`); the checker treats a non-function `typeident` callee as construction (result type = the type); codegen converts. Typed data blocks `[args]: T` remain valid too.
 
 ## D27: Type body block form — RETIRED
 
@@ -458,6 +458,8 @@ Used in any expression position (e.g. `next cond ? error('empty') : 42`). For *r
 - × Allowing user shadowing of `error` — defeats universal availability and creates surprises
 
 ## D35: Built-in types are nominal; user types are structural
+
+> **Revised by D49** — *named* types (including user `type X`) are nominal; only the **unnamed** (anonymous literals, function parameter lists) are structural. The clauses below about "user types structural" and "user-branded deferred" are superseded; the union-discriminator mechanism and the "types as branded memory" framing carry forward.
 
 All built-in types — numeric (D14), `String`, `Bool`, `Void`, `Error`, `Frame` — are nominal. They are distinct from each other and from user types even when memory layouts coincide: `Int32` and `Uint32` have identical 4-byte representations but are distinct types; `Float32` and `Uint32` likewise.
 
@@ -684,6 +686,109 @@ There is no `x == void`. `void` is not a runtime value (D40 — size 0, no WASM 
 
 ---
 
+## D48: Single-branch `cond ? value` is conditional emission in an emit position
+
+A ternary's meaning depends on whether its result is **consumed** or **emitted**:
+
+- **Value position** (the result feeds an operator, binding, or a stage that needs a value): both branches are required — `cond ? a : b`. Single-branch `cond ? a` is an error ("requires both branches") — there is no value on the false path. (Exception: a bottom-typed branch — `break`/`done` — never returns, so the result type comes from the other branch.)
+- **Emit position** (a stage body, whose value is auto-emitted): single-branch `cond ? value` emits `value` when the condition holds and **emits nothing** otherwise — the chain stops on the false path. This is the canonical conditional-emit / filter idiom: `data >> each >> T { p($) ? $ }`. No `filter` function is needed — just as `T { f($) }` is `map`, so no `map` function is needed either.
+
+`void` is **not a value** and cannot be emitted: a chain stops on void rather than carrying a void value downstream. Writing `void` as an emittable expression (`T { void }`, `cond ? $ : void`) is an error that points to `cond ? value`. (D40's absorbing identity at the emit boundary — there is no void value to emit.)
+
+- \+ Element-wise transforms are syntax (the chain), not library functions: `map`/`filter` fall out of `>> each >> T { … }`, keeping the stdlib to what the chain can't express (aggregation via `fold`; restructuring like `take`/`zip`)
+- \+ One conditional-emit spelling (`cond ? value`) — no `: void`, no separate drop form
+- \+ Reuses the distinction the language already makes (a stage that produces nothing vs a value that must exist)
+- × `cond ? $ : void` is rejected rather than aliased to `cond ? $` — one canonical idiom, and `void` stays non-valued (D40)
+
+---
+
+## D49: Nominal for named types, structural for the unnamed (revises D35)
+
+A declaration is identity. `type X = …` mints a **nominal** type whose identity is that declaration *instance* — not its name string, not its layout. Two named types with identical layout are distinct (`type NotFound = [resource: String]` ≠ `type Forbidden = [resource: String]`); two named types that happened to share a name (shadowing, future modules) would also be distinct, because the instance — not the string — is compared. This extends to **user** named types, generalizing D35's "built-ins nominal" to "all *named* types are nominal" and retiring its "user types structural / user-branded deferred" clause.
+
+Everything **unnamed is structural**: anonymous literals `[x = 1, y = 2]`, and **function parameter lists** — a signature `(a: A, b: B): R` *is* the structural block `[a: A, b: B] → R`, so calls match arguments by shape (`f(1, 'x')`) with no named type needed.
+
+A structural value acquires a nominal brand at **one point**: where it meets a named type — `x: T`, a constructor's declared return, or a typed binding. `[resource = 'u']` is a bare block until `notFound(…): NotFound` (or `e: NotFound`) stamps it. The coercion is **one-way**: structural → named acquires the brand; named → a *different* named type is rejected. So `canAssign` is nominal between named types, structural elsewhere.
+
+Discrimination lives at the **union tag**: `A | B` records the variant by nominal id, so runtime dispatch (`v >> X { … }`, `is X`) reads identity off the tag (D35's union-discriminator, now the general mechanism); no per-value tag on non-union values.
+
+- \+ Identity enforced by the type system, not a string or convention (P2) — the prerequisite for standardized, detectable errors
+- \+ One discrimination path: by type, never `id == "..."` (P1)
+- \+ The type *is* the identity; no discriminant field, nothing implicit (P3)
+- \+ Closes the D35 gap — `canAssign` was structural while `|`-dispatch already matched by name (inconsistent: a `Forbidden` was structurally assignable into a `NotFound` slot, then mis-caught); now both are nominal-for-named
+- \+ Functions stay structural in their inputs (P5) — param lists are just block types; no ceremony to call
+- − A real commitment: every union becomes a tagged sum (a discriminant), and `canAssign` gains a nominal branch
+- × Pure structural (old D35 for user types) — can't distinguish same-shape types; detection collapses `NotFound`/`Forbidden`
+- × Structural + a `kind: 'NotFound'` discriminant field — an unenforced string id in disguise; fails P2, re-creates the mess
+
+## D50: Structural nominal errors — typed, composed, no message
+
+An error is a **nominal type** (D49) built from a minimal base `Error = [ stack: Frame ]`. Its information is its **type plus structured fields** — there is no `id`/`message` string. Discrimination is by type; a free-text string would re-encode the meaning in a form the compiler can't check. Supersedes **D24** (single, string-keyed `Error`) and **D34** (`error` keyword auto-synth).
+
+```
+type Error     = [ stack: Frame ]
+type NotFound  = Error & [ resource: String ]    # is-a Error, plus structured data
+type DivByZero = Error                            # no extra data — the type name is the info
+notFound = (r: String): NotFound { [ resource = r, stack = captureStack() ] }
+captureStack()                                    # the lone primitive → Frame
+result >> NotFound { … } >> Error { … }           # specific by instance, base by composition
+```
+
+**Composition is is-a (β).** A named type's *components* are the named types named in its definition (`= X`, `& X & Y`); anonymous blocks (`[fields]`) contribute fields but no identity. `canAssign` and dispatch match a value against its own type **or any component, transitively**: `>> Error { }` catches every error (each composes `Error`); `>> NotFound { }` catches that one. Overlap resolves by **chain order** — first arm wins, so order specific before base. This is the language's whole subtyping story: composition + chain dispatch, no classes or interfaces.
+
+`captureStack()` is the only primitive; constructors are ordinary functions filling fields + stack. The `error` intrinsic is retired. Human-readable text is **derived** (a `show`-style dispatch over the type), never stored.
+
+- \+ Identity *and* payload compiler-checked (P2); the type is the meaning, nothing redundant (P3/P4)
+- \+ One matching rule — self-or-component — retires the special `'error'` family (P1)
+- \+ Subtyping with no inheritance machinery: just `&` + dispatch (P5)
+- − Stack captured eagerly at every construction — a runtime cost; **lazy stack deferred** (figure out later)
+- − No free-text escape; you define a type for each error
+- × String id/message (D24) — uncheckable; "ids are always a mess"
+- × Structural-only error typing — collapses same-shape errors (`NotFound`/`Forbidden`)
+
+Refines: D23 (errors stay chain-routed values); D25 (a typed dispatch arm `>> T { }` *is* the catch — the `catch(T)` modifier is likely unneeded; confirm when specced); D31 (`Int32 | Error` → `Int32 | <TypedError>`). D49 gains: named → a different named type is rejected *unless the target is a component of the source*.
+
+## D51: `String` is the named byte-sequence type (`String = [Uint8]`)
+
+A `String` is a homogeneous, runtime-length sequence of `Uint8` bytes interpreted as UTF-8 (D14/D35). Its runtime representation **is** a byte block — the same `[length][itemSize][bytes…]` buffer any data block uses — so a `String` and a `[Uint8]` byte block are *one coherent type* across the checker, `inferType`, and codegen. An anonymous data block whose every element is a `Uint8` (≥2 elements; a single one collapses to the scalar per D10) therefore has type `String`, and a string literal `'…'` is that same type with the same layout. `length(s)` reads the buffer's element count (a byte count); `out` renders a `String` as text via `out_str` (decode the bytes), so `[Uint8(72), Uint8(105)] >> out` prints `Hi`.
+
+`String` is the **named** brand (D49) over the byte sequence: unlike an anonymous block it never collapses under D10 (a 1-byte `'h'` stays a `String`, not a `Uint8`), which is what lets a byte-producing function declare a `String` return even when a path yields a single byte. The brand carries no per-value tag — it is a primitive *interpretation* of bytes (D35), distinct from a nominal record (no `nominalId`, no union discriminator).
+
+This is the keystone the reverted codegen-only flatten lacked: with `inferType` and the checker agreeing a byte block is a `String`, byte-flatten (`concat`), `out_buffer`, and `itoa` can each recognize a byte sequence consistently.
+
+- \+ P1/P3: one representation for text and byte buffers; `inferType`, checker, and codegen agree on the byte-block type
+- \+ P4: no separate "string" runtime — text is just bytes; opens the path to a single `out_buffer` host primitive with number→string formatting (`itoa`/`toString`) written in gb
+- \+ "A byte is just `Uint8`" (D14) made real — `char` is `Uint8`, `concat` is byte-flatten, no new primitives
+- − A lone scalar `Uint8` is not yet a `String` (the 1-byte coercion at a `: String` boundary is deferred with `itoa`); byte-level iteration (`each`/destructure over a *runtime* `String`) is deferred — to head-rest a `String` is currently one opaque value, distinct from compile-time byte-block reads
+- × Keep `String` a distinct `'string'` runtime (a 4-byte-header `[len][bytes]`) — layout incompatible with byte blocks, so flatten/`itoa` can't recognize a byte sequence (the keystone gap)
+- × A 1-element `[Uint8]` *is* a `String` — contradicts D10 singleton-collapse; the named brand (literal / annotation) is the non-collapsing form instead
+
+## D52: Constructing a `String` is explicit — only literals and zero-op re-brands are implicit
+
+A `String` value arises from exactly two sources: a string **literal** (`'…'`), or an explicit **`String(…)` constructor** (D26). A data block — even one whose elements are all byte-buffer-compatible (`Uint8`/`String`) — is never *implicitly* a `String`; it stays a byte tuple (D36) until passed through `String(…)`.
+
+The reason is P3. Coercing a multi-piece block to a `String` (`String(['foo', 'bar'])` → `'foobar'`) allocates a new buffer and copies bytes — a runtime **operation**, not a relabel. Hiding that behind a type annotation (`s: String = ['foo', 'bar']`) would make an allocation+copy invisible. The `String(…)` call is the visible "work happens here" marker. This **refines D49**: a structural→nominal coercion is implicit only when it is a **zero-op re-brand** (same bytes, new identity — e.g. `[x=1, y=2] → Point`, where the literal's allocation is already written by the author); a coercion that must *construct* (allocate / copy / concatenate) is always an explicit constructor call.
+
+A string literal is implicit-`String` because it *is* a String at its source — there is no block and no coercion. So `canAssign` accepts `String ← String` and `String ← string-literal`, but **not** `String ← data block`: a block at a `: String` boundary (binding, return, param) is a compile error pointing to `String(…)`.
+
+```
+greeting: String = 'hello'              # literal — free
+hi   = String([Uint8(72), Uint8(105)])  # re-brand a contiguous buffer → 'Hi' (zero-op)
+full = String(['foo', 'bar'])           # 'foobar' — the concat/alloc is visible at the call
+pair = ['foo', Uint8(33)]               # a 2-tuple (D36), NOT a String
+s: String = ['foo', 'bar']              # error — a block is not a String; use String([...])
+```
+
+- \+ P3: every `String`-building allocation is visible at a `String(…)` call; a type annotation never silently runs a concat
+- \+ P1: one way to build a String from parts (`String([…])`) — no `+`/`concat` operator, no implicit/explicit fork
+- \+ Preserves byte tuples (D36) — `['foo', Uint8(33)]` is an addressable pair until `String(…)`
+- − More verbose than annotation-driven coercion (`String([…])` vs a bare `: String`) — accepted: the verbosity *is* the transparency
+- × Implicit block→String at a `: String` boundary — hides an allocation+copy behind a declaration (the magic this rejects). The free all-`Uint8` re-brand was the tempting edge case, but a reader can't tell "contiguous-bytes (free)" from "multi-piece (allocates)" at a glance, so even that routes through `String(…)`
+
+Interacts with: D26 (`String(…)` is the constructor), D36 (byte tuples preserved), D49 (coercion implicit iff zero-op), D51 (the `String = [Uint8]` representation this builds on).
+
+---
+
 ## Open / Deferred
 
 Tracked in `potential-features.md`:
@@ -702,3 +807,4 @@ Not yet decided / specced (future waves):
 - Multi-level break (labeled loops)
 - Type narrowing implementation depth
 - Pick-class type operations (labeled-pattern destructure + constraint syntax; substrate landed in D43)
+- Block-typed record fields — **handle** (pointer; parent stays flat; nesting preserved) vs **inline** (current: nested blocks flatten, `length([[1,4],[2,5],[3,6]])` → 6). Settle the first time a nominal record needs a *data-block-typed* field (errors dodge it — their fields are handles: `String`, `Frame`). Same lever reopens **zip-as-pairs**: handles ⇒ a stream of pairs exists; inline ⇒ flat-only (D49). Explored 2026-06-02; leaning **inline (Option A)** but deferred off the error critical path (errors use handles) — grounded findings + the three-piece build (checker flatten / codegen variable-block flatten fix / binding-stamping) in `todo.md`.

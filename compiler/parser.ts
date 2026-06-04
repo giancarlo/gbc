@@ -134,12 +134,23 @@ export function parse(
 		}
 	}
 
+	function addComponents(n: Node, out: Type[]): void {
+		if (n.kind === 'typeident') {
+			if (n.symbol.kind === 'type') out.push(n.symbol);
+			return;
+		}
+		if (n.kind === '&') {
+			addComponents(n.children[0], out);
+			addComponents(n.children[1], out);
+		}
+	}
+
 	function buildTypeSymbol(
 		def: Node,
 		name: string,
 	): Type | undefined {
 		if (def.kind === 'typeident' && def.symbol.kind === 'type')
-			return { ...def.symbol, name };
+			return { ...def.symbol, name, components: [def.symbol] };
 		if (def.kind === 'fn' && def.symbol.kind === 'function')
 			return { ...def.symbol, name };
 		if (def.kind === '>>')
@@ -166,6 +177,8 @@ export function parse(
 		if (def.kind === '&') {
 			const members: Record<string, SymbolMap['variable']> = {};
 			addDataMembers(def, members);
+			const components: Type[] = [];
+			addComponents(def, components);
 			return {
 				kind: 'type',
 				flags: 0,
@@ -173,6 +186,7 @@ export function parse(
 				family: 'data',
 				size: 4,
 				members,
+				components,
 			};
 		}
 		return undefined;

@@ -12,7 +12,7 @@ import { checker } from './checker.js';
 import { STDLIB_SOURCE } from './stdlib-source.js';
 
 import type { Node, NodeMap } from './node.js';
-import type { Scope, Symbol, SymbolMap } from './symbol-table.js';
+import type { Scope, Symbol, SymbolMap, Type } from './symbol-table.js';
 
 export type ExternalsMap = Map<string, SymbolMap['function']>;
 
@@ -72,11 +72,21 @@ const preludeDefs: NodeMap['def'][] = [];
 for (const child of stdlib.root.children)
 	if (
 		child.kind === 'def' &&
-		(child.value.kind === 'fn' || child.value.kind === '|')
+		(child.value.kind === 'fn' ||
+				child.value.kind === '|' ||
+				child.value.kind === 'data')
 	) {
 		if (child.symbol.name) preludeSymbols[child.symbol.name] = child.symbol;
 		preludeDefs.push(child);
 	}
+
+const preludeTypes: Record<string, Type> = {};
+for (const child of stdlib.root.children) {
+	if (child.kind !== 'type') continue;
+	const sym = child.symbol;
+	if ((sym.kind === 'type' || sym.kind === 'function') && sym.name)
+		preludeTypes[sym.name] = sym;
+}
 
 function withPrelude(root: Node): Node {
 	if (preludeDefs.length === 0 || root.kind !== 'root') return root;
@@ -88,6 +98,7 @@ export function Program(options?: ProgramOptions) {
 	const typesTable = TypesSymbolTable();
 	const api = ParserApi(scan);
 	symbolTable.setSymbols(preludeSymbols);
+	typesTable.setSymbols(preludeTypes);
 
 	function parser(src: string) {
 		api.start(src);

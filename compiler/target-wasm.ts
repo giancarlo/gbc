@@ -85,6 +85,17 @@ const OP_I32_SUB = 0x6b;
 const OP_I32_MUL = 0x6c;
 const OP_I32_DIV_S = 0x6d;
 const OP_I32_AND = 0x71;
+
+const SCALAR_CTORS: Record<string, SymbolMap['type']> = {
+	Int8: BaseTypes.Int8,
+	Int16: BaseTypes.Int16,
+	Int32: BaseTypes.Int32,
+	Uint8: BaseTypes.Uint8,
+	Uint16: BaseTypes.Uint16,
+	Uint32: BaseTypes.Uint32,
+	Float32: BaseTypes.Float32,
+	Float64: BaseTypes.Float64,
+};
 const OP_I32_OR = 0x72;
 const OP_I32_XOR = 0x73;
 const OP_I32_SHL = 0x74;
@@ -137,6 +148,7 @@ interface ModuleFunction {
 	body: number[];
 	/** Extra locals declared after parameters, listed individually (one entry per local). */
 	locals: number[];
+	name?: string;
 }
 
 interface ModuleData {
@@ -191,6 +203,27 @@ function emitImportsSection(m: Module, out: number[]) {
 		uleb128(im.typeIdx, payload);
 	}
 	section(SEC_IMPORT, payload, out);
+}
+
+function emitNameSection(m: Module, out: number[]) {
+	const entries: [number, string][] = [];
+	m.imports.forEach((im, i) => entries.push([i, im.field]));
+	m.functions.forEach((fb, i) => {
+		if (fb.name) entries.push([m.imports.length + i, fb.name]);
+	});
+	if (!entries.length) return;
+	const sub: number[] = [];
+	uleb128(entries.length, sub);
+	for (const [idx, nm] of entries) {
+		uleb128(idx, sub);
+		name(nm, sub);
+	}
+	const payload: number[] = [];
+	name('name', payload);
+	payload.push(1);
+	uleb128(sub.length, payload);
+	for (const b of sub) payload.push(b);
+	section(0, payload, out);
 }
 
 function emitGlobalsSection(m: Module, out: number[]) {
@@ -283,6 +316,7 @@ function emitModule(m: Module): Uint8Array {
 	emitExportsSection(m, out);
 	emitCodeSection(m, out);
 	emitDataSection(m, out);
+	emitNameSection(m, out);
 
 	return new Uint8Array(out);
 }
@@ -299,7 +333,6 @@ function gbcToWasm(type: Type): number {
 		case 'bool':
 		case 'string':
 		case 'fn':
-		case 'error':
 		case 'data':
 		case 'union':
 		case 'literal':
@@ -345,12 +378,20 @@ function findLiteralOut(value: unknown): string | undefined {
 	return undefined;
 }
 
+function composes(m: Type, target: Type): boolean {
+	return m === target || !!m.components?.some(c => composes(c, target));
+}
+
+function namedData(t: Type): boolean {
+	return t.kind === 'type' && t.family === 'data' && t.name !== '__data';
+}
+
 function findUnionOut(
 	t: SymbolMap['type'] & { family: 'union' },
 	externals: Map<string, SymbolMap['function']>,
 ): string | undefined {
 	const nonError = t.members.filter(
-		m => m.kind === 'type' && m.family !== 'error',
+		m => m.kind === 'type' && !namedData(m),
 	);
 	for (const m of nonError) {
 		const r = findOutExternal(m, externals);
@@ -393,9 +434,7 @@ function findOutExternal(
 ): string | undefined {
 	if (t.kind !== 'type')
 		throw new Error(`Cannot @.out value of kind ${t.kind}`);
-	if (t.family === 'data' && externals.has('out_data')) return 'out_data';
 	if (t.family === 'fn' || t.family === 'void') return undefined;
-	if (t.family === 'error' && externals.has('out_str')) return 'out_str';
 	if (t.family === 'literal') {
 		const lit = findLiteralOut(t.value);
 		if (lit) return lit;
@@ -420,6 +459,7 @@ interface FuncBuilder {
 	returnType: Type;
 	callFixups: { offset: number; builderIdx: number; size: number }[];
 	blockDepth: number;
+	name?: string;
 	fusion?: Fusion;
 	/** Local index holding the current pipe-stage input value (`$`). */
 	dollarLocal?: number;
@@ -444,6 +484,7 @@ export function compileWasm(
 		const utf8 = enc.encode(s);
 		const buf: number[] = [];
 		u32le(utf8.length, buf);
+		u32le(1, buf);
 		for (const b of utf8) buf.push(b);
 		const offset = heap;
 		datas.push({ offset, bytes: buf });
@@ -496,6 +537,19 @@ export function compileWasm(
 	}
 
 	const funcBuilders: FuncBuilder[] = [];
+	const allocBuilderIdx = funcBuilders.length;
+	const allocBuilder: FuncBuilder = {
+		typeIdx: typeIdx([I32], [I32]),
+		body: [],
+		locals: [],
+		paramCount: 1,
+		paramMap: new Map(),
+		returnType: BaseTypes.Int32,
+		callFixups: [],
+		blockDepth: 0,
+		name: '__alloc',
+	};
+	funcBuilders.push(allocBuilder);
 	const fnDefBuilderIdx = new Map<GbcSymbol, number>();
 	/**
 	 * Fns with at least one union-typed parameter. They are NOT given an
@@ -517,6 +571,17 @@ export function compileWasm(
 	// keyed by builder index — used so a template call reports the concrete
 	// result type, not the template's abstract one.
 	const specReturn = new Map<number, Type>();
+	const nominalIds = new Map<Type, number>();
+
+	function nominalId(t: Type): number | undefined {
+		if (!namedData(t)) return undefined;
+		let id = nominalIds.get(t);
+		if (id === undefined) {
+			id = nominalIds.size + 1;
+			nominalIds.set(t, id);
+		}
+		return id;
+	}
 	// D45: function-typed params are bound to a concrete function at each call
 	// site (monomorphized, never a runtime funcref). Active during a spec body.
 	const fnArgBindings = new Map<GbcSymbol, SymbolMap['function']>();
@@ -552,6 +617,11 @@ export function compileWasm(
 
 	function inferCallType(node: NodeMap['call']): Type {
 		const callee = node.children[0];
+		if (callee.kind === '.') {
+			const sfn = resolveStaticMemberFn(callee);
+			return sfn ? sfn.returnType ?? BaseTypes.Void : BaseTypes.Unknown;
+		}
+		if (callee.kind === 'typeident') return callee.symbol;
 		if (callee.kind !== 'ident') return BaseTypes.Unknown;
 		const sym = callee.symbol;
 		const bound = fnArgBindings.get(sym);
@@ -588,7 +658,7 @@ export function compileWasm(
 		const recv = node.children[0];
 		const field = node.children[1];
 		const recvType = inferType(recv, fn);
-		if (recvType.kind === 'type' && (recvType.family === 'data' || recvType.family === 'error')) {
+		if (recvType.kind === 'type' && recvType.family === 'data') {
 			const members = recvType.members;
 			if (field.kind === 'ident' && members) {
 				const m = members[field.symbol.name ?? ''];
@@ -662,7 +732,12 @@ export function compileWasm(
 			case '.':
 				return inferMemberType(node, fn);
 			case 'data': {
-				const items = dataItems(node).flatMap(flattenDataItem);
+				const items = dataItems(node)
+			.flatMap(flattenDataItem)
+			.filter(it => {
+				const v = itemValue(it);
+				return !(v.kind === 'ident' && v.symbol.kind === 'function');
+			});
 				const first = items[0];
 				if (
 					items.length === 1 &&
@@ -746,6 +821,10 @@ export function compileWasm(
 		if (sym.kind === 'literal') {
 			const t = sym.type;
 			if (t?.kind === 'type') {
+				if (t.family === 'void')
+					throw new Error(
+						'"void" is not a value and cannot be emitted; a chain stops on void — use "cond ? value" for conditional emission',
+					);
 				if (t.family === 'bool') {
 					fn.body.push(OP_I32_CONST);
 					sleb128(sym.value ? 1 : 0, fn.body);
@@ -1034,10 +1113,8 @@ export function compileWasm(
 			fn.body.push(0x40);
 			fn.blockDepth++;
 			const t = compileExpr(thenBranch, fn);
-			if (
-				hasRuntimeValue(t)
-			)
-				fn.body.push(OP_DROP);
+			if (fn.fusion && hasRuntimeValue(t)) fn.fusion.emit(t);
+			else if (hasRuntimeValue(t)) fn.body.push(OP_DROP);
 			fn.body.push(OP_END);
 			fn.blockDepth--;
 			return BaseTypes.Void;
@@ -1319,19 +1396,6 @@ export function compileWasm(
 		fn: FuncBuilder,
 	): Type {
 		if (name === 'out') return compileHostOutCall(args, fn);
-		if (name === 'error') {
-			if (args) compileExpr(args, fn);
-			else {
-				fn.body.push(OP_I32_CONST);
-				sleb128(0, fn.body);
-			}
-			// Tag Error pointers with high bit set so runtime dispatch can
-			// distinguish them from plain Int32 values in unions.
-			fn.body.push(OP_I32_CONST);
-			sleb128(-0x80000000, fn.body);
-			fn.body.push(0x72); // i32.or
-			return BaseTypes.Error;
-		}
 		if (name === 'length') {
 			if (!args) throw new Error('length() requires an argument');
 			const argType = inferType(args, fn);
@@ -1358,6 +1422,147 @@ export function compileWasm(
 			return BaseTypes.Int32;
 		}
 		throw new Error(`Unknown intrinsic: "${name}"`);
+	}
+
+	function compileScalarCtor(
+		target: SymbolMap['type'],
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): Type {
+		if (!args) throw new Error(`${target.name}() requires an argument`);
+		const t = compileExpr(args, fn);
+		if (target.family === 'float') {
+			if (!isFloatType(t)) coerceToFloat(t, fn);
+			return target;
+		}
+		if (isFloatType(t)) fn.body.push(0xaa);
+		if (target.family === 'uint') {
+			if (target.size === 1 || target.size === 2) {
+				fn.body.push(OP_I32_CONST);
+				sleb128(target.size === 1 ? 0xff : 0xffff, fn.body);
+				fn.body.push(OP_I32_AND);
+			}
+		} else if (target.size === 1 || target.size === 2) {
+			const bits = target.size === 1 ? 24 : 16;
+			fn.body.push(OP_I32_CONST);
+			sleb128(bits, fn.body);
+			fn.body.push(0x74);
+			fn.body.push(OP_I32_CONST);
+			sleb128(bits, fn.body);
+			fn.body.push(0x75);
+		}
+		return target;
+	}
+
+	function emitLoadLocal(local: number, fn: FuncBuilder) {
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(local, fn.body);
+	}
+
+	function emitStoreLocal(local: number, fn: FuncBuilder) {
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(local, fn.body);
+	}
+
+	function emitConst(value: number, fn: FuncBuilder) {
+		fn.body.push(OP_I32_CONST);
+		sleb128(value, fn.body);
+	}
+
+	function compileStringFlatten(items: Node[], fn: FuncBuilder): Type {
+		const parts = items.map(item => {
+			const t = compileExpr(itemValue(item), fn);
+			const isStr = t.kind === 'type' && t.family === 'string';
+			const isByte =
+				t.kind === 'type' && t.family === 'uint' && t.size === 1;
+			if (!isStr && !isByte)
+				throw new Error(
+					`String(...) parts must be String or Uint8, got ${t.name}`,
+				);
+			const local = allocLocal(fn, I32);
+			emitStoreLocal(local, fn);
+			return { local, isStr };
+		});
+		const total = allocLocal(fn, I32);
+		emitConst(0, fn);
+		emitStoreLocal(total, fn);
+		for (const p of parts) {
+			emitLoadLocal(total, fn);
+			if (p.isStr) {
+				emitLoadLocal(p.local, fn);
+				emitElemLoad(4, 0, fn);
+			} else emitConst(1, fn);
+			fn.body.push(OP_I32_ADD);
+			emitStoreLocal(total, fn);
+		}
+		emitLoadLocal(total, fn);
+		emitConst(8, fn);
+		fn.body.push(OP_I32_ADD);
+		emitFixedCall(fn, allocBuilderIdx);
+		const buf = allocLocal(fn, I32);
+		emitStoreLocal(buf, fn);
+		emitLoadLocal(buf, fn);
+		emitLoadLocal(total, fn);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(0, fn.body);
+		emitLoadLocal(buf, fn);
+		emitConst(1, fn);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(4, fn.body);
+		const cur = allocLocal(fn, I32);
+		emitLoadLocal(buf, fn);
+		emitConst(8, fn);
+		fn.body.push(OP_I32_ADD);
+		emitStoreLocal(cur, fn);
+		for (const p of parts) {
+			if (p.isStr) {
+				emitLoadLocal(cur, fn);
+				emitLoadLocal(p.local, fn);
+				emitConst(8, fn);
+				fn.body.push(OP_I32_ADD);
+				emitLoadLocal(p.local, fn);
+				fn.body.push(OP_I32_LOAD);
+				uleb128(2, fn.body);
+				uleb128(0, fn.body);
+				fn.body.push(0xfc, 0x0a, 0x00, 0x00);
+				emitLoadLocal(cur, fn);
+				emitLoadLocal(p.local, fn);
+				fn.body.push(OP_I32_LOAD);
+				uleb128(2, fn.body);
+				uleb128(0, fn.body);
+				fn.body.push(OP_I32_ADD);
+				emitStoreLocal(cur, fn);
+			} else {
+				emitLoadLocal(cur, fn);
+				emitLoadLocal(p.local, fn);
+				fn.body.push(0x3a);
+				uleb128(0, fn.body);
+				uleb128(0, fn.body);
+				emitLoadLocal(cur, fn);
+				emitConst(1, fn);
+				fn.body.push(OP_I32_ADD);
+				emitStoreLocal(cur, fn);
+			}
+		}
+		emitLoadLocal(buf, fn);
+		return BaseTypes.String;
+	}
+
+	function compileStringCtor(args: Node | undefined, fn: FuncBuilder): Type {
+		if (!args) throw new Error('String() requires a byte-buffer argument');
+		if (args.kind === 'data') {
+			const items = dataItems(args).flatMap(flattenDataItem);
+			if (items.length === 0)
+				throw new Error('String([]) requires at least one part');
+			return compileStringFlatten(items, fn);
+		}
+		const t = compileExpr(args, fn);
+		if (t.kind === 'type' && t.family === 'string') return BaseTypes.String;
+		throw new Error(
+			`String(...) expects a String or a [String|Uint8] block, got ${t.name}`,
+		);
 	}
 
 	function emitOutHostCall(inputType: Type, fn: FuncBuilder): Type {
@@ -1472,9 +1677,39 @@ export function compileWasm(
 		return fnSym.returnType ?? BaseTypes.Void;
 	}
 
+	function resolveStaticMemberFn(callee: Node): SymbolMap['function'] | undefined {
+		if (callee.kind !== '.') return undefined;
+		const recv = callee.children[0];
+		const field = callee.children[1];
+		if (recv.kind !== 'ident' || field.kind !== 'ident') return undefined;
+		const rt = recv.symbol.type;
+		if (!rt || rt.kind !== 'type' || rt.family !== 'data') return undefined;
+		const m = rt.members[field.symbol.name ?? ''];
+		const mt = m?.type;
+		if (mt && mt.kind === 'function') return mt;
+		return undefined;
+	}
+
 	function compileCall(node: NodeMap['call'], fn: FuncBuilder): Type {
+		const rt = compileCallInner(node, fn);
+		const id = nominalId(rt);
+		if (id !== undefined) {
+			fn.body.push(OP_I32_CONST);
+			sleb128(0x80000000 | (id << 24), fn.body);
+			fn.body.push(0x72);
+		}
+		return rt;
+	}
+
+	function compileCallInner(node: NodeMap['call'], fn: FuncBuilder): Type {
 		const callee = node.children[0];
 		const args = node.children[1];
+		if (callee.kind === 'typeident') {
+			const target = SCALAR_CTORS[callee.symbol.name ?? ''];
+			if (target) return compileScalarCtor(target, args, fn);
+			if (callee.symbol.kind === 'type' && callee.symbol.family === 'string')
+				return compileStringCtor(args, fn);
+		}
 		if (callee.kind === 'call') {
 			const innerFn = returnedFnLiteral(callee);
 			if (!innerFn) throw new Error('Indirect call not yet supported');
@@ -1483,6 +1718,18 @@ export function compileWasm(
 			compileCallArgs(args, innerFn.symbol, fn);
 			emitFixedCall(fn, idx);
 			return specReturn.get(idx) ?? innerFn.symbol.returnType ?? BaseTypes.Void;
+		}
+		if (callee.kind === '.') {
+			const sfn = resolveStaticMemberFn(callee);
+			if (sfn && sfn.flags & Flags.External) {
+				if (args) compileCallArgs(args, sfn, fn);
+				const sig = fnSignature(sfn);
+				const idx = importHost(sfn.name ?? '', sig.params, sig.results);
+				fn.body.push(OP_CALL);
+				uleb128(idx, fn.body);
+				return sfn.returnType ?? BaseTypes.Void;
+			}
+			if (sfn) return compileDirectCall(sfn, args, fn);
 		}
 		if (callee.kind !== 'ident')
 			throw new Error('Indirect call not yet supported');
@@ -1498,6 +1745,17 @@ export function compileWasm(
 		if (templateNode) return compileTemplateCall(templateNode, args, fn);
 		const disp = tryCompileDispatch(calleeSym, args, fn);
 		if (disp) return disp;
+		if (
+			calleeSym.kind === 'function' &&
+			!!(calleeSym.flags & Flags.External)
+		) {
+			if (args) compileCallArgs(args, calleeSym, fn);
+			const sig = fnSignature(calleeSym);
+			const idx = importHost(calleeSym.name ?? '', sig.params, sig.results);
+			fn.body.push(OP_CALL);
+			uleb128(idx, fn.body);
+			return calleeSym.returnType ?? BaseTypes.Void;
+		}
 		return compileDirectCall(calleeSym, args, fn);
 	}
 
@@ -1514,7 +1772,7 @@ export function compileWasm(
 	function dispatchArgType(t: Type): Type {
 		if (t.kind === 'type' && t.family === 'union' && t.members) {
 			const m = t.members.find(
-				x => !(x.kind === 'type' && x.family === 'error'),
+				x => !(x.kind === 'type' && namedData(x)),
 			);
 			if (m) return dispatchArgType(m);
 		}
@@ -1540,13 +1798,14 @@ export function compileWasm(
 			return ps.every((p, i) => {
 				const pt = p.type;
 				const at = ats[i];
-				return (
-					pt?.kind === 'type' &&
-					pt.family !== 'unknown' &&
-					at?.kind === 'type' &&
-					pt.family === at.family &&
-					pt.name === at.name
-				);
+				if (
+					pt?.kind !== 'type' ||
+					pt.family === 'unknown' ||
+					at?.kind !== 'type'
+				)
+					return false;
+				if (pt.family === at.family && pt.name === at.name) return true;
+				return isIntType(pt) && isIntType(at) && pt.size >= at.size;
 			});
 		});
 		if (typed) return typed;
@@ -1623,52 +1882,62 @@ export function compileWasm(
 		const itemTypes: Type[] = items.map(it => inferType(itemValue(it), fn));
 		const useF64 =
 			itemTypes.length > 0 && itemTypes.every(isFloatType);
-		const slotSize = useF64 ? 8 : 4;
-		const buf: number[] = [];
-		u32le(items.length, buf);
-		u32le(slotSize, buf);
-		// Reserve item bytes; they get filled at construction time via memory
-		// stores so we can use runtime values (idents, calls etc.).
-		const offset = heap;
-		heap += buf.length;
-		// Header
-		datas.push({ offset, bytes: buf });
-		// Item slots area
-		const slotsOffset = heap;
-		const empty: number[] = [];
-		for (let i = 0; i < items.length * slotSize; i++) empty.push(0);
-		datas.push({ offset: slotsOffset, bytes: empty });
-		heap += empty.length;
-		// Align to 8 bytes after items
-		heap = (heap + 7) & ~7;
-
-		// Emit code that writes each item at runtime.
+		const useByte =
+			itemTypes.length > 0 &&
+			itemTypes.every(
+				t => t.kind === 'type' && t.family === 'uint' && t.size === 1,
+			);
+		const slotSize = useF64 ? 8 : useByte ? 1 : 4;
+		const headerSize = 8;
+		const totalSize = headerSize + items.length * slotSize;
+		fn.body.push(OP_I32_CONST);
+		sleb128(totalSize, fn.body);
+		emitFixedCall(fn, allocBuilderIdx);
+		const bufLocal = allocLocal(fn, I32);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(bufLocal, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(bufLocal, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(items.length, fn.body);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(0, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(bufLocal, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(slotSize, fn.body);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(4, fn.body);
 		for (let i = 0; i < items.length; i++) {
 			const item = items[i];
 			if (!item) continue;
 			const itemNode = itemValue(item);
-			const addr = slotsOffset + i * slotSize;
-			fn.body.push(OP_I32_CONST);
-			sleb128(addr, fn.body);
+			const off = headerSize + i * slotSize;
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(bufLocal, fn.body);
 			const t = compileExpr(itemNode, fn);
 			if (useF64) {
 				if (!isFloatType(t)) coerceToFloat(t, fn);
 				fn.body.push(OP_F64_STORE);
-				uleb128(3, fn.body); // align 8
+				uleb128(3, fn.body);
+				uleb128(off, fn.body);
+			} else if (useByte) {
+				fn.body.push(0x3a);
 				uleb128(0, fn.body);
+				uleb128(off, fn.body);
 			} else {
-				// 4-byte slot. Truncate float to int when needed.
 				if (isFloatType(t)) {
-					fn.body.push(0xaa); // i32.trunc_f64_s
+					fn.body.push(0xaa);
 				}
 				fn.body.push(OP_I32_STORE);
 				uleb128(2, fn.body);
-				uleb128(0, fn.body);
+				uleb128(off, fn.body);
 			}
 		}
-		// Return pointer to header
-		fn.body.push(OP_I32_CONST);
-		sleb128(offset, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(bufLocal, fn.body);
 		return makeDataType(slotSize, items);
 	}
 
@@ -1728,23 +1997,23 @@ export function compileWasm(
 		return compileExpr(itemValue(target), fn);
 	}
 
+	function emitElemLoad(size: number, off: number, fn: FuncBuilder) {
+		fn.body.push(size === 8 ? OP_F64_LOAD : size === 1 ? 0x2d : OP_I32_LOAD);
+		uleb128(size === 8 ? 3 : size === 1 ? 0 : 2, fn.body);
+		uleb128(off, fn.body);
+	}
+
+	function emitElemStore(size: number, off: number, fn: FuncBuilder) {
+		fn.body.push(size === 8 ? OP_F64_STORE : size === 1 ? 0x3a : OP_I32_STORE);
+		uleb128(size === 8 ? 3 : size === 1 ? 0 : 2, fn.body);
+		uleb128(off, fn.body);
+	}
+
 	function compileMemberDollar(field: Node, fn: FuncBuilder): Type {
 		if (
 			fn.dollarLocal !== undefined &&
 			fn.dollarType?.kind === 'type' &&
-			fn.dollarType.family === 'error'
-		) {
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(fn.dollarLocal, fn.body);
-			fn.body.push(OP_I32_CONST);
-			sleb128(0x7FFFFFFF, fn.body);
-			fn.body.push(0x71); // i32.and — clear Error tag bit
-			return BaseTypes.String;
-		}
-		if (
-			fn.dollarLocal !== undefined &&
-			fn.dollarType?.kind === 'type' &&
-			(fn.dollarType.family === 'data' || fn.dollarType.family === 'error')
+			fn.dollarType.family === 'data'
 		) {
 			const slotSize = fn.dollarType.size || 4;
 			let idx = 0;
@@ -1756,19 +2025,16 @@ export function compileWasm(
 			}
 			fn.body.push(OP_LOCAL_GET);
 			uleb128(fn.dollarLocal, fn.body);
+			if (nominalId(fn.dollarType) !== undefined) {
+				fn.body.push(OP_I32_CONST);
+				sleb128(0x00FFFFFF, fn.body);
+				fn.body.push(0x71);
+			}
 			fn.body.push(OP_I32_CONST);
 			sleb128(8 + idx * slotSize, fn.body);
 			fn.body.push(OP_I32_ADD);
-			if (slotSize === 8) {
-				fn.body.push(OP_F64_LOAD);
-				uleb128(3, fn.body);
-				uleb128(0, fn.body);
-				return BaseTypes.Float64;
-			}
-			fn.body.push(OP_I32_LOAD);
-			uleb128(2, fn.body);
-			uleb128(0, fn.body);
-			return BaseTypes.Int32;
+			emitElemLoad(slotSize, 0, fn);
+			return slotSize === 8 ? BaseTypes.Float64 : BaseTypes.Int32;
 		}
 		fn.body.push(OP_I32_CONST);
 		sleb128(0, fn.body);
@@ -1781,7 +2047,7 @@ export function compileWasm(
 		if (recv.kind === 'data') return compileMemberData(recv, field, fn);
 		if (recv.kind === 'ident') {
 			const recvType = inferType(recv, fn);
-			if (recvType.kind === 'type' && (recvType.family === 'data' || recvType.family === 'error')) {
+			if (recvType.kind === 'type' && recvType.family === 'data') {
 				const recvSym = recv.symbol;
 				if (recvSym.kind === 'variable') {
 					return compileMemberLoad(recv, recvType, field, fn);
@@ -1801,13 +2067,6 @@ export function compileWasm(
 		field: Node,
 		fn: FuncBuilder,
 	): Type {
-		if (recvType.kind === 'type' && recvType.family === 'error') {
-			compileExpr(recv, fn);
-			fn.body.push(OP_I32_CONST);
-			sleb128(0x7FFFFFFF, fn.body);
-			fn.body.push(0x71); // i32.and — clear Error tag bit
-			return BaseTypes.String;
-		}
 		if (recvType.kind !== 'type' || recvType.family !== 'data')
 			throw new Error('compileMemberLoad: not a data type');
 		const slotSize = recvType.size || 4;
@@ -1832,19 +2091,19 @@ export function compileWasm(
 		if (idx === undefined) throw new Error('Member access target not found');
 		// Push base pointer + (8 [header] + idx*slotSize)
 		compileExpr(recv, fn);
+		if (nominalId(recvType) !== undefined) {
+			fn.body.push(OP_I32_CONST);
+			sleb128(0x00FFFFFF, fn.body);
+			fn.body.push(0x71);
+		}
 		fn.body.push(OP_I32_CONST);
 		sleb128(8 + idx * slotSize, fn.body);
 		fn.body.push(OP_I32_ADD);
-		if (slotSize === 8) {
-			fn.body.push(OP_F64_LOAD);
-			uleb128(3, fn.body);
-			uleb128(0, fn.body);
-			return memberType ?? BaseTypes.Float64;
-		}
-		fn.body.push(OP_I32_LOAD);
-		uleb128(2, fn.body);
-		uleb128(0, fn.body);
-		return memberType ?? BaseTypes.Int32;
+		emitElemLoad(slotSize, 0, fn);
+		return (
+			memberType ??
+			(slotSize === 8 ? BaseTypes.Float64 : BaseTypes.Int32)
+		);
 	}
 
 	function compileInlineFn(_node: NodeMap['fn'], fn: FuncBuilder): Type {
@@ -2438,6 +2697,7 @@ export function compileWasm(
 		const savedDollarLocal = fn.dollarLocal;
 		const savedDollarType = fn.dollarType;
 		let savedSlotTypes: (Type | undefined)[] | undefined;
+		const savedSlotLocals = params.map(p => fn.paramMap.get(p.symbol));
 		const scalarLift =
 			inTemplateInline > 0 &&
 			params.length > 1 &&
@@ -2518,7 +2778,7 @@ export function compileWasm(
 						flags: 0,
 						name: '__data',
 						family: 'data',
-						size: 0,
+						size: inputType.size,
 						members,
 					};
 				}
@@ -2543,37 +2803,35 @@ export function compileWasm(
 				// single-element rest (D10 collapse) falls through to slot read.
 				if (isLast && ptype.kind === 'type' && ptype.family === 'data') {
 					const restCount = Object.keys(ptype.members).length;
-					const header: number[] = [];
-					u32le(restCount, header);
-					u32le(itemSize, header);
-					const restOffset = heap;
-					heap += header.length;
-					datas.push({ offset: restOffset, bytes: header });
-					const slotsOffset = heap;
-					const empty: number[] = [];
-					for (let i = 0; i < restCount * itemSize; i++) empty.push(0);
-					datas.push({ offset: slotsOffset, bytes: empty });
-					heap += empty.length;
-					heap = (heap + 7) & ~7;
-					for (let i = 0; i < restCount; i++) {
-						fn.body.push(OP_I32_CONST);
-						sleb128(slotsOffset + i * itemSize, fn.body);
-						fn.body.push(OP_LOCAL_GET);
-						uleb128(dataLocal, fn.body);
-						fn.body.push(OP_I32_CONST);
-						sleb128(8 + (headCount + i) * itemSize, fn.body);
-						fn.body.push(OP_I32_ADD);
-						fn.body.push(OP_I32_LOAD);
-						uleb128(2, fn.body);
-						uleb128(0, fn.body);
-						fn.body.push(OP_I32_STORE);
-						uleb128(2, fn.body);
-						uleb128(0, fn.body);
-					}
 					fn.body.push(OP_I32_CONST);
-					sleb128(restOffset, fn.body);
+					sleb128(8 + restCount * itemSize, fn.body);
+					emitFixedCall(fn, allocBuilderIdx);
 					fn.body.push(OP_LOCAL_SET);
 					uleb128(localIdx, fn.body);
+					fn.body.push(OP_LOCAL_GET);
+					uleb128(localIdx, fn.body);
+					fn.body.push(OP_I32_CONST);
+					sleb128(restCount, fn.body);
+					fn.body.push(OP_I32_STORE);
+					uleb128(2, fn.body);
+					uleb128(0, fn.body);
+					fn.body.push(OP_LOCAL_GET);
+					uleb128(localIdx, fn.body);
+					fn.body.push(OP_I32_CONST);
+					sleb128(itemSize, fn.body);
+					fn.body.push(OP_I32_STORE);
+					uleb128(2, fn.body);
+					uleb128(4, fn.body);
+					for (let i = 0; i < restCount; i++) {
+						fn.body.push(OP_LOCAL_GET);
+						uleb128(localIdx, fn.body);
+						fn.body.push(OP_LOCAL_GET);
+						uleb128(dataLocal, fn.body);
+						const srcOff = 8 + (headCount + i) * itemSize;
+						const dstOff = 8 + i * itemSize;
+						emitElemLoad(itemSize, srcOff, fn);
+						emitElemStore(itemSize, dstOff, fn);
+					}
 					fn.paramMap.set(pSym, localIdx);
 					return;
 				}
@@ -2584,12 +2842,7 @@ export function compileWasm(
 				const slotIdx = labelIdx >= 0 ? labelIdx : idx;
 				fn.body.push(OP_LOCAL_GET);
 				uleb128(dataLocal, fn.body);
-				fn.body.push(OP_I32_CONST);
-				sleb128(8 + slotIdx * itemSize, fn.body);
-				fn.body.push(OP_I32_ADD);
-				fn.body.push(OP_I32_LOAD);
-				uleb128(2, fn.body);
-				uleb128(0, fn.body);
+				emitElemLoad(itemSize, 8 + slotIdx * itemSize, fn);
 				fn.body.push(OP_LOCAL_SET);
 				uleb128(localIdx, fn.body);
 				fn.paramMap.set(pSym, localIdx);
@@ -2636,6 +2889,11 @@ export function compileWasm(
 			params.forEach((p, i) => {
 				p.symbol.type = savedSlotTypes![i];
 			});
+		params.forEach((p, i) => {
+			const sl = savedSlotLocals[i];
+			if (sl === undefined) fn.paramMap.delete(p.symbol);
+			else fn.paramMap.set(p.symbol, sl);
+		});
 		return BaseTypes.Void;
 	}
 
@@ -2766,7 +3024,7 @@ export function compileWasm(
 		if (!t || t.kind !== 'type') return undefined;
 		if (
 			t.family === 'literal' ||
-			t.family === 'error' ||
+			namedData(t) ||
 			t.family === 'int' ||
 			t.family === 'uint' ||
 			t.family === 'float' ||
@@ -2780,6 +3038,7 @@ export function compileWasm(
 	function isDispatchedInput(t: Type): boolean {
 		if (t.kind !== 'type') return false;
 		if (t.family === 'union') return true;
+		if (namedData(t)) return true;
 		return false;
 	}
 
@@ -2859,11 +3118,44 @@ export function compileWasm(
 				fn.body.push(OP_I32_CONST);
 				sleb128(ptr, fn.body);
 				fn.body.push(0x46); // i32.eq
-			} else if (dispatchType.family === 'error') {
-				// Error variant: tagged with high bit set.
+			} else if (namedData(dispatchType)) {
+				const members =
+					inputType.kind === 'type' && inputType.family === 'union'
+						? inputType.members
+						: [inputType];
+				const ids: number[] = [];
+				for (const m of members) {
+					if (!composes(m, dispatchType)) continue;
+					const mid = nominalId(m);
+					if (mid !== undefined) ids.push(mid);
+				}
 				fn.body.push(OP_I32_CONST);
-				sleb128(-0x80000000, fn.body);
-				fn.body.push(0x71); // i32.and
+				sleb128(24, fn.body);
+				fn.body.push(0x76);
+				if (ids.length === 0) {
+					fn.body.push(OP_DROP);
+					fn.body.push(OP_I32_CONST);
+					sleb128(0, fn.body);
+				} else if (ids.length === 1) {
+					fn.body.push(OP_I32_CONST);
+					sleb128(0x80 | (ids[0] ?? 0), fn.body);
+					fn.body.push(0x46);
+				} else {
+					const tmp = allocLocal(fn, I32);
+					fn.body.push(0x22);
+					uleb128(tmp, fn.body);
+					fn.body.push(OP_I32_CONST);
+					sleb128(0x80 | (ids[0] ?? 0), fn.body);
+					fn.body.push(0x46);
+					for (let k = 1; k < ids.length; k++) {
+						fn.body.push(OP_LOCAL_GET);
+						uleb128(tmp, fn.body);
+						fn.body.push(OP_I32_CONST);
+						sleb128(0x80 | (ids[k] ?? 0), fn.body);
+						fn.body.push(0x46);
+						fn.body.push(0x72);
+					}
+				}
 			} else if (
 				dispatchType.family === 'int' ||
 				dispatchType.family === 'uint' ||
@@ -3079,6 +3371,7 @@ export function compileWasm(
 			returnType,
 			callFixups: [],
 			blockDepth: 0,
+			name: fnNode.symbol?.name,
 		};
 		const builderIdx = funcBuilders.length;
 		funcBuilders.push(builder);
@@ -3104,6 +3397,7 @@ export function compileWasm(
 			return null;
 		}
 		const { builder, builderIdx, returnType } = allocFuncBuilder(fnNode);
+		builder.name = defSym.name;
 		fnSym.returnType = returnType;
 		fnDefBuilderIdx.set(defSym, builderIdx);
 		fnDefBuilderIdx.set(fnSym, builderIdx);
@@ -3448,6 +3742,13 @@ export function compileWasm(
 		const sym = node.symbol;
 		const value = node.value;
 		if (value.kind === 'fn') return;
+		if (value.kind === 'data') {
+			const st = sym.type;
+			if (st?.kind === 'type' && st.family === 'data') {
+				const ms = Object.values(st.members);
+				if (ms.length > 0 && ms.every(m => m.type?.kind === 'function')) return;
+			}
+		}
 		const isMut = !!(sym.flags & Flags.Variable);
 		const declaredType = sym.type;
 		let valueType: Type | undefined = declaredType;
@@ -3636,6 +3937,7 @@ export function compileWasm(
 		returnType: BaseTypes.Void,
 		callFixups: [],
 		blockDepth: 0,
+		name: 'main',
 	};
 	const mainBuilderIdx = funcBuilders.length;
 	funcBuilders.push(mainBuilder);
@@ -3648,6 +3950,23 @@ export function compileWasm(
 	resolveCallFixups(baseFuncIdx);
 	const mainFuncIdx = baseFuncIdx + mainBuilderIdx;
 
+		const heapStart = (heap + 7) & ~7;
+		const heapGlobalIdx = globals.length;
+		const heapInit: number[] = [OP_I32_CONST];
+		sleb128(heapStart, heapInit);
+		globals.push({ type: I32, mutable: true, init: heapInit });
+		allocBuilder.body.push(OP_GLOBAL_GET);
+		uleb128(heapGlobalIdx, allocBuilder.body);
+		allocBuilder.body.push(OP_GLOBAL_GET);
+		uleb128(heapGlobalIdx, allocBuilder.body);
+		allocBuilder.body.push(OP_LOCAL_GET, 0);
+		allocBuilder.body.push(OP_I32_CONST, 3, OP_I32_ADD);
+		allocBuilder.body.push(OP_I32_CONST, 0x7c, OP_I32_AND);
+		allocBuilder.body.push(OP_I32_ADD);
+		allocBuilder.body.push(OP_GLOBAL_SET);
+		uleb128(heapGlobalIdx, allocBuilder.body);
+		const allocFuncIdx = baseFuncIdx + allocBuilderIdx;
+
 	const m: Module = {
 		types,
 		imports,
@@ -3655,12 +3974,14 @@ export function compileWasm(
 			typeIdx: b.typeIdx,
 			body: b.body,
 			locals: b.locals,
+			name: b.name,
 		})),
 		globals,
 		memoryPages: 1,
 		exports: [
 			{ name: 'main', kind: EXTERNAL_FUNC, idx: mainFuncIdx },
 			{ name: 'memory', kind: EXTERNAL_MEMORY, idx: 0 },
+			{ name: '__alloc', kind: EXTERNAL_FUNC, idx: allocFuncIdx },
 		],
 		datas,
 	};

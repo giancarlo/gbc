@@ -36,7 +36,7 @@ export function parseType(
 		if (t.kind !== 'type') return t;
 		if (t.family === 'unknown' && t.name && subst.has(t.name))
 			return subst.get(t.name)!;
-		if (t.family === 'data' || t.family === 'error') {
+		if (t.family === 'data') {
 			const members: Record<string, Symbol> = {};
 			for (const [k, m] of Object.entries(t.members))
 				members[k] =

@@ -198,22 +198,8 @@ export class SpecApi extends TestApiBase<SpecApi> {
 			const buf = new Uint8Array(memory.buffer);
 			const len = view.getUint32(strPtr, true);
 			return new TextDecoder().decode(
-				buf.subarray(strPtr + 4, strPtr + 4 + len),
+				buf.subarray(strPtr + 8, strPtr + 8 + len),
 			);
-		};
-		const decodeData = (ptr: number): OutValue[] => {
-			if (!memory) throw new Error('memory not bound');
-			const view = new DataView(memory.buffer);
-			const length = view.getUint32(ptr, true);
-			const itemSize = view.getUint32(ptr + 4, true);
-			const items: OutValue[] = [];
-			const base = ptr + 8;
-			for (let i = 0; i < length; i++) {
-				const off = base + i * itemSize;
-				if (itemSize === 8) items.push(view.getFloat64(off, true));
-				else items.push(view.getInt32(off, true));
-			}
-			return items;
 		};
 		const instance = new WebAssembly.Instance(module, {
 			env: {
@@ -235,9 +221,7 @@ export class SpecApi extends TestApiBase<SpecApi> {
 				out_bool(n: number) {
 					captures.push(!!n);
 				},
-				out_data(ptr: number) {
-					captures.push(decodeData(ptr));
-				},
+				traceHost() {},
 			},
 		});
 		memory = instance.exports.memory as WebAssembly.Memory;

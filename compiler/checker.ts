@@ -15,10 +15,9 @@ function typeToStr(type?: Type): string {
 
 /** Completes the return type resolution for function identifiers if their type is function and it has a defined returnType.*/
 function resolveReturnType(node: Node) {
-	if (node.kind === 'ident') {
-		const type = resolver(node);
-		if (type.kind === 'function' && type.returnType) return type.returnType;
-	}
+	const type = resolver(node);
+	if (type?.kind === 'function' && type.returnType) return type.returnType;
+	if (type?.kind === 'type' && type.family !== 'fn') return type;
 }
 
 function resolveDataType(node: NodeMap['data']): Type {
@@ -91,7 +90,8 @@ function resolveParameterType(node: NodeMap['parameter']): Type | undefined {
 function resolvePropdefType(node: NodeMap['propdef']): Type {
 	if (node.symbol.type) return node.symbol.type;
 	const t = node.value ? resolver(node.value) : BT.Unknown;
-	if (t.kind === 'type' && t.family !== 'unknown') node.symbol.type = t;
+	if (t.kind === 'function' || (t.kind === 'type' && t.family !== 'unknown'))
+		node.symbol.type = t;
 	return t;
 }
 
@@ -165,7 +165,7 @@ function resolveType(node: CheckedNode): Type | undefined {
 			const lt = resolver(left);
 			if (
 				lt.kind === 'type' &&
-				(lt.family === 'data' || lt.family === 'error')
+				lt.family === 'data'
 			) {
 				const keys = Object.keys(lt.members);
 				let key: string | undefined;
@@ -351,6 +351,7 @@ function paramsMatch(
 
 function canAssign(to: Type, a: Type): boolean {
 	if (to === a) return true;
+	if (a.components?.some(c => canAssign(to, c))) return true;
 	if (to.kind === 'function' && a.kind === 'function') {
 		const tp = to.parameters ?? [];
 		const ap = a.parameters ?? [];
@@ -370,9 +371,19 @@ function canAssign(to: Type, a: Type): boolean {
 		return to.members.some(m => canAssign(m, a));
 	if (to.family === 'literal' && a.family === 'literal')
 		return to.value === a.value;
-	if (to.family === 'string' && a.family === 'literal' && typeof a.value === 'string')
-		return true;
+	if (to.family === 'string') {
+		if (a.family === 'string') return true;
+		if (a.family === 'literal' && typeof a.value === 'string') return true;
+	}
 	if (to.family === 'data' && a.family === 'data') {
+		// D49: a named type is nominal — its identity is the type-symbol
+		// instance, not its structure. The `to === a` test at the top of this
+		// function is that identity check, so reaching here means the instances
+		// already differ; two types that each carry a declared identity are
+		// therefore distinct and never assign, even with identical members. An
+		// anonymous block (`__data`) has no declared identity, so it coerces
+		// structurally into a named type.
+		if (to.name !== '__data' && a.name !== '__data') return false;
 		for (const key of Object.keys(to.members)) {
 			const toType = to.members[key]?.type;
 			const aType = a.members[key]?.type;
@@ -468,7 +479,7 @@ function containsApp(t: Type, seen = new Set<Type>()): boolean {
 	seen.add(t);
 	if (t.application) return true;
 	if (t.family === 'union') return t.members.some(m => containsApp(m, seen));
-	if (t.family === 'data' || t.family === 'error')
+	if (t.family === 'data')
 		return Object.values(t.members).some(
 			m => m.type !== undefined && containsApp(m.type, seen),
 		);
@@ -486,7 +497,7 @@ export function reduceType(t: Type, bindings: Map<string, Type>, depth = 0): Typ
 	if (!bindings.size && !containsApp(t)) return t;
 	if (t.family === 'union')
 		return unionOf(t.members.map(m => reduceType(m, bindings, depth + 1)));
-	if (t.family === 'data' || t.family === 'error') {
+	if (t.family === 'data') {
 		const reduced: Type[] = [];
 		for (const k of Object.keys(t.members)) {
 			const mt = t.members[k]?.type;
@@ -715,7 +726,13 @@ export function checker({
 	}
 
 	function checkCall(node: NodeMap['call']) {
-		const fn = resolveType(node.children[0]);
+		const calleeNode = node.children[0];
+		const fn = resolveType(calleeNode);
+		if (calleeNode.kind === 'typeident') {
+			if (fn && fn.kind === 'type' && fn.family !== 'fn') return;
+			error(`This expression is not callable`, node);
+			return;
+		}
 		if (!fn || fn.kind !== 'function') {
 			error(`This expression is not callable`, node);
 			return;
