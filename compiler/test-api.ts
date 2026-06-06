@@ -187,8 +187,20 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		test?.(result);
 	};
 
-	protected runWasm(root: NodeMap['root']): WasmRunResult {
-		const bytes = Program().compileAst(root);
+	/**
+	 * Compile `src` (a program containing `#test { ... }` blocks) in test mode
+	 * and run it. The test prelude's `ok`/`equal` are silent on a pass and emit
+	 * a failure line otherwise, so `out` is the sequence of failures (empty when
+	 * every assertion holds).
+	 */
+	testBlock = ({ src, out }: { p?: string; src: string; out: OutValue[] }) => {
+		const { ast: rootAst } = this.parse(src);
+		const result = this.runWasm(rootAst, true);
+		this.equalValues(result.out, out);
+	};
+
+	protected runWasm(root: NodeMap['root'], testMode = false): WasmRunResult {
+		const bytes = Program().compileAst(root, testMode);
 		const captures: OutValue[] = [];
 		const module = new WebAssembly.Module(bytes);
 		let memory: WebAssembly.Memory | undefined;

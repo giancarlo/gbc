@@ -787,6 +787,18 @@ s: String = ['foo', 'bar']              # error — a block is not a String; use
 
 Interacts with: D26 (`String(…)` is the constructor), D36 (byte tuples preserved), D49 (coercion implicit iff zero-op), D51 (the `String = [Uint8]` representation this builds on).
 
+## D53: `String` equality is byte-wise value equality
+
+`==`/`!=` on `String` compare **by value**: length first, then bytes (the `__streq` runtime helper, with a same-pointer fast path that returns early, à la Go). Equal text is equal regardless of where each buffer lives — a runtime-built `String` equals an identical literal. This follows directly from D51 (`String = [Uint8]`): comparing two strings is comparing two byte buffers. Value equality is what `==` means everywhere for text — JS string *primitives*, Rust `str`, and Go `string` all value-compare; only object identity is reference-compared.
+
+Equality is over the **raw UTF-8 bytes** — no Unicode normalization (precomposed `é` ≠ decomposed `é`), matching Rust/Go/Zig. Canonical/normalized equality needs Unicode tables and is a separate future explicit op (same bucket as `graphemes()`), never folded into `==`.
+
+- \+ P3: `==` means content equality (no surprising identity semantics); Go's pointer fast path keeps interned-literal compares O(1)
+- \+ Raw-byte equality is predictable and table-free; normalization stays an explicit, costed op
+- − O(n) in length for distinct buffers (unavoidable — core WASM has no `memcmp`; word-at-a-time compare is a future perf tweak)
+- × Reference/identity equality (JS objects; Zig's raw slice `==`) — wrong for text; equal strings at different addresses must compare equal
+- × Normalized-by-default — hidden Unicode-table cost behind `==` (P3/P6); deferred to an explicit op
+
 ---
 
 ## Open / Deferred

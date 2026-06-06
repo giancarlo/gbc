@@ -8,6 +8,7 @@ type MakeInfix<T extends string> = { [K in T]: Infix };
 export type BaseNodeMap = {
 	root: { children: Node[] };
 	main: { children: Node[]; statements: Node[]; scope: Scope };
+	test: { children: Node[]; statements: Node[]; scope: Scope };
 	type: {
 		children: [Node, Node] | [Node, Node, Node];
 		typeParameters?: NodeMap['parameter'][];

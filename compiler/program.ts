@@ -9,7 +9,7 @@ import { scan } from './scanner.js';
 import { compileTypes } from './compiler-types.js';
 import { compileWasm } from './target-wasm.js';
 import { checker } from './checker.js';
-import { STDLIB_SOURCE } from './stdlib-source.js';
+import { STDLIB_SOURCE, TEST_SOURCE } from './stdlib-source.js';
 
 import type { Node, NodeMap } from './node.js';
 import type { Scope, Symbol, SymbolMap, Type } from './symbol-table.js';
@@ -35,9 +35,15 @@ interface Module {
  * top-level symbol scope. Has no knowledge of "stdlib" — the same function
  * loads the prelude now and any `@module` once the module system lands.
  */
-function loadModule(source: string): Module {
+function loadModule(
+	source: string,
+	extraSymbols?: Record<string, Symbol>,
+	extraTypes?: Record<string, Type>,
+): Module {
 	const symbolTable = ProgramSymbolTable();
 	const typesTable = TypesSymbolTable();
+	if (extraSymbols) symbolTable.setSymbols(extraSymbols);
+	if (extraTypes) typesTable.setSymbols(extraTypes);
 	const api = ParserApi(scan);
 	api.start(source);
 	const scope = symbolTable.push();
@@ -52,14 +58,19 @@ function loadModule(source: string): Module {
 const stdlib = loadModule(STDLIB_SOURCE);
 if (stdlib.errors.length)
 	throw new Error(
-		`stdlib failed: ${stdlib.errors.map(e => e.message).join(', ')}`,
+		`stdlib failed: ${stdlib.errors
+			.map(e => `line ${e.position.line + 1}: ${e.message}`)
+			.join(', ')}`,
 	);
 
 // Host imports: the stdlib's `external` declarations.
 const stdlibExternals: ExternalsMap = new Map();
-for (const key of Object.keys(stdlib.scope)) {
-	const sym = stdlib.scope[key];
-	if (sym && sym.kind === 'function' && sym.flags & Flags.External)
+for (const [key, sym] of stdlib.scope) {
+	if (
+		typeof key === 'string' &&
+		sym.kind === 'function' &&
+		sym.flags & Flags.External
+	)
 		stdlibExternals.set(key, sym);
 }
 
@@ -67,30 +78,57 @@ for (const key of Object.keys(stdlib.scope)) {
 // injected into every program's scope (like `error`/`length`) and its def
 // nodes are prepended to the codegen root so their templates are inlinable.
 // Imported modules (future `@module.name`) are NOT global — resolved via `@`.
-const preludeSymbols: Record<string, Symbol> = {};
-const preludeDefs: NodeMap['def'][] = [];
-for (const child of stdlib.root.children)
-	if (
-		child.kind === 'def' &&
-		(child.value.kind === 'fn' ||
+function collectDefs(module: Module): {
+	symbols: Record<string, Symbol>;
+	defs: NodeMap['def'][];
+} {
+	const symbols: Record<string, Symbol> = {};
+	const defs: NodeMap['def'][] = [];
+	for (const child of module.root.children)
+		if (
+			child.kind === 'def' &&
+			(child.value.kind === 'fn' ||
 				child.value.kind === '|' ||
 				child.value.kind === 'data')
-	) {
-		if (child.symbol.name) preludeSymbols[child.symbol.name] = child.symbol;
-		preludeDefs.push(child);
-	}
-
-const preludeTypes: Record<string, Type> = {};
-for (const child of stdlib.root.children) {
-	if (child.kind !== 'type') continue;
-	const sym = child.symbol;
-	if ((sym.kind === 'type' || sym.kind === 'function') && sym.name)
-		preludeTypes[sym.name] = sym;
+		) {
+			if (child.symbol.name) symbols[child.symbol.name] = child.symbol;
+			defs.push(child);
+		}
+	return { symbols, defs };
 }
 
-function withPrelude(root: Node): Node {
-	if (preludeDefs.length === 0 || root.kind !== 'root') return root;
-	return { ...root, children: [...preludeDefs, ...root.children] };
+function collectTypes(module: Module): Record<string, Type> {
+	const types: Record<string, Type> = {};
+	for (const child of module.root.children) {
+		if (child.kind !== 'type') continue;
+		const sym = child.symbol;
+		if ((sym.kind === 'type' || sym.kind === 'function') && sym.name)
+			types[sym.name] = sym;
+	}
+	return types;
+}
+
+const { symbols: preludeSymbols, defs: preludeDefs } = collectDefs(stdlib);
+const preludeTypes = collectTypes(stdlib);
+
+// The test module (assert helpers for `#test` blocks). Loaded with the stdlib
+// prelude in scope (it calls `out`/`toString`). Its symbols are always
+// resolvable (so `#test` bodies parse), but its def nodes are prepended to the
+// codegen root ONLY in test mode — normal builds never carry them.
+const testModule = loadModule(TEST_SOURCE, preludeSymbols, preludeTypes);
+if (testModule.errors.length)
+	throw new Error(
+		`test module failed: ${testModule.errors
+			.map(e => `line ${e.position.line + 1}: ${e.message}`)
+			.join(', ')}`,
+	);
+const { symbols: testSymbols, defs: testDefs } = collectDefs(testModule);
+
+function withPrelude(root: Node, testMode = false): Node {
+	if (root.kind !== 'root') return root;
+	const head = testMode ? [...preludeDefs, ...testDefs] : preludeDefs;
+	if (head.length === 0) return root;
+	return { ...root, children: [...head, ...root.children] };
 }
 
 export function Program(options?: ProgramOptions) {
@@ -98,6 +136,7 @@ export function Program(options?: ProgramOptions) {
 	const typesTable = TypesSymbolTable();
 	const api = ParserApi(scan);
 	symbolTable.setSymbols(preludeSymbols);
+	symbolTable.setSymbols(testSymbols);
 	typesTable.setSymbols(preludeTypes);
 
 	function parser(src: string) {
@@ -133,8 +172,8 @@ export function Program(options?: ProgramOptions) {
 		};
 	}
 
-	function compileAst(root: Node): Uint8Array {
-		return compileWasm(withPrelude(root), stdlibExternals);
+	function compileAst(root: Node, testMode = false): Uint8Array {
+		return compileWasm(withPrelude(root, testMode), stdlibExternals, testMode);
 	}
 
 	return {

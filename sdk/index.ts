@@ -230,7 +230,7 @@ export type SymbolTable<S extends { name: string }> = ReturnType<
 	typeof SymbolTable<S>
 >;
 export function SymbolTable<S>(
-	newScope: () => Record<string | symbol, S> = () => ({}),
+	newScope: () => Map<string | symbol, S> = () => new Map(),
 ) {
 	const globalScope = newScope();
 	let scope = globalScope;
@@ -260,15 +260,18 @@ export function SymbolTable<S>(
 				let i = stack.length - 1, scope = stack[i];
 				i >= 0;
 				scope = stack[--i]
-			)
-				if (scope?.[id]) return scope[id];
+			) {
+				const found = scope?.get(id);
+				if (found !== undefined) return found;
+			}
 		},
 		set<T extends S>(id: string | symbol, symbol: T): T {
-			scope[id] = symbol;
+			scope.set(id, symbol);
 			return symbol;
 		},
 		setSymbols(symbols: Record<string, S>) {
-			Object.assign(scope, symbols);
+			for (const [id, symbol] of Object.entries(symbols))
+				scope.set(id, symbol);
 		},
 
 		/**

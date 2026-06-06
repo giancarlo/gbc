@@ -1315,6 +1315,12 @@ a = {
 			ast: `(call typeident (data (, 'Hi' (call typeident 33))))`,
 			out: ['Hi!'],
 		});
+		expr({
+			p: 'A scalar `Uint8` constructs a single-byte `String`: `String(Uint8(72))` is the 1-character string `H` (the byte rendered as text).',
+			src: `String(Uint8(72))`,
+			ast: `(call typeident (call typeident 72))`,
+			out: ['H'],
+		});
 		compileError({
 			p: 'A `String([...])` part is a `Uint8` (one byte) or a `String` — a wider integer like `Uint16` is rejected. It is ambiguous (raw bytes vs a codepoint), and a codepoint must be UTF-8-*encoded* to its bytes, never stored raw (that would break the UTF-8 invariant). Codepoint→bytes encoding is a future explicit operation, not a constructor part; non-ASCII is written as a string literal.',
 			src: `main { String([Uint16(233)]) >> out }`,
@@ -1330,6 +1336,36 @@ a = {
 			p: 'Constructing a `String` is explicit (D52): a data block is never *implicitly* a `String`, because turning bytes into text can allocate and copy, and that work must be visible — not hidden behind a `: String` annotation. Even a contiguous all-`Uint8` block must go through the `String(...)` constructor. Only a string literal and another `String` assign to `String` directly.',
 			src: `s: String = [Uint8(72), Uint8(105)]`,
 			expected: 'not assignable',
+		});
+		expr({
+			p: '`==` on `String` compares by value — byte for byte, not by address (D51). Equal text is equal.',
+			src: `'abc' == 'abc'`,
+			ast: `(== 'abc' 'abc')`,
+			out: [true],
+		});
+		expr({
+			p: 'Strings differing in any byte are not equal.',
+			src: `'abc' == 'abd'`,
+			ast: `(== 'abc' 'abd')`,
+			out: [false],
+		});
+		expr({
+			p: 'Strings of different length are not equal (length is compared first).',
+			src: `'ab' == 'abc'`,
+			ast: `(== 'ab' 'abc')`,
+			out: [false],
+		});
+		expr({
+			p: 'Equality is by content, not identity: a `String` built at runtime equals an identical literal even though they are distinct buffers in memory.',
+			src: `String([Uint8(104), Uint8(105)]) == 'hi'`,
+			ast: `(== (call typeident (data (, (call typeident 104) (call typeident 105)))) 'hi')`,
+			out: [true],
+		});
+		expr({
+			p: '`!=` is the negation of `==` on strings.',
+			src: `'abc' != 'abd'`,
+			ast: `(!= 'abc' 'abd')`,
+			out: [true],
 		});
 		rule({
 			p: '`Bool` for `true`/`false` values.',
@@ -1711,6 +1747,40 @@ a = {
 				ast: '(root (def :runUntil ? (fn (parameter :limit typeident ?) typeident (def @variable :counter ? 0) (>> loop (fn (parameter :i typeident ?) (? (== :counter @variable :limit) break) (= :counter @variable (+ :counter @variable 1)))) (next :counter @variable))) (main (>> (call :runUntil 5) :out)))',
 				out: [5],
 			});
+		});
+	});
+
+	h('Test blocks', ({ ast, rule, testBlock }) => {
+		ast({
+			p: 'A `#test { ... }` block declares a co-located test. It is a `#`-directive (the `#` space — omitted from normal builds) wrapping a block of statements, parsed like `main { ... }`.',
+			src: `#test { 5 == 5 }`,
+			ast: `(test (== 5 5))`,
+		});
+		rule({
+			p: 'A `#test` block is omitted from a normal build: a program carrying one beside a definition compiles and runs as if it were absent. Like `main`, the block is self-terminating (no trailing `;`).',
+			src: `dbl = (n: Int32): Int32 { n * 2 }; #test { dbl(3) == 6 } main { dbl(5) >> out }`,
+			ast: `(root (def :dbl ? (fn @sequence (parameter :n typeident ?) typeident (* :n 2))) (test (== (call :dbl 3) 6)) (main (>> (call :dbl 5) :out)))`,
+			out: [10],
+		});
+		testBlock({
+			p: 'In test mode the `#test` block runs. `ok(cond)` is silent when the condition holds — a passing test emits nothing.',
+			src: `#test { ok(5 == 5) }`,
+			out: [],
+		});
+		testBlock({
+			p: 'A failing `ok` emits an assertion-failure line.',
+			src: `#test { ok(5 == 6) }`,
+			out: ['assertion failed'],
+		});
+		testBlock({
+			p: 'A `#test` block holds many assertions; only the failures surface. `equal(actual, expected)` reports a `!=` diff.',
+			src: `#test { equal(5, 5); equal(1, 2); equal(3, 3); }`,
+			out: ['1 != 2'],
+		});
+		testBlock({
+			p: 'Assertions call any in-scope code — here a co-located definition and `String` equality (D53), formatted by `toString`.',
+			src: `hi = (): String { String([Uint8(72), Uint8(105)]) }; #test { equal(hi(), 'Hi') }`,
+			out: [],
 		});
 	});
 });

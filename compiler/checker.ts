@@ -793,7 +793,10 @@ export function checker({
 					node,
 				);
 		}
-		if (!sym.references?.length && !(sym.flags & Flags.Export))
+		const usedExternally = sym.references?.some(
+			r => r.start < node.start || r.start >= node.end,
+		);
+		if (!usedExternally && !(sym.flags & Flags.Export))
 			error(
 				`"${sym.name}" is declared but never used`,
 				node.label,
@@ -989,6 +992,8 @@ export function checker({
 				return checkFnDef(node);
 			case 'main':
 				return checkEach(node.statements);
+			case 'test':
+				return;
 			case 'data': {
 				const inner = node.children[0];
 				const items =

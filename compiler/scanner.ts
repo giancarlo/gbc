@@ -171,6 +171,14 @@ export function scan(source: string) {
 			case "'":
 				return scanString();
 			case '#':
+				if (
+					current(1) === 't' &&
+					current(2) === 'e' &&
+					current(3) === 's' &&
+					current(4) === 't' &&
+					notIdent(current(5))
+				)
+					return tk('#test', 5);
 				return tk('comment', matchWhile(notEol, 1));
 			case '0':
 				if (la === 'x' || la === 'b') return scanRadixNumber(la);

@@ -74,7 +74,7 @@ export type SymbolMap = {
 	[K in keyof SymbolProp]: BaseSymbol & { kind: K } & SymbolProp[K];
 };
 export type Symbol = SymbolMap[keyof SymbolProp];
-export type Scope = Record<string | symbol, Symbol>;
+export type Scope = Map<string | symbol, Symbol>;
 
 export type SymbolTable = ReturnType<typeof ProgramSymbolTable>;
 export type TypesSymbolTable = ReturnType<typeof TypesSymbolTable>;

@@ -30,10 +30,11 @@ function symbolFlags(flags: number) {
 }
 
 export function ast(node: AstNode): string {
-	const flags =
-		'symbol' in node && node.symbol.flags
-			? symbolFlags(node.symbol.flags as number)
-			: '';
+	const rawFlags =
+		'symbol' in node && node.symbol.flags ? node.symbol.flags : 0;
+	// `@export` is declaration metadata; don't echo it on every reference.
+	const shownFlags = node.kind === 'ident' ? rawFlags & ~Flags.Export : rawFlags;
+	const flags = shownFlags ? symbolFlags(shownFlags) : '';
 	const id = nodeId(node) + (flags ? ` ${flags.join(' ')}` : '');
 
 	if (!('children' in node)) return id;

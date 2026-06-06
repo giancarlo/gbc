@@ -50,10 +50,10 @@ export function parse(
 					if (!stmt)
 						throw api.error('Unexpected token', current());
 					result.push(stmt);
-					if (stmt.kind === 'main') {
+					if (stmt.kind === 'main' || stmt.kind === 'test') {
 						if (current().kind === ';')
 							throw api.error(
-								'";" is not allowed after a `main` block statement',
+								'";" is not allowed after a block statement',
 								current(),
 							);
 						continue;
@@ -234,9 +234,21 @@ export function parse(
 		const isExport = optional('export');
 		const isType = optional('type');
 
-		const expr = isType
-			? typeDefinition(isType)
-			: expectNodeKind(expression(), 'def', 'Expected definition');
+		let expr: Node | undefined;
+		if (isType) expr = typeDefinition(isType);
+		else {
+			const parsed = expression();
+			const found = current();
+			expr = expectNodeKind(
+				parsed,
+				'def',
+				`Expected a definition (\`name = value\`), but got a "${
+					parsed?.kind ?? 'nothing'
+				}" expression (stalled at "${
+					found.kind === 'eof' ? 'end of input' : text(found)
+				}")`,
+			);
+		}
 
 		if (isExport) markExported(expr);
 
@@ -282,6 +294,20 @@ export function parse(
 				const children = parseStatementBlock(expression, '}');
 				return {
 					...token,
+					scope,
+					children,
+					end: expect('}').end,
+					statements: children,
+				};
+			});
+		} else if (token.kind === '#test') {
+			next();
+			expect('{');
+			return symbolTable.withScope(scope => {
+				const children = parseStatementBlock(expression, '}');
+				return {
+					...token,
+					kind: 'test' as const,
 					scope,
 					children,
 					end: expect('}').end,

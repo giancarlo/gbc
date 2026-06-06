@@ -370,6 +370,10 @@ function isFloatType(t: Type): boolean {
 	return t.kind === 'type' && t.family === 'float';
 }
 
+function isStringType(t: Type): boolean {
+	return t.kind === 'type' && t.family === 'string';
+}
+
 function findLiteralOut(value: unknown): string | undefined {
 	if (typeof value === 'string') return 'out_str';
 	if (typeof value === 'boolean') return 'out_bool';
@@ -472,6 +476,7 @@ interface FuncBuilder {
 export function compileWasm(
 	root: Node,
 	externals: Map<string, SymbolMap['function']>,
+	testMode = false,
 ): Uint8Array {
 	const datas: ModuleData[] = [];
 	const enc = new TextEncoder();
@@ -550,6 +555,19 @@ export function compileWasm(
 		name: '__alloc',
 	};
 	funcBuilders.push(allocBuilder);
+	const streqBuilderIdx = funcBuilders.length;
+	const streqBuilder: FuncBuilder = {
+		typeIdx: typeIdx([I32, I32], [I32]),
+		body: [],
+		locals: [I32, I32],
+		paramCount: 2,
+		paramMap: new Map(),
+		returnType: BaseTypes.Bool,
+		callFixups: [],
+		blockDepth: 0,
+		name: '__streq',
+	};
+	funcBuilders.push(streqBuilder);
 	const fnDefBuilderIdx = new Map<GbcSymbol, number>();
 	/**
 	 * Fns with at least one union-typed parameter. They are NOT given an
@@ -1358,6 +1376,16 @@ export function compileWasm(
 		const actualRt = compileExpr(rhs, fn);
 		if (useFloat && !isFloatType(actualRt)) coerceToFloat(actualRt, fn);
 
+		if (
+			(kind === '==' || kind === '!=') &&
+			isStringType(actualLt) &&
+			isStringType(actualRt)
+		) {
+			emitFixedCall(fn, streqBuilderIdx);
+			if (kind === '!=') fn.body.push(OP_I32_EQZ);
+			return BaseTypes.Bool;
+		}
+
 		if (useFloat) {
 			const op =
 				kind === '=='
@@ -1560,8 +1588,33 @@ export function compileWasm(
 		}
 		const t = compileExpr(args, fn);
 		if (t.kind === 'type' && t.family === 'string') return BaseTypes.String;
+		if (t.kind === 'type' && t.family === 'uint' && t.size === 1) {
+			const b = allocLocal(fn, I32);
+			emitStoreLocal(b, fn);
+			emitConst(9, fn);
+			emitFixedCall(fn, allocBuilderIdx);
+			const buf = allocLocal(fn, I32);
+			emitStoreLocal(buf, fn);
+			emitLoadLocal(buf, fn);
+			emitConst(1, fn);
+			fn.body.push(OP_I32_STORE);
+			uleb128(2, fn.body);
+			uleb128(0, fn.body);
+			emitLoadLocal(buf, fn);
+			emitConst(1, fn);
+			fn.body.push(OP_I32_STORE);
+			uleb128(2, fn.body);
+			uleb128(4, fn.body);
+			emitLoadLocal(buf, fn);
+			emitLoadLocal(b, fn);
+			fn.body.push(0x3a);
+			uleb128(0, fn.body);
+			uleb128(8, fn.body);
+			emitLoadLocal(buf, fn);
+			return BaseTypes.String;
+		}
 		throw new Error(
-			`String(...) expects a String or a [String|Uint8] block, got ${t.name}`,
+			`String(...) expects a String, a Uint8, or a [String|Uint8] block, got ${t.name}`,
 		);
 	}
 
@@ -3889,6 +3942,14 @@ export function compileWasm(
 
 	function compileTopLevelStatements(mainBuilder: FuncBuilder) {
 		if (root.kind !== 'root') return;
+		if (testMode) {
+			for (const child of root.children) {
+				if (child.kind !== 'test') continue;
+				for (const stmt of child.statements)
+					compileMainStatement(stmt, mainBuilder);
+			}
+			return;
+		}
 		for (const child of root.children) {
 			if (child.kind === '=' || child.kind === '>>') {
 				compileExpr(child, mainBuilder);
@@ -3966,6 +4027,23 @@ export function compileWasm(
 		allocBuilder.body.push(OP_GLOBAL_SET);
 		uleb128(heapGlobalIdx, allocBuilder.body);
 		const allocFuncIdx = baseFuncIdx + allocBuilderIdx;
+
+		const sq = streqBuilder.body;
+		sq.push(OP_LOCAL_GET, 0, OP_LOCAL_GET, 1, OP_I32_EQ);
+		sq.push(OP_IF, 0x40, OP_I32_CONST, 1, OP_RETURN, OP_END);
+		sq.push(OP_LOCAL_GET, 0, OP_I32_LOAD, 2, 0, OP_LOCAL_SET, 2);
+		sq.push(OP_LOCAL_GET, 1, OP_I32_LOAD, 2, 0, OP_LOCAL_GET, 2, OP_I32_NE);
+		sq.push(OP_IF, 0x40, OP_I32_CONST, 0, OP_RETURN, OP_END);
+		sq.push(OP_I32_CONST, 0, OP_LOCAL_SET, 3);
+		sq.push(OP_LOOP, 0x40);
+		sq.push(OP_LOCAL_GET, 3, OP_LOCAL_GET, 2, OP_I32_GE_S);
+		sq.push(OP_IF, 0x40, OP_I32_CONST, 1, OP_RETURN, OP_END);
+		sq.push(OP_LOCAL_GET, 0, OP_LOCAL_GET, 3, OP_I32_ADD, 0x2d, 0, 8);
+		sq.push(OP_LOCAL_GET, 1, OP_LOCAL_GET, 3, OP_I32_ADD, 0x2d, 0, 8);
+		sq.push(OP_I32_NE);
+		sq.push(OP_IF, 0x40, OP_I32_CONST, 0, OP_RETURN, OP_END);
+		sq.push(OP_LOCAL_GET, 3, OP_I32_CONST, 1, OP_I32_ADD, OP_LOCAL_SET, 3);
+		sq.push(OP_BR, 0, OP_END, 0x00);
 
 	const m: Module = {
 		types,
