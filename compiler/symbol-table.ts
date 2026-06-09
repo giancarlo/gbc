@@ -87,22 +87,25 @@ export const EmptyFunction: SymbolMap['function'] = {
 	flags: Flags.None,
 };
 
-export function SymbolTable<T extends Symbol>(globals?: Record<string, T>) {
+export function SymbolTable<T extends Symbol>(globals?: Record<string, T>, ignoreReferences = false) {
 	const st = BaseSymbolTable<T>();
 
 	if (globals) st.setSymbols(globals);
 
-	return {
+	const table = {
 		...st,
+		ignoreReferences,
 		/** Retrieves a symbol by id and logs a reference at the specified node position. */
 		getWithReference(id: string, node: Position) {
 			const symbol = st.get(id);
-			if (symbol) {
+			if (symbol && !table.ignoreReferences) {
 				(symbol.references ||= []).push(node);
 			}
 			return symbol;
 		},
 	};
+
+	return table;
 }
 
 function literal(value: unknown, type: SymbolMap['type']) {

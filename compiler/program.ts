@@ -149,13 +149,17 @@ export function Program(options?: ProgramOptions) {
 		return { root, scope, errors: api.errors };
 	}
 
-	function compile(src: string) {
+	function compileMode(src: string, testMode = false) {
 		const parsed = parser(src);
 		checker(parsed).run();
 		let bytes: Uint8Array | undefined;
 		if (parsed.errors.length === 0) {
 			try {
-				bytes = compileWasm(withPrelude(parsed.root), stdlibExternals);
+				bytes = compileWasm(
+					withPrelude(parsed.root, testMode),
+					stdlibExternals,
+					testMode,
+				);
 			} catch (e) {
 				if (e instanceof CompilerError) parsed.errors.push(e);
 				else if (e instanceof Error)
@@ -172,12 +176,21 @@ export function Program(options?: ProgramOptions) {
 		};
 	}
 
+	function compile(src: string) {
+		return compileMode(src);
+	}
+
+	function compileTest(src: string) {
+		return compileMode(src, true);
+	}
+
 	function compileAst(root: Node, testMode = false): Uint8Array {
 		return compileWasm(withPrelude(root, testMode), stdlibExternals, testMode);
 	}
 
 	return {
 		compile,
+		compileTest,
 		compileAst,
 		compileTypes,
 		options,

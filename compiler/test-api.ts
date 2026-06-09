@@ -94,15 +94,19 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		pre,
 		src,
 		expected,
+		testMode,
 	}: {
 		p?: string;
 		pre?: string;
 		src: string;
 		expected: string;
+		testMode?: boolean;
 	}) => {
 		const wrapped = pre ? `${pre}; ${src}` : src;
 		const program = Program();
-		const result = program.compile(wrapped);
+		const result = testMode
+			? program.compileTest(wrapped)
+			: program.compile(wrapped);
 		this.assert(
 			result.errors.length > 0,
 			`Expected compile errors for: ${wrapped}`,
@@ -194,13 +198,22 @@ export class SpecApi extends TestApiBase<SpecApi> {
 	 * every assertion holds).
 	 */
 	testBlock = ({ src, out }: { p?: string; src: string; out: OutValue[] }) => {
-		const { ast: rootAst } = this.parse(src);
-		const result = this.runWasm(rootAst, true);
+		const compiled = Program().compileTest(src);
+		if (compiled.errors.length) {
+			this.printErrors(compiled.errors);
+			throw 'Errors found';
+		}
+		this.assert(compiled.bytes);
+		const result = this.runWasmBytes(compiled.bytes);
 		this.equalValues(result.out, out);
 	};
 
 	protected runWasm(root: NodeMap['root'], testMode = false): WasmRunResult {
 		const bytes = Program().compileAst(root, testMode);
+		return this.runWasmBytes(bytes);
+	}
+
+	protected runWasmBytes(bytes: Uint8Array): WasmRunResult {
 		const captures: OutValue[] = [];
 		const module = new WebAssembly.Module(bytes);
 		let memory: WebAssembly.Memory | undefined;

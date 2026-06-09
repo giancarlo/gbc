@@ -53,7 +53,7 @@ const start = program('gbc', () => {
 						`${basename(resolvedFile, ext)}.js`,
 					);
 					mkdirSync(outdir, { recursive: true });
-					writeFileSync(outFile, out.output);
+					writeFileSync(outFile, out.bytes!);
 
 					if (options.types) {
 						const dts = program.compileTypes(out.ast);
@@ -65,7 +65,7 @@ const start = program('gbc', () => {
 						console.log(dts);
 						writeFileSync(dtsFile, dts);
 					}
-				} else console.log(out.output);
+				} else console.log(out.bytes);
 			}
 		}
 		if (hasErrors) process.exitCode = 1;

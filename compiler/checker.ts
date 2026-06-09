@@ -993,7 +993,7 @@ export function checker({
 			case 'main':
 				return checkEach(node.statements);
 			case 'test':
-				return;
+				return checkEach(node.statements);
 			case 'data': {
 				const inner = node.children[0];
 				const items =

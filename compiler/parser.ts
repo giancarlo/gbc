@@ -303,17 +303,23 @@ export function parse(
 		} else if (token.kind === '#test') {
 			next();
 			expect('{');
-			return symbolTable.withScope(scope => {
-				const children = parseStatementBlock(expression, '}');
-				return {
-					...token,
-					kind: 'test' as const,
-					scope,
-					children,
-					end: expect('}').end,
-					statements: children,
-				};
-			});
+			const prev = symbolTable.ignoreReferences;
+			symbolTable.ignoreReferences = true;
+			try {
+				return symbolTable.withScope(scope => {
+					const children = parseStatementBlock(expression, '}');
+					return {
+						...token,
+						kind: 'test' as const,
+						scope,
+						children,
+						end: expect('}').end,
+						statements: children,
+					};
+				});
+			} finally {
+				symbolTable.ignoreReferences = prev;
+			}
 		} else if (token.kind === 'comment') {
 			next();
 			return token;
