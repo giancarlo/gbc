@@ -328,9 +328,28 @@ export function parse(
 		return definition();
 	}
 
+	function validateTestPlacement(children: Node[]) {
+		for (let i = 0; i < children.length; i++) {
+			const child = children[i];
+			if (child?.kind !== 'test') continue;
+			let j = i + 1;
+			while (children[j]?.kind === 'test') j++;
+			const target = children[j];
+			if (target?.kind !== 'def' || target.value.kind !== 'fn')
+				api.pushError(
+					api.error(
+						'`#test` must immediately precede a function definition',
+						child,
+					),
+				);
+		}
+	}
+
+	const children = parseStatementBlock(topStatement, 'eof');
+	validateTestPlacement(children);
 	const root = {
 		...node('root'),
-		children: parseStatementBlock(topStatement, 'eof'),
+		children,
 	};
 	return root;
 }

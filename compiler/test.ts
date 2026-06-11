@@ -1752,50 +1752,55 @@ a = {
 
 	h('Test blocks', ({ ast, compileError, rule, testBlock }) => {
 		ast({
-			p: 'A `#test { ... }` block declares a co-located test. It is a `#`-directive (the `#` space — omitted from normal builds) wrapping a block of statements, parsed like `main { ... }`.',
-			src: `#test { 5 == 5 }`,
-			ast: `(test (== 5 5))`,
+			p: 'A `#test { ... }` block declares a co-located test for the function definition immediately below it. It is a `#`-directive (the `#` space — omitted from normal builds) wrapping a block of statements, parsed like `main { ... }`.',
+			src: `#test { 5 == 5 } target = (): Int32 { 5 }`,
+			ast: `(test (== 5 5)) (def :target ? (fn @sequence typeident 5))`,
 		});
 		rule({
-			p: 'A `#test` block is omitted from a normal build: a program carrying one beside a definition compiles and runs as if it were absent. Like `main`, the block is self-terminating (no trailing `;`).',
-			src: `dbl = (n: Int32): Int32 { n * 2 }; #test { dbl(3) == 6 } main { dbl(5) >> out }`,
-			ast: `(root (def :dbl ? (fn @sequence (parameter :n typeident ?) typeident (* :n 2))) (test (== (call :dbl 3) 6)) (main (>> (call :dbl 5) :out)))`,
+			p: 'A `#test` block is omitted from a normal build: a program carrying one above a function compiles and runs as if the test were absent. Like `main`, the block is self-terminating (no trailing `;`).',
+			src: `#test { ok(true) } export dbl = (n: Int32): Int32 { n * 2 }; main { dbl(5) >> out }`,
+			ast: `(root (test (call :ok :true)) (def @export :dbl ? (fn @sequence (parameter :n typeident ?) typeident (* :n 2))) (main (>> (call :dbl 5) :out)))`,
 			out: [10],
 		});
 		compileError({
 			p: '`#test` blocks are type-checked in normal builds even though they are omitted from normal codegen.',
-			src: `#test { missingHelper(1) } main { 'ok' >> out }`,
+			src: `#test { missingHelper(1) } target = (): Int32 { 1 }`,
 			expected: 'Identifier not defined',
 		});
 		compileError({
 			p: 'Test-mode compilation uses the same semantic checks for `#test` blocks.',
-			src: `#test { missingHelper(1) }`,
+			src: `#test { missingHelper(1) } target = (): Int32 { 1 }`,
 			expected: 'Identifier not defined',
 			testMode: true,
 		});
 		compileError({
+			p: 'A `#test` block must immediately precede the function definition it belongs to.',
+			src: `#test { ok(true) } main { }`,
+			expected: 'must immediately precede a function definition',
+		});
+		compileError({
 			p: 'References from `#test` blocks do not count as production usage. A helper used only by tests must still be exported or used by normal code.',
-			src: `helper = (n: Int32): Int32 { n + 1 }; #test { ok(helper(1) == 2) } main { }`,
+			src: `#test { ok(true) } helper = (n: Int32): Int32 { n + 1 }; main { }`,
 			expected: 'declared but never used',
 		});
 		testBlock({
 			p: 'In test mode the `#test` block runs. `ok(cond)` is silent when the condition holds — a passing test emits nothing.',
-			src: `#test { ok(5 == 5) }`,
+			src: `#test { ok(5 == 5) } export target = (): Int32 { 5 }`,
 			out: [],
 		});
 		testBlock({
 			p: 'A failing `ok` emits an assertion-failure line.',
-			src: `#test { ok(5 == 6) }`,
+			src: `#test { ok(5 == 6) } export target = (): Int32 { 5 }`,
 			out: ['assertion failed'],
 		});
 		testBlock({
 			p: 'A `#test` block holds many assertions; only the failures surface. `equal(actual, expected)` reports a `!=` diff.',
-			src: `#test { equal(5, 5); equal(1, 2); equal(3, 3); }`,
+			src: `#test { equal(5, 5); equal(1, 2); equal(3, 3); } export target = (): Int32 { 5 }`,
 			out: ['1 != 2'],
 		});
 		testBlock({
 			p: 'Assertions call any in-scope code — here a co-located definition and `String` equality (D53), formatted by `toString`.',
-			src: `export hi = (): String { String([Uint8(72), Uint8(105)]) }; #test { equal(hi(), 'Hi') }`,
+			src: `export hi = (): String { String([Uint8(72), Uint8(105)]) }; #test { equal(hi(), 'Hi') } export target = (): Int32 { 5 }`,
 			out: [],
 		});
 	});
