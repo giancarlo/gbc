@@ -92,6 +92,7 @@ export type BaseNodeMap = {
 	| '-'
 	| '*'
 	| '/'
+	| '%'
 	| '|'
 	| '&'
 	| '=='
@@ -103,7 +104,6 @@ export type BaseNodeMap = {
 	| '<:'
 	| ':>'
 	| '^'
-	| 'is'
 >;
 export type NodeMap = MakeNodeMap<BaseNodeMap>;
 export type Node = NodeMap[keyof NodeMap];

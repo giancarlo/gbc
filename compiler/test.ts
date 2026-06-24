@@ -103,7 +103,6 @@ export default spec('Language Reference', ({ h }) => {
 		token('?', 'Conditional Ternary Operator', '?');
 		token(':>', 'Bitwise Shift Right', ':>');
 		token('<:', 'Bitwise Shift Left', '<:');
-		token('is', 'Type test (returns Bool; narrows in truthy branch)', 'is');
 
 		expr({ src: '1 > 0 || 2 > 0', ast: '(|| (> 1 0) (> 2 0))' });
 		expr({
@@ -238,7 +237,6 @@ export default spec('Language Reference', ({ h }) => {
 				'done',
 			);
 			token('export', 'Export module symbol', 'export');
-			token('is', 'Type test operator (narrows in truthy branch)', 'is');
 			token(
 				'loop',
 				'Infinite emitter primitive (yields 0, 1, 2, ...)',
@@ -678,8 +676,8 @@ a = {
 				expr({
 					p: 'Type prefix `Error` is a catch-all for any error variant — it matches by composition, since every error type composes `Error` (D50).',
 					pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { next n > 0 ? n : fail() }`,
-					src: `risky(0) >> Int32 { $ + 1 } >> Error { 99 }`,
-					ast: `(>> (call :risky 0) (fn @sequence (parameter ? typeident ?) (+ $ 1)) (fn @sequence (parameter ? typeident ?) 99))`,
+					src: `risky(0) >> Int32 { $ + 1 } | Error { 99 }`,
+					ast: `(>> (call :risky 0) (| (fn @sequence (parameter ? typeident ?) (+ $ 1)) (fn @sequence (parameter ? typeident ?) 99)))`,
 					out: [99],
 				});
 				expr({
@@ -795,21 +793,20 @@ a = {
 				expr({
 					p: 'Bool dispatch using two literal-type prefixes; pattern-match on truthy/falsy.',
 					pre: `check = (n: Int32): Bool { next n > 0 }`,
-					src: `check(5) >> :true { 'positive' } >> :false { 'non-positive' }`,
-					ast: `(>> (call :check 5) (fn @sequence (parameter ? typeident ?) 'positive') (fn @sequence (parameter ? typeident ?) 'non-positive'))`,
+					src: `check(5) >> :true { 'positive' } | :false { 'non-positive' }`,
+					ast: `(>> (call :check 5) (| (fn @sequence (parameter ? typeident ?) 'positive') (fn @sequence (parameter ? typeident ?) 'non-positive')))`,
 					out: ['positive'],
 				});
-				expr({
-					p: 'Literal-type guard — terminate the chain when truthy.',
-					src: `loop >> :true { break }`,
-					ast: `(>> loop (fn (parameter ? typeident ?) break))`,
-					out: [],
+				compileError({
+					p: 'A literal-type arm matches values of that literal’s base type; `:true` (a `Bool` literal) cannot consume `loop`’s `Int32` stream — the stage does not consume the emitted type.',
+					src: `main { loop >> :true { break } >> out }`,
+					expected: 'does not consume',
 				});
 				expr({
 					p: 'Literal string type-prefix; matches a specific string value.',
 					pre: `mode = (): 'on' | 'off' { next 'on' }`,
-					src: `mode() >> :'on' { 'enabled' } >> :'off' { 'disabled' }`,
-					ast: `(>> (call :mode ?) (fn @sequence (parameter ? typeident ?) 'enabled') (fn @sequence (parameter ? typeident ?) 'disabled'))`,
+					src: `mode() >> :'on' { 'enabled' } | :'off' { 'disabled' }`,
+					ast: `(>> (call :mode ?) (| (fn @sequence (parameter ? typeident ?) 'enabled') (fn @sequence (parameter ? typeident ?) 'disabled')))`,
 					out: ['enabled'],
 				});
 				expr({
@@ -827,6 +824,12 @@ a = {
 					p: 'Parens around a single anonymous slot (`(:T) { body }`) are not allowed — use `:T { body }` (literal) or `T { body }` (named).',
 					src: `main { 5 >> (:Int32) { $ } >> out }`,
 					expected: 'Parens',
+				});
+				compileError({
+					p: 'Exhaustiveness over `Bool`: a `Bool`-typed value is consumed only by both literal arms together; matching `:true` alone leaves `false` unhandled.',
+					pre: `check = (n: Int32): Bool { next n > 0 }`,
+					src: `main { check(5) >> :true { 1 } >> out }`,
+					expected: 'does not consume',
 				});
 			},
 		);
@@ -852,8 +855,8 @@ a = {
 				expr({
 					p: 'Named-slot match on an error type: the whole error binds to `e`; access its structured fields via `e.field` (D50 — errors carry typed fields, not a string id).',
 					pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { next n > 0 ? n : fail() }`,
-					src: `risky(0) >> Int32 { $ } >> (e: Fail) { e.code }`,
-					ast: `(>> (call :risky 0) (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter :e typeident ?) (. :e :code)))`,
+					src: `risky(0) >> Int32 { $ } | (e: Fail) { e.code }`,
+					ast: `(>> (call :risky 0) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter :e typeident ?) (. :e :code))))`,
 					out: [7],
 				});
 				expr({
@@ -1390,19 +1393,6 @@ a = {
 			ast: `(root (def :n typeident 42) (main (>> :n :out)))`,
 			out: [42],
 		});
-		expr({
-			p: '`is` reads the value type the checker assigned. An immutable def takes its value type, not the declared union annotation.',
-			pre: `n: Int32 | String = 42; m: Int32 | String = 'hi'`,
-			src: `{ n is Int32, n is String, m is Int32, m is String }`,
-			ast: `(fn @sequence (, (is :n typeident) (is :n typeident) (is :m typeident) (is :m typeident)))`,
-			out: [true, false, false, true],
-		});
-		rule({
-			p: 'Union-typed parameters narrow per call site via specialization. Calling the same fn with different concrete arms compiles independent bodies; each body sees the narrowed type.',
-			src: `f = (v: Int32 | String) { next(v is Int32, v is String) }; main { f(5) >> out; f('x') >> out; }`,
-			ast: `(root (def :f ? (fn (parameter :v typeident ?) (next (, (is :v typeident) (is :v typeident))))) (main (>> (call :f 5) :out) (>> (call :f 'x') :out)))`,
-			out: [true, false, false, true],
-		});
 		rule({
 			p: 'A `type` declaration creates a named type alias. A bare data block coerces structurally into it (D49): the literal `[ x = 10, y = 20 ]` acquires the `Point` identity by matching its members.',
 			src: `type Point = [ x: Int32, y: Int32 ]; p: Point = [ x = 10, y = 20 ]; main { p.x >> out }`,
@@ -1428,8 +1418,8 @@ a = {
 		});
 		rule({
 			p: 'A chain over a union routes each value to the stage whose type it is-a — discrimination is by nominal type, with no tag written by the user. This is general, not an error feature: any union of named types dispatches the same way.',
-			src: `type Point = [ x: Int32 ]; type Circle = [ r: Int32 ]; mp = (): Point { [ x = 1 ] }; mc = (): Circle { [ r = 9 ] }; shape = (n: Int32): Point | Circle { next n > 0 ? mp() : mc() }; main { shape(0 - 1) >> Point { 1 } >> Circle { 2 } >> out }`,
-			ast: `(root (type :Point (data (propdef :x typeident ?))) (type :Circle (data (propdef :r typeident ?))) (def :mp ? (fn @sequence typeident (data (propdef :x ? 1)))) (def :mc ? (fn @sequence typeident (data (propdef :r ? 9)))) (def :shape ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :mp ?) (call :mc ?))))) (main (>> (call :shape (- 0 1)) (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 2) :out)))`,
+			src: `type Point = [ x: Int32 ]; type Circle = [ r: Int32 ]; mp = (): Point { [ x = 1 ] }; mc = (): Circle { [ r = 9 ] }; shape = (n: Int32): Point | Circle { next n > 0 ? mp() : mc() }; main { shape(0 - 1) >> Point { 1 } | Circle { 2 } >> out }`,
+			ast: `(root (type :Point (data (propdef :x typeident ?))) (type :Circle (data (propdef :r typeident ?))) (def :mp ? (fn @sequence typeident (data (propdef :x ? 1)))) (def :mc ? (fn @sequence typeident (data (propdef :r ? 9)))) (def :shape ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :mp ?) (call :mc ?))))) (main (>> (call :shape (- 0 1)) (| (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 2)) :out)))`,
 			out: [2],
 		});
 		rule({
@@ -1454,26 +1444,103 @@ a = {
 		});
 		rule({
 			p: 'Errors are values. A function that may fail returns a union of its success type and the error type — `T | NotFound`, or the catch-all `T | Error`. The error variant is produced by an ordinary constructor call, with no exception machinery, and travels along the chain like any other value.',
-			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } >> NotFound { 0 } >> out }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 5) (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0) :out)))`,
+			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } | NotFound { 0 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 5) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out)))`,
 			out: [5],
 		});
 		rule({
 			p: 'A chain discriminates errors by type: each typed stage `>> T { … }` consumes the variant whose type the value *is-a*, and the success variant flows to its own stage. Two error types with identical structure are told apart by nominal identity, not by shape.',
-			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; fb = (): Forbidden { [ resource = 'y' ] }; pick = (n: Int32): Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(0 - 1) >> Int32 { 1 } >> NotFound { 2 } >> Forbidden { 3 } >> out }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (type :Forbidden (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :fb ? (fn @sequence typeident (data (propdef :resource ? 'y')))) (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :nf ?) (call :fb ?))))) (main (>> (call :pick (- 0 1)) (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 2) (fn @sequence (parameter ? typeident ?) 3) :out)))`,
+			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; fb = (): Forbidden { [ resource = 'y' ] }; pick = (n: Int32): Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(0 - 1) >> Int32 { 1 } | NotFound { 2 } | Forbidden { 3 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (type :Forbidden (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :fb ? (fn @sequence typeident (data (propdef :resource ? 'y')))) (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :nf ?) (call :fb ?))))) (main (>> (call :pick (- 0 1)) (| (| (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 2)) (fn @sequence (parameter ? typeident ?) 3)) :out)))`,
 			out: [3],
 		});
 		rule({
 			p: 'A `>> Error { … }` stage is a catch-all: since every error type composes `Error`, it matches *any* error variant. A chain matches the first stage a value is-a, so specific handlers must precede the `Error` catch-all.',
-			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(0) >> Int32 { 1 } >> Error { 9 } >> out }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 0) (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 9) :out)))`,
+			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(0) >> Int32 { 1 } | Error { 9 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 0) (| (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 9)) :out)))`,
 			out: [9],
 		});
 		compileError({
 			p: 'Errors obey nominal identity (D49): two error types with the same fields stay distinct. A `Forbidden` is not a `NotFound`, so a value of one is never assignable to the other — the very property that lets a chain tell them apart.',
 			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; fb = (): Forbidden { [ resource = 'y' ] }; n: NotFound = fb();`,
 			expected: 'not assignable',
+		});
+		compileError({
+			p: 'Exhaustiveness: every stage must consume the full type the previous stage emits. Handling only the success arm leaves the error variant `NotFound` unconsumed — a compile error, not a value that silently slips through.',
+			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } >> out }`,
+			expected: 'does not consume',
+		});
+		compileError({
+			p: 'A `|`-dispatch must cover the whole union: arms for `Int32` and `NotFound` but not `Forbidden` leave `Forbidden` unconsumed.',
+			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; fb = (): Forbidden { [ resource = 'y' ] }; pick = (n: Int32): Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(1) >> Int32 { 1 } | NotFound { 2 } >> out }`,
+			expected: 'does not consume "Forbidden"',
+		});
+	});
+
+	h('Arithmetic safety (D31)', ({ expr, rule, compileError }) => {
+		expr({
+			p: 'A known non-zero literal divisor narrows integer `/` to plain `Int32` — no `DivByZero` to handle (const-fold narrow).',
+			pre: `half = (n: Int32): Int32 { n / 2 }`,
+			src: `half(10)`,
+			ast: `(call :half 10)`,
+			out: [5],
+		});
+		compileError({
+			p: 'Dividing by a literal zero is a compile error.',
+			src: `main { 10 / 0 >> out }`,
+			expected: 'zero',
+		});
+		compileError({
+			p: 'A runtime divisor makes integer `/` return `Int32 | DivByZero`; returning it where `Int32` is declared is an error — the failure must be handled.',
+			src: `bad = (n: Int32): Int32 { 10 / n }; main { bad(2) >> out }`,
+			expected: 'not assignable',
+		});
+		rule({
+			p: 'A runtime division is `Int32 | DivByZero`, handled by dispatch: the success quotient and the divide-by-zero error are two arms. `d(0)` produces the error value, caught by the `DivByZero` arm.',
+			src: `d = (n: Int32): Int32 | DivByZero { 10 / n }; main { d(2) >> Int32 { $ } | DivByZero { 0 } >> out; d(0) >> Int32 { $ } | DivByZero { 0 } >> out; }`,
+			ast: `(root (def :d ? (fn @sequence (parameter :n typeident ?) typeident (/ 10 :n))) (main (>> (call :d 2) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out) (>> (call :d 0) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out)))`,
+			out: [5, 0],
+		});
+		rule({
+			p: 'A return-typed function may collapse its union in-body: the chain ends in a dispatch whose value is the return; the `DivByZero` arm makes it total.',
+			src: `recip = (n: Int32): Int32 { 10 / n >> Int32 { $ } | DivByZero { 0 } }; main { recip(5) >> out; recip(0) >> out; }`,
+			ast: `(root (def :recip ? (fn @sequence (parameter :n typeident ?) typeident (>> (/ 10 :n) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0))))) (main (>> (call :recip 5) :out) (>> (call :recip 0) :out)))`,
+			out: [2, 0],
+		});
+		expr({
+			p: 'Float division is unchanged — `Float64`, no error union (IEEE).',
+			pre: `fdiv = (a: Float64, b: Float64): Float64 { a / b }`,
+			src: `fdiv(7.5, 2.5)`,
+			ast: `(call :fdiv (, 7.5 2.5))`,
+			out: [3],
+		});
+		compileError({
+			p: 'No unconsumed value: in a statement body, a bare value-expression must be emitted (`next`), bound, or piped to a consumer — leaving it stranded is a compile error.',
+			src: `f = (n: Int32): Int32 { n + 1; next 2; }; main { f(3) >> out }`,
+			expected: 'not consumed',
+		});
+		expr({
+			p: 'Integer modulo `%` (i32.rem_s). A known non-zero literal divisor narrows to plain `Int32` like `/`; `43 % 10` is `3`, distinguishing remainder from division.',
+			pre: `mod10 = (n: Int32): Int32 { n % 10 }`,
+			src: `mod10(43)`,
+			ast: `(call :mod10 43)`,
+			out: [3],
+		});
+		compileError({
+			p: 'Modulo by a literal zero is a compile error, exactly like `/` (the divisor is statically zero).',
+			src: `main { 10 % 0 >> out }`,
+			expected: 'zero',
+		});
+		compileError({
+			p: 'Modulo requires integer operands — core WASM has no float remainder op, so float `%` is rejected rather than silently mis-compiled.',
+			src: `main { 7.5 % 2.5 >> out }`,
+			expected: 'integer operands',
+		});
+		rule({
+			p: 'A runtime `%` is `Int32 | DivByZero` and reuses the D31 zero-check: `m(3)` is the remainder `1`; `m(0)` traps-free produces the error value, caught by the `DivByZero` arm.',
+			src: `m = (n: Int32): Int32 | DivByZero { 10 % n }; main { m(3) >> Int32 { $ } | DivByZero { 99 } >> out; m(0) >> Int32 { $ } | DivByZero { 99 } >> out; }`,
+			ast: `(root (def :m ? (fn @sequence (parameter :n typeident ?) typeident (% 10 :n))) (main (>> (call :m 3) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 99)) :out) (>> (call :m 0) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 99)) :out)))`,
+			out: [1, 99],
 		});
 	});
 
@@ -1685,7 +1752,7 @@ a = {
 
 	h('Modules', ({ p }) => {
 		p(
-			`A module is a single source file. Top-level declarations may be marked with the \`export\` modifier to expose them to other modules. The standard library is a global prelude — its symbols (\`out\`, \`each\`, \`error\`, …) are in scope unqualified, no import needed. The \`@\` operator resolves a member of an external module: \`@module.name\`.`,
+			`A module is a single source file. Top-level declarations may be marked with the \`export\` modifier to expose them to other modules. The standard library is a global prelude — its symbols (\`out\`, \`each\`, …) are in scope unqualified, no import needed. The \`@\` operator resolves a member of an external module: \`@module.name\`.`,
 			({ rule, ast }) => {
 				ast({
 					src: `export helper = (x: Int32) { x * 2 }`,
@@ -1747,6 +1814,12 @@ a = {
 				ast: '(root (def :runUntil ? (fn (parameter :limit typeident ?) typeident (def @variable :counter ? 0) (>> loop (fn (parameter :i typeident ?) (? (== :counter @variable :limit) break) (= :counter @variable (+ :counter @variable 1)))) (next :counter @variable))) (main (>> (call :runUntil 5) :out)))',
 				out: [5],
 			});
+			rule({
+				p: '`break` stops only the *innermost* chain. An outer `loop` runs a stage that itself contains an inner `loop` chain; the inner `break` ends the inner chain and the outer loop continues to its next value, so the accumulator advances once per inner pass, twice over.',
+				src: `nestedBreak = (): Int32 { total: var = 0; loop >> (i: Int32) { i >= 2 ? break; loop >> (j: Int32) { j >= 2 ? break; total = total + 1; }; }; next total; }; main { nestedBreak() >> out }`,
+				ast: `(root (def :nestedBreak ? (fn typeident (def @variable :total ? 0) (>> loop (fn (parameter :i typeident ?) (? (>= :i 2) break) (>> loop (fn (parameter :j typeident ?) (? (>= :j 2) break) (= :total @variable (+ :total @variable 1)))))) (next :total @variable))) (main (>> (call :nestedBreak ?) :out)))`,
+				out: [4],
+			});
 		});
 	});
 
@@ -1800,7 +1873,7 @@ a = {
 		});
 		testBlock({
 			p: 'Assertions call any in-scope code — here a co-located definition and `String` equality (D53), formatted by `toString`.',
-			src: `export hi = (): String { String([Uint8(72), Uint8(105)]) }; #test { equal(hi(), 'Hi') } export target = (): Int32 { 5 }`,
+			src: `export hi = (): String { String([Uint8(72), Uint8(105)]) }; #test { equal(hi(), 'Hi') } export target = (): Int32 { 5 };`,
 			out: [],
 		});
 	});

@@ -223,7 +223,9 @@ Typed params use the named form `(a: T)` / `(a, b)` (D16). There is no `($: T)` 
 
 - \+ P1: one typed-arg syntax; `($: T)` would duplicate `(name: T)`
 
-## D21: `is` operator for type tests + narrowing
+## D21: `is` operator for type tests + narrowing — RETIRED
+
+> **Retired by D55** — the `is` operator and flow-narrowing are removed. Type dispatch (`v >> T { … } | … `) is the sole union-discrimination mechanism; the truthy-branch narrowing below was never implemented and is redundant with dispatch. The body is kept for reference.
 
 `value is Type` is a binary operator returning `Bool`. In the truthy branch of a conditional, the operand's type is narrowed to the tested type.
 
@@ -281,6 +283,8 @@ Errors travel only along `>>` chains — no stack unwinding. The compiler enforc
 - × Hidden auto-propagation through `(T)` stages without a marker — type-signature dishonesty; replaced with explicit `catch` modifier per D25
 
 ## D24: Built-in `Error` type with auto-filled id and stack
+
+> **Superseded by D50** — errors are now nominal types composed from a minimal `Error = [ stack: Frame ]` base, discriminated by type, with no `id`/`message` string. The auto-filled-`id` model below is retired and kept for reference.
 
 `Error` is a built-in type with shape:
 
@@ -390,6 +394,8 @@ Supersedes D11's "no required delimiters" parenthetical.
 
 ## D31: Arithmetic safety — Int division returns `T | Error`; Float follows IEEE
 
+> **Revised by D50** — the error variant is now a nominal error type (`type DivByZero = Error`), not the string-keyed `Error('div-by-zero')` shown below; the union reads `Int32 | DivByZero`. The const-folding narrow rules carry forward unchanged.
+
 Integer division (`/`) and modulo (`%`) over integer operands return `Int32 | Error` (or analogous union for other Int widths). The Error constructor follows D24 — `Error('div-by-zero')`.
 
 Float division and modulo over float operands return the float type unchanged; IEEE semantics apply — `infinity`, `-infinity`, `nan` are legitimate Float values, not Error.
@@ -440,6 +446,8 @@ Recursive functions written tail-recursively never stack-overflow, regardless of
 - × Allowing arbitrary mixed-kind — loses transparency; harder to read
 
 ## D34: `error` is a built-in function producing an Error value
+
+> **Superseded by D50** — the `error` intrinsic is retired (it is no longer in the stdlib). Errors are constructed by ordinary factory functions returning a nominal error type (e.g. `notFound = (r: String): NotFound { [ resource = r ] }`). The body below is kept for reference.
 
 `error: (code: String): Error` is a built-in function always in scope. The name `error` is reserved — user code cannot define a local or top-level binding named `error`.
 
@@ -798,6 +806,46 @@ Equality is over the **raw UTF-8 bytes** — no Unicode normalization (precompos
 - − O(n) in length for distinct buffers (unavoidable — core WASM has no `memcmp`; word-at-a-time compare is a future perf tweak)
 - × Reference/identity equality (JS objects; Zig's raw slice `==`) — wrong for text; equal strings at different addresses must compare equal
 - × Normalized-by-default — hidden Unicode-table cost behind `==` (P3/P6); deferred to an explicit op
+
+## D54: Integer divide-by-zero is a value, not a trap (affirms D31)
+
+> **Representation per D56** — the on-zero codegen builds a `DivByZero` *value*; how that value is laid out at runtime (the value plus a separate hidden tag, not the original in-band high-bit scheme) is specified by D56.
+
+`a / b` and `a % b` over integers return `Int32 | DivByZero` (D31). On a zero divisor the codegen builds a `DivByZero` value rather than letting WASM `i32.div_s` trap. Considered and rejected: trapping like WASM/Rust/Go, defining `x / 0 = 0`, and an `@.unwrap` escape.
+
+- \+ gbc has no panic (D23); the value channel is its only failure channel. Rust/Go can panic because they *have* a recoverable panic — but a WASM trap is **uncatchable and terminal** (throws to the host as a `RuntimeError`; no in-module `recover`). So a trapping `/` makes every divide-by-zero unrecoverable program death, strictly worse than Rust/Go. Errors-as-values is the only recovery mechanism on WASM.
+- \+ Perf is a non-issue: integer division is ~20–40 cycles; a `divisor == 0` check is one perfectly-predicted branch, and `div_s` already checks for zero to trap. **Const-fold narrow** removes even that for a known non-zero literal divisor (→ plain `Int32`); literal `0` → compile error; only a genuinely-runtime divisor carries the union.
+- × Trap like WASM/Rust/Go — reintroduces panic (rejected) and is uncatchable on WASM. If ever wanted, the clean form is Rust's: trapping `/` + opt-in `safeDiv → Int32 | DivByZero`.
+- × `define x / 0 = 0` (Pony/Lean) — still needs the branch (`div_s` traps) and silently hides the bug.
+- × `@.unwrap` escape — a trap in disguise (uncatchable on WASM); unneeded, since the union is handled by dispatch, not proven away.
+
+## D55: Type dispatch is the sole union-discrimination mechanism — no `is`/flow-narrowing
+
+A union is discriminated by dispatching it through a `|` arm set (`v >> Int32 { … } | String { … }`), which narrows `$` per arm (monomorphization). A pipe is an expression, so this works in value position too — it reaches every place a union must be narrowed. There is **no `is`-operator flow-narrowing** (narrowing a binding inside a `?:` branch).
+
+- \+ P1 — one mechanism. The only syntax flow-narrowing would touch is `?:`, and `v is T ? a : b` is exactly `v >> T { a } | <rest> { b }`. Redundant.
+- \+ Dispatch is strictly more capable: it's exhaustive and handles N variants directly; an `is`-ternary narrows only the true branch, leaving the rest a union for >2 variants (forcing nested ternaries).
+- \+ Flow-narrowing would not have helped D31: a validated divisor needs *value*-predicate narrowing (`b != 0`), not a type test (refinement typing gbc lacks); the div *result* is dispatched like any other union.
+- × `is` + flow-narrowing — a second discrimination path beside dispatch; violates P1, adds checker condition-analysis, and is strictly weaker.
+- Consequence: the existing `is` operator (a `Bool` type-test with no narrowing) is redundant and slated for removal.
+
+## D56: Union representation — value plus a separate hidden tag (no in-band bit-stealing)
+
+A materialized union is two physically separate parts: the **value** and a **hidden tag** (the discriminant). The value occupies a slot sized to the union's largest member; the tag is compiler-owned metadata stored separately — its own local for a symbol, its own region of the block for a data field — never packed into the value's bits and never interleaved into the value memory. The representation is **uniform across symbols and data-block fields**: `a = 1 / b` and a `[ …, 1 / b, … ]` field store identically. The tag is never user-visible — no syntax reads or writes it, like a vtable. And when a union is produced and **dispatched in place** without being bound or stored, the compiler fuses producer into dispatch and materializes **neither value nor tag**; the pair exists only when the union escapes into a binding or a data block.
+
+- \+ Correctness — the value keeps its full natural range. The original scheme stole bit 31 of the value for the tag, so any negative `Int32` (`d(-3) → -3 = 0xFFFFFFFD`) was misread as an error. Disjoint storage removes the collision: an `Int32` payload is its plain 32 bits, a `Float64` its 8 bytes.
+- \+ Flat memory preserved where it can be — non-union data (`[Int32]`, `String` bytes, scalar tuples) stays a faithful byte image; only the *separate* tag region is added for union fields. The "block is its memory image" invariant holds for products/scalars; it was never possible for sums (a sum needs a discriminant — information-theoretic).
+- \+ Consistency forces it — a local and a data-block field are both storage; there is no principled line between them (no language draws one: Rust has both `let x: Result` and `struct { x: Result }`, same layout). Allowing union variables but forbidding union fields is incoherent, so materialization must be uniform.
+- \+ Hidden ⇒ sound — producer writes the tag, dispatch reads it, no surface op can forge a tag/value mismatch, so a union value's tag can never lie about its payload (C's manual tagged union has the same layout with no such guarantee; the guarantee is the reason to have a union type).
+- \+ Zero cost when transient — the common produce-and-dispatch path materializes nothing; cost is paid only on escape (bind/store).
+- × In-band bit-stealing (`0x80000000 | id` in the value's high bits — the original codegen) — collides with full-range payloads; `Int32` has no spare bit and no niche, so there is nowhere inside the value to put a tag. This is the bug D56 fixes.
+- × Inline `{tag, value}` per slot — correct, but interleaves tags into the value region, breaking the flat-image invariant for the surrounding block.
+- × Fat pointer (`{ptr, tag}`, value out-of-line) — a pointer hop and a separate allocation for no benefit on inline scalars (the value already fits the slot). Right tool only for large/variable/shared payloads or uniform-width references (Go interfaces), not gbc's small values.
+- × Forbid materialized unions (dispatch-only; no union variables or fields) — would keep every block a pure value image, but is the incoherent split above once union variables are allowed.
+- × Niche optimization (zero tag bits via an impossible payload value) — valid for members with a niche (non-null pointer, etc.) and may apply per-union later; inapplicable to `Int32 | DivByZero` (`Int32` has no spare value, `DivByZero` no payload to hide a marker in).
+- Supersedes the (undocumented) bit-stealing codegen behind D31/D54. The div/mod *value* (D54) and the type-level union + const-fold narrow (D31) carry forward unchanged; only the runtime layout changes.
+- Prerequisite — data-block layout must move from a single uniform `itemSize` (current; truncates mixed sizes) to **per-field offsets/sizes**, so each slot is sized to its field's largest member. Needed for heterogeneous tuples regardless of unions.
+- Implementation — `driveDispatch` reads the tag slot (not bit 31); construction writes value and tag separately; a fused path is added for produce-and-dispatch.
 
 ---
 

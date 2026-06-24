@@ -172,6 +172,7 @@ export function compile(node: Node): string {
 		case '&':
 		case '/':
 		case '*':
+		case '%':
 		case '>':
 		case '<':
 		case '>=':
@@ -196,8 +197,6 @@ export function compile(node: Node): string {
 			})`;
 		case 'propdef':
 			return node.value ? compile(node.value) : '';
-		case 'is':
-			return `(${compile(node.children[0])} instanceof ${compile(node.children[1])})`;
 		case 'typeident':
 			return text(node);
 		case 'external':

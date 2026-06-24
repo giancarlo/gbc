@@ -8,7 +8,6 @@ export const keywords = [
 	'done',
 	'export',
 	'external',
-	'is',
 	'loop',
 	'main',
 	'next',
@@ -156,6 +155,7 @@ export function scan(source: string) {
 			case '?':
 			case '*':
 			case '/':
+			case '%':
 			case '~':
 			case '(':
 			case ')':

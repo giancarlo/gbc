@@ -365,19 +365,6 @@ export function parseExpression(
 			'>=': infixOperator(9),
 			'<:': infixOperator(10),
 			':>': infixOperator(10),
-			is: {
-				precedence: 9,
-				infix(tk, left) {
-					const right = expectType();
-					return {
-						...tk,
-						kind: 'is',
-						children: [left, right],
-						start: left.start,
-						end: right.end,
-					};
-				},
-			},
 			'+': {
 				precedence: 11,
 				infix: infix(11),
@@ -410,6 +397,7 @@ export function parseExpression(
 			},
 			'/': infixOperator(12),
 			'*': infixOperator(12),
+			'%': infixOperator(12),
 			comment: { prefix: n => n },
 			'@': {
 				prefix(tk) {

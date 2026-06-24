@@ -26,6 +26,13 @@ declare class TextEncoder {
 
 // WASM value type codes
 const I32 = 0x7f;
+
+// D31: the stdlib `DivByZero` type, injected at program init so integer
+// division codegen can build and tag the error value.
+let divByZeroType: Type | undefined;
+export function setDivByZeroType(t: Type | undefined): void {
+	divByZeroType = t;
+}
 const I64 = 0x7e;
 const F32 = 0x7d;
 const F64 = 0x7c;
@@ -84,6 +91,7 @@ const OP_I32_ADD = 0x6a;
 const OP_I32_SUB = 0x6b;
 const OP_I32_MUL = 0x6c;
 const OP_I32_DIV_S = 0x6d;
+const OP_I32_REM_S = 0x6f;
 const OP_I32_AND = 0x71;
 
 const SCALAR_CTORS: Record<string, SymbolMap['type']> = {
@@ -344,21 +352,43 @@ function gbcToWasm(type: Type): number {
 	}
 }
 
+function unionPayloadWasm(t: Type): number {
+	if (t.kind !== 'type' || t.family !== 'union') return I32;
+	let maxSize = 0;
+	for (const m of t.members)
+		if (m.kind === 'type' && m.size > maxSize) maxSize = m.size;
+	return maxSize > 4 ? I64 : I32;
+}
+
+function wasmTypesOf(t: Type): number[] {
+	if (isUnionType(t)) return [unionPayloadWasm(t), I32];
+	if (t.kind === 'type' && t.family === 'void') return [];
+	return [gbcToWasm(t)];
+}
+
+function isUnionType(t: Type): boolean {
+	if (t.kind !== 'type' || t.family !== 'union') return false;
+	if (
+		t.members.length > 0 &&
+		t.members.every(m => m.kind === 'type' && m.family === 'literal')
+	)
+		return false;
+	return true;
+}
+
 function fnSignature(fn: SymbolMap['function']): {
 	params: number[];
 	results: number[];
 } {
-	const params = (fn.parameters ?? []).map(p => {
+	const params = (fn.parameters ?? []).flatMap(p => {
 		if (!p.type)
 			throw new Error(
 				`Function "${fn.name ?? '?'}" parameter has no type`,
 			);
-		return gbcToWasm(p.type);
+		return wasmTypesOf(p.type);
 	});
 	const ret = fn.returnType;
-	const results: number[] = [];
-	if (ret && !(ret.kind === 'type' && ret.family === 'void'))
-		results.push(gbcToWasm(ret));
+	const results: number[] = ret ? wasmTypesOf(ret) : [];
 	return { params, results };
 }
 
@@ -374,79 +404,12 @@ function isStringType(t: Type): boolean {
 	return t.kind === 'type' && t.family === 'string';
 }
 
-function findLiteralOut(value: unknown): string | undefined {
-	if (typeof value === 'string') return 'out_str';
-	if (typeof value === 'boolean') return 'out_bool';
-	if (typeof value === 'number')
-		return Number.isInteger(value) ? 'out_i32' : 'out_f64';
-	return undefined;
-}
-
 function composes(m: Type, target: Type): boolean {
 	return m === target || !!m.components?.some(c => composes(c, target));
 }
 
 function namedData(t: Type): boolean {
 	return t.kind === 'type' && t.family === 'data' && t.name !== '__data';
-}
-
-function findUnionOut(
-	t: SymbolMap['type'] & { family: 'union' },
-	externals: Map<string, SymbolMap['function']>,
-): string | undefined {
-	const nonError = t.members.filter(
-		m => m.kind === 'type' && !namedData(m),
-	);
-	for (const m of nonError) {
-		const r = findOutExternal(m, externals);
-		if (r) return r;
-	}
-	for (const m of t.members) {
-		const r = findOutExternal(m, externals);
-		if (r) return r;
-	}
-	return undefined;
-}
-
-function findOutByShape(
-	t: SymbolMap['type'],
-	externals: Map<string, SymbolMap['function']>,
-): string | undefined {
-	for (const [name, sym] of externals) {
-		if (!name.startsWith('out_')) continue;
-		const param = sym.parameters?.[0]?.type;
-		if (
-			param &&
-			param.kind === 'type' &&
-			param.family === t.family &&
-			param.size === t.size
-		)
-			return name;
-	}
-	for (const [name, sym] of externals) {
-		if (!name.startsWith('out_')) continue;
-		const param = sym.parameters?.[0]?.type;
-		if (param && param.kind === 'type' && param.family === t.family)
-			return name;
-	}
-	return undefined;
-}
-
-function findOutExternal(
-	t: Type,
-	externals: Map<string, SymbolMap['function']>,
-): string | undefined {
-	if (t.kind !== 'type')
-		throw new Error(`Cannot @.out value of kind ${t.kind}`);
-	if (t.family === 'fn' || t.family === 'void') return undefined;
-	if (t.family === 'literal') {
-		const lit = findLiteralOut(t.value);
-		if (lit) return lit;
-	}
-	if (t.family === 'union') return findUnionOut(t, externals);
-	const byShape = findOutByShape(t, externals);
-	if (byShape) return byShape;
-	throw new Error(`No host external accepts type ${t.name}`);
 }
 
 interface Fusion {
@@ -467,6 +430,7 @@ interface FuncBuilder {
 	fusion?: Fusion;
 	/** Local index holding the current pipe-stage input value (`$`). */
 	dollarLocal?: number;
+	dollarTagLocal?: number;
 	/** Type of `$` in the current pipe-stage scope. */
 	dollarType?: Type;
 	/** Block depth that `done` should branch to (inside inline-emit). */
@@ -475,7 +439,6 @@ interface FuncBuilder {
 
 export function compileWasm(
 	root: Node,
-	externals: Map<string, SymbolMap['function']>,
 	testMode = false,
 ): Uint8Array {
 	const datas: ModuleData[] = [];
@@ -623,7 +586,7 @@ export function compileWasm(
 	}
 
 	function inferArithType(
-		node: NodeMap['+' | '-' | '*' | '/'],
+		node: NodeMap['+' | '-' | '*' | '/' | '%'],
 		fn?: FuncBuilder,
 	): Type {
 		const lt = inferType(node.children[0], fn);
@@ -719,6 +682,7 @@ export function compileWasm(
 			case '-':
 			case '*':
 			case '/':
+			case '%':
 				return inferArithType(node, fn);
 			case '|':
 			case '&':
@@ -813,6 +777,56 @@ export function compileWasm(
 		if (isIntType(have)) fn.body.push(OP_F64_CONVERT_I32_S);
 	}
 
+	const memberTagMap = new Map<string, number>();
+	function memberTag(t: Type): number {
+		if (t.kind !== 'type') return 0;
+		const key = t.family + '#' + (t.name ?? '');
+		let id = memberTagMap.get(key);
+		if (id === undefined) {
+			id = memberTagMap.size + 1;
+			memberTagMap.set(key, id);
+		}
+		return id;
+	}
+
+	function unionTagOf(union: Type, have: Type): number {
+		if (
+			union.kind === 'type' &&
+			union.family === 'union' &&
+			have.kind === 'type'
+		) {
+			for (const m of union.members)
+				if (
+					m.kind === 'type' &&
+					m.family === have.family &&
+					m.name === have.name
+				)
+					return memberTag(m);
+			for (const m of union.members)
+				if (m.kind === 'type' && composes(have, m)) return memberTag(m);
+		}
+		return memberTag(have);
+	}
+
+	function matchingTags(union: Type, dt: Type): number[] {
+		if (union.kind !== 'type' || union.family !== 'union') return [];
+		const tags: number[] = [];
+		union.members.forEach(m => {
+			if (m.kind !== 'type') return;
+			if (
+				composes(m, dt) ||
+				(dt.kind === 'type' && m.family === dt.family && m.name === dt.name)
+			)
+				tags.push(memberTag(m));
+		});
+		return tags;
+	}
+
+	function coerceToUnion(have: Type, union: Type, fn: FuncBuilder) {
+		fn.body.push(OP_I32_CONST);
+		sleb128(unionTagOf(union, have), fn.body);
+	}
+
 	function compileString(node: NodeMap['string'], fn: FuncBuilder): Type {
 		const raw = text(node);
 		const decoded = decodeEscapes(raw.slice(1, -1));
@@ -876,6 +890,14 @@ export function compileWasm(
 		if (fn.dollarLocal !== undefined) {
 			fn.body.push(OP_LOCAL_GET);
 			uleb128(fn.dollarLocal, fn.body);
+			if (
+				fn.dollarTagLocal !== undefined &&
+				fn.dollarType &&
+				isUnionType(fn.dollarType)
+			) {
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(fn.dollarTagLocal, fn.body);
+			}
 			return fn.dollarType ?? BaseTypes.Int32;
 		}
 		fn.body.push(OP_I32_CONST);
@@ -1031,27 +1053,6 @@ export function compileWasm(
 		return lt;
 	}
 
-	function compileIs(node: NodeMap['is'], fn: FuncBuilder): Type {
-		const lhs = node.children[0];
-		const rhs = node.children[1];
-		const valueType = inferType(lhs, fn);
-		const testType =
-			rhs.kind === 'typeident' ? rhs.symbol : BaseTypes.Unknown;
-		const lhsType = compileExpr(lhs, fn);
-		if (
-			hasRuntimeValue(lhsType)
-		)
-			fn.body.push(OP_DROP);
-		const matches =
-			valueType.kind === 'type' &&
-			testType.kind === 'type' &&
-			valueType.family === testType.family &&
-			valueType.size === testType.size;
-		fn.body.push(OP_I32_CONST);
-		sleb128(matches ? 1 : 0, fn.body);
-		return BaseTypes.Bool;
-	}
-
 	function unionOfTypes(a: Type, b: Type): Type {
 		if (a.kind !== 'type' || b.kind !== 'type') return a;
 		if (a === b) return a;
@@ -1146,6 +1147,31 @@ export function compileWasm(
 			: isBottom(elseBranch)
 				? thenType
 				: unionOfTypes(thenType, elseType);
+		if (isUnionType(effective)) {
+			const payloadLocal = allocLocal(fn, unionPayloadWasm(effective));
+			const tagLocal = allocLocal(fn, I32);
+			const emitBranch = (branch: Node) => {
+				const t = compileExpr(branch, fn);
+				if (isBottom(branch)) return;
+				if (!isUnionType(t)) coerceToUnion(t, effective, fn);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(tagLocal, fn.body);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(payloadLocal, fn.body);
+			};
+			fn.body.push(0x40);
+			fn.blockDepth++;
+			emitBranch(thenBranch);
+			fn.body.push(OP_ELSE);
+			emitBranch(elseBranch);
+			fn.body.push(OP_END);
+			fn.blockDepth--;
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(payloadLocal, fn.body);
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(tagLocal, fn.body);
+			return effective;
+		}
 		const blockType =
 			hasRuntimeValue(effective)
 				? gbcToWasm(effective)
@@ -1252,6 +1278,7 @@ export function compileWasm(
 			case '-':
 			case '*':
 			case '/':
+			case '%':
 				return compileArith(node, fn);
 			case 'negate':
 				return compileNegate(node, fn);
@@ -1288,8 +1315,6 @@ export function compileWasm(
 					node.children[1],
 					fn,
 				);
-			case 'is':
-				return compileIs(node, fn);
 			case '?':
 				return compileTernary(node, fn);
 			case '>>':
@@ -1319,7 +1344,12 @@ export function compileWasm(
 	}
 
 	function compileArith(
-		node: NodeMap['+'] | NodeMap['-'] | NodeMap['*'] | NodeMap['/'],
+		node:
+			| NodeMap['+']
+			| NodeMap['-']
+			| NodeMap['*']
+			| NodeMap['/']
+			| NodeMap['%'],
 		fn: FuncBuilder,
 	): Type {
 		const lhs = node.children[0];
@@ -1327,6 +1357,66 @@ export function compileWasm(
 		const lt = inferType(lhs, fn);
 		const rt = inferType(rhs, fn);
 		const useFloat = isFloatType(lt) || isFloatType(rt);
+
+		// D31: integer division by a divisor that isn't a known non-zero literal
+		// returns `Int32 | DivByZero` — emit a zero-check that builds the tagged
+		// error value instead of letting `div_s` trap.
+		if (
+			(node.kind === '/' || node.kind === '%') &&
+			!useFloat &&
+			divByZeroType &&
+			!(rhs.kind === 'number' && rhs.value !== 0)
+		) {
+			const id = nominalId(divByZeroType);
+			if (id !== undefined) {
+				const divUnion = unionOfTypes(BaseTypes.Int32, divByZeroType);
+				const errTag = unionTagOf(divUnion, divByZeroType);
+				const okTag = unionTagOf(divUnion, BaseTypes.Int32);
+				compileExpr(lhs, fn);
+				const dividendLocal = allocLocal(fn, I32);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(dividendLocal, fn.body);
+				compileExpr(rhs, fn);
+				const divLocal = allocLocal(fn, I32);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(divLocal, fn.body);
+				const payloadLocal = allocLocal(fn, I32);
+				const tagLocal = allocLocal(fn, I32);
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(divLocal, fn.body);
+				fn.body.push(OP_I32_EQZ);
+				fn.body.push(OP_IF);
+				fn.body.push(0x40);
+				fn.blockDepth++;
+				fn.body.push(OP_I32_CONST);
+				sleb128(0, fn.body);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(payloadLocal, fn.body);
+				fn.body.push(OP_I32_CONST);
+				sleb128(errTag, fn.body);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(tagLocal, fn.body);
+				fn.body.push(OP_ELSE);
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(dividendLocal, fn.body);
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(divLocal, fn.body);
+				fn.body.push(node.kind === '%' ? OP_I32_REM_S : OP_I32_DIV_S);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(payloadLocal, fn.body);
+				fn.body.push(OP_I32_CONST);
+				sleb128(okTag, fn.body);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(tagLocal, fn.body);
+				fn.body.push(OP_END);
+				fn.blockDepth--;
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(payloadLocal, fn.body);
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(tagLocal, fn.body);
+				return unionOfTypes(BaseTypes.Int32, divByZeroType);
+			}
+		}
 
 		const actualLt = compileExpr(lhs, fn);
 		if (useFloat && !isFloatType(actualLt)) coerceToFloat(actualLt, fn);
@@ -1356,6 +1446,8 @@ export function compileWasm(
 					? OP_I32_SUB
 					: node.kind === '*'
 						? OP_I32_MUL
+						: node.kind === '%'
+						? OP_I32_REM_S
 						: OP_I32_DIV_S;
 		fn.body.push(op);
 		return BaseTypes.Int32;
@@ -1423,7 +1515,6 @@ export function compileWasm(
 		args: Node | undefined,
 		fn: FuncBuilder,
 	): Type {
-		if (name === 'out') return compileHostOutCall(args, fn);
 		if (name === 'length') {
 			if (!args) throw new Error('length() requires an argument');
 			const argType = inferType(args, fn);
@@ -1618,34 +1709,6 @@ export function compileWasm(
 		);
 	}
 
-	function emitOutHostCall(inputType: Type, fn: FuncBuilder): Type {
-		let inT = inputType;
-		if (inT.kind !== 'type' || inT.family === 'unknown')
-			inT = BaseTypes.Int32;
-		const hostField = findOutExternal(inT, externals);
-		if (!hostField) {
-			if (inT.family !== 'void') fn.body.push(OP_DROP);
-			return BaseTypes.Void;
-		}
-		const ext = externals.get(hostField);
-		if (!ext)
-			throw new Error(`External "${hostField}" missing from stdlib`);
-		const sig = fnSignature(ext);
-		const idx = importHost(hostField, sig.params, sig.results);
-		fn.body.push(OP_CALL);
-		uleb128(idx, fn.body);
-		return BaseTypes.Void;
-	}
-
-	function compileHostOutCall(
-		args: Node | undefined,
-		fn: FuncBuilder,
-	): Type {
-		if (!args) return BaseTypes.Void;
-		const argType = compileExpr(args, fn);
-		return emitOutHostCall(argType, fn);
-	}
-
 	function emitFixedCall(fn: FuncBuilder, builderIdx: number) {
 		fn.body.push(OP_CALL);
 		const fixupOffset = fn.body.length;
@@ -1744,14 +1807,7 @@ export function compileWasm(
 	}
 
 	function compileCall(node: NodeMap['call'], fn: FuncBuilder): Type {
-		const rt = compileCallInner(node, fn);
-		const id = nominalId(rt);
-		if (id !== undefined) {
-			fn.body.push(OP_I32_CONST);
-			sleb128(0x80000000 | (id << 24), fn.body);
-			fn.body.push(0x72);
-		}
-		return rt;
+		return compileCallInner(node, fn);
 	}
 
 	function compileCallInner(node: NodeMap['call'], fn: FuncBuilder): Type {
@@ -2276,6 +2332,15 @@ export function compileWasm(
 
 		let sourceType = compileExpr(source, fn);
 		if (
+			originalUnion &&
+			isUnionType(originalUnion) &&
+			!isUnionType(sourceType) &&
+			hasRuntimeValue(sourceType)
+		) {
+			coerceToUnion(sourceType, originalUnion, fn);
+			sourceType = originalUnion;
+		}
+		if (
 			source.kind === 'call' &&
 			sourceType.kind === 'type' &&
 			sourceType.family === 'unknown'
@@ -2430,11 +2495,14 @@ export function compileWasm(
 		uleb128(dollarLocal, fn.body);
 
 		const savedDollarLocal = fn.dollarLocal;
+		const savedDollarTagLocal = fn.dollarTagLocal;
 		const savedDollarType = fn.dollarType;
 		fn.dollarLocal = dollarLocal;
+		fn.dollarTagLocal = undefined;
 		fn.dollarType = dataType;
 		compileFnSource(fnNode, stages, fn);
 		fn.dollarLocal = savedDollarLocal;
+		fn.dollarTagLocal = savedDollarTagLocal;
 		fn.dollarType = savedDollarType;
 		return true;
 	}
@@ -2748,6 +2816,7 @@ export function compileWasm(
 	): Type {
 		const params = stage.parameters ?? [];
 		const savedDollarLocal = fn.dollarLocal;
+		const savedDollarTagLocal = fn.dollarTagLocal;
 		const savedDollarType = fn.dollarType;
 		let savedSlotTypes: (Type | undefined)[] | undefined;
 		const savedSlotLocals = params.map(p => fn.paramMap.get(p.symbol));
@@ -2909,19 +2978,36 @@ export function compileWasm(
 						pSym.type = p.type.symbol;
 					else pSym.type = inputType;
 				}
-				const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
-				fn.body.push(OP_LOCAL_SET);
-				uleb128(localIdx, fn.body);
-				fn.paramMap.set(pSym, localIdx);
-				if (!p.label) {
-					fn.dollarLocal = localIdx;
-					fn.dollarType = pSym.type ?? inputType;
+				if (isUnionType(pSym.type)) {
+					const tagIdx = allocLocal(fn, I32);
+					const payIdx = allocLocal(fn, unionPayloadWasm(pSym.type));
+					fn.body.push(OP_LOCAL_SET);
+					uleb128(tagIdx, fn.body);
+					fn.body.push(OP_LOCAL_SET);
+					uleb128(payIdx, fn.body);
+					fn.paramMap.set(pSym, payIdx);
+					if (!p.label) {
+						fn.dollarLocal = payIdx;
+						fn.dollarTagLocal = tagIdx;
+						fn.dollarType = pSym.type;
+					}
+				} else {
+					const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
+					fn.body.push(OP_LOCAL_SET);
+					uleb128(localIdx, fn.body);
+					fn.paramMap.set(pSym, localIdx);
+					if (!p.label) {
+						fn.dollarLocal = localIdx;
+						fn.dollarTagLocal = undefined;
+						fn.dollarType = pSym.type ?? inputType;
+					}
 				}
 			} else {
 				const localIdx = allocLocal(fn, I32);
 				fn.body.push(OP_LOCAL_SET);
 				uleb128(localIdx, fn.body);
 				fn.dollarLocal = localIdx;
+				fn.dollarTagLocal = undefined;
 				fn.dollarType = inputType;
 			}
 		}
@@ -2937,6 +3023,7 @@ export function compileWasm(
 		}
 		fn.fusion = savedFusion;
 		fn.dollarLocal = savedDollarLocal;
+		fn.dollarTagLocal = savedDollarTagLocal;
 		fn.dollarType = savedDollarType;
 		if (savedSlotTypes)
 			params.forEach((p, i) => {
@@ -2997,14 +3084,6 @@ export function compileWasm(
 		fn: FuncBuilder,
 	): Type {
 		const sym = stage.symbol;
-		if (
-			sym.kind === 'function' &&
-			sym.flags & Flags.Intrinsic &&
-			sym.name === 'out'
-		) {
-			emitOutHostCall(inputType, fn);
-			return driveStages(rest, BaseTypes.Void, fn);
-		}
 		const template = fnTemplates.get(sym);
 		if (template && template.symbol.flags & Flags.Sequence)
 			return driveTemplateStage(template, inputType, rest, fn);
@@ -3021,11 +3100,14 @@ export function compileWasm(
 			fn.body.push(OP_LOCAL_SET);
 			uleb128(dollarLocal, fn.body);
 			const savedDollarLocal = fn.dollarLocal;
+			const savedDollarTagLocal = fn.dollarTagLocal;
 			const savedDollarType = fn.dollarType;
 			fn.dollarLocal = dollarLocal;
+			fn.dollarTagLocal = undefined;
 			fn.dollarType = inputType;
 			compileFnSource(fnValue, rest, fn);
 			fn.dollarLocal = savedDollarLocal;
+			fn.dollarTagLocal = savedDollarTagLocal;
 			fn.dollarType = savedDollarType;
 			return BaseTypes.Void;
 		}
@@ -3095,6 +3177,39 @@ export function compileWasm(
 		return false;
 	}
 
+	function autoDispatchUnion(
+		stages: Node[],
+		inputType: Type,
+		fn: FuncBuilder,
+	): Type {
+		const members =
+			inputType.kind === 'type' && inputType.family === 'union'
+				? inputType.members
+				: [];
+		const tagLocal = allocLocal(fn, I32);
+		const payloadLocal = allocLocal(fn, unionPayloadWasm(inputType));
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(tagLocal, fn.body);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(payloadLocal, fn.body);
+		for (const m of members) {
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(tagLocal, fn.body);
+			fn.body.push(OP_I32_CONST);
+			sleb128(memberTag(m), fn.body);
+			fn.body.push(0x46);
+			fn.body.push(OP_IF);
+			fn.body.push(0x40);
+			fn.blockDepth++;
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(payloadLocal, fn.body);
+			driveStages(stages, m, fn);
+			fn.body.push(OP_END);
+			fn.blockDepth--;
+		}
+		return BaseTypes.Void;
+	}
+
 	function driveStages(
 		stages: Node[],
 		inputType: Type,
@@ -3129,6 +3244,21 @@ export function compileWasm(
 		}
 
 		if (stage.kind === 'fn') return driveFnStage(stage, inputType, rest, fn);
+
+		if (stage.kind === '|') {
+			const arms: Node[] = [];
+			const collect = (n: Node): void => {
+				if (n.kind === '|') {
+					collect(n.children[0]);
+					collect(n.children[1]);
+				} else arms.push(n);
+			};
+			collect(stage);
+			return driveDispatch(arms, rest, inputType, fn);
+		}
+
+		if (isUnionType(inputType))
+			return autoDispatchUnion(stages, inputType, fn);
 		if (stage.kind === 'ident') return driveIdentStage(stage, inputType, rest, fn);
 
 		throw new Error(`Unsupported pipe stage: ${stage.kind}`);
@@ -3140,100 +3270,120 @@ export function compileWasm(
 		inputType: Type,
 		fn: FuncBuilder,
 	): Type {
-		const inputLocal = allocLocal(fn, gbcToWasm(inputType));
+		const isUnion = isUnionType(inputType);
+		const valueLocal = allocLocal(
+			fn,
+			isUnion ? unionPayloadWasm(inputType) : gbcToWasm(inputType),
+		);
+		let tagLocal = -1;
+		if (isUnion) {
+			tagLocal = allocLocal(fn, I32);
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(tagLocal, fn.body);
+		}
 		fn.body.push(OP_LOCAL_SET);
-		uleb128(inputLocal, fn.body);
+		uleb128(valueLocal, fn.body);
+		const valueReturn =
+			afterStages.length === 0 &&
+			hasRuntimeValue(fn.returnType) &&
+			!isUnionType(fn.returnType);
+		const savedDispatchFusion = fn.fusion;
+		let resultLocal = -1;
+		if (valueReturn) {
+			resultLocal = allocLocal(fn, gbcToWasm(fn.returnType));
+			fn.fusion = {
+				emit: () => {
+					fn.body.push(OP_LOCAL_SET);
+					uleb128(resultLocal, fn.body);
+				},
+				targetDepth: fn.blockDepth,
+			};
+		}
+		const staticMatch = (dt: Type): boolean => {
+			if (composes(inputType, dt)) return true;
+			return (
+				inputType.kind === 'type' &&
+				dt.kind === 'type' &&
+				inputType.family === dt.family &&
+				inputType.name === dt.name
+			);
+		};
 		for (const ds of dispatchStages) {
 			if (ds.kind !== 'fn') continue;
 			const dispatchType = stageDispatchType(ds);
 			if (!dispatchType) continue;
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(inputLocal, fn.body);
-			if (
-				dispatchType.family === 'literal' &&
-				typeof dispatchType.value === 'boolean'
-			) {
+			const armMember = isUnion ? dispatchType : inputType;
+			if (dispatchType.family === 'literal') {
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(valueLocal, fn.body);
 				fn.body.push(OP_I32_CONST);
-				sleb128(dispatchType.value ? 1 : 0, fn.body);
+				if (typeof dispatchType.value === 'boolean')
+					sleb128(dispatchType.value ? 1 : 0, fn.body);
+				else if (typeof dispatchType.value === 'number')
+					sleb128(dispatchType.value | 0, fn.body);
+				else if (typeof dispatchType.value === 'string')
+					sleb128(intern(dispatchType.value), fn.body);
+				else sleb128(0, fn.body);
 				fn.body.push(0x46); // i32.eq
-			} else if (
-				dispatchType.family === 'literal' &&
-				typeof dispatchType.value === 'number'
-			) {
+			} else if (!isUnion) {
 				fn.body.push(OP_I32_CONST);
-				sleb128(dispatchType.value | 0, fn.body);
-				fn.body.push(0x46); // i32.eq
-			} else if (
-				dispatchType.family === 'literal' &&
-				typeof dispatchType.value === 'string'
-			) {
-				const ptr = intern(dispatchType.value);
-				fn.body.push(OP_I32_CONST);
-				sleb128(ptr, fn.body);
-				fn.body.push(0x46); // i32.eq
+				sleb128(staticMatch(dispatchType) ? 1 : 0, fn.body);
 			} else if (namedData(dispatchType)) {
-				const members =
-					inputType.kind === 'type' && inputType.family === 'union'
-						? inputType.members
-						: [inputType];
-				const ids: number[] = [];
-				for (const m of members) {
-					if (!composes(m, dispatchType)) continue;
-					const mid = nominalId(m);
-					if (mid !== undefined) ids.push(mid);
-				}
-				fn.body.push(OP_I32_CONST);
-				sleb128(24, fn.body);
-				fn.body.push(0x76);
+				const ids: number[] = matchingTags(inputType, dispatchType);
 				if (ids.length === 0) {
-					fn.body.push(OP_DROP);
 					fn.body.push(OP_I32_CONST);
 					sleb128(0, fn.body);
 				} else if (ids.length === 1) {
+					fn.body.push(OP_LOCAL_GET);
+					uleb128(tagLocal, fn.body);
 					fn.body.push(OP_I32_CONST);
-					sleb128(0x80 | (ids[0] ?? 0), fn.body);
+					sleb128(ids[0] ?? 0, fn.body);
 					fn.body.push(0x46);
 				} else {
-					const tmp = allocLocal(fn, I32);
-					fn.body.push(0x22);
-					uleb128(tmp, fn.body);
+					fn.body.push(OP_LOCAL_GET);
+					uleb128(tagLocal, fn.body);
 					fn.body.push(OP_I32_CONST);
-					sleb128(0x80 | (ids[0] ?? 0), fn.body);
+					sleb128(ids[0] ?? 0, fn.body);
 					fn.body.push(0x46);
 					for (let k = 1; k < ids.length; k++) {
 						fn.body.push(OP_LOCAL_GET);
-						uleb128(tmp, fn.body);
+						uleb128(tagLocal, fn.body);
 						fn.body.push(OP_I32_CONST);
-						sleb128(0x80 | (ids[k] ?? 0), fn.body);
+						sleb128(ids[k] ?? 0, fn.body);
 						fn.body.push(0x46);
 						fn.body.push(0x72);
 					}
 				}
-			} else if (
-				dispatchType.family === 'int' ||
-				dispatchType.family === 'uint' ||
-				dispatchType.family === 'float' ||
-				dispatchType.family === 'bool' ||
-				dispatchType.family === 'string'
-			) {
-				// Non-Error variant: dispatch only when Error tag bit is clear.
-				fn.body.push(OP_I32_CONST);
-				sleb128(-0x80000000, fn.body);
-				fn.body.push(0x71); // i32.and
-				fn.body.push(0x45); // i32.eqz — true when high bit is 0
 			} else {
-				fn.body.push(OP_DROP);
-				fn.body.push(OP_I32_CONST);
-				sleb128(0, fn.body);
-			}
+					const sids = matchingTags(inputType, dispatchType);
+					fn.body.push(OP_LOCAL_GET);
+					uleb128(tagLocal, fn.body);
+					fn.body.push(OP_I32_CONST);
+					sleb128(sids[0] ?? 0, fn.body);
+					fn.body.push(0x46);
+					for (let k = 1; k < sids.length; k++) {
+						fn.body.push(OP_LOCAL_GET);
+						uleb128(tagLocal, fn.body);
+						fn.body.push(OP_I32_CONST);
+						sleb128(sids[k] ?? 0, fn.body);
+						fn.body.push(0x46);
+						fn.body.push(0x72);
+					}
+				}
 			fn.body.push(OP_IF);
 			fn.body.push(0x40);
 			fn.blockDepth++;
 			fn.body.push(OP_LOCAL_GET);
-			uleb128(inputLocal, fn.body);
-			driveFnStage(ds, inputType, afterStages, fn);
+			uleb128(valueLocal, fn.body);
+			driveFnStage(ds, armMember, afterStages, fn);
 			fn.body.push(OP_END);
 			fn.blockDepth--;
+		}
+		if (valueReturn) {
+			fn.fusion = savedDispatchFusion;
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(resultLocal, fn.body);
+			return fn.returnType;
 		}
 		return BaseTypes.Void;
 	}
@@ -3337,8 +3487,11 @@ export function compileWasm(
 			const sym = p.symbol;
 			if (fnArgBindings.has(sym)) continue;
 			if (!sym.type) sym.type = BaseTypes.Int32;
-			paramTypes.push(gbcToWasm(sym.type));
-			paramMap.set(sym, local++);
+			paramMap.set(sym, local);
+			for (const wt of wasmTypesOf(sym.type)) {
+				paramTypes.push(wt);
+				local++;
+			}
 		}
 		return { paramTypes, paramMap };
 	}
@@ -3350,6 +3503,12 @@ export function compileWasm(
 		let returnType: Type = fnNode.returnType
 			? resolveTypeFromNode(fnNode.returnType)
 			: BaseTypes.Unknown;
+		if (
+			fnNode.returnType &&
+			fnNode.symbol?.returnType?.kind === 'type' &&
+			fnNode.symbol.returnType.family !== 'unknown'
+		)
+			returnType = fnNode.symbol.returnType;
 		if (
 			returnType.kind === 'type' &&
 			returnType.family === 'unknown' &&
@@ -3410,11 +3569,9 @@ export function compileWasm(
 		const paramSyms = fnNode.parameters ?? [];
 		const { paramTypes, paramMap } = buildParamTypes(paramSyms);
 		const returnType = resolveFnReturnType(fnNode, typeArgs);
-		const resultTypes: number[] = [];
-		if (
-			hasRuntimeValue(returnType)
-		)
-			resultTypes.push(gbcToWasm(returnType));
+		const resultTypes: number[] = hasRuntimeValue(returnType)
+			? wasmTypesOf(returnType)
+			: [];
 		const builder: FuncBuilder = {
 			typeIdx: typeIdx(paramTypes, resultTypes),
 			body: [],
@@ -3687,17 +3844,22 @@ export function compileWasm(
 			const val = stmts[0].children?.[0];
 			if (val) {
 				const t = compileExpr(val, builder);
-				// Drop the value if the fn declares no return type (void).
 				const rt = builder.returnType;
 				const fnHasNoResult =
 					rt.kind !== 'type' ||
 					rt.family === 'void' ||
 					rt.family === 'unknown';
-				if (
-					fnHasNoResult &&
+				if (fnHasNoResult) {
+					if (hasRuntimeValue(t)) {
+						builder.body.push(OP_DROP);
+						if (isUnionType(t)) builder.body.push(OP_DROP);
+					}
+				} else if (
+					isUnionType(rt) &&
+					!isUnionType(t) &&
 					hasRuntimeValue(t)
 				) {
-					builder.body.push(OP_DROP);
+					coerceToUnion(t, rt, builder);
 				}
 			}
 			return;
@@ -3716,8 +3878,12 @@ export function compileWasm(
 			const valueOnStack =
 				hasRuntimeValue(t);
 			if (!valueOnStack) continue;
-			if (isTail && hasReturn) continue;
+			if (isTail && hasReturn) {
+				if (isUnionType(rt) && !isUnionType(t)) coerceToUnion(t, rt, builder);
+				continue;
+			}
 			builder.body.push(OP_DROP);
+			if (isUnionType(t)) builder.body.push(OP_DROP);
 		}
 	}
 

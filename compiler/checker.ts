@@ -7,6 +7,13 @@ import type { Symbol, SymbolMap, Type } from './symbol-table.js';
 const typeSymbol = Symbol('type');
 type CheckedNode = Node & { [typeSymbol]?: Type };
 
+// D31: the stdlib `DivByZero` type, injected at program init so the free
+// type-resolution layer can build `Int32 | DivByZero` for runtime division.
+let divByZero: Type | undefined;
+export function setDivByZero(t: Type | undefined): void {
+	divByZero = t;
+}
+
 function typeToStr(type?: Type): string {
 	if (type?.kind === 'type' && type.family === 'union')
 		return type.members.map(m => m.name).join(' | ');
@@ -56,6 +63,14 @@ function resolveNumericOp(node: InfixNode): Type | undefined {
 
 	if (!isNumericType(lType) || !isNumericType(rType)) return;
 	if (isFloatType(lType) || isFloatType(rType)) return BT.Float64;
+	// D31: integer division by a value that isn't a known non-zero literal can
+	// fail, so the result type carries `DivByZero` (const-fold narrows the
+	// literal case back to plain `Int32`).
+	if ((node.kind === '/' || node.kind === '%') && divByZero) {
+		const rhs = node.children[1];
+		if (!(rhs.kind === 'number' && rhs.value !== 0))
+			return unionOf([BT.Int32, divByZero]);
+	}
 	return BT.Int32;
 }
 
@@ -181,6 +196,7 @@ function resolveType(node: CheckedNode): Type | undefined {
 		case '+':
 		case '/':
 		case '*':
+		case '%':
 			return resolveNumericOp(node);
 		case '<=':
 		case '>=':
@@ -188,7 +204,6 @@ function resolveType(node: CheckedNode): Type | undefined {
 		case '>':
 		case '==':
 		case '!=':
-		case 'is':
 		case '!':
 		case '&&':
 		case '||':
@@ -209,6 +224,37 @@ function resolveType(node: CheckedNode): Type | undefined {
 			}
 			if (last.kind === 'ident')
 				return resolveReturnType(last) ?? resolver(last);
+			if (last.kind === '|') {
+				// A `|`-dispatch stage emits the union of its arms' returns; each
+				// arm's `$` is its declared (matched) variant type.
+				const rets: Type[] = [];
+				const walk = (n: Node): void => {
+					if (n.kind === '|') {
+						walk(n.children[0]);
+						walk(n.children[1]);
+						return;
+					}
+					if (n.kind !== 'fn') {
+						rets.push(resolver(n));
+						return;
+					}
+					const body = n.statements?.[0];
+					if (!body) {
+						rets.push(BT.Void);
+						return;
+					}
+					const ptype = n.parameters?.[0]?.type;
+					if (
+						ptype &&
+						ptype.kind === 'typeident' &&
+						ptype.symbol.kind === 'type'
+					)
+						annotateDollar(body, ptype.symbol);
+					rets.push(resolver(body));
+				};
+				walk(last);
+				return unionOf(rets);
+			}
 			return resolver(last);
 		}
 		case '|': {
@@ -367,6 +413,8 @@ function canAssign(to: Type, a: Type): boolean {
 	}
 	if (to.kind !== 'type' || a.kind !== 'type') return false;
 	if (to.family === 'unknown') return true;
+	if (a.family === 'union')
+		return a.members.every(m => canAssign(to, m));
 	if (to.family === 'union')
 		return to.members.some(m => canAssign(m, a));
 	if (to.family === 'literal' && a.family === 'literal')
@@ -375,6 +423,18 @@ function canAssign(to: Type, a: Type): boolean {
 		if (a.family === 'string') return true;
 		if (a.family === 'literal' && typeof a.value === 'string') return true;
 	}
+	if (
+		(to.family === 'int' || to.family === 'uint' || to.family === 'float') &&
+		a.family === 'literal' &&
+		typeof a.value === 'number'
+	)
+		return true;
+	if (
+		to.family === 'bool' &&
+		a.family === 'literal' &&
+		typeof a.value === 'boolean'
+	)
+		return true;
 	if (to.family === 'data' && a.family === 'data') {
 		// D49: a named type is nominal — its identity is the type-symbol
 		// instance, not its structure. The `to === a` test at the top of this
@@ -626,6 +686,17 @@ export function checker({
 				position: left,
 			});
 		}
+		if (node.kind === '%' && (isFloatType(lt) || isFloatType(rt)))
+			error('modulo requires integer operands', left);
+		if (
+			(node.kind === '/' || node.kind === '%') &&
+			right.kind === 'number' &&
+			right.value === 0
+		)
+			error(
+				`${node.kind === '%' ? 'modulo' : 'division'} by zero`,
+				right,
+			);
 	}
 
 	/**
@@ -859,7 +930,31 @@ export function checker({
 						emitted,
 					);
 			});
-		if (node.statements) checkEach(node.statements);
+		if (node.statements && !(node.symbol.flags & Flags.Sequence)) {
+				for (const s of node.statements) {
+					if (!s) continue;
+					if (
+						s.kind === 'next' ||
+						s.kind === 'done' ||
+						s.kind === 'break' ||
+						s.kind === 'def' ||
+						s.kind === '=' ||
+						s.kind === 'comment'
+					)
+						continue;
+					const t = resolver(s);
+					if (
+						t.kind === 'type' &&
+						t.family !== 'void' &&
+						t.family !== 'unknown'
+					)
+						error(
+							'value is not consumed: emit it with `next`, bind it, or pipe it to a consumer',
+							s,
+						);
+				}
+			}
+			if (node.statements) checkEach(node.statements);
 	}
 
 	function checkStageOnlyStmt(c: NodeMap['fn'], i: number) {
@@ -958,13 +1053,154 @@ export function checker({
 		checkStageReturnType(c);
 	}
 
+	function stageAcceptType(stage: Node): Type | undefined {
+		if (stage.kind === 'fn') {
+			if ((stage.parameters?.length ?? 0) > 1) return undefined;
+			return paramDeclaredType(stage, 0);
+		}
+		if (stage.kind === '|') {
+			const parts: Type[] = [];
+			let acceptsAny = false;
+			const walk = (n: Node): void => {
+				if (n.kind === '|') {
+					walk(n.children[0]);
+					walk(n.children[1]);
+					return;
+				}
+				const a = stageAcceptType(n);
+				if (a === undefined) acceptsAny = true;
+				else parts.push(a);
+			};
+			walk(stage);
+			return acceptsAny ? undefined : unionOf(parts);
+		}
+		if (stage.kind === 'ident') {
+			const sym = stage.symbol;
+			const fsym =
+				sym.kind === 'function'
+					? sym
+					: sym.definition?.kind === 'def' &&
+						  sym.definition.value.kind === 'fn'
+						? resolveFnType(sym.definition.value)
+						: undefined;
+			if (!fsym || fsym.kind !== 'function') return undefined;
+			const cands = fsym.overloads ? [fsym, ...fsym.overloads] : [fsym];
+			const parts: Type[] = [];
+			for (const c of cands) {
+				if ((c.parameters?.length ?? 0) !== 1) return undefined;
+				const p = c.parameters?.[0]?.type;
+				if (!p) return undefined;
+				parts.push(p);
+			}
+			return unionOf(parts);
+		}
+		return undefined;
+	}
+
+	function stageEmitType(stage: Node): Type {
+		if (stage.kind === 'fn') {
+			const ft = resolveFnType(stage);
+			return ft.kind === 'function' && ft.returnType
+				? ft.returnType
+				: BT.Unknown;
+		}
+		if (stage.kind === '|') {
+			const parts: Type[] = [];
+			const walk = (n: Node): void => {
+				if (n.kind === '|') {
+					walk(n.children[0]);
+					walk(n.children[1]);
+					return;
+				}
+				parts.push(stageEmitType(n));
+			};
+			walk(stage);
+			return unionOf(parts);
+		}
+		return BT.Unknown;
+	}
+
 	function checkPipe(node: NodeMap['>>']) {
 		inferPipeStageParams(node.children);
-		for (let i = 0; i < node.children.length; i++) {
-			const c = node.children[i];
+		const kids = node.children;
+		for (let i = 0; i < kids.length; i++) {
+			const c = kids[i];
 			if (!c) continue;
 			if (c.kind === 'fn') checkPipeStageFn(c, i);
-			else check(c);
+			else if (c.kind === '|') {
+				const checkArms = (n: Node): void => {
+					if (n.kind === '|') {
+						checkArms(n.children[0]);
+						checkArms(n.children[1]);
+					} else if (n.kind === 'fn') checkPipeStageFn(n, i);
+					else check(n);
+				};
+				checkArms(c);
+			} else check(c);
+		}
+		const litType = (v: unknown): Type => ({
+			kind: 'type',
+			flags: 0,
+			family: 'literal',
+			name: typeof v === 'string' ? `'${v}'` : String(v),
+			size:
+				typeof v === 'string'
+					? 0
+					: typeof v === 'boolean'
+						? 1
+						: typeof v === 'number' && Number.isInteger(v)
+							? 4
+							: 8,
+			value: v,
+		});
+		// A literal value (`5`, `'x'`, `true`) carries its literal type here, so a
+		// single matching arm exhausts it; a base-typed value (`Int32`, `Bool`)
+		// needs arms covering its domain.
+		const emitTypeOf = (n: Node): Type => {
+			if (n.kind === 'number') return litType(n.value);
+			if (n.kind === 'string') return litType(text(n).slice(1, -1));
+			if (
+				n.kind === 'ident' &&
+				n.symbol.kind === 'literal' &&
+				n.symbol.value !== undefined
+			)
+				return litType(n.symbol.value);
+			return resolver(n);
+		};
+		const covers = (accept: Type, m: Type): boolean => {
+			if (canAssign(accept, m)) return true;
+			if (m.kind === 'type' && m.family === 'bool')
+				return (
+					canAssign(accept, litType(true)) &&
+					canAssign(accept, litType(false))
+				);
+			return false;
+		};
+		let emit = kids[0] ? emitTypeOf(kids[0]) : undefined;
+		for (let i = 1; i < kids.length; i++) {
+			const stage = kids[i];
+			if (!stage) continue;
+			if (
+				emit &&
+				emit.kind === 'type' &&
+				emit.family !== 'unknown' &&
+				emit.family !== 'void'
+			) {
+				const accept = stageAcceptType(stage);
+				if (accept !== undefined && !isTypeParam(accept)) {
+					const members: Type[] =
+						emit.family === 'union' ? emit.members : [emit];
+					const uncovered = members.find(m => !covers(accept, m));
+					if (uncovered)
+						error(
+							`pipe stage does not consume "${typeToStr(
+								uncovered,
+							)}" of "${typeToStr(emit)}"`,
+							stage,
+						);
+				}
+			}
+			emit = stageEmitType(stage);
 		}
 	}
 
@@ -1016,6 +1252,7 @@ export function checker({
 			case '+':
 			case '/':
 			case '*':
+			case '%':
 				return numberBinaryOperator(node);
 			case '==':
 			case '!=': {
@@ -1212,7 +1449,16 @@ export function checker({
 			const stage = children[i];
 			const input = children[i - 1];
 			if (!stage || !input) continue;
-			inferPipeStage(stage, input);
+			if (stage.kind === '|') {
+				// Each dispatch arm infers `$` from its own declared type.
+				const collect = (n: Node): void => {
+					if (n.kind === '|') {
+						collect(n.children[0]);
+						collect(n.children[1]);
+					} else inferPipeStage(n, input);
+				};
+				collect(stage);
+			} else inferPipeStage(stage, input);
 		}
 	}
 

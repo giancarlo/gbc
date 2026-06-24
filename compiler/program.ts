@@ -1,20 +1,17 @@
 import { CompilerError, ParserApi } from '../sdk/index.js';
 import {
-	Flags,
 	ProgramSymbolTable,
 	TypesSymbolTable,
 } from './symbol-table.js';
 import { parse } from './parser.js';
 import { scan } from './scanner.js';
 import { compileTypes } from './compiler-types.js';
-import { compileWasm } from './target-wasm.js';
-import { checker } from './checker.js';
+import { compileWasm, setDivByZeroType } from './target-wasm.js';
+import { checker, setDivByZero } from './checker.js';
 import { STDLIB_SOURCE, TEST_SOURCE } from './stdlib-source.js';
 
 import type { Node, NodeMap } from './node.js';
-import type { Scope, Symbol, SymbolMap, Type } from './symbol-table.js';
-
-export type ExternalsMap = Map<string, SymbolMap['function']>;
+import type { Scope, Symbol, Type } from './symbol-table.js';
 
 export interface System {
 	readFile(): string;
@@ -63,17 +60,6 @@ if (stdlib.errors.length)
 			.join(', ')}`,
 	);
 
-// Host imports: the stdlib's `external` declarations.
-const stdlibExternals: ExternalsMap = new Map();
-for (const [key, sym] of stdlib.scope) {
-	if (
-		typeof key === 'string' &&
-		sym.kind === 'function' &&
-		sym.flags & Flags.External
-	)
-		stdlibExternals.set(key, sym);
-}
-
 // Prelude = the stdlib's gb definitions. It is GLOBAL: its symbols are
 // injected into every program's scope (like `error`/`length`) and its def
 // nodes are prepended to the codegen root so their templates are inlinable.
@@ -110,6 +96,8 @@ function collectTypes(module: Module): Record<string, Type> {
 
 const { symbols: preludeSymbols, defs: preludeDefs } = collectDefs(stdlib);
 const preludeTypes = collectTypes(stdlib);
+setDivByZero(preludeTypes['DivByZero']);
+setDivByZeroType(preludeTypes['DivByZero']);
 
 // The test module (assert helpers for `#test` blocks). Loaded with the stdlib
 // prelude in scope (it calls `out`/`toString`). Its symbols are always
@@ -157,7 +145,6 @@ export function Program(options?: ProgramOptions) {
 			try {
 				bytes = compileWasm(
 					withPrelude(parsed.root, testMode),
-					stdlibExternals,
 					testMode,
 				);
 			} catch (e) {
@@ -185,7 +172,7 @@ export function Program(options?: ProgramOptions) {
 	}
 
 	function compileAst(root: Node, testMode = false): Uint8Array {
-		return compileWasm(withPrelude(root, testMode), stdlibExternals, testMode);
+		return compileWasm(withPrelude(root, testMode), testMode);
 	}
 
 	return {
