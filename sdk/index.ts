@@ -126,7 +126,21 @@ export function sleb128(n: number, out: number[]) {
 	}
 }
 
+/** Append n as signed LEB128 to out — BigInt for values beyond 32 bits. */
+export function sleb128big(n: bigint, out: number[]) {
+	let more = true;
+	while (more) {
+		let b = Number(n & 0x7fn);
+		n >>= 7n;
+		const sign = b & 0x40;
+		if ((n === 0n && !sign) || (n === -1n && sign)) more = false;
+		else b |= 0x80;
+		out.push(b);
+	}
+}
+
 export class CompilerError {
+	stack?: string;
 	constructor(
 		public message: string,
 		public position: Position,
@@ -183,7 +197,9 @@ export function formatError(
 	return `${error.message}
 
 ${pos.line + (options?.startLine ?? 1)}: ${lineText}
-${' '.repeat(pad)}${'~'.repeat(text.length || 1)}`;
+${' '.repeat(pad)}${'~'.repeat(text.length || 1)}${
+		error.stack ? `\n\n${error.stack}` : ''
+	}`;
 }
 
 export type ErrorApi = ReturnType<typeof ErrorApi>;
@@ -312,7 +328,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		pushError,
 		errors,
 		catchAndRecover,
-		expect,
+		consume,
 		expectNode,
 		expectNodeKind,
 		expectNodeParser,
@@ -370,9 +386,9 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		content: () => C,
 		end: Node['kind'],
 	) {
-		const s = expect(start);
+		const s = consume(start);
 		const result = content();
-		const e = expect(end);
+		const e = consume(end);
 		result.start = s.start;
 		result.end = e.end;
 		return result;
@@ -421,7 +437,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 	}
 
 	/** Verify token is the correct kind and advance */
-	function expect<K extends Node['kind']>(kind: K): Token<K> {
+	function consume<K extends Node['kind']>(kind: K): Token<K> {
 		if (kind !== token.kind)
 			throw error(`Expected "${kind}" but got "${token.kind}"`, token);
 
@@ -507,7 +523,7 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 	tableFn: ParserTableFn<Map, ScannerToken>,
 	api: ParserApi<ScannerToken>,
 ) {
-	const { current, next, expect, expectNode, optional } = api;
+	const { current, next, consume, expectNode, optional } = api;
 
 	function expression(precedence = 0) {
 		const left = current();
@@ -596,7 +612,7 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 				left,
 			) as unknown as Node;
 
-			expect(operator2);
+			consume(operator2);
 			const child3 = expectExpression(precedence);
 			result.end = child3.end;
 			result.children.push(child3);

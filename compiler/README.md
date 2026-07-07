@@ -8,7 +8,7 @@ A concise and type-safe functional language designed to prioritize immutability 
 
 -   Branch Version: [0.0.1](https://npmjs.com/package/@cxl/gbc.compiler/v/0.0.1)
 -   License: GPL-3.0
--   Documentation: [Link](https:/github.com/giancarlo/gbc/compiler)
+-   Documentation: [Link](https://github.com/giancarlo/@cxl/gbc.compiler)
 -   Report Issues: [Github](https://github.com/giancarlo/gbc/issues)
 
 ## Installation

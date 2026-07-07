@@ -34,8 +34,10 @@ export function parseType(
 
 	function substituteType(t: Type, subst: Map<string, Type>): Type {
 		if (t.kind !== 'type') return t;
-		if (t.family === 'unknown' && t.name && subst.has(t.name))
-			return subst.get(t.name)!;
+		if (t.family === 'unknown' && t.name) {
+			const sub = subst.get(t.name);
+			if (sub !== undefined) return sub;
+		}
 		if (t.family === 'data') {
 			const members: Record<string, Symbol> = {};
 			for (const [k, m] of Object.entries(t.members))
@@ -62,10 +64,10 @@ export function parseType(
 			const a = expression();
 			if (a) argNodes.push(a);
 		} while (api.optional(','));
-		api.expect('>');
+		api.consume('>');
 		if (argNodes.length !== params.length)
 			throw api.error(
-				`type "${sym.name ?? '?'}" expects ${params.length} type argument(s), got ${argNodes.length}`,
+				`type "${sym.name}" expects ${params.length} type argument(s), got ${argNodes.length}`,
 				node,
 			);
 		// D43: chain-defined or forward-declared (recursive) type-functions
@@ -92,7 +94,7 @@ export function parseType(
 	}
 
 	const parser = parserTable<NodeMap, ScannerToken>(
-		({ expect, expression, expectNode }) => ({
+		({ consume, expression, expectNode }) => ({
 			ident: {
 				prefix(n) {
 					const name = text(n);
@@ -167,10 +169,21 @@ export function parseType(
 							});
 						} while (optional(','));
 					}
-					const close = expect(')');
+					const close = consume(')');
 					const returnType = optional(':')
 						? expectNode(expression(), 'Expected return type')
 						: undefined;
+					// An omitted return already means "no value" — bare
+					// `Void` adds nothing (`T | Void` unions stay).
+					if (
+						returnType?.kind === 'typeident' &&
+						returnType.symbol.kind === 'type' &&
+						returnType.symbol.family === 'void'
+					)
+						throw api.error(
+							'return types are inferred — omit the return instead of `: Void`',
+							tk,
+						);
 					// A single unnamed type with no return is a parenthesized
 					// type, not a function type: `(T)` == `T`.
 					if (!returnType && !named && params.length === 1) {
@@ -286,11 +299,11 @@ export function parseType(
 			'>>': {
 				precedence: 1,
 				infix(tk, left) {
-					expect('[');
+					consume('[');
 					const scope = symbolTable.push();
 					const binds: NodeMap['parameter'][] = [];
 					do {
-						const bid = api.expect('ident');
+						const bid = api.consume('ident');
 						const bname = text(bid);
 						symbolTable.set(bname, {
 							kind: 'type',
@@ -310,15 +323,19 @@ export function parseType(
 							children: [blabel, undefined, undefined],
 						});
 					} while (api.optional(','));
-					const close = expect(']');
+					const close = consume(']');
+					const firstBind = binds[0];
+					const lastBind = binds[binds.length - 1];
+					if (!firstBind || !lastBind)
+						throw api.error('Expected at least one binding', tk);
 					const inner: NodeMap[','] = {
-						...binds[0]!,
+						...firstBind,
 						kind: ',',
-						end: binds[binds.length - 1]!.end,
+						end: lastBind.end,
 						children: binds,
 					};
 					const pattern: NodeMap['data'] = {
-						...binds[0]!,
+						...firstBind,
 						kind: 'data',
 						end: close.end,
 						children: [inner],
@@ -332,9 +349,9 @@ export function parseType(
 						value: undefined,
 						children: [undefined, pattern, undefined],
 					};
-					expect('{');
+					consume('{');
 					const body = expectNode(expression(), 'Expected stage body');
-					const end = expect('}').end;
+					const end = consume('}').end;
 					symbolTable.pop(scope);
 					const stage: NodeMap['fn'] = {
 						...tk,
@@ -361,7 +378,7 @@ export function parseType(
 			'[': {
 				prefix(tk) {
 					if (current().kind === ']') {
-						const close = expect(']');
+						const close = consume(']');
 						return {
 							...tk,
 							kind: 'typeident',
@@ -404,7 +421,7 @@ export function parseType(
 							children: [labelNode, pt, undefined],
 						});
 					} while (optional(','));
-					const close = expect(']');
+					const close = consume(']');
 					const first = propdefs[0];
 					const inner: NodeMap[','] | NodeMap['propdef'] =
 						propdefs.length === 1 && first
@@ -444,7 +461,7 @@ export function typeParameters(
 	const scope = symbolTable.push();
 	const params: NodeMap['parameter'][] = [];
 	do {
-		const pid = api.expect('ident');
+		const pid = api.consume('ident');
 		const name = text(pid);
 		const placeholder: Type = {
 			kind: 'type',
@@ -474,12 +491,16 @@ export function typeParameters(
 			children: [labelNode, constraint, undefined],
 		});
 	} while (api.optional(','));
-	api.expect('>');
+	api.consume('>');
+	const firstParam = params[0];
+	const lastParam = params[params.length - 1];
+	if (!firstParam || !lastParam)
+		throw api.error('Expected at least one type parameter', lt);
 	const list: NodeMap[','] = {
 		...lt,
 		kind: ',',
-		start: params[0]!.start,
-		end: params[params.length - 1]!.end,
+		start: firstParam.start,
+		end: lastParam.end,
 		children: params,
 	};
 	return { params, list, pop: () => symbolTable.pop(scope) };

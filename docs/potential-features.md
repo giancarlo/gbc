@@ -575,3 +575,98 @@ counter = makeCounter()
 counter()    # Output: 1
 counter()    # Output: 2
 ```
+
+## Module system & the `.gbo` artifact
+
+Design worked out for cross-module resolution, the per-module artifact, and the
+bundler. **None of this is needed yet.** The only near-term piece is
+`@module.symbol` resolution. Recorded here so the design isn't lost; supersedes
+parts of D42 (see "Revises D42" below).
+
+### Status
+
+- **D22** — module = file; `export` inline modifier; `@module.name` is the sole
+  cross-module access form; `@` means only "external boundary."
+- **D46** — stdlib is a global prelude, loaded by a general `loadModule`.
+- **D42** — per-module artifact → bundle to one WASM per entry (walk imports,
+  monomorphize, tree-shake).
+
+Built: `loadModule` (parse+check one module → root+scope), prelude injection,
+`@` parsed. Missing: `@module.name` resolution, module-name→source resolution,
+the artifact format, the bundler.
+
+### Near-term: `@module.symbol` resolution
+
+The one piece with plausible near-term use. Needs: (1) map `@parser` → a source
+(a resolver), (2) `loadModule` it (memoized), (3) look up the exported symbol in
+its scope, (4) wire the reference. The bundler, `.gbo` format, and orphan rule
+below are **not** required for this — it can reuse the single-WASM whole-program
+codegen, treating a resolved `@module` as more prepended defs. It is not
+single-file testable (needs ≥2 modules), so it waits on a multi-module test
+harness.
+
+### `.gbo` — relocatable object, tuned for fast assembly
+
+Priority is **assembly speed**: the bundler should be a *linker*, not a
+compiler. Phase 1 (per file) does the expensive work once — parse, check, lower
+non-generics to WASM bodies. Phase 2 (bundle) only stitches: select the
+reachable closure, assign final indices, patch relocations, concat. Assembly
+cost = O(reachable code), not O(program). Only generics are codegen'd at bundle
+(types unknown until then), and deduped. Everything binary and index-referenced
+so nothing is re-parsed/re-checked/re-analyzed.
+
+Sections (binary, fixed-layout, cross-referenced by integer index):
+
+| Section | Contents | Why fast |
+|---|---|---|
+| `header` | magic, version, module-id, content-hash | hash ⇒ phase-1 incremental cache |
+| `symbols` | fixed-stride `{nameOff, kind, flags, sigRef, bodyOff/templateOff}` | mmap + O(1) index access |
+| `strpool` | interned strings + data blobs | deduped once at link |
+| `deps` | per-symbol adjacency + table-membership | reachability is a graph walk, no re-analysis |
+| `code` | per non-generic fn: lowered WASM body + relocations `{offset, kind, targetSym}` | link = patch + concat, no recompile |
+| `generics` | typed IR templates | only thing codegen'd at bundle; deduped by spec-key |
+| `dispatch` | per name: arms `{inputTypeRef, bodyRef, ownerModule}` incl. `extend` arms | bundler merges across modules, runs orphan check, emits selector |
+| `types` | type decls (layout, nominal id, components) | for mono + dispatch tag assignment |
+
+Assembly: mmap → BFS reachability from `main`/pinned over `deps` (+ table
+membership for `call_indirect`) → assign final index spaces in one pass → patch
++ concat non-generic bodies → monomorphize reachable generics (dedup by
+spec-key) → merge dispatch arms + orphan-check + emit selectors → concat to one
+WASM.
+
+Perf levers: pre-lowered bodies (patch+concat is the minimum); index-based
+refs (no string lookups at link); precomputed `deps` (walk, not re-derive);
+spec-key dedup (each specialization compiled once); content-hash (incremental
+phase 1); minimal relocation set (only cross-module index kinds).
+
+### Revises D42
+
+`.gbo` is a **relocatable object** (the `wasm-ld` shape, specialized to gb), not
+"a valid standalone WASM module." Rationale: WASM has no runtime module system —
+imports are wired by the host at instantiation; there's no cross-module
+reference, linking, or resolution in core WASM. Multi-module → one module is a
+build-time linker job (`wasm-ld` over relocatable objects). And WASM's flat,
+positional index spaces (`funcidx`, …) mean dropping/merging functions forces
+renumbering every reference — so a finalized-WASM `.gbo` would be re-linked
+anyway, buying nothing. Hence: relocatable bodies + link-time DCE. Generics are
+tree-shaken by construction (only reachable specializations are ever emitted).
+
+### The orphan rule depends on the bundler
+
+Cross-module `extend` coherence — an `extend name (T)` is allowed only if the
+module owns the dispatch `name` or the type `T` (Rust's orphan rule) — is a
+whole-program check. The bundler is the only place that sees every module's
+`extend` arms at once, so it: (a) collects all arms per dispatch across modules,
+(b) enforces own-dispatch-or-own-type, (c) rejects overlaps/orphans. So the
+orphan rule is gated on the bundler; until then it stays unenforced (single-file
+programs own everything, so no orphan can arise).
+
+### Open decisions
+
+- **Import surface** — inline `@module.name` only (D22), or also a `use`/import
+  statement to bind a short name? Biggest unsettled question.
+- **Module resolution** — name→path, search roots, extensions.
+- **Relocation set** — exact index kinds needing patch (funcidx, globalidx,
+  typeidx, data-offset, table-elem, memory base?).
+- **Generic templates** — typed IR (faster to lower at bundle) vs raw AST.
+- **`main` in non-entry modules.**

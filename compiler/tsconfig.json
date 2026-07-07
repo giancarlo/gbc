@@ -4,11 +4,13 @@
 		"outDir": "../dist/compiler"
 	},
 	"files": [
+		"bundle.ts",
 		"checker.ts",
 		"compiler.ts",
 		"compiler-types.ts",
 		"debug.ts",
 		"error.ts",
+		"host.ts",
 		"index.ts",
 		"scanner.ts",
 		"parser-expression.ts",

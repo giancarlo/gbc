@@ -18,6 +18,7 @@ import {
 import { Node, NodeMap } from './node.js';
 import { typeParameters } from './parser-type.js';
 import type { ScannerToken } from './scanner.js';
+import type { ModuleLoader, ModuleRef } from './parser.js';
 
 export function parseExpression(
 	api: ParserApi<ScannerToken>,
@@ -28,11 +29,142 @@ export function parseExpression(
 		parser: () => Node | undefined,
 		endKind: ScannerToken['kind'],
 	) => Node[],
+	loader?: ModuleLoader,
 ) {
-	const { current, error, expect, expectNode, optional, parseList } = api;
+	const { current, error, consume, expectNode, optional, parseList } = api;
 
 	function expectType() {
 		return expectNode(typeParser(2), 'Expected type expression');
+	}
+
+	/** `@name` (library) or `@.seg.seg` (local file). Local refs consume all
+	 * dotted segments as the path; a library ref is the single mapped name —
+	 * members are ordinary `.` access on the bound namespace. */
+	function parseModuleRef(): (ModuleRef & { end: number }) | undefined {
+		const at = current();
+		if (at.kind !== '@') return undefined;
+		api.next();
+		if (current().kind === 'ident') {
+			const nameTk = current();
+			api.next();
+			return { dot: false, segs: [text(nameTk)], end: nameTk.end };
+		}
+		if (String(current().kind) === '.') {
+			const segs: string[] = [];
+			let end = at.end;
+			while (String(current().kind) === '.') {
+				api.next();
+				const seg = current();
+				if (seg.kind !== 'ident')
+					throw error('Expected a module path segment', seg);
+				api.next();
+				segs.push(text(seg));
+				end = seg.end;
+			}
+			return { dot: true, segs, end };
+		}
+		api.backtrack(at);
+		return undefined;
+	}
+
+	function requireLoader(tk: ScannerToken): ModuleLoader {
+		if (!loader)
+			throw error(
+				'module references need a module-aware compile (compileFile)',
+				tk,
+			);
+		return loader;
+	}
+
+	/** `(a, b) = @…` — bind each name directly to the module's export
+	 * symbol, so references compile against the real definition. */
+	function parseDestructureImport(
+		open: ScannerToken,
+		names: Token<'ident'>[],
+	): NodeMap['import'] {
+		const eq = current();
+		api.next();
+		const ref = parseModuleRef();
+		if (!ref)
+			throw error(
+				'destructuring binds a module reference (`@lib` or `@.file`)',
+				eq,
+			);
+		const { exports, types } = requireLoader(open).load(ref);
+		for (const nameTk of names) {
+			const name = text(nameTk);
+			const sym = exports[name];
+			const type = types[name];
+			if (!sym && !type)
+				throw error(`module does not export "${name}"`, nameTk);
+			if (sym) symbolTable.set(name, sym);
+			if (type) typesTable.set(name, type);
+		}
+		return { ...open, kind: 'import', children: [], end: ref.end };
+	}
+
+	/** Token lookahead for `(a, b) = …` — pure scan, no binding. */
+	function scanDestructureNames(): Token<'ident'>[] | undefined {
+		const first = current();
+		if (first.kind !== 'ident') return undefined;
+		const names: Token<'ident'>[] = [first];
+		api.next();
+		while (String(current().kind) === ',') {
+			api.next();
+			const n = current();
+			if (n.kind !== 'ident') {
+				api.backtrack(first);
+				return undefined;
+			}
+			names.push(n);
+			api.next();
+		}
+		if (String(current().kind) !== ')' || names.length < 2) {
+			api.backtrack(first);
+			return undefined;
+		}
+		api.next();
+		if (String(current().kind) !== '=') {
+			api.backtrack(first);
+			return undefined;
+		}
+		return names;
+	}
+
+	/**
+	 * An unresolved ident in a deferred-execution region (fn body, `main`,
+	 * `#test`) parses with a placeholder symbol and is re-resolved against
+	 * the module scope at end of parse (forward refs / mutual recursion).
+	 * The patch must reassign `node.symbol` — codegen maps are keyed by
+	 * symbol identity. Top-level initializers run in source order, so
+	 * misses there still throw.
+	 */
+	const forwardRefs: {
+		node: NodeMap['ident'];
+		token: Token<'ident'>;
+		name: string;
+		countRef: boolean;
+	}[] = [];
+	let deferDepth = 0;
+
+	function deferred<T>(fn: () => T): T {
+		deferDepth++;
+		try {
+			return fn();
+		} finally {
+			deferDepth--;
+		}
+	}
+
+	function resolveForwardRefs() {
+		for (const ref of forwardRefs) {
+			const symbol = symbolTable.get(ref.name);
+			if (symbol) {
+				ref.node.symbol = symbol;
+				if (ref.countRef) (symbol.references ||= []).push(ref.token);
+			} else api.pushError(error('Identifier not defined', ref.token));
+		}
+		forwardRefs.length = 0;
 	}
 
 	/**
@@ -45,7 +177,7 @@ export function parseExpression(
 		if (current().kind === 'var') {
 			api.next();
 			symbol.flags |= Flags.Variable;
-			return undefined;
+			return current().kind === '=' ? undefined : expectType();
 		}
 		return expectType();
 	}
@@ -113,18 +245,30 @@ export function parseExpression(
 	function blockParameters(node: NodeMap['fn']) {
 		node.parameters = parseList(parameter, ',', n => !!n);
 		node.symbol.parameters = node.parameters.map(p => p.symbol);
-		expect(')');
+		consume(')');
 		node.children.push(...node.parameters);
 	}
 
 	function parseLambdaAfterOpenParen(tk: ScannerToken): NodeMap['fn'] {
 		return parseBlock(tk, node => {
 			blockParameters(node);
-			if (optional(':'))
-				node.children.push(
-					(node.returnType = expectType()),
-				);
-			expect('{');
+			if (optional(':')) {
+				const rt = expectType();
+				// Bare `Void` here states nothing the body doesn't already:
+				// return types are inferred. (`T | Void` and the `T:Void`
+				// stage form carry meaning and stay.)
+				if (
+					rt.kind === 'typeident' &&
+					rt.symbol.kind === 'type' &&
+					rt.symbol.family === 'void'
+				)
+					throw error(
+						'return types are inferred — a fn that produces no value needs no `: Void` annotation',
+						rt,
+					);
+				node.children.push((node.returnType = rt));
+			}
+			consume('{');
 			return parseFnBody(node);
 		});
 	}
@@ -142,6 +286,18 @@ export function parseExpression(
 			if (typeNode.kind === 'typeident' && typeNode.symbol.kind === 'type')
 				anonSym.type = typeNode.symbol;
 			const returnTypeNode = optional(':') ? expectType() : undefined;
+			// `T:R` asserts a real emitted type; "emits nothing" is inferred
+			// from the body, so `T:Void` states nothing — same rule as fn
+			// returns. (This was Void's last writable surface.)
+			if (
+				returnTypeNode?.kind === 'typeident' &&
+				returnTypeNode.symbol.kind === 'type' &&
+				returnTypeNode.symbol.family === 'void'
+			)
+				throw error(
+					'return types are inferred — a stage that emits nothing needs no `:Void` annotation',
+					returnTypeNode,
+				);
 			if (returnTypeNode) node.returnType = returnTypeNode;
 			const param: NodeMap['parameter'] = {
 				...tk,
@@ -152,14 +308,14 @@ export function parseExpression(
 			};
 			node.parameters = [param];
 			node.children.push(param);
-			expect('{');
+			consume('{');
 			return parseFnBody(node);
 		});
 	}
 
 	function parseFnBody(node: NodeMap['fn']): Node[] {
 		const stmts = parseStatementBlock(statement, '}');
-		node.end = expect('}').end;
+		node.end = consume('}').end;
 		const only = stmts.length === 1 ? stmts[0] : undefined;
 		const isAutoEmit =
 			stmts.length === 0 ||
@@ -172,12 +328,24 @@ export function parseExpression(
 		return stmts;
 	}
 
-	function prefixNumber(op: (n: number) => number) {
+	function numberNode(n: ScannerToken): NodeMap['number'] {
+		const float = n.kind === 'float';
+		const raw = text(n).replace(/_/g, '');
+		let value: number | bigint = +raw;
+		if (!float && !Number.isSafeInteger(value)) {
+			value = BigInt(raw);
+			if (value > (1n << 64n) - 1n)
+				throw error('Integer literal is too large', n);
+		}
+		return { ...n, kind: 'number', value, float };
+	}
+
+	function prefixNumber(op: (n: number | bigint) => number | bigint) {
 		return (n: UnaryNode<NodeMap>) => {
 			const right = n.children[0];
 			if (right.kind === 'number') {
 				right.value = op(right.value);
-				return right as Node;
+				return right;
 			}
 			return n;
 		};
@@ -215,7 +383,7 @@ export function parseExpression(
 				kind: 'variable',
 				flags: 0,
 			});
-			node.statements = cb(node);
+			node.statements = deferred(() => cb(node));
 			node.children.push(...node.statements);
 			return node;
 		});
@@ -248,7 +416,7 @@ export function parseExpression(
 	 * `statement()` and through `?:` ternary branches via `parseBranchOrExpr`.
 	 */
 	function parseNextStmt(): NodeMap['next'] {
-		const tk = expect('next');
+		const tk = consume('next');
 		const owner = expectScopeOwner();
 		const value = expectNode(exprParser(), 'Expected expression');
 		return {
@@ -262,7 +430,9 @@ export function parseExpression(
 	function parseSimpleStmt(): Node {
 		const tk = current();
 		api.next();
-		return tk as Node;
+		return tk.kind === 'done'
+			? { ...tk, kind: 'done' }
+			: { ...tk, kind: 'break' };
 	}
 
 	/**
@@ -308,6 +478,23 @@ export function parseExpression(
 		return expectNode(exprParser(), 'Expected expression');
 	}
 
+	function isLiteralValueData(typeNode: Node | undefined): boolean {
+		if (!typeNode || typeNode.kind !== 'data') return false;
+		const inner = typeNode.children[0];
+		const items =
+			inner?.kind === ',' ? inner.children : inner ? [inner] : [];
+		const ms = items
+			.map(item => (item.kind === 'propdef' ? item.symbol.type : undefined))
+			.filter((t): t is Type => !!t);
+		if (ms.length === 0) return false;
+		return ms.every(
+			t =>
+				t.kind === 'type' &&
+				t.family === 'literal' &&
+				typeof t.value === 'number',
+		);
+	}
+
 	const parser = parserTable<NodeMap, ScannerToken>(
 		({
 			expression: expr,
@@ -320,14 +507,17 @@ export function parseExpression(
 			'>>': {
 				precedence: 1,
 				infix(tk, left) {
-					const node = tk as NodeMap['>>'];
-					node.start = left.start;
 					const right = expectExpression();
-					node.children =
-						right.kind === '>>'
-							? [left, ...right.children]
-							: [left, right];
-					node.end = right.end;
+					const node: NodeMap['>>'] = {
+						...tk,
+						kind: '>>',
+						start: left.start,
+						end: right.end,
+						children:
+							right.kind === '>>'
+								? [left, ...right.children]
+								: [left, right],
+					};
 					return node;
 				},
 			},
@@ -398,9 +588,23 @@ export function parseExpression(
 			'/': infixOperator(12),
 			'*': infixOperator(12),
 			'%': infixOperator(12),
-			comment: { prefix: n => n },
 			'@': {
 				prefix(tk) {
+					if (loader) {
+						api.backtrack(tk);
+						const ref = parseModuleRef();
+						if (ref) {
+							const { symbol } = requireLoader(tk).load(ref);
+							const node: NodeMap['ident'] = {
+								...tk,
+								kind: 'ident',
+								symbol,
+								end: ref.end,
+							};
+							return node;
+						}
+						api.next();
+					}
 					const ident = optional('ident');
 					if (ident) tk.end = ident.end;
 					return tk;
@@ -423,7 +627,7 @@ export function parseExpression(
 							end: numTk.end,
 						};
 					}
-					const right = expect('ident');
+					const right = consume('ident');
 					const prop = text(right);
 
 					let leftSymbol: Symbol | undefined;
@@ -465,14 +669,17 @@ export function parseExpression(
 			',': {
 				precedence: 1,
 				infix(tk, left) {
-					const node = tk as NodeMap[','];
-					node.start = left.start;
 					const right = expectExpression(2);
-					node.children =
-						left.kind === ','
-							? [...left.children, right]
-							: [left, right];
-					node.end = right.end;
+					const node: NodeMap[','] = {
+						...tk,
+						kind: ',',
+						start: left.start,
+						end: right.end,
+						children:
+							left.kind === ','
+								? [...left.children, right]
+								: [left, right],
+					};
 					return node;
 				},
 			},
@@ -535,6 +742,9 @@ export function parseExpression(
 			'(': {
 				precedence: 20,
 				prefix(tk) {
+					const importNames = scanDestructureNames();
+					if (importNames)
+						return parseDestructureImport(tk, importNames);
 					const tk1 = current();
 					if (tk1.kind === ':')
 						throw error(
@@ -557,8 +767,8 @@ export function parseExpression(
 					}
 					if (isLambda) return parseLambdaAfterOpenParen(tk);
 					const node = expectExpression();
-					expect(')');
-					return node as NodeMap['('];
+					consume(')');
+					return node;
 				},
 				infix(tk, left) {
 					const cur = current();
@@ -567,7 +777,7 @@ export function parseExpression(
 						kind: 'call',
 						children: [left, cur.kind === ')' ? undefined : expr()],
 						start: left.start,
-						end: expect(')').end,
+						end: consume(')').end,
 					};
 				},
 			},
@@ -582,24 +792,7 @@ export function parseExpression(
 					} catch {
 						typeNode = undefined;
 					}
-					const hasLiteralValueMembers = (() => {
-						if (!typeNode || typeNode.kind !== 'data') return false;
-						const inner = typeNode.children[0];
-						const items =
-							inner?.kind === ',' ? inner.children : inner ? [inner] : [];
-						const ms = items
-							.map(item =>
-								item.kind === 'propdef' ? item.symbol.type : undefined,
-							)
-							.filter((t): t is Type => !!t);
-						if (ms.length === 0) return false;
-						return ms.every(
-							t =>
-								t.kind === 'type' &&
-								t.family === 'literal' &&
-								typeof t.value === 'number',
-						);
-					})();
+					const hasLiteralValueMembers = isLiteralValueData(typeNode);
 					if (typeNode && !hasLiteralValueMembers && current().kind === '{')
 						return parseAnonymousSlotBlock(tk, typeNode);
 					if (hasLiteralValueMembers && current().kind === '{')
@@ -632,7 +825,7 @@ export function parseExpression(
 						...tk,
 						kind: 'data',
 						children: inner ? [inner] : [],
-						end: expect(']').end,
+						end: consume(']').end,
 					};
 					return result;
 				},
@@ -640,7 +833,7 @@ export function parseExpression(
 					return {
 						...tk,
 						children: [left, expectExpression()],
-						end: expect(']').end,
+						end: consume(']').end,
 					};
 				},
 			},
@@ -649,32 +842,58 @@ export function parseExpression(
 				precedence: 2,
 				infix(tk, left) {
 					const truthy = parseBranchOrExpr(2);
-					const node = {
+					const falsy = optional(':')
+						? parseBranchOrExpr(2)
+						: undefined;
+					const node: NodeMap['?'] = {
 						...tk,
-						kind: '?' as const,
+						kind: '?',
 						start: left.start,
-						end: truthy.end,
-						children: [left, truthy] as Node[],
+						end: (falsy ?? truthy).end,
+						children: falsy ? [left, truthy, falsy] : [left, truthy],
 					};
-					if (optional(':')) {
-						const falsy = parseBranchOrExpr(2);
-						node.children.push(falsy);
-						node.end = falsy.end;
-					}
-					return node as NodeMap['?'];
+					return node;
 				},
 			},
 
 			loop: {
 				prefix: n => n,
 			},
-			number: {
-				prefix: n => {
-					(n as NodeMap['number']).value = +text(n).replace(/_/g, '');
-					return n as NodeMap['number'];
+			number: { prefix: n => numberNode(n) },
+			float: { prefix: n => numberNode(n) },
+			string: { prefix: n => n },
+			strhead: {
+				prefix(tk) {
+					const chunk = (t: ScannerToken) =>
+						text(t).slice(1, t.kind === 'strtail' ? -1 : -2);
+					const strings: string[] = [chunk(tk)];
+					const children: Node[] = [];
+					for (;;) {
+						children.push(expectExpression());
+						const cont = current();
+						if (cont.kind === 'strmid') {
+							strings.push(chunk(cont));
+							api.next();
+							continue;
+						}
+						if (cont.kind !== 'strtail')
+							throw error(
+								'Unterminated string interpolation',
+								cont,
+							);
+						strings.push(chunk(cont));
+						api.next();
+						const node: NodeMap['interp'] = {
+							...tk,
+							kind: 'interp',
+							children,
+							strings,
+							end: cont.end,
+						};
+						return node;
+					}
 				},
 			},
-			string: { prefix: n => n },
 			ident: {
 				prefix: n => {
 					const name = text(n);
@@ -682,6 +901,7 @@ export function parseExpression(
 					if (symbol) return { ...n, symbol };
 					if (typesTable.get(name)) {
 						const savedErrors = api.errors.length;
+						const savedRefs = forwardRefs.length;
 						api.backtrack(n);
 						let typeNode: Node | undefined;
 						try {
@@ -696,12 +916,27 @@ export function parseExpression(
 						if (typeNode && current().kind === '(')
 							return typeNode;
 						api.errors.length = savedErrors;
+						forwardRefs.length = savedRefs;
 						api.backtrack(n);
 						api.next();
 					}
 					const tk = current();
-					if (tk.kind !== '=' && tk.kind !== ':')
+					if (tk.kind !== '=' && tk.kind !== ':') {
+						if (deferDepth) {
+							const node: NodeMap['ident'] = {
+								...n,
+								symbol: { name, kind: 'variable', flags: 0 },
+							};
+							forwardRefs.push({
+								node,
+								token: n,
+								name,
+								countRef: !symbolTable.ignoreReferences,
+							});
+							return node;
+						}
 						throw error('Identifier not defined', n);
+					}
 					return parseSlot(
 						n,
 						slot => ({
@@ -740,6 +975,8 @@ export function parseExpression(
 		}
 
 		// Symbol already declared in scope ⇒ this is an assignment, not a def.
+		// (Shadowing is impossible by construction: `=` always assigns the
+		// visible binding, and typed declarations reject any visible name.)
 		if (nextKind === '=' && symbolTable.get(text(tk))) {
 			api.backtrack(tk);
 			return;
@@ -775,5 +1012,5 @@ export function parseExpression(
 		return definition() || exprParser();
 	}
 
-	return statement;
+	return { statement, deferred, resolveForwardRefs };
 }

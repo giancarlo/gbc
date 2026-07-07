@@ -3,6 +3,7 @@ import { CompilerError, Token, each, formatError } from '../sdk/index.js';
 
 import { scan } from './scanner.js';
 import { Program } from './program.js';
+import { runWasm as runHostWasm } from './host.js';
 import { ast as printAst } from './debug.js';
 
 import type { NodeMap } from './node.js';
@@ -38,6 +39,12 @@ export type RuleDef = {
 	ast: string;
 	/** Expected `out` captures when running the compiled WASM module. */
 	out?: OutValue[];
+	/** Fail when the run ends with more than this many 64KB memory pages. */
+	maxPages?: number;
+	/** Compile as a debug build (shadow-stack error chains). */
+	debug?: boolean;
+	/** Expected `runtime.exit` code (0 = ran to completion). */
+	exit?: number;
 	test?: (ast: NodeMap['root']) => void;
 };
 
@@ -46,6 +53,9 @@ export type OutValue = string | number | boolean | OutValue[];
 /** Result of running a compiled WASM module's `main` export. */
 export interface WasmRunResult {
 	out: OutValue[];
+	/** Memory size in 64KB pages after `main` returned. */
+	pages: number;
+	exitCode: number;
 }
 
 /**
@@ -125,12 +135,20 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		}
 	};
 
-	rule = ({ src, ast, out, test }: RuleDef) => {
+	rule = ({ src, ast, out, maxPages, debug, exit, test }: RuleDef) => {
 		const { ast: rootAst } = this.parse(src);
 		this.equal(printAst(rootAst), ast);
-		if (out !== undefined) {
-			const result = this.runWasm(rootAst);
-			this.equalValues(result.out, out);
+		if (out !== undefined || maxPages !== undefined || exit !== undefined) {
+			const result = this.runWasm(rootAst, false, debug);
+			if (out !== undefined) this.equalValues(result.out, out);
+			if (maxPages !== undefined && result.pages > maxPages)
+				throw new Error(
+					`heap grew to ${result.pages} pages (max ${maxPages})`,
+				);
+			if (exit !== undefined && result.exitCode !== exit)
+				throw new Error(
+					`exit code ${result.exitCode} (expected ${exit})`,
+				);
 		}
 		test?.(rootAst);
 	};
@@ -197,6 +215,90 @@ export class SpecApi extends TestApiBase<SpecApi> {
 	 * a failure line otherwise, so `out` is the sequence of failures (empty when
 	 * every assertion holds).
 	 */
+	/**
+	 * Multi-file program: `files` is a virtual filesystem (absolute paths),
+	 * `entry` the program entry. Compiles module-aware and runs `main`.
+	 */
+	modules = ({
+		files,
+		bundles,
+		entry,
+		out,
+		errors,
+	}: {
+		p?: string;
+		files: Record<string, string>;
+		/** Pre-sealed libraries: target .gbm path → its own virtual tree. */
+		bundles?: Record<string, { files: Record<string, string>; entry: string }>;
+		entry: string;
+		out?: OutValue[];
+		errors?: string;
+	}) => {
+		const bundleBytes: Record<string, Uint8Array> = {};
+		for (const [target, lib] of Object.entries(bundles ?? {})) {
+			const libSys = {
+				readFile: (path: string) => {
+					const f = lib.files[path];
+					if (f === undefined) throw new Error(`ENOENT: ${path}`);
+					return f;
+				},
+				readBytes: (path: string) => {
+					throw new Error(`ENOENT: ${path}`);
+				},
+			};
+			const built = Program({ sys: libSys }).buildLibrary(lib.entry);
+			if (built.errors.length || !built.bundle) {
+				this.printErrors(built.errors);
+				throw 'Bundle build failed';
+			}
+			bundleBytes[target] = built.bundle;
+		}
+		const sys = {
+			readFile: (path: string) => {
+				const f = files[path];
+				if (f === undefined) throw new Error(`ENOENT: ${path}`);
+				return f;
+			},
+			readBytes: (path: string) => {
+				const b = bundleBytes[path];
+				if (b === undefined) throw new Error(`ENOENT: ${path}`);
+				return b;
+			},
+		};
+		let result;
+		try {
+			result = Program({ sys }).compileFile(entry, {
+				requireMain: true,
+			});
+		} catch (e) {
+			if (errors && e instanceof Error && e.message.includes(errors))
+				return;
+			throw e;
+		}
+		if (errors) {
+			const matched = result.errors.some(e =>
+				e.message.includes(errors),
+			);
+			if (!matched) {
+				this.printErrors(result.errors);
+				this.assert(
+					false,
+					`No error contained "${errors}". Got: ${result.errors
+						.map(e => e.message)
+						.join('; ')}`,
+				);
+			}
+			return;
+		}
+		if (result.errors.length) {
+			this.printErrors(result.errors);
+			throw 'Errors found';
+		}
+		this.assert(result.bytes);
+		const run = this.runWasmBytes(result.bytes);
+		if (out) this.equalValues(run.out, out);
+	};
+
 	testBlock = ({ src, out }: { p?: string; src: string; out: OutValue[] }) => {
 		const compiled = Program().compileTest(src);
 		if (compiled.errors.length) {
@@ -208,50 +310,21 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		this.equalValues(result.out, out);
 	};
 
-	protected runWasm(root: NodeMap['root'], testMode = false): WasmRunResult {
-		const bytes = Program().compileAst(root, testMode);
+	protected runWasm(
+		root: NodeMap['root'],
+		testMode = false,
+		debug = false,
+	): WasmRunResult {
+		const bytes = Program({ debug }).compileAst(root, testMode);
 		return this.runWasmBytes(bytes);
 	}
 
 	protected runWasmBytes(bytes: Uint8Array): WasmRunResult {
 		const captures: OutValue[] = [];
-		const module = new WebAssembly.Module(bytes);
-		let memory: WebAssembly.Memory | undefined;
-		const decodeString = (strPtr: number) => {
-			if (!memory) throw new Error('memory not bound');
-			const view = new DataView(memory.buffer);
-			const buf = new Uint8Array(memory.buffer);
-			const len = view.getUint32(strPtr, true);
-			return new TextDecoder().decode(
-				buf.subarray(strPtr + 8, strPtr + 8 + len),
-			);
-		};
-		const instance = new WebAssembly.Instance(module, {
-			env: {
-				out_str(strPtr: number) {
-					captures.push(decodeString(strPtr));
-				},
-				out_i32(n: number) {
-					captures.push(n | 0);
-				},
-				out_i64(n: bigint) {
-					captures.push(Number(n));
-				},
-				out_f32(n: number) {
-					captures.push(n);
-				},
-				out_f64(n: number) {
-					captures.push(n);
-				},
-				out_bool(n: number) {
-					captures.push(!!n);
-				},
-				traceHost() {},
-			},
-		});
-		memory = instance.exports.memory as WebAssembly.Memory;
-		(instance.exports.main as () => void)();
-		return { out: captures };
+		const { pages, exitCode } = runHostWasm(bytes, chunk =>
+			captures.push(chunk),
+		);
+		return { out: captures, pages, exitCode };
 	}
 
 	ast = ({

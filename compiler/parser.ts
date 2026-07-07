@@ -6,18 +6,44 @@ import { Flags, SymbolTable, TypesSymbolTable } from './symbol-table.js';
 
 import type { ScannerToken } from './scanner.js';
 import type { Node, NodeMap } from './node.js';
-import type { SymbolMap, Type } from './symbol-table.js';
+import type { Symbol, SymbolMap, Type } from './symbol-table.js';
 
 export type RootNode = ReturnType<typeof parse>;
+
+/** A parsed `@` module reference: `@name` (library, via the import map) or
+ * `@.seg.seg` (local file, relative to the importing file). */
+export interface ModuleRef {
+	dot: boolean;
+	segs: string[];
+}
+
+/** Host-side module loader threaded into the parser: imports bind the
+ * loaded module's actual export symbols at parse time, so downstream
+ * symbol-identity machinery (codegen builder maps) needs no patching. */
+export interface ModuleLoader {
+	load(ref: ModuleRef): {
+		symbol: SymbolMap['variable'];
+		exports: Record<string, Symbol>;
+		types: Record<string, Type>;
+	};
+	setMap(entries: { name: string; path: string }[]): void;
+}
+
+export interface ParseOptions {
+	loader?: ModuleLoader;
+	/** Parsing an imported module: `main` is forbidden. */
+	module?: boolean;
+}
 
 export function parse(
 	api: ParserApi<ScannerToken>,
 	symbolTable: SymbolTable,
 	typesTable: TypesSymbolTable,
+	options: ParseOptions = {},
 ) {
 	const {
 		current,
-		expect,
+		consume,
 		expectNode,
 		expectNodeKind,
 		optional,
@@ -29,9 +55,8 @@ export function parse(
 	const typeParser = parseType(api, typesTable);
 
 	/**
-	 * D30 statement separator: `fn` and `main` blocks self-terminate; every
-	 * other statement requires `;`. Returns `true` to continue, `false` to
-	 * stop the list. Throws on missing `;` or stray `;` after a block.
+	 * Statement separator: `;` separates statements and the trailing `;` is
+	 * optional. A `main`/`test` block statement self-terminates (no `;` after).
 	 */
 	function parseStatementBlock(
 		parser: () => Node | undefined,
@@ -40,8 +65,6 @@ export function parse(
 		return catchAndRecover(
 			() => {
 				const result: Node[] = [];
-				let multi = false;
-				let nonBlockCount = 0;
 				while (
 					current().kind !== endKind &&
 					current().kind !== 'eof'
@@ -59,23 +82,10 @@ export function parse(
 						continue;
 					}
 					if (stmt.kind === 'comment') continue;
-					nonBlockCount++;
 					const consumed = optional(';');
 					const after = current().kind;
 					const atEnd = after === endKind || after === 'eof';
-					if (consumed) {
-						if (atEnd && nonBlockCount === 1)
-							throw api.error(
-								'";" is not allowed after a single statement',
-								stmt,
-							);
-						multi = true;
-					} else if (multi)
-						throw api.error(
-							'Expected ";" after statement',
-							current(),
-						);
-					else if (!atEnd)
+					if (!consumed && !atEnd)
 						throw api.error('Expected ";"', current());
 				}
 				return result;
@@ -91,12 +101,17 @@ export function parse(
 		);
 	}
 
-	const expression = parseExpression(
+	const {
+		statement: expression,
+		deferred,
+		resolveForwardRefs,
+	} = parseExpression(
 		api,
 		symbolTable,
 		typesTable,
 		typeParser,
 		parseStatementBlock,
+		options.loader,
 	);
 
 	function markExported(node: NodeMap['def'] | NodeMap['type']) {
@@ -151,8 +166,7 @@ export function parse(
 	): Type | undefined {
 		if (def.kind === 'typeident' && def.symbol.kind === 'type')
 			return { ...def.symbol, name, components: [def.symbol] };
-		if (def.kind === 'fn' && def.symbol.kind === 'function')
-			return { ...def.symbol, name };
+		if (def.kind === 'fn') return { ...def.symbol, name };
 		if (def.kind === '>>')
 			return {
 				kind: 'type',
@@ -193,7 +207,7 @@ export function parse(
 	}
 
 	function typeDefinition(node: Token<'type'>) {
-		const ident = expect('ident');
+		const ident = consume('ident');
 		const name = text(ident);
 		const stub: Type = {
 			kind: 'type',
@@ -208,11 +222,23 @@ export function parse(
 			stub.typeParams = tp.params
 				.map(p => p.symbol.type)
 				.filter((t): t is Type => !!t);
-		expect('=');
+		consume('=');
 		const def = expectNode(typeParser(), 'Expected type definition');
 		tp?.pop();
 		const built = buildTypeSymbol(def, name);
 		if (!built) throw api.error('Expected type definition', ident);
+		// A type with no structure is Void itself (`[]` is Void) — it can
+		// have no values, so naming one is always a latent error.
+		const emptyDef =
+			(def.kind === 'typeident' &&
+				def.symbol.kind === 'type' &&
+				(def.symbol.family === 'void' || def.symbol.name === '[]')) ||
+			(def.kind === 'data' && !def.children[0]);
+		if (emptyDef)
+			throw api.error(
+				`"${name}" has no structure — \`[]\` is Void and has no values`,
+				ident,
+			);
 		// Mutate the forward-declared stub in place so recursive references
 		// captured during the body parse (e.g. `Reverse<R>`) see the completed
 		// definition. typeParams set on the stub above are preserved.
@@ -238,6 +264,7 @@ export function parse(
 		if (isType) expr = typeDefinition(isType);
 		else {
 			const parsed = expression();
+			if (parsed?.kind === 'import') return parsed;
 			const found = current();
 			expr = expectNodeKind(
 				parsed,
@@ -257,10 +284,10 @@ export function parse(
 
 	function externalDecl(token: Token<'external'>): NodeMap['external'] {
 		next();
-		const ident = expect('ident');
-		expect(':');
+		const ident = consume('ident');
+		consume(':');
 		const type = expectNode(typeParser(), 'Expected type');
-		if (type.kind !== 'fn' || type.symbol.kind !== 'function')
+		if (type.kind !== 'fn')
 			throw api.error(
 				'External must declare a function type',
 				ident,
@@ -285,44 +312,104 @@ export function parse(
 		};
 	}
 
+	function extendDecl(token: Token<'extend'>): NodeMap['extend'] {
+		next();
+		const identTk = consume('ident');
+		const name = text(identTk);
+		const symbol = symbolTable.getWithReference(name, identTk);
+		const identNode: NodeMap['ident'] = {
+			...identTk,
+			symbol: symbol ?? { name, kind: 'variable', flags: 0 },
+		};
+		const arm = expectNodeKind(
+			expression(),
+			'fn',
+			'extend requires a `(params): Ret { body }` arm',
+		);
+		return {
+			...token,
+			kind: 'extend',
+			children: [identNode, arm],
+			end: arm.end,
+		};
+	}
+
+	function importMapDecl(token: ScannerToken): Node {
+		next();
+		consume('{');
+		const entries: { name: string; path: string }[] = [];
+		while (current().kind !== '}' && current().kind !== 'eof') {
+			consume('@');
+			const nameTk = consume('ident');
+			consume('=');
+			const pathTk = current();
+			if (pathTk.kind !== 'string')
+				throw api.error('Expected a path string', pathTk);
+			next();
+			entries.push({
+				name: text(nameTk),
+				path: text(pathTk).slice(1, -1),
+			});
+			optional(';');
+		}
+		const end = consume('}').end;
+		if (!options.loader)
+			throw api.error(
+				'`#importmap` requires a module-aware compile (an entry file)',
+				token,
+			);
+		options.loader.setMap(entries);
+		// Inert comment node: self-terminating (no `;` after the block) and
+		// invisible to the checker/codegen — the entries live in the loader.
+		return { ...token, kind: 'comment' as const, end };
+	}
+
 	function topStatement() {
 		const token = current();
+		if (token.kind === 'extend') return extendDecl(token);
+		if (token.kind === '#importmap') return importMapDecl(token);
 		if (token.kind === 'main') {
+			if (options.module)
+				throw api.error(
+					'a library module cannot declare `main` — `main` belongs to the program entry',
+					token,
+				);
 			next();
-			expect('{');
+			consume('{');
 			return symbolTable.withScope(scope => {
-				const children = parseStatementBlock(expression, '}');
+				const children = deferred(() =>
+					parseStatementBlock(expression, '}'),
+				);
 				return {
 					...token,
 					scope,
 					children,
-					end: expect('}').end,
+					end: consume('}').end,
 					statements: children,
 				};
 			});
 		} else if (token.kind === '#test') {
 			next();
-			expect('{');
+			consume('{');
 			const prev = symbolTable.ignoreReferences;
 			symbolTable.ignoreReferences = true;
 			try {
 				return symbolTable.withScope(scope => {
-					const children = parseStatementBlock(expression, '}');
+					const children = deferred(() =>
+						parseStatementBlock(expression, '}'),
+					);
 					return {
 						...token,
 						kind: 'test' as const,
 						scope,
 						children,
-						end: expect('}').end,
+						end: consume('}').end,
 						statements: children,
 					};
 				});
 			} finally {
 				symbolTable.ignoreReferences = prev;
 			}
-		} else if (token.kind === 'comment') {
-			next();
-			return token;
 		} else if (token.kind === 'external') return externalDecl(token);
 
 		return definition();
@@ -346,10 +433,48 @@ export function parse(
 	}
 
 	const children = parseStatementBlock(topStatement, 'eof');
-	validateTestPlacement(children);
+	// Merge each `extend name arm` into `name`'s dispatch: rewrite the target
+	// def's value to `<old value> | arm`, so all dispatch machinery (resolution,
+	// uniform-return/ambiguity checks, codegen) handles it unchanged.
+	const defsByName = new Map<string, NodeMap['def']>();
+	for (const c of children)
+		if (c.kind === 'def' && c.symbol.name) defsByName.set(c.symbol.name, c);
+	const mergedChildren: Node[] = [];
+	for (const c of children) {
+		if (c.kind === 'extend') {
+			const targetName = text(c.children[0]);
+			const def = defsByName.get(targetName);
+			const arm = c.children[1];
+			if (def && (def.value.kind === 'fn' || def.value.kind === '|')) {
+				const merged: NodeMap['|'] = {
+					...c,
+					kind: '|',
+					children: [def.value, arm],
+					start: def.value.start,
+					end: arm.end,
+				};
+				def.value = merged;
+				def.children[2] = merged;
+				continue;
+			}
+			// Extending a type's constructor: keep the node; the checker and
+			// codegen resolve the arm against the type's constructor dispatch.
+			if (typesTable.get(targetName)) {
+				mergedChildren.push(c);
+				continue;
+			}
+			api.pushError(
+				api.error(`"${targetName}" is not a dispatch to extend`, c),
+			);
+			continue;
+		}
+		mergedChildren.push(c);
+	}
+	resolveForwardRefs();
+	validateTestPlacement(mergedChildren);
 	const root = {
 		...node('root'),
-		children,
+		children: mergedChildren,
 	};
 	return root;
 }

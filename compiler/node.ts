@@ -20,8 +20,13 @@ export type BaseNodeMap = {
 	ident: { symbol: Symbol };
 	label: object;
 	string: object;
-	number: { value: number };
+	number: { value: number | bigint; float?: boolean };
 	literal: { value: unknown; references?: Node[] };
+	interp: { children: Node[]; strings: string[] };
+	extend: { children: [NodeMap['ident'], NodeMap['fn']] };
+	/** A module import statement (destructure or `#importmap` entry) — all
+	 * binding happened at parse time; inert for the checker and codegen. */
+	import: { children: Node[] };
 	loop: object;
 	next: {
 		children?: [Node | undefined];
@@ -61,7 +66,7 @@ export type BaseNodeMap = {
 	};
 	'@': object;
 	'=': { children: [Node, Node] };
-	'?': { children: [Node, Node, Node | undefined] };
+	'?': { children: [Node, Node, (Node | undefined)?] };
 	'~': { children: [Node] };
 	'!': { children: [Node] };
 	'+': { children: [Node] };
@@ -78,9 +83,18 @@ export type BaseNodeMap = {
 	'[': { children: [Node, Node] };
 	'(': { children: [Node] };
 	':': { children: [Node, Node] };
-	call: { children: [Node, Node | undefined] };
+	call: {
+		children: [Node, Node | undefined];
+		/** Fn an inlined error-ctor call belongs to (trace attribution). */
+		originFn?: string;
+	};
 	data: {
 		children: Node[];
+		/** Error-composed target this literal constructs — codegen lays out
+		 * and fills the hidden `__trace` slot. */
+		nominal?: SymbolMap['type'];
+		/** Fn the construction belongs to (survives template inlining). */
+		originFn?: string;
 	};
 	'.': { children: [Node, Node] };
 	',': { children: Node[] };

@@ -265,7 +265,9 @@ export type Point = [ x: Int32, y: Int32 ]
 - × Standalone `export [list]` — redundant naming, drifts independently of definitions
 - × `@.name` for stdlib (earlier design) — overloaded `@` with two meanings; superseded by the global prelude (D46)
 
-## D23: Errors are values; chain-routed propagation
+## D23: Errors are values; chain-routed propagation — RETIRED
+
+> **RETIRED (2026-06-29)** — the error pipeline (this + D24 + D25) is dropped. Union-typed error values (`DivByZero` and friends via D31/D56) cover the routing need: an error is an ordinary union member, routed by the existing `|`-dispatch (D55 chain dispatch), with no dedicated chain-routing rule, auto-filled `id`, or `catch` modifier. (Error **stack capture** is *not* abandoned — a `stack: Frame` payload is still wanted, tracked separately in `docs/todo.md` → `Errors`.) Body kept for reference.
 
 Type `Error` is built-in (D24). Functions emit errors via `next Error('code')`. The pipe `>>` dispatches by stage parameter type:
 - `(T)` stage — non-T inputs route past, looking for a stage that accepts them
@@ -282,9 +284,9 @@ Errors travel only along `>>` chains — no stack unwinding. The compiler enforc
 - × `Result<T, E>` + `?` operator — second control-flow path, boilerplate at every call
 - × Hidden auto-propagation through `(T)` stages without a marker — type-signature dishonesty; replaced with explicit `catch` modifier per D25
 
-## D24: Built-in `Error` type with auto-filled id and stack
+## D24: Built-in `Error` type with auto-filled id and stack — RETIRED
 
-> **Superseded by D50** — errors are now nominal types composed from a minimal `Error = [ stack: Frame ]` base, discriminated by type, with no `id`/`message` string. The auto-filled-`id` model below is retired and kept for reference.
+> **RETIRED (2026-06-29)** — the error pipeline (D23 + this + D25) is dropped; see D23 for rationale. The auto-filled-`id` model below was already superseded by D50's nominal errors. The **stack** half is *not* abandoned: a `stack: Frame` payload on `Error` is still wanted (tracked in `docs/todo.md` → `Errors`); only the `id` / auto-routing / `catch` machinery dies. Body kept for reference.
 
 `Error` is a built-in type with shape:
 
@@ -318,7 +320,9 @@ catch (e: Error): Int32 { next e.id == 'parser/NOT_FOUND' ? 0 : -1 }
 - × User-extensible Error hierarchy — error-type proliferation
 - × `is Error('CODE')` literal-type narrowing — extra type-system surface; equality on id is enough
 
-## D25: `catch(T)` — parameterized type modifier for chain handlers
+## D25: `catch(T)` — parameterized type modifier for chain handlers — RETIRED
+
+> **RETIRED (2026-06-29)** — the error pipeline (D23 + D24 + this) is dropped; see D23. There is no `catch` modifier — union variants are consumed by ordinary `|`-dispatch arms (D55). Body kept for reference.
 
 `catch(T)` is a type modifier on function types (parallels `var` per D6). It marks a function as a chain handler that consumes type T.
 
@@ -433,7 +437,9 @@ Recursive functions written tail-recursively never stack-overflow, regardless of
 
 ## D33: `?:` is a value-ternary; `break`/`done` admitted as bottom-typed branches
 
-`?:` is a value-ternary expression. Both branches are required and must produce values of compatible types. **Exception**: `break` and `done` (control-flow keywords that never return) may appear in either branch. They are bottom-typed — the result type is determined by the non-bottom branch (or is bottom itself if both are).
+`?:` is a value-ternary expression. Both branches are required. Branches of differing value types form a union of those types (D56) — mixing types is allowed; the early "forbid mixed-kind" note is superseded by union types. **Exception**: `break` and `done` (control-flow keywords that never return) may appear in either branch. They are bottom-typed — the result type is determined by the non-bottom branch (or is bottom itself if both are).
+
+**Constant conditions are an error.** If the condition is a compile-time constant — a literal (`1`, `true`) or a constant-foldable comparison (`1 < 2`) — one branch is statically unreachable dead code, and the ternary is rejected (`` `?:` condition is a compile-time constant; one branch is dead code ``). This mirrors the unconsumed-value / dead-code rule applied elsewhere. Conditions that depend on a runtime value (`b ? …`, `$ >= n ? …`) are unaffected.
 
 `next` is **not** allowed inside `?:` branches (statement-only); for value-choice emission write `next cond ? X : Y` (`next` outside the pure-value ternary). The range idiom `loop >> { $ >= n ? break : $ }` motivates admitting bottom branches. `next` is excluded because, unlike `break`/`done`, it continues after emitting — ambiguous in expression position. (Exact legal/illegal branch combinations: test.ts.)
 
@@ -447,7 +453,7 @@ Recursive functions written tail-recursively never stack-overflow, regardless of
 
 ## D34: `error` is a built-in function producing an Error value
 
-> **Superseded by D50** — the `error` intrinsic is retired (it is no longer in the stdlib). Errors are constructed by ordinary factory functions returning a nominal error type (e.g. `notFound = (r: String): NotFound { [ resource = r ] }`). The body below is kept for reference.
+> **Superseded by D50; pipeline retired (2026-06-29)** — the `error` intrinsic is gone (not in the stdlib) and the error pipeline (D23–D25) is dropped. Errors are constructed by ordinary factory functions returning a nominal error type (e.g. `notFound = (r: String): NotFound { [ resource = r ] }`). The one surviving idea here — **capturing a stack at construction** — carries forward as `captureStack()` (D50) and is tracked as future work in `docs/todo.md` → `Errors`. Body kept for reference.
 
 `error: (code: String): Error` is a built-in function always in scope. The name `error` is reserved — user code cannot define a local or top-level binding named `error`.
 
@@ -754,7 +760,9 @@ result >> NotFound { … } >> Error { … }           # specific by instance, ba
 - × String id/message (D24) — uncheckable; "ids are always a mess"
 - × Structural-only error typing — collapses same-shape errors (`NotFound`/`Forbidden`)
 
-Refines: D23 (errors stay chain-routed values); D25 (a typed dispatch arm `>> T { }` *is* the catch — the `catch(T)` modifier is likely unneeded; confirm when specced); D31 (`Int32 | Error` → `Int32 | <TypedError>`). D49 gains: named → a different named type is rejected *unless the target is a component of the source*.
+Refines: D23 / D25 (both **RETIRED 2026-06-29** — errors are union members routed by `|`-dispatch; a typed dispatch arm `>> T { }` *is* the catch, so the `catch(T)` modifier is confirmed unneeded); D31 (`Int32 | Error` → `Int32 | <TypedError>`). D49 gains: named → a different named type is rejected *unless the target is a component of the source*.
+
+**Status:** the nominal / by-type discrimination is implemented (`DivByZero` etc.); the `stack: Frame` payload + `captureStack()` are the *target* but **not yet built** — the working base is `Error = []`. Tracked in `docs/todo.md` → `Errors`.
 
 ## D51: `String` is the named byte-sequence type (`String = [Uint8]`)
 
@@ -846,6 +854,101 @@ A materialized union is two physically separate parts: the **value** and a **hid
 - Supersedes the (undocumented) bit-stealing codegen behind D31/D54. The div/mod *value* (D54) and the type-level union + const-fold narrow (D31) carry forward unchanged; only the runtime layout changes.
 - Prerequisite — data-block layout must move from a single uniform `itemSize` (current; truncates mixed sizes) to **per-field offsets/sizes**, so each slot is sized to its field's largest member. Needed for heterogeneous tuples regardless of unions.
 - Implementation — `driveDispatch` reads the tag slot (not bit 31); construction writes value and tag separately; a fused path is added for produce-and-dispatch.
+- Wide payloads (member > 4 bytes, e.g. `Float64`, `Int64`) — the value slot is a single i64 "bit cell" (i32 when every member fits 4 bytes); members are bit-cast into/out of it (`i64.reinterpret_f64`/`f64.reinterpret_i64` for floats, `i64.extend_i32_u`/`i32.wrap_i64` for ints and pointers). One `bitcast` helper at the construction site (`coerceToUnion`) and the two read sites (`driveDispatch`, `autoDispatchUnion`); a no-op whenever member and slot types already match (so i32-only unions are unchanged). Chosen over per-union native slot typing (f64 slot for a float-dominant union): the cast is bit-exact and effectively free, while native typing only avoids it for unions whose payload-bearing members share one type — which excludes `Float64 | <error>` (an i32-class marker member), the case it was meant to help — so it would need fragile marker detection for no runtime gain.
+
+---
+
+## D57: Data-block layout — headerless, per-field, concatenation `&`, interior-pointer upcast
+
+A data block is a **headerless** flat record laid out by one per-field rule. Offsets and arity are compile-time facts of the type, not runtime metadata: `length` is the member count (already constant-folded), field access is a constant offset, and there is no runtime indexing. The old `[u32 length][u32 itemSize]` header is dropped — for a data block its values were never read (only `String`, genuinely variable-length, keeps a header). One `data` kind covers struct, tuple, and homogeneous array; "homogeneous" is merely the case where the per-field offsets happen to form a uniform stride, not a separate representation.
+
+Layout: fields in declaration order, each at the running size rounded up to its natural alignment, total rounded to the max field alignment. Each field holds its type's full inline representation — scalar inline by size, `String`/nested handle as a 4-byte pointer, and a **union field as `[payload][tag]` inline** (the same two-part value as a union local, D56 — uniform across local and field).
+
+Intersection composes by concatenation: `A & B` lays out as `[A-fields][B-fields]`, each component contiguous and aligned, so every component of a type is a contiguous sub-block at a compile-time offset. Assignability stays `composes` (D49 — component membership), which means every assignable supertype *is* one of those sub-blocks. An **upcast is therefore a pointer adjustment** — viewing a value as a component type yields `ptr + that component's offset`, a compile-time constant, `+0` when the component is the prefix. No copy, no per-value tag, no vtable. Field access always uses the static type's offset and is correct because the (possibly adjusted) pointer points at a region whose layout *is* that type. Headerlessness is what permits this: with no header to skip, any field-aligned interior address is a valid block-view.
+
+- \+ Correctness — per-field offsets end the uniform-`itemSize` truncation (`[1, 3.14].1` was lossy/invalid WASM); union fields and heterogeneous tuples now store faithfully.
+- \+ Zero-cost upcast — reordered subtyping (`Tag & Named` used as `Named`) works via a constant pointer add, often `+0`; no reshape copy, no runtime type info.
+- \+ Uniform with D56 — a union is `[payload][tag]` whether bound to a local or stored in a field; one representation, one construction/dispatch path.
+- \+ Leaner — removes 8 header bytes and the `+8` skip from every access; one layout rule, no struct-vs-array split.
+- × Keep the `[length][itemSize]` header — vestigial: `length` is the compile-time member count, access is a compile-time offset, there is no runtime index. Dead bytes plus skip.
+- × Uniform `itemSize` slot — truncates wide fields in mixed blocks and cannot hold a union field's tag.
+- × Reshape on upcast (copy the target's fields into a fresh block) — correct, but copies on every non-prefix upcast; headerless interior pointers give the same view for free.
+- × Box union fields (pointer to a heap `{tag, value}`) — an allocation per element and an indirection per read on the streaming hot path; breaks D56 local/field uniformity.
+- × Reject non-prefix upcast (prefix-only subtyping) — a real expressiveness loss; pointer adjustment makes any component upcast free, so reordered intersections need not be forbidden.
+- × Runtime offset table / per-value type tag (vtable) — erasure-safe but adds a per-value header and an indirection per field access; against the flat, no-per-value-tag model.
+- Commitment — an interior pointer cannot be walked back to its allocation start, so this forecloses GC or refcounting **for data blocks**; they are bump-allocated (never freed) today. Type erasure (existentials, a `[Named]` holding mixed concrete types behind the supertype) or GC would need the runtime-offset-table model — this is the point to revisit. `String` is unaffected: its value pointer is the allocation start and the pool refcount lives there.
+- Constraint — the layout pass must keep each `&` component contiguous (no global repacking, e.g. slotting a later component's field into an earlier one's padding), or the sub-block view breaks.
+- Builds on D56 (union value+tag) and D49 (nominal-for-named; `composes` assignability). Supersedes the uniform-`itemSize` codegen and the D56 "per-field offsets" prerequisite note. `&` is commutative for assignability (a value of `A & B` or `B & A` is usable as both A and B by adjustment) though the two orders are distinct byte layouts.
+- Orthogonal — whether a **data-block-typed field** is an inline (flattened) sub-block or a handle (pointer) is settled by D58.
+
+---
+
+## D58: Nested records — named fields inline as units, anonymous blocks flatten (D49-keyed)
+
+When a data block contains another block, layout follows D49's named/unnamed axis. An **anonymous** nested block flattens into its parent — `[[1,2],[3,4]]` is a flat four-element block (`length` 4); a structural tuple has no identity to preserve. A **named record field** (a labeled field whose value is a record) is preserved as a contiguous **inline sub-record** — laid out at its full size within the parent, never spliced and never boxed. Reading the field yields an **interior pointer** to its sub-region (the D57 `ptr + offset` mechanism), so `line.to.x` resolves `line → to` (interior pointer) `→ x` (leaf load) with no allocation and no load until the leaf. Records are fixed-size, so inlining is always possible; the boxed **handle** (4-byte pointer) stays reserved for genuinely variable-size or shared members (`String`, a future dynamic `[T]`).
+
+- \+ Identity preserved where it exists — a named field stays a unit you can read (`line.to`) and chain through (`line.to.x`); an anonymous tuple flattens. Matches D49 (named = nominal, unnamed = structural).
+- \+ No boxing — a fixed-size record needs no allocation or indirection; the sub-record is inline, reached by pointer arithmetic, reusing D57's interior-pointer upcast.
+- \+ Flat memory kept — the parent stays one allocation; nesting is tracked by the type, not by headers or out-of-line pointers.
+- × Flatten everything (prior behavior) — erases named structure: `line.to`/`line.to.x` impossible, no record-typed fields. Rejected by the first nominal record needing a block field.
+- × Box every nested record — correct but an allocation + a load per access for something fixed-size; reserved for variable-size/shared members only.
+- Revises D57's "nested → 4-byte handle" clause: a *named* record field is inline; only variable-size/shared members stay handles.
+- Scope — covers named record **fields** (labeled members). Homogeneous **collections** of records (unlabeled elements, `[Point]`) still flatten; preserving those as a stream of record units (zip-as-pairs) is the same interior-pointer mechanism gated on element type, deferred until needed.
+
+## D59: `T(x)` is an overloadable, param-dispatched constructor whose arms all return `T`
+
+> **DEFERRED (2026-07-01)** — the constructor-overload model (memberwise ctors, user conversion arms, `char()`, `String(x)` to-text, dispatch extension) is recorded here as the intended design but **not yet implemented**; it is gated on speccing dispatch-extension. The scalar-conversion arg type-check (`Int64('hello')` → error) already landed.
+
+
+A type used as a call — `Int64(x)`, `String(x)` — is the type's **constructor**: an overload set dispatched by its **parameters**, where **every arm returns `T`**. One shape unifies conversion, parsing, and construction — all are "produce a `T` from some input":
+
+```
+Int64(x: Int32): Int64      # widen      (built-in seed arm)
+Int64(x: Float64): Int64    # truncate   (built-in)
+Int64(x: String): Int64     # parse
+Int64(x: Celsius): Int64    # user conversion
+String(x: Int32): String    # to-text — '8'  (the former toStringInt)
+```
+
+Built-in scalar conversions are the seed arms; user code extends any constructor by adding an input-typed arm (`Int64 = Int64 | (c: Celsius): Int64 { c.raw }`), exactly as the stdlib extends a `|`-dispatch. The checker **enforces** that every arm of `T(…)` returns `T` — `Int64(x): String` is a compile error — so the name-to-result link is guaranteed, not conventional.
+
+**Overloading is by parameters only; there is no return-type dispatch.** Selection uses the value that flows in (input type), never the type expected out — consistent with forward, pipe-first dispatch (D55). This is *why* constructors need no new machinery: the return is pinned by the type's identity, not inferred from context. Two arms with the **same** input but different returns are an **ambiguous-overload error**, not a union — a union return is meaningful only as the declared result of a *single* computation (D56), never as a byproduct of overload merging (only the first arm would run, so the union would be a type the runtime never produces).
+
+Data construction stays the `[...]` literal + coercion (D49/D52); there is no positional data constructor. No-arg `T()` is always an error (no zero/default-by-type — write the value). Type-constructor calls type-check like every other call: `Int64('hello')` is a compile error, not silent garbage.
+
+- \+ P1: one overload rule everywhere — dispatch by params. Conversion, parse, and construct collapse into a single shape (`T(y): T`); `toString` / `to<Type>` / `String([…])` all fold into constructor arms.
+- \+ P2/P3: the return type is guaranteed by the type system (arms must return `T`) — no convention-only `toInt64` names, no unenforced return, no result-type lie.
+- \+ Extensible via the existing arm mechanism — a user `Celsius → Int64` is a normal overload; no traits/methods needed.
+- \+ Forward/pipe-coherent — `Int64(x)` / `x >> Int64` selects on what flows in; nothing flows backward.
+- − Two arms differing only by return are now an error, not a union (a real behavior tightened); return-polymorphic constants (`mempty`, context-`read`) are inexpressible — accepted, they are inherently against forward flow and rare.
+- × Return-type dispatch (a single generic `to<To>`) — needs backward/bidirectional inference and makes untyped pipe positions ambiguous; rejected as against forward flow, for a payoff already covered by return-pinned constructors.
+- × `to<Type>` free functions (`toInt64`, `toString`) — the name-to-result link is unenforced (a `toInt64` may return anything) and fragments one concept into N names; rejected.
+- × Hardcoded, unchecked scalar ctors (prior behavior) — `Int64('hello')` silently produced garbage; rejected.
+
+Interacts with: D26/D52 (`String(…)` constructor; concat moves to interpolation D60), D49 (data via `[...]` + coercion), D55 (forward dispatch by input), D56 (union returns are single-arm declared results only). Supersedes the "Rejected: `as` → `toInt64` functions" note.
+
+## D60: String building — `String(x)` to-text, `char(n)` code→char, `'${…}'` concat
+
+Building a `String` is three distinct, named operations, no overlap:
+- `String(x): String` — value → text via the constructor's arms (D59): `String(8)` → `'8'`, `String(3.14)` → `'3.14'`. This is the former `toString`.
+- `char(n: Uint8): String` — a byte / code point → its one-character string: `char(72)` → `'H'`. The primitive the old `String(Uint8(…))` performed, now named so number-as-charcode is never confused with number-as-text.
+- `'a${expr}b'` — **interpolation** is the concatenation surface: the literal splits into parts and `${expr}` holes; each part is coerced with `String(expr)` and the pieces concatenated (the D57 flatten). `'x=${n}'` with `n = 5` → `'x=5'`.
+
+This **retires `String([…])` as the concat surface** (D52): concatenation is spelled with interpolation, not a data-block constructor, and `String(x)` is unary (a conversion arm), so there is no multi-arg/positional `String(…)`. itoa becomes:
+
+```
+String = String | (n: Int32): String {
+  n < 10 ? char(48 + n) : '${n / 10}${char(48 + n % 10)}'
+}
+```
+
+- \+ P1/P3: three operations, three names, no overloaded meaning — number-as-text (`String`), number-as-char (`char`), concat (`'${…}'`) are visibly distinct.
+- \+ Kills the `String(72) = 'H'` trap (the Go wart): a bare number converts to decimal text; the char-code path is an explicit `char`.
+- \+ Concat is the familiar interpolation form, not `String([a, b, c])`.
+- − Interpolation is new scanner/parser/codegen surface — accepted; it replaces both `String([…])` and call-site `toString`.
+- × `String([…])` concat + `String(Uint8)` charcode (prior D26/D52) — conflated three operations under one name with the charcode trap; rejected.
+
+Interacts with: D59 (`String(x)` is a constructor arm; `char` is a separate primitive), D51/D57 (String repr + flatten used by interpolation), D52 (concat surface moves from `String([…])` to interpolation).
 
 ---
 
@@ -859,7 +962,9 @@ Tracked in `potential-features.md`:
 - Dynamic (non-capturing) function values via funcref table + `call_indirect` (only when a real need arises; static cases monomorphize per D45)
 
 Rejected:
-- `as` type-casting operator — replaced by stdlib conversion functions (`toInt64`, `toFloat32`, `parseInt`, etc.) returning `T` for lossless conversions and `T | Error` for lossy ones. Conversions are regular function calls; compiler inlines to WASM conversion instructions.
+- `as` type-casting operator — replaced by **type constructors** (D59): `Int64(x)`, `String(x)`, etc. are overloadable, param-dispatched, return-pinned calls (conversion = parse = construct). Lossy conversions return `T | Error`; the compiler inlines built-in scalar arms to WASM conversion instructions.
+- `to<Type>` free conversion functions (`toInt64`, `toString`) — superseded by D59 constructor arms (the name-to-result link is unenforced for free functions; constructors guarantee the return type).
+- Return-type dispatch / a single generic `to<To>` — see D59; against forward-flow dispatch.
 
 Not yet decided / specced (future waves):
 - Module resolution / file paths (compiler/tooling concern)
@@ -867,4 +972,4 @@ Not yet decided / specced (future waves):
 - Multi-level break (labeled loops)
 - Type narrowing implementation depth
 - Pick-class type operations (labeled-pattern destructure + constraint syntax; substrate landed in D43)
-- Block-typed record fields — **handle** (pointer; parent stays flat; nesting preserved) vs **inline** (current: nested blocks flatten, `length([[1,4],[2,5],[3,6]])` → 6). Settle the first time a nominal record needs a *data-block-typed* field (errors dodge it — their fields are handles: `String`, `Frame`). Same lever reopens **zip-as-pairs**: handles ⇒ a stream of pairs exists; inline ⇒ flat-only (D49). Explored 2026-06-02; leaning **inline (Option A)** but deferred off the error critical path (errors use handles) — grounded findings + the three-piece build (checker flatten / codegen variable-block flatten fix / binding-stamping) in `todo.md`.
+- Record *collections* / zip-as-pairs — D58 settled named record *fields* (inline units). A homogeneous *collection* of records (`[Point]`, unlabeled elements) still flattens; preserving its elements as a stream of record units (enabling zip-as-pairs) is the same interior-pointer mechanism gated on element type, deferred until a real need.

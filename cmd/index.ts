@@ -220,7 +220,7 @@ function isControl(kind: Kind) {
 function createParser(source: string) {
 	const api = ParserApi(scan);
 	api.start(source);
-	const { current, next, expect, error } = api;
+	const { current, next, consume, error } = api;
 
 	function parseWord(): WordNode {
 		const first = current();
@@ -249,7 +249,7 @@ function createParser(source: string) {
 		const closer = openerKind === '(' ? ')' : '}';
 		next();
 		const child = parseExpression();
-		const close = expect(closer);
+		const close = consume(closer);
 		return {
 			...opener,
 			kind: 'group',

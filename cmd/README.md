@@ -14,4 +14,3 @@ A language for IDE commands
 ## Installation
 
 	npm install @cxl/gbc.cmd
-

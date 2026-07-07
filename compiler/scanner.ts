@@ -7,6 +7,7 @@ export const keywords = [
 	'break',
 	'done',
 	'export',
+	'extend',
 	'external',
 	'loop',
 	'main',
@@ -21,9 +22,7 @@ const identFirst = (ch: string) => alpha(ch);
 const notIdent = (ch: string) => !ident(ch);
 const notEol = (ch: string) => ch !== '\n';
 
-const stringCh = (ch: string) => ch !== "'"; // && ch !== '{';
-/*const stringEscape = (ch: string, cur: string) =>
-	(cur === "'" && ch === '\\') || (cur === '{' && ch !== '$');*/
+const stringCh = (ch: string) => ch !== "'" && ch !== '$';
 
 export function scan(source: string) {
 	const {
@@ -34,11 +33,24 @@ export function scan(source: string) {
 		createTrieMatcher,
 		error,
 		skipWhitespace,
-		backtrack,
+		backtrack: apiBacktrack,
 		matchEnclosed,
 	} = ScannerApi({ source });
 
 	const keywordMatcher = createTrieMatcher(keywords, notIdent);
+
+	const braceStack: number[] = [];
+	const braceLog: {
+		end: number;
+		kind: 'push' | 'pop' | 'inc' | 'dec';
+		val: number;
+	}[] = [];
+
+	function bumpTop(delta: number) {
+		const i = braceStack.length - 1;
+		const d = braceStack[i];
+		if (d !== undefined) braceStack[i] = d + delta;
+	}
 
 	/**
 	 * Match a digit run with `_` allowed only as a separator between digits.
@@ -73,11 +85,13 @@ export function scan(source: string) {
 	function scanDecimalNumber() {
 		let consumed = digitRun(digit, 0);
 		if (consumed === 0) throw error('Expected digit', 1);
+		let float = false;
 		if (current(consumed) === '.') {
 			const decimals = digitRun(digit, consumed + 1);
 			if (decimals === 0)
 				throw error('Expected digit', consumed + 1);
 			consumed = decimals;
+			float = true;
 		}
 		if (current(consumed) === 'e' || current(consumed) === 'E') {
 			let n = consumed + 1;
@@ -85,10 +99,11 @@ export function scan(source: string) {
 			const exp = digitRun(digit, n);
 			if (exp === 0) throw error('Expected digit', n + 1);
 			consumed = exp;
+			float = true;
 		}
 		if (ident(current(consumed)))
 			throw error('Expected digit', consumed + 1);
-		return tk('number', consumed);
+		return tk(float ? 'float' : 'number', consumed);
 	}
 
 	function scanTwoCharOp(
@@ -121,13 +136,36 @@ export function scan(source: string) {
 		}
 	}
 
-	function scanString() {
-		let n = matchEnclosed(stringCh, stringEscape);
-		const end = current(n);
-		if (end === '') throw error('Unterminated string', n);
-		else if (end === "'") n += 1;
-		else n -= 1;
-		return tk('string', n);
+	function scanStr(fromQuote: boolean) {
+		let n = 1;
+		for (;;) {
+			n = matchEnclosed(stringCh, stringEscape, n);
+			const c = current(n);
+			if (c === '') throw error('Unterminated string', n);
+			if (c === "'") return tk(fromQuote ? 'string' : 'strtail', n + 1);
+			if (current(n + 1) === '{') {
+				braceStack.push(0);
+				return tk(fromQuote ? 'strhead' : 'strmid', n + 2);
+			}
+			n += 1;
+		}
+	}
+
+	function scanCloseBrace() {
+		if (braceStack.length && braceStack[braceStack.length - 1] === 0) {
+			const val = braceStack.pop() ?? 0;
+			const t = scanStr(false);
+			braceLog.push({ end: t.end, kind: 'pop', val });
+			if (t.kind === 'strmid')
+				braceLog.push({ end: t.end, kind: 'push', val: 0 });
+			return t;
+		}
+		const t = tk('}', 1);
+		if (braceStack.length) {
+			bumpTop(-1);
+			braceLog.push({ end: t.end, kind: 'dec', val: 0 });
+		}
+		return t;
 	}
 
 	function next() {
@@ -148,8 +186,16 @@ export function scan(source: string) {
 			case '!':
 			case ':':
 				return scanTwoCharOp(ch, la);
-			case '{':
+			case '{': {
+				const t = tk('{', 1);
+				if (braceStack.length) {
+					bumpTop(1);
+					braceLog.push({ end: t.end, kind: 'inc', val: 0 });
+				}
+				return t;
+			}
 			case '}':
+				return scanCloseBrace();
 			case '.':
 			case ',':
 			case '?':
@@ -168,9 +214,15 @@ export function scan(source: string) {
 			case '+':
 			case '-':
 				return tk(ch, 1);
-			case "'":
-				return scanString();
-			case '#':
+			case "'": {
+				const t = scanStr(true);
+				if (t.kind === 'strhead')
+					braceLog.push({ end: t.end, kind: 'push', val: 0 });
+				return t;
+			}
+			case '#': {
+				// `#` is the directive sigil, not a comment marker — only
+				// registered directives exist; free prose is a scan error.
 				if (
 					current(1) === 't' &&
 					current(2) === 'e' &&
@@ -179,9 +231,24 @@ export function scan(source: string) {
 					notIdent(current(5))
 				)
 					return tk('#test', 5);
-				return tk('comment', matchWhile(notEol, 1));
+				const MAP = 'importmap';
+				let isMap = true;
+				for (let i = 0; i < MAP.length; i++)
+					if (current(1 + i) !== MAP[i]) {
+						isMap = false;
+						break;
+					}
+				if (isMap && notIdent(current(1 + MAP.length)))
+					return tk('#importmap', 1 + MAP.length);
+				throw error(
+					'`#` starts a directive, and free-text comments do not exist — known directives: #test, #importmap',
+					matchWhile(notEol, 1),
+				);
+			}
 			case '0':
-				if (la === 'x' || la === 'b') return scanRadixNumber(la);
+				return la === 'x' || la === 'b'
+					? scanRadixNumber(la)
+					: scanDecimalNumber();
 			case '1':
 			case '2':
 			case '3':
@@ -198,6 +265,19 @@ export function scan(source: string) {
 				if (identFirst(ch)) return tk('ident', matchWhile(ident, 1));
 				throw error(`Invalid character "${ch}"`, 1);
 			}
+		}
+	}
+
+	function backtrack(pos: Parameters<typeof apiBacktrack>[0]) {
+		apiBacktrack(pos);
+		for (;;) {
+			const op = braceLog[braceLog.length - 1];
+			if (!op || op.end <= pos.end) break;
+			braceLog.pop();
+			if (op.kind === 'push') braceStack.pop();
+			else if (op.kind === 'pop') braceStack.push(op.val);
+			else if (op.kind === 'inc') bumpTop(-1);
+			else bumpTop(1);
 		}
 	}
 

@@ -7,15 +7,12 @@ function def(node: NodeMap['def']) {
 
 	if (!(symbol.flags & Flags.Export)) return '';
 
-	switch (node.value.kind) {
-		case 'fn': {
-			const params =
-				node.value.parameters?.map(p => `${p.symbol.name || '$'}:any`) ?? '';
-			return `export function ${text(node.label)}(${params}): any`;
-		}
-		default:
-			return '';
+	if (node.value.kind === 'fn') {
+		const params =
+			node.value.parameters?.map(p => `${p.symbol.name || '$'}:any`) ?? '';
+		return `export function ${text(node.label)}(${params}): any`;
 	}
+	return '';
 }
 
 /**
