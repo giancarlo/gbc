@@ -265,6 +265,21 @@ export function parse(
 		else {
 			const parsed = expression();
 			if (parsed?.kind === 'import') return parsed;
+			// `name = …` parses as an assignment (not a def) only when `name` is
+			// already bound: a built-in/prelude (in the global scope) or an
+			// earlier definition. Neither can be redefined — say which, and
+			// point at `extend` for adding an overload arm.
+			if (parsed?.kind === '=') {
+				const lhs = parsed.children[0];
+				const name = text(lhs);
+				const builtin = symbolTable.globalScope.has(name);
+				throw api.error(
+					builtin
+						? `"${name}" is a built-in; add an arm with \`extend ${name} (…) { … }\` or rename`
+						: `"${name}" is already defined; rename or use \`extend\``,
+					lhs,
+				);
+			}
 			const found = current();
 			expr = expectNodeKind(
 				parsed,

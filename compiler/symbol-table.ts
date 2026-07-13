@@ -8,6 +8,7 @@ export enum Flags {
 	Sequence = 4,
 	External = 16,
 	Intrinsic = 32,
+	Collection = 64,
 }
 
 type BaseSymbol = {
@@ -45,8 +46,8 @@ type TypeUnion =
 			size: number;
 			family: 'data';
 			members: Record<string, Symbol>;
-			/** Runtime-length collection of `elem`: laid out
-			 * `[count][elem0][elem1]…` (header'd like String), elements
+			/** Runtime-length collection of `elem` (`Array<T>`): laid out
+			 * `[len][cap][elem0][elem1]…` (payload at offset 8), elements
 			 * inline at the element's stride. `members` stays empty —
 			 * the length is not known at compile time. */
 			elem?: Type;
@@ -227,6 +228,41 @@ export const AnyData: SymbolMap['type'] = {
 	members: {},
 };
 
+// `Buffer<T>` — the low-level, safe, runtime-length memory primitive that the
+// stdlib `Array<T>` (and eventually `String`) is built on. A bare `Buffer`
+// (this symbol) carries `Flags.Collection` for routing; applying it
+// (`Buffer<Int32>`) yields a `bufferTypeOf` instance — a `data` type whose
+// `elem` is the element type (see the `elem` field docs). Layout is
+// `[len][cap][elem×cap]`, payload at offset 8. One shared shape so
+// parser/checker/backend never disagree.
+export const BufferType: SymbolMap['type'] = {
+	name: 'Buffer',
+	kind: 'type',
+	flags: Flags.Collection,
+	family: 'data',
+	size: 4,
+	members: {},
+	typeParams: [
+		{ name: 'T', kind: 'type', flags: 0, family: 'unknown', size: 4 },
+	],
+};
+
+export function bufferTypeOf(elem: Type): SymbolMap['type'] {
+	return {
+		kind: 'type',
+		flags: Flags.Collection,
+		name: 'Buffer',
+		family: 'data',
+		size: 4,
+		members: {},
+		elem,
+	};
+}
+
+export function isCollection(t: Type): boolean {
+	return t.kind === 'type' && t.family === 'data' && t.elem !== undefined;
+}
+
 export function ProgramSymbolTable() {
 	return SymbolTable<Symbol>({
 		true: literal(true, BaseTypes.Bool),
@@ -245,6 +281,43 @@ export function ProgramSymbolTable() {
 		frames: FramesIntrinsic,
 		frameAt: FrameAtIntrinsic,
 		stack: StackIntrinsic,
+		// `Buffer<T>` primitives — the safe memory floor the stdlib `Array<T>`
+		// is built on. `realloc` is the single ownership-shifting op (moves its
+		// buffer in, frees the old block, returns the relocated one). Return
+		// types that depend on the element type (`get` → T, `set`/`realloc` →
+		// Buffer<T>) are computed from the argument (registered here as Unknown).
+		get: {
+			kind: 'function',
+			name: 'get',
+			flags: Flags.Intrinsic,
+			parameters: [param('b', BaseTypes.Unknown), param('i', BaseTypes.Int32)],
+			returnType: BaseTypes.Unknown,
+		},
+		set: {
+			kind: 'function',
+			name: 'set',
+			flags: Flags.Intrinsic,
+			parameters: [
+				param('b', BaseTypes.Unknown),
+				param('i', BaseTypes.Int32),
+				param('x', BaseTypes.Unknown),
+			],
+			returnType: BaseTypes.Unknown,
+		},
+		capacity: {
+			kind: 'function',
+			name: 'capacity',
+			flags: Flags.Intrinsic,
+			parameters: [param('b', BaseTypes.Unknown)],
+			returnType: BaseTypes.Int32,
+		},
+		realloc: {
+			kind: 'function',
+			name: 'realloc',
+			flags: Flags.Intrinsic,
+			parameters: [param('b', BaseTypes.Unknown), param('n', BaseTypes.Int32)],
+			returnType: BaseTypes.Unknown,
+		},
 		out_buffer: {
 			kind: 'function',
 			name: 'out_buffer',
@@ -295,7 +368,7 @@ export const BaseTypes = {
 } as const satisfies Record<string, SymbolMap['type']>;
 
 export function TypesSymbolTable() {
-	return SymbolTable<Type>(BaseTypes);
+	return SymbolTable<Type>({ ...BaseTypes, Buffer: BufferType });
 }
 
 /** `origin(e: Error): Frame` — the trace reader; Error/Frame types are

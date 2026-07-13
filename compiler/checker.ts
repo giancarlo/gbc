@@ -4,6 +4,7 @@ import type { InfixNode, Node, NodeMap } from './node.js';
 import {
 	BaseTypes as BT,
 	Flags,
+	bufferTypeOf,
 	isFloatType,
 	isIntType,
 	isNumericType,
@@ -67,11 +68,47 @@ function typeToStr(type?: Type): string {
 	return type?.name || 'unknown';
 }
 
-/** Completes the return type resolution for function identifiers if their type is function and it has a defined returnType.*/
+// `Buffer<T>(cap)` constructs a buffer; its element type comes from the applied
+// type argument on the callee (`Buffer<Int32>`). A bare `Buffer` with no type
+// arg is reported by `checkBufferCtorArg`.
+function bufferCtorType(node: NodeMap['call']): Type | undefined {
+	const callee = node.children[0];
+	if (callee.kind !== 'typeident') return undefined;
+	const sym = callee.symbol;
+	if (!(sym.kind === 'type' && sym.flags & Flags.Collection)) return undefined;
+	if (sym.family === 'data' && sym.elem) return sym;
+	return bufferTypeOf(BT.Unknown);
+}
+
+// `get(b,i)` → the buffer's element type; `set`/`realloc` → the buffer type.
+function bufferIntrinsicReturn(node: NodeMap['call']): Type | undefined {
+	const callee = node.children[0];
+	if (callee.kind !== 'ident') return undefined;
+	const sym = callee.symbol;
+	if (!(sym.kind === 'function' && sym.flags & Flags.Intrinsic)) return undefined;
+	const name = sym.name;
+	if (name !== 'get' && name !== 'set' && name !== 'realloc') return undefined;
+	const argsNode = node.children[1];
+	const first = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
+	if (!first) return undefined;
+	const bt = resolver(first);
+	if (bt.kind !== 'type' || bt.family !== 'data' || !bt.elem) return undefined;
+	return name === 'get' ? bt.elem : bt;
+}
+
 function callReturnType(node: NodeMap['call']): Type | undefined {
+	const buf = bufferCtorType(node) ?? bufferIntrinsicReturn(node);
+	if (buf) return buf;
 	const rt = resolveReturnType(node.children[0]);
-	if (!rt || rt.kind !== 'type' || rt.family !== 'unknown' || !rt.name)
-		return rt;
+	if (!rt || rt.kind !== 'type') return rt;
+	return substituteGenericReturn(rt, node);
+}
+
+// Generic return: unify each parameter against its argument to bind the type
+// variables, then substitute them into the declared return. Resolves not just
+// a bare `T` return but parameterized ones like `Buffer<T>` -> `Buffer<Int32>`
+// (via `reduceType`'s data/elem case). Non-generic callees return `rt` as-is.
+function substituteGenericReturn(rt: Type, node: NodeMap['call']): Type {
 	const ft = resolver(node.children[0]);
 	const fnSym =
 		ft.kind === 'function'
@@ -79,24 +116,24 @@ function callReturnType(node: NodeMap['call']): Type | undefined {
 			: ft.type?.kind === 'function'
 				? ft.type
 				: undefined;
+	const fnNode =
+		fnSym?.definition?.kind === 'fn' ? fnSym.definition : undefined;
+	const tparams = fnNode?.typeParameters;
+	if (!tparams?.length) return rt;
+	const names = new Set(
+		tparams.map(t => t.symbol.name).filter((n): n is string => !!n),
+	);
 	const params = fnSym?.parameters ?? [];
 	const argsNode = node.children[1];
 	const args =
 		argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
+	const subst = new Map<string, Type>();
 	for (let i = 0; i < params.length; i++) {
 		const pt = params[i]?.type;
 		const arg = args[i];
-		if (
-			arg &&
-			pt?.kind === 'type' &&
-			pt.family === 'unknown' &&
-			pt.name === rt.name
-		) {
-			const at = resolver(arg);
-			if (at.kind === 'type' && at.family !== 'unknown') return at;
-		}
+		if (pt && arg) unifyTypeParam(pt, resolver(arg), names, subst);
 	}
-	return rt;
+	return reduceType(rt, subst);
 }
 
 function resolveReturnType(node: Node) {
@@ -525,6 +562,7 @@ function refsAny(node: Node, outer: Set<Symbol>): boolean {
 function paramsMatch(
 	params: Symbol[] | undefined,
 	argTypes: (Type | undefined)[],
+	widen = false,
 ): boolean {
 	const arity = params?.length ?? 0;
 	if (arity !== argTypes.length) return false;
@@ -532,7 +570,19 @@ function paramsMatch(
 		const want = params?.[i]?.type;
 		const got = argTypes[i];
 		if (!want || !got) continue;
-		if (!canAssign(want, got)) return false;
+		if (canAssign(want, got)) continue;
+		// A narrower int arg adopts a wider int arm (`5` picks an `Int64` arm)
+		// — mirrors codegen's dispatch widen, tried only after exact matches.
+		if (
+			widen &&
+			want.kind === 'type' &&
+			got.kind === 'type' &&
+			isIntType(want) &&
+			isIntType(got) &&
+			want.size >= got.size
+		)
+			continue;
+		return false;
 	}
 	return true;
 }
@@ -547,6 +597,8 @@ function canAssign(to: Type, a: Type): boolean {
 	if (a.family === 'union') return a.members.every(m => canAssign(to, m));
 	if (to.family === 'union') return to.members.some(m => canAssign(m, a));
 	if (canAssignCoercion(to, a)) return true;
+	if (to.family === 'data' && a.family === 'data' && to.elem && a.elem)
+		return canAssign(to.elem, a.elem);
 	return canAssignData(to, a);
 }
 
@@ -701,6 +753,27 @@ function containsApp(t: Type, seen = new Set<Type>()): boolean {
 	return false;
 }
 
+// Reduce a record type's members under bindings, applying D40 (drop `Void`
+// members) and D10 (a single member collapses to its type).
+function reduceDataMembers(
+	members: Record<string, Symbol>,
+	bindings: Map<string, Type>,
+	depth: number,
+): Type {
+	const reduced: Type[] = [];
+	for (const k of Object.keys(members)) {
+		const mt = members[k]?.type;
+		if (!mt) continue;
+		const r = reduceType(mt, bindings, depth + 1);
+		if (r.kind === 'type' && r.family === 'void') continue; // D40 drop
+		reduced.push(r);
+	}
+	if (reduced.length === 0) return BT.Void;
+	const first = reduced[0];
+	if (reduced.length === 1 && first) return first; // D10 collapse
+	return dataTypeOf(reduced);
+}
+
 // Reduce a type under type-variable bindings: substitute bound vars, evaluate
 // applications. Identity for ordinary types when there is nothing to do.
 export function reduceType(t: Type, bindings: Map<string, Type>, depth = 0): Type {
@@ -714,20 +787,11 @@ export function reduceType(t: Type, bindings: Map<string, Type>, depth = 0): Typ
 	if (!bindings.size && !containsApp(t)) return t;
 	if (t.family === 'union')
 		return unionOf(t.members.map(m => reduceType(m, bindings, depth + 1)));
-	if (t.family === 'data') {
-		const reduced: Type[] = [];
-		for (const k of Object.keys(t.members)) {
-			const mt = t.members[k]?.type;
-			if (!mt) continue;
-			const r = reduceType(mt, bindings, depth + 1);
-			if (r.kind === 'type' && r.family === 'void') continue; // D40 drop
-			reduced.push(r);
-		}
-		if (reduced.length === 0) return BT.Void;
-		const first = reduced[0];
-		if (reduced.length === 1 && first) return first; // D10 collapse
-		return dataTypeOf(reduced);
+	if (t.family === 'data' && t.elem) {
+		const e = reduceType(t.elem, bindings, depth + 1);
+		return e === t.elem ? t : bufferTypeOf(e);
 	}
+	if (t.family === 'data') return reduceDataMembers(t.members, bindings, depth);
 	return t;
 }
 
@@ -911,9 +975,10 @@ export function checker({
 		node: NodeMap['call'],
 	): SymbolMap['function'] | undefined {
 		if (fn.overloads) {
-			const match = [fn, ...fn.overloads].find(c =>
-				paramsMatch(c.parameters, argTypes),
-			);
+			const arms = [fn, ...fn.overloads];
+			const match =
+				arms.find(c => paramsMatch(c.parameters, argTypes)) ??
+				arms.find(c => paramsMatch(c.parameters, argTypes, true));
 			if (!match) {
 				error(
 					`No matching overload for ${fn.name ?? '?'}(${argTypes
@@ -1015,6 +1080,24 @@ export function checker({
 			);
 	}
 
+	function checkBufferCtorArg(
+		target: SymbolMap['type'] & { family: 'data' },
+		node: NodeMap['call'],
+	) {
+		if (!target.elem) {
+			error(`Buffer requires a type argument: Buffer<T>(capacity)`, node);
+			return;
+		}
+		const args = node.children[1];
+		if (!args || args.kind === ',') {
+			error(`Buffer<T>(capacity) takes a single Int32 capacity`, node);
+			return;
+		}
+		const at = resolver(args);
+		if (at.kind === 'type' && at.family !== 'unknown' && !isIntType(at))
+			error(`Buffer capacity must be an Int32`, node);
+	}
+
 	function checkScalarCtorArg(target: Type, node: NodeMap['call']) {
 		if (target.kind !== 'type' || !isNumericType(target)) return;
 		const args = node.children[1];
@@ -1039,7 +1122,9 @@ export function checker({
 		const fn = resolveType(calleeNode);
 		if (calleeNode.kind === 'typeident') {
 			if (fn && fn.kind === 'type' && fn.family !== 'fn') {
-				if (fn.family === 'data') checkDataCtorArg(fn, node);
+				if (fn.family === 'data' && fn.flags & Flags.Collection)
+					checkBufferCtorArg(fn, node);
+				else if (fn.family === 'data') checkDataCtorArg(fn, node);
 				else checkScalarCtorArg(fn, node);
 				return;
 			}
@@ -1383,6 +1468,36 @@ export function checker({
 			);
 		}
 	}
+	// `realloc(x, …)` relocates and frees `x`'s block — a move of an owned
+	// local (like `next x`). `set(x, …)` mutates in place and returns the same
+	// block, so it is an alias, not a move: `x` stays the owner and reads after
+	// it remain valid.
+	function markReallocMoves(
+		n: Node,
+		owned: Set<Symbol>,
+		moved: Set<Symbol>,
+	): void {
+		if (n.kind === 'fn' || n.kind === 'main' || n.kind === 'test') return;
+		if (n.kind === 'call') {
+			const callee = n.children[0];
+			if (
+				callee.kind === 'ident' &&
+				callee.symbol.kind === 'function' &&
+				callee.symbol.flags & Flags.Intrinsic &&
+				callee.symbol.name === 'realloc'
+			) {
+				const a = n.children[1];
+				const a0 = a?.kind === ',' ? a.children[0] : a;
+				if (a0?.kind === 'ident' && owned.has(a0.symbol))
+					moved.add(a0.symbol);
+			}
+		}
+		if ('children' in n && n.children)
+			for (let i = 0; i < n.children.length; i++) {
+				const k = n.children[i];
+				if (k) markReallocMoves(k, owned, moved);
+			}
+	}
 	function checkMoves(node: { statements?: Node[] }): void {
 		if (!node.statements) return;
 		const owned = new Set<Symbol>();
@@ -1390,6 +1505,7 @@ export function checker({
 		const borrowed = new Map<Symbol, Symbol>();
 		for (const s of node.statements) {
 			flagMovedUses(s, moved, borrowed);
+			markReallocMoves(s, owned, moved);
 			if (s.kind === 'def') {
 				walkEmbeds(s.value, new Set(), owned, borrowed, m => {
 					owned.delete(m);

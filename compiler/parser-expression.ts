@@ -119,7 +119,7 @@ export function parseExpression(
 			names.push(n);
 			api.next();
 		}
-		if (String(current().kind) !== ')' || names.length < 2) {
+		if (String(current().kind) !== ')') {
 			api.backtrack(first);
 			return undefined;
 		}
@@ -127,6 +127,18 @@ export function parseExpression(
 		if (String(current().kind) !== '=') {
 			api.backtrack(first);
 			return undefined;
+		}
+		// A single name `(a) = …` is ambiguous with a grouped assignment; only
+		// a module-ref RHS (`@…`) makes it a destructure import.
+		if (names.length < 2) {
+			const eq = current();
+			api.next();
+			const isModule = String(current().kind) === '@';
+			api.backtrack(eq);
+			if (!isModule) {
+				api.backtrack(first);
+				return undefined;
+			}
 		}
 		return names;
 	}

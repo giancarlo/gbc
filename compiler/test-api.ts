@@ -299,7 +299,16 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		if (out) this.equalValues(run.out, out);
 	};
 
-	testBlock = ({ src, out }: { p?: string; src: string; out: OutValue[] }) => {
+	testBlock = ({
+		src,
+		out,
+		maxPages,
+	}: {
+		p?: string;
+		src: string;
+		out: OutValue[];
+		maxPages?: number;
+	}) => {
 		const compiled = Program().compileTest(src);
 		if (compiled.errors.length) {
 			this.printErrors(compiled.errors);
@@ -308,6 +317,10 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		this.assert(compiled.bytes);
 		const result = this.runWasmBytes(compiled.bytes);
 		this.equalValues(result.out, out);
+		if (maxPages !== undefined && result.pages > maxPages)
+			throw new Error(
+				`heap grew to ${result.pages} pages (max ${maxPages})`,
+			);
 	};
 
 	protected runWasm(

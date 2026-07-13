@@ -20,6 +20,12 @@ export take = <T>(t: T, n: Int32) { t >> (h, r) { n > 0 ? h, take(r, n - 1) } };
 export drop = <T>(t: T, n: Int32) { t >> (h, r) { n <= 0 ? h, drop(r, n - 1) } };
 export reverse = <T>(t: T) { t >> (h, r) { reverse(r), h } };
 
+export push = <T>(a: Buffer<T>, x: T): Buffer<T> {
+	length(a) < capacity(a)
+		? set(a, length(a), x)
+		: set(realloc(a, capacity(a) * 2), length(a), x)
+};
+
 negDigits = (n: Int32): String {
 	n > -10
 		? String(Char(Uint8(48 - n)))

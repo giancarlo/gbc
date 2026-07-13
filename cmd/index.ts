@@ -54,7 +54,7 @@ const {
 } = matchers;
 
 const identFirst = (ch: string) => ch === '_' || alpha(ch);
-const notIdent = (ch: string) => ch === undefined || !ident(ch);
+const notIdent = (ch: string | undefined) => ch === undefined || !ident(ch);
 const notEol = (ch: string) => ch !== '\n';
 const stringCh = (ch: string) => ch !== "'";
 
@@ -73,6 +73,30 @@ export function scan(source: string) {
 
 	const keywordMatcher = createTrieMatcher(keywords, notIdent);
 
+	function scanNumber(ch: string, la: string) {
+		if (ch === '0' && la === 'x') {
+			const consumed = matchWhile(hexDigit, 2);
+			if (consumed === 2 || ident(current(consumed)))
+				throw error('Expected hexadecimal digit', consumed + 1);
+			return tk('number', consumed);
+		}
+		if (ch === '0' && la === 'b') {
+			const consumed = matchWhile(binaryDigit, 2);
+			if (consumed === 2 || ident(current(consumed)))
+				throw error('Expected binary digit', consumed + 1);
+			return tk('number', consumed);
+		}
+		let consumed = matchWhile(digit, 1);
+		if (consumed && current(consumed) === '.') {
+			const decimals = matchWhile(digit, ++consumed);
+			if (decimals === consumed) throw error('Expected digit', consumed);
+			consumed = decimals;
+		}
+		if (ident(current(consumed)))
+			throw error('Expected digit', consumed + 1);
+		return tk('number', consumed);
+	}
+
 	function next() {
 		skipWhitespace();
 
@@ -81,7 +105,6 @@ export function scan(source: string) {
 		const ch = current();
 		const la = current(1);
 
-		/* eslint no-fallthrough: off */
 		switch (ch) {
 			// 2-char operators
 			case '=':
@@ -145,18 +168,6 @@ export function scan(source: string) {
 
 			// Number
 			case '0':
-				if (la === 'x') {
-					const consumed = matchWhile(hexDigit, 2);
-					if (consumed === 2 || ident(current(consumed)))
-						throw error('Expected hexadecimal digit', consumed + 1);
-					return tk('number', consumed);
-				}
-				if (la === 'b') {
-					const consumed = matchWhile(binaryDigit, 2);
-					if (consumed === 2 || ident(current(consumed)))
-						throw error('Expected binary digit', consumed + 1);
-					return tk('number', consumed);
-				}
 			case '1':
 			case '2':
 			case '3':
@@ -165,19 +176,8 @@ export function scan(source: string) {
 			case '6':
 			case '7':
 			case '8':
-			case '9': {
-				let consumed = matchWhile(digit, 1);
-				if (consumed && current(consumed) === '.') {
-					const decimals = matchWhile(digit, ++consumed);
-					if (decimals === consumed)
-						throw error('Expected digit', consumed);
-					consumed = decimals;
-				}
-				if (ident(current(consumed)))
-					throw error('Expected digit', consumed + 1);
-
-				return tk('number', consumed);
-			}
+			case '9':
+				return scanNumber(ch, la);
 			default: {
 				// Keywords
 				const keywordToken = keywordMatcher();
@@ -317,13 +317,14 @@ function createParser(source: string) {
 			const op = current();
 			next();
 			const right = parseCommand();
-			left = {
+			const bin: BinaryNode = {
 				...op,
 				kind: '|',
 				start: left.start,
 				children: [left, right],
 				end: right.end,
-			} as BinaryNode;
+			};
+			left = bin;
 		}
 		return left;
 	}
@@ -334,12 +335,14 @@ function createParser(source: string) {
 			const op = current();
 			next();
 			const right = parsePipe();
-			left = {
+			const bin: BinaryNode = {
 				...op,
+				kind: String(op.kind) === '&&' ? '&&' : '||',
 				start: left.start,
 				children: [left, right],
 				end: right.end,
-			} as BinaryNode;
+			};
+			left = bin;
 		}
 		return left;
 	}
@@ -381,7 +384,7 @@ function compileNode(node: Node): string {
 		case 'word':
 			return compileWord(node);
 		case 'group':
-			return (node.opener as string) === '('
+			return node.opener === '('
 				? `(${compileNode(node.children[0])})`
 				: `{ ${compileNode(node.children[0])} ; }`;
 		case 'command':
@@ -412,7 +415,8 @@ export function program() {
 	function parse(src: string) {
 		const parser = createParser(src);
 		const root = parser.parse();
-		return { root, errors: [] as never[] };
+		const errors: never[] = [];
+		return { root, errors };
 	}
 
 	function compile(src: string) {

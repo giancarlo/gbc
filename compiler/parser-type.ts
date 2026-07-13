@@ -2,7 +2,7 @@ import { ParserApi, Token, parserTable, text } from '../sdk/index.js';
 
 import type { Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
-import { AnyData, Flags } from './symbol-table.js';
+import { AnyData, Flags, bufferTypeOf } from './symbol-table.js';
 import type {
 	Symbol,
 	SymbolMap,
@@ -70,6 +70,14 @@ export function parseType(
 				`type "${sym.name}" expects ${params.length} type argument(s), got ${argNodes.length}`,
 				node,
 			);
+		// `Buffer<T>` builds a runtime-length collection type whose `elem` is the
+		// argument (a type param placeholder for a generic `Buffer<T>` param —
+		// substituted at monomorphization).
+		if (sym.flags & Flags.Collection) {
+			const a = argNodes[0];
+			const elem = a?.kind === 'typeident' ? a.symbol : AnyData;
+			return { ...node, symbol: bufferTypeOf(elem) };
+		}
 		// D43: chain-defined or forward-declared (recursive) type-functions
 		// reduce on demand in the checker — defer as an application symbol
 		// carrying the arg nodes (composes inside unions/data). Concrete

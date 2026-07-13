@@ -86,14 +86,20 @@ export function scan(source: string) {
 		let consumed = digitRun(digit, 0);
 		if (consumed === 0) throw error('Expected digit', 1);
 		let float = false;
-		if (current(consumed) === '.') {
+		// A number right after a member `.` is a positional index, not a
+		// float — `.0` must not merge into it, so `d.1.0` reads as `(d.1).0`.
+		const memberIndex = current(-1) === '.';
+		if (!memberIndex && current(consumed) === '.') {
 			const decimals = digitRun(digit, consumed + 1);
 			if (decimals === 0)
 				throw error('Expected digit', consumed + 1);
 			consumed = decimals;
 			float = true;
 		}
-		if (current(consumed) === 'e' || current(consumed) === 'E') {
+		if (
+			!memberIndex &&
+			(current(consumed) === 'e' || current(consumed) === 'E')
+		) {
 			let n = consumed + 1;
 			if (current(n) === '+' || current(n) === '-') n++;
 			const exp = digitRun(digit, n);

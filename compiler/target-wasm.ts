@@ -2,6 +2,7 @@ import { sleb128, sleb128big, text, uleb128 } from '../sdk/index.js';
 
 import { reduceType } from './checker.js';
 import {
+	bufferTypeOf,
 	BaseTypes,
 	Flags,
 	isFloatType,
@@ -514,6 +515,21 @@ function fieldBytes(t: Type): number {
 	return 4;
 }
 
+// Does a value of this type own heap allocations that drop-glue must free?
+// Scalars/void: no. String: yes. A collection always owns its block. A record
+// owns heap iff any member (or the hidden trace slot) does.
+function typeOwnsHeap(t: Type | undefined): boolean {
+	if (!t || t.kind !== 'type') return false;
+	if (t.family === 'string') return true;
+	if (t.family === 'data') {
+		if (t.elem) return true;
+		return Object.keys(t.members).some(
+			k => k === '__trace' || typeOwnsHeap(t.members[k]?.type),
+		);
+	}
+	return false;
+}
+
 function fieldAlign(t: Type): number {
 	if (isUnionType(t)) return unionPayloadWasm(t) === I64 ? 8 : 4;
 	if (t.kind === 'type' && t.family === 'data') {
@@ -679,8 +695,15 @@ export function compileWasm(
 	const enc = new TextEncoder();
 	let heap = 0;
 	const internCache = new Map<string, number>();
+	// Every `intern` call while recording a fn for `.gbm` storage must be
+	// matched by a `data` reloc (via `emitDataConst`/`dataImm`); an unmatched
+	// one means a data offset was baked without a relocation, so the fn is
+	// tainted rather than stored with a wrong offset. Counted, not per-fn
+	// attributed, so it is snapshotted around each recorded body.
+	let internCalls = 0;
 
 	function intern(s: string): number {
+		internCalls++;
 		const cached = internCache.get(s);
 		if (cached !== undefined) return cached;
 		const utf8 = enc.encode(s);
@@ -941,16 +964,21 @@ export function compileWasm(
 		for (const child of rootNode.children) {
 			if (child.kind !== 'def' || child.value.kind !== 'fn') continue;
 			const fnNode = child.value;
-			if (fnNode.typeParameters?.length) continue;
 			const params = fnNode.parameters ?? [];
 			if (!params.length) continue;
-			const generic = params.some(p => {
+			// Higher-order (function-typed) and dispatch (union-typed) params
+			// are handled by other machinery — skip those fns. A generic fn is
+			// allowed: the per-param type gate excludes type-param value params
+			// (`x: T`, unknown family) while a concrete `Buffer<T>` param still
+			// qualifies as a consuming/accumulator slot.
+			const hasFnOrUnionParam = params.some(p => {
 				const t = p.symbol.type;
 				return (
-					!t || t.kind === 'function' || t.family === 'union'
+					t?.kind === 'function' ||
+					(t?.kind === 'type' && t.family === 'union')
 				);
 			});
-			if (generic) continue;
+			if (hasFnOrUnionParam) continue;
 			if (hostExports && child.symbol.flags & Flags.Export) continue;
 			infos.set(child.symbol, {
 				defSym: child.symbol,
@@ -1010,41 +1038,191 @@ export function compileWasm(
 			visitTail(stmts[stmts.length - 1]);
 			return tails;
 		};
-		for (const info of infos.values()) {
-			if (info.nonCall || !info.sites.length || !info.selfSites.size)
-				continue;
-			const params = info.fnNode.parameters ?? [];
-			const paramSyms = params.map(p => p.symbol);
-			const tails = tailCallsOf(info.fnNode);
-			const flags = params.map((p, i) => {
-				const t = p.symbol.type;
+		// paramSym -> its owning fn + index, so an arg that is itself an
+		// owned-in param can be recognized as movable-in.
+		const paramOwner = new Map<GbcSymbol, { info: Info; idx: number }>();
+		for (const info of infos.values())
+			(info.fnNode.parameters ?? []).forEach((p, i) =>
+				paramOwner.set(p.symbol, { info, idx: i }),
+			);
+		// Walk the body; true when `sym` appears at an arg position of a
+		// `set`/`realloc` call that `match(name, argIndex)` accepts. Buffer args
+		// (arg 0) are relocated; a `set` value arg (arg 2) is embedded — both
+		// move `sym` into the buffer, so the param must be owned-in.
+		const paramFlowsInto = (
+			fnNode: NodeMap['fn'],
+			sym: GbcSymbol,
+			match: (name: string, argIndex: number) => boolean,
+		): boolean => {
+			const flowsAtCall = (n: NodeMap['call']): boolean => {
+				const callee = n.children[0];
 				if (
-					t?.kind !== 'type' ||
-					(t.family !== 'string' && t.family !== 'data')
+					callee.kind !== 'ident' ||
+					callee.symbol.kind !== 'function' ||
+					!(callee.symbol.flags & Flags.Intrinsic) ||
+					(callee.symbol.name !== 'set' &&
+						callee.symbol.name !== 'realloc')
 				)
 					return false;
-				return info.sites.every(site => {
-					const a = resolveArgNodes(
-						paramSyms,
-						argListFromCall(site.children[1]),
-					)[i];
-					if (!a) return false;
-					if (a.kind === 'string') return true;
+				const a = n.children[1];
+				const args = a?.kind === ',' ? a.children : a ? [a] : [];
+				for (let k = 0; k < args.length; k++) {
+					const ak = args[k];
 					if (
-						a.kind === 'ident' &&
-						a.symbol === p.symbol &&
-						info.selfSites.has(site) &&
-						tails.has(site)
+						ak?.kind === 'ident' &&
+						ak.symbol === sym &&
+						match(callee.symbol.name ?? '', k)
 					)
 						return true;
-					return ownableExpr(a);
-				});
+				}
+				return false;
+			};
+			let hit = false;
+			const walk = (n: Node | undefined): void => {
+				if (!n || hit) return;
+				if (n.kind === 'call' && flowsAtCall(n)) hit = true;
+				if ('children' in n && n.children) {
+					const kids = n.children;
+					for (let j = 0; j < kids.length; j++) walk(kids[j]);
+				}
+				if ('statements' in n && n.statements) {
+					const stmts = n.statements;
+					for (let j = 0; j < stmts.length; j++) walk(stmts[j]);
+				}
+				if (n.kind === 'def' || n.kind === 'propdef') walk(n.value);
+			};
+			(fnNode.statements ?? []).forEach(walk);
+			return hit;
+		};
+		const consumesBuffer = (fnNode: NodeMap['fn'], sym: GbcSymbol): boolean =>
+			paramFlowsInto(fnNode, sym, (_nm, i) => i === 0);
+		const embedsValue = (fnNode: NodeMap['fn'], sym: GbcSymbol): boolean =>
+			paramFlowsInto(fnNode, sym, (nm, i) => nm === 'set' && i === 2);
+		const flagsOf = new Map<Info, boolean[]>();
+		const meta = new Map<Info, { paramSyms: GbcSymbol[]; tails: Set<Node> }>();
+		const isOwnedInParam = (sym: GbcSymbol): boolean => {
+			const o = paramOwner.get(sym);
+			return !!o && !!flagsOf.get(o.info)?.[o.idx];
+		};
+		// The caller owns `a` and can move it into a consuming slot: a fresh
+		// block, an owned local (fresh-valued binding — incl. a `push`/`set`
+		// result once its callee is known owned-in), or an owned-in param.
+		const argMovableIn = (a: Node): boolean => {
+			if (a.kind === 'string') return true;
+			if (ownableExpr(a)) return true;
+			if (a.kind === 'ident') {
+				if (isOwnedInParam(a.symbol)) return true;
+				const def = a.symbol.definition;
+				if (def?.kind === 'def' && ownableExpr(def.value)) return true;
+			}
+			return false;
+		};
+		const typedHeap = (sym: GbcSymbol): boolean => {
+			const t = sym.type;
+			return (
+				t?.kind === 'type' &&
+				(t.family === 'string' || t.family === 'data')
+			);
+		};
+		// A self-recursive accumulator keeps the original site rule (string |
+		// fresh | tail re-pass); a consuming param admits any movable-in arg.
+		const okSites = (
+			info: Info,
+			i: number,
+			paramSyms: GbcSymbol[],
+			tails: Set<Node>,
+			accum: boolean,
+		): boolean =>
+			info.sites.every(site => {
+				const a = resolveArgNodes(
+					paramSyms,
+					argListFromCall(site.children[1]),
+				)[i];
+				if (!a) return false;
+				if (accum && a.kind === 'string') return true;
+				if (
+					a.kind === 'ident' &&
+					a.symbol === paramSyms[i] &&
+					info.selfSites.has(site) &&
+					tails.has(site)
+				)
+					return true;
+				return accum ? ownableExpr(a) : argMovableIn(a);
 			});
-			if (flags.some(Boolean)) {
-				ownedInParams.set(info.defSym, flags);
-				ownedInParams.set(info.fnNode.symbol, flags);
+		const qualifies = (
+			info: Info,
+			i: number,
+			paramSyms: GbcSymbol[],
+			tails: Set<Node>,
+		): boolean => {
+			const sym = paramSyms[i];
+			if (!sym) return false;
+			const heap = typedHeap(sym);
+			// An embedded value param (`set`'s value arg) is owned-in even when
+			// its declared type is a type variable — it monomorphizes to a heap
+			// element in some specs; `compileFnBody` gates the actual drop-glue
+			// on the concrete type, so a scalar spec stays a no-op.
+			const embed = embedsValue(info.fnNode, sym);
+			if (!heap && !embed) return false;
+			if (
+				heap &&
+				info.selfSites.size > 0 &&
+				okSites(info, i, paramSyms, tails, true)
+			)
+				return true;
+			return (
+				((heap && consumesBuffer(info.fnNode, sym)) || embed) &&
+				okSites(info, i, paramSyms, tails, false)
+			);
+		};
+		// Seed: self-accumulators are decided by the map-independent rule;
+		// consuming params start optimistic so a `push`-of-a-`push` chain can
+		// converge (a consuming fn's result is owned only when its own param is
+		// owned-in). The fixpoint below is monotone decreasing.
+		for (const info of infos.values()) {
+			if (info.nonCall || !info.sites.length) continue;
+			const paramSyms = (info.fnNode.parameters ?? []).map(p => p.symbol);
+			const tails = tailCallsOf(info.fnNode);
+			meta.set(info, { paramSyms, tails });
+			flagsOf.set(
+				info,
+				paramSyms.map(
+					sym =>
+						(typedHeap(sym) &&
+							(info.selfSites.size > 0 ||
+								consumesBuffer(info.fnNode, sym))) ||
+						embedsValue(info.fnNode, sym),
+				),
+			);
+		}
+		// Publish working flags so `ownableExpr`/`fnReturnsOwned` reflect them
+		// while checking movability; refine until stable.
+		const publish = () => {
+			ownedInParams.clear();
+			returnsOwnedMemo.clear();
+			for (const [info, flags] of flagsOf)
+				if (flags.some(Boolean)) {
+					ownedInParams.set(info.defSym, flags);
+					ownedInParams.set(info.fnNode.symbol, flags);
+				}
+		};
+		let changed = true;
+		while (changed) {
+			changed = false;
+			publish();
+			for (const [info, { paramSyms, tails }] of meta) {
+				const cur = flagsOf.get(info);
+				if (!cur) continue;
+				const next = cur.map(
+					(on, i) => on && qualifies(info, i, paramSyms, tails),
+				);
+				if (next.some((v, i) => v !== cur[i])) {
+					changed = true;
+					flagsOf.set(info, next);
+				}
 			}
 		}
+		publish();
 	}
 	/**
 	 * Fns with at least one union-typed parameter. They are NOT given an
@@ -1115,9 +1293,18 @@ export function compileWasm(
 			const sfn = resolveStaticMemberFn(callee);
 			return sfn ? sfn.returnType ?? BaseTypes.Void : BaseTypes.Unknown;
 		}
-		if (callee.kind === 'typeident') return callee.symbol;
+		if (callee.kind === 'typeident') {
+			const cs = callee.symbol;
+			if (cs.kind === 'type' && cs.flags & Flags.Collection)
+				return cs.family === 'data' && cs.elem
+					? cs
+					: bufferTypeOf(BaseTypes.Unknown);
+			return cs;
+		}
 		if (callee.kind !== 'ident') return BaseTypes.Unknown;
 		const sym = callee.symbol;
+		const buf = inferBufferIntrinsic(sym, node);
+		if (buf) return buf;
 		const bound = fnArgBindings.get(sym);
 		if (bound) return bound.returnType ?? BaseTypes.Void;
 		const fnSym =
@@ -1131,6 +1318,24 @@ export function compileWasm(
 		if (rt.kind === 'type' && rt.family === 'unknown' && rt.name)
 			return inferGenericReturn(fnSym, rt, node);
 		return rt;
+	}
+
+	// `get(b,i)` → the buffer's element type; `set`/`grow` → the buffer type.
+	function inferBufferIntrinsic(
+		sym: GbcSymbol,
+		node: NodeMap['call'],
+	): Type | undefined {
+		if (!(sym.kind === 'function' && sym.flags & Flags.Intrinsic))
+			return undefined;
+		const name = sym.name;
+		if (name !== 'get' && name !== 'set' && name !== 'realloc')
+			return undefined;
+		const argsNode = node.children[1];
+		const first = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
+		if (!first) return undefined;
+		const bt = inferType(first);
+		if (bt.kind !== 'type' || bt.family !== 'data' || !bt.elem) return undefined;
+		return name === 'get' ? bt.elem : bt;
 	}
 
 	// When a fn's declared return is itself a type parameter, recover the
@@ -1653,6 +1858,29 @@ export function compileWasm(
 			fn.owned = fn.owned.filter(o => o.sym !== node.symbol);
 	}
 
+	/** Is `callee` a reference to the named prelude intrinsic (`set`/`realloc`/…)? */
+	function isIntrinsicCallee(callee: Node, name: string): boolean {
+		return (
+			callee.kind === 'ident' &&
+			callee.symbol.kind === 'function' &&
+			!!(callee.symbol.flags & Flags.Intrinsic) &&
+			callee.symbol.name === name
+		);
+	}
+
+	/** A tail expression that moves an owned buffer out: a bare owned ident, or
+	 * a `set(b, …)` passthrough whose buffer is itself moved out (`set` returns
+	 * its buffer unchanged). `realloc` releases at its own call site. */
+	function releaseTailOwned(fn: FuncBuilder, node: Node | undefined) {
+		if (!node) return;
+		if (node.kind === 'ident') return releaseOwned(fn, node);
+		if (node.kind !== 'call' || !isIntrinsicCallee(node.children[0], 'set'))
+			return;
+		const argsNode = node.children[1];
+		const a0 = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
+		releaseTailOwned(fn, a0);
+	}
+
 	/** `String(x)` allocates for these argument families — via a ctor arm
 	 * whose return paths are fresh-or-static, or the built-in char/float
 	 * conversions when no arm matches. */
@@ -1687,24 +1915,27 @@ export function compileWasm(
 		);
 	}
 
-	function ownableCall(node: NodeMap['call'], fn?: FuncBuilder): boolean {
-		const callee = node.children[0];
-		const args = node.children[1];
-		if (callee.kind === '.') {
-			// `runtime.stack(e)` materializes a fresh collection; its
-			// members are static frame words, so a block free suffices.
-			const sfn = resolveStaticMemberFn(callee);
-			return !!sfn && sfn === StackIntrinsic;
-		}
-		if (callee.kind === 'typeident') {
-			if (callee.symbol.kind !== 'type' || callee.symbol.family !== 'string')
-				return false;
-			if (!args || args.kind === ',') return false;
-			return ctorAllocsFresh(inferType(args, fn));
-		}
-		if (callee.kind !== 'ident') return false;
-		const def = callee.symbol.definition;
-		if (def?.kind !== 'def') return false;
+	// `Buffer<T>(cap)` allocates a fresh collection block; a `String(x)` ctor is
+	// ownable when its arm allocates fresh. Other type ctors are not.
+	function typeidentOwnable(
+		callee: NodeMap['typeident'],
+		args: Node | undefined,
+		fn?: FuncBuilder,
+	): boolean {
+		if (callee.symbol.kind === 'type' && callee.symbol.flags & Flags.Collection)
+			return true;
+		if (callee.symbol.kind !== 'type' || callee.symbol.family !== 'string')
+			return false;
+		if (!args || args.kind === ',') return false;
+		return ctorAllocsFresh(inferType(args, fn));
+	}
+
+	// A user fn/dispatch is ownable when the resolved arm returns an owned value.
+	function callableOwnable(
+		def: NodeMap['def'],
+		args: Node | undefined,
+		fn?: FuncBuilder,
+	): boolean {
 		if (def.value.kind === 'fn') return fnReturnsOwned(def.value);
 		const armNodes = dispatchArmNodes(def.value);
 		if (!armNodes) return false;
@@ -1713,17 +1944,41 @@ export function compileWasm(
 			if (a.kind !== 'fn') return false;
 			overloads.push(a.symbol);
 		}
-		const argList = args
-			? args.kind === ','
-				? args.children
-				: [args]
-			: [];
+		const argList = args ? (args.kind === ',' ? args.children : [args]) : [];
 		const arm = findDispatchArm(
 			overloads,
 			argList.map(a => inferType(a, fn)),
 		);
 		const armNode = armNodes.find(a => a.kind === 'fn' && a.symbol === arm);
 		return armNode?.kind === 'fn' ? fnReturnsOwned(armNode) : false;
+	}
+
+	function ownableCall(node: NodeMap['call'], fn?: FuncBuilder): boolean {
+		const callee = node.children[0];
+		const args = node.children[1];
+		if (callee.kind === '.') {
+			// `runtime.stack(e)` materializes a fresh collection; its members
+			// are static frame words, so a block free suffices.
+			const sfn = resolveStaticMemberFn(callee);
+			return !!sfn && sfn === StackIntrinsic;
+		}
+		if (callee.kind === 'typeident')
+			return typeidentOwnable(callee, args, fn);
+		if (callee.kind !== 'ident') return false;
+		// `realloc` returns a fresh block; `set` carries its buffer arg's
+		// ownership through. Other intrinsics yield a borrow or a scalar.
+		if (isIntrinsicCallee(callee, 'realloc')) return true;
+		if (isIntrinsicCallee(callee, 'set')) {
+			const a0 = args?.kind === ',' ? args.children[0] : args;
+			return !!a0 && ownableExpr(a0, fn);
+		}
+		if (
+			callee.symbol.kind === 'function' &&
+			callee.symbol.flags & Flags.Intrinsic
+		)
+			return false;
+		const def = callee.symbol.definition;
+		return def?.kind === 'def' ? callableOwnable(def, args, fn) : false;
 	}
 
 	function ownableExpr(node: Node, fn?: FuncBuilder): boolean {
@@ -1767,39 +2022,50 @@ export function compileWasm(
 		return result;
 	}
 
+	// `next s` of a local this body owns is a move of a fresh value — the
+	// idiomatic constructor. Params and outer locals stay borrows, except an
+	// owned-in param: returning it moves a value this body owned, fresh to
+	// every caller.
+	function returnIdentOwned(
+		node: NodeMap['ident'],
+		fnNode: NodeMap['fn'],
+	): boolean {
+		const flags = ownedInParams.get(fnNode.symbol);
+		if (flags) {
+			const idx = (fnNode.parameters ?? []).findIndex(
+				p => p.symbol === node.symbol,
+			);
+			if (idx >= 0 && flags[idx]) return true;
+		}
+		const def = node.symbol.definition;
+		return (
+			def?.kind === 'def' &&
+			def.start >= fnNode.start &&
+			def.end <= fnNode.end &&
+			ownableExpr(def.value)
+		);
+	}
+
 	function returnPathOwned(node: Node, fnNode: NodeMap['fn']): boolean {
 		if (node.kind === 'next')
 			return node.children?.[0]
 				? returnPathOwned(node.children[0], fnNode)
 				: false;
 		if (node.kind === 'string') return true;
-		const vt = inferType(node);
-		// scalar paths carry nothing to free
-		if (isFreeableScalar(vt)) return true;
+		if (isFreeableScalar(inferType(node))) return true;
 		if (node.kind === '?')
 			return node.children[2]
 				? returnPathOwned(node.children[1], fnNode) &&
 						returnPathOwned(node.children[2], fnNode)
 				: false;
-		// `next s` of a local this body owns is a move of a fresh value —
-		// the idiomatic constructor. Params and outer locals stay borrows,
-		// except an owned-in param: returning it moves a value this body
-		// owned, fresh to every caller.
-		if (node.kind === 'ident') {
-			const flags = ownedInParams.get(fnNode.symbol);
-			if (flags) {
-				const idx = (fnNode.parameters ?? []).findIndex(
-					p => p.symbol === node.symbol,
-				);
-				if (idx >= 0 && flags[idx]) return true;
-			}
-			const def = node.symbol.definition;
-			return (
-				def?.kind === 'def' &&
-				def.start >= fnNode.start &&
-				def.end <= fnNode.end &&
-				ownableExpr(def.value)
-			);
+		if (node.kind === 'ident') return returnIdentOwned(node, fnNode);
+		// `set(b, i, x)` returns its buffer arg unchanged — the return owns a
+		// value iff that buffer does (an owned-in param, an owned local, or a
+		// fresh block). `realloc` already reports owned via `ownableExpr` below.
+		if (node.kind === 'call' && isIntrinsicCallee(node.children[0], 'set')) {
+			const argsNode = node.children[1];
+			const a0 = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
+			return a0 ? returnPathOwned(a0, fnNode) : false;
 		}
 		return ownableExpr(node);
 	}
@@ -1810,6 +2076,124 @@ export function compileWasm(
 	 * record is embedded by value, never a separate block). The `__trace`
 	 * word may point at a captured heap chain; statics no-op in `__free`,
 	 * so freeing every candidate word is uniformly safe. */
+	// Free the heap elements of a runtime-length collection `[len][cap][elem…]`
+	// with a real loop over `[0,len)`. The block itself is freed by the caller.
+	// Scalar/all-scalar-record elements own nothing → no loop.
+	function emitCollectionElemFrees(
+		loadBase: () => void,
+		elemType: Type | undefined,
+		fn: FuncBuilder,
+	) {
+		if (!typeOwnsHeap(elemType) || elemType?.kind !== 'type') return;
+		const stride = fieldBytes(elemType);
+		const base = allocLocal(fn, I32);
+		const len = allocLocal(fn, I32);
+		const i = allocLocal(fn, I32);
+		loadBase();
+		fn.body.push(OP_LOCAL_TEE);
+		uleb128(base, fn.body);
+		fn.body.push(OP_I32_LOAD);
+		uleb128(2, fn.body);
+		uleb128(0, fn.body);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(len, fn.body);
+		fn.body.push(OP_I32_CONST, 0);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(i, fn.body);
+		fn.body.push(OP_BLOCK, 0x40);
+		fn.blockDepth++;
+		fn.body.push(OP_LOOP, 0x40);
+		fn.blockDepth++;
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(i, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(len, fn.body);
+		fn.body.push(OP_I32_GE_S);
+		fn.body.push(OP_BR_IF, 1);
+		const addr = () => {
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(base, fn.body);
+			fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(i, fn.body);
+			fn.body.push(OP_I32_CONST);
+			sleb128(stride, fn.body);
+			fn.body.push(OP_I32_MUL);
+			fn.body.push(OP_I32_ADD);
+		};
+		if (elemType.family === 'string') {
+			addr();
+			fn.body.push(OP_I32_LOAD);
+			uleb128(2, fn.body);
+			uleb128(0, fn.body);
+			emitFixedCall(fn, freeBuilderIdx);
+		} else if (elemType.family === 'data' && elemType.elem) {
+			const eptr = allocLocal(fn, I32);
+			addr();
+			fn.body.push(OP_I32_LOAD);
+			uleb128(2, fn.body);
+			uleb128(0, fn.body);
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(eptr, fn.body);
+			const loadEptr = () => {
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(eptr, fn.body);
+			};
+			emitCollectionElemFrees(loadEptr, elemType.elem, fn);
+			loadEptr();
+			emitFixedCall(fn, freeBuilderIdx);
+		} else {
+			emitDataMemberFrees(addr, elemType, fn);
+		}
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(i, fn.body);
+		fn.body.push(OP_I32_CONST, 1, OP_I32_ADD);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(i, fn.body);
+		fn.body.push(OP_BR, 0);
+		fn.body.push(OP_END);
+		fn.blockDepth--;
+		fn.body.push(OP_END);
+		fn.blockDepth--;
+	}
+
+	// Free one record member at `off`: a string/`__trace` pointer word directly,
+	// a collection member by freeing its elements then its block, a nested
+	// record by recursing inline. Scalars own nothing.
+	function freeMemberAt(
+		loadPtr: () => void,
+		key: string,
+		mt: Type | undefined,
+		off: number,
+		fn: FuncBuilder,
+		visiting: Set<Type>,
+	): void {
+		if (key === '__trace' || (mt?.kind === 'type' && mt.family === 'string')) {
+			loadPtr();
+			fn.body.push(OP_I32_LOAD);
+			uleb128(2, fn.body);
+			uleb128(off, fn.body);
+			emitFixedCall(fn, freeBuilderIdx);
+			return;
+		}
+		if (mt?.kind !== 'type' || mt.family !== 'data') return;
+		if (!mt.elem) return emitDataMemberFrees(loadPtr, mt, fn, off, visiting);
+		const eptr = allocLocal(fn, I32);
+		loadPtr();
+		fn.body.push(OP_I32_LOAD);
+		uleb128(2, fn.body);
+		uleb128(off, fn.body);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(eptr, fn.body);
+		const loadEptr = () => {
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(eptr, fn.body);
+		};
+		emitCollectionElemFrees(loadEptr, mt.elem, fn);
+		loadEptr();
+		emitFixedCall(fn, freeBuilderIdx);
+	}
+
 	function emitDataMemberFrees(
 		loadPtr: () => void,
 		t: Type | undefined,
@@ -1818,6 +2202,12 @@ export function compileWasm(
 		visiting: Set<Type> = new Set(),
 	) {
 		if (!t || t.kind !== 'type' || t.family !== 'data') return;
+		if (t.elem) {
+			// A runtime-length collection: free its elements (the caller frees
+			// the block). Collections are pointer-referenced, never inline.
+			emitCollectionElemFrees(loadPtr, t.elem, fn);
+			return;
+		}
 		if (visiting.has(t)) return;
 		visiting.add(t);
 		const layout = fieldLayout(t.members);
@@ -1825,16 +2215,7 @@ export function compileWasm(
 			const key = layout.keys[i];
 			if (!key) continue;
 			const off = base + (layout.offs[i] ?? 0);
-			const mt = t.members[key]?.type;
-			if (key === '__trace' || mt?.kind === 'type' && mt.family === 'string') {
-				loadPtr();
-				fn.body.push(OP_I32_LOAD);
-				uleb128(2, fn.body);
-				uleb128(off, fn.body);
-				emitFixedCall(fn, freeBuilderIdx);
-			} else if (mt?.kind === 'type' && mt.family === 'data') {
-				emitDataMemberFrees(loadPtr, mt, fn, off, visiting);
-			}
+			freeMemberAt(loadPtr, key, t.members[key]?.type, off, fn, visiting);
 		}
 		visiting.delete(t);
 	}
@@ -2628,14 +3009,6 @@ export function compileWasm(
 		return BaseTypes.Bool;
 	}
 
-	function compileDropped(node: Node, fn: FuncBuilder) {
-		const t = compileExpr(node, fn);
-		if (hasRuntimeValue(t)) {
-			fn.body.push(OP_DROP);
-			if (isUnionType(t)) fn.body.push(OP_DROP);
-		}
-	}
-
 	function emitHeaderLength(args: Node, fn: FuncBuilder): Type {
 		// Runtime-length collection: the count is the header word.
 		compileExpr(args, fn);
@@ -2678,6 +3051,14 @@ export function compileWasm(
 			return BaseTypes.Int32;
 		}
 		return emitHeaderLength(args, fn);
+	}
+
+	function compileDropped(node: Node, fn: FuncBuilder) {
+		const t = compileExpr(node, fn);
+		if (hasRuntimeValue(t)) {
+			fn.body.push(OP_DROP);
+			if (isUnionType(t)) fn.body.push(OP_DROP);
+		}
 	}
 
 	function compileTraceIntrinsic(
@@ -2801,7 +3182,7 @@ export function compileWasm(
 		args: Node | undefined,
 		fn: FuncBuilder,
 	): Type {
-		// runtime.stack(e): materialize the trace as [count][frame…] —
+		// runtime.stack(e): materialize the trace as [len][cap][frame…] —
 		// each frame's 16 bytes copied inline, so the result is an
 		// ordinary record collection (each/length/member access work).
 		if (!args) throw new Error('stack() requires an argument');
@@ -2826,7 +3207,7 @@ export function compileWasm(
 		uleb128(h, fn.body);
 		const emitSingle = () => {
 				fn.body.push(OP_I32_CONST);
-				sleb128(4 + fSize, fn.body);
+				sleb128(8 + fSize, fn.body);
 				emitFixedCall(fn, allocBuilderIdx);
 				fn.body.push(OP_LOCAL_SET);
 				uleb128(b, fn.body);
@@ -2838,7 +3219,13 @@ export function compileWasm(
 				uleb128(0, fn.body);
 				fn.body.push(OP_LOCAL_GET);
 				uleb128(b, fn.body);
-				fn.body.push(OP_I32_CONST, 4, OP_I32_ADD);
+				fn.body.push(OP_I32_CONST, 1);
+				fn.body.push(OP_I32_STORE);
+				uleb128(2, fn.body);
+				uleb128(4, fn.body);
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(b, fn.body);
+				fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
 				fn.body.push(OP_LOCAL_GET);
 				uleb128(h, fn.body);
 				fn.body.push(OP_I32_CONST);
@@ -2869,7 +3256,7 @@ export function compileWasm(
 				fn.body.push(OP_I32_CONST);
 				sleb128(fSize, fn.body);
 				fn.body.push(OP_I32_MUL);
-				fn.body.push(OP_I32_CONST, 4, OP_I32_ADD);
+				fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
 				emitFixedCall(fn, allocBuilderIdx);
 				fn.body.push(OP_LOCAL_SET);
 				uleb128(b, fn.body);
@@ -2880,10 +3267,17 @@ export function compileWasm(
 				fn.body.push(OP_I32_STORE);
 				uleb128(2, fn.body);
 				uleb128(0, fn.body);
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(b, fn.body);
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(t, fn.body);
+				fn.body.push(OP_I32_STORE);
+				uleb128(2, fn.body);
+				uleb128(4, fn.body);
 				// frame 0 = origin (pointer at h+4)
 				fn.body.push(OP_LOCAL_GET);
 				uleb128(b, fn.body);
-				fn.body.push(OP_I32_CONST, 4, OP_I32_ADD);
+				fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
 				fn.body.push(OP_LOCAL_GET);
 				uleb128(h, fn.body);
 				fn.body.push(OP_I32_LOAD);
@@ -2907,7 +3301,7 @@ export function compileWasm(
 				fn.body.push(OP_BR_IF, 1);
 				fn.body.push(OP_LOCAL_GET);
 				uleb128(b, fn.body);
-				fn.body.push(OP_I32_CONST, 4, OP_I32_ADD);
+				fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
 				fn.body.push(OP_LOCAL_GET);
 				uleb128(i, fn.body);
 				fn.body.push(OP_I32_CONST);
@@ -2951,6 +3345,10 @@ export function compileWasm(
 		fn: FuncBuilder,
 	): Type {
 		if (name === 'length') return compileLength(args, fn);
+		if (name === 'get') return compileBufferGet(args, fn);
+		if (name === 'set') return compileBufferSet(args, fn);
+		if (name === 'capacity') return compileBufferCap(args, fn);
+		if (name === 'realloc') return compileBufferRealloc(args, fn);
 		if (name === 'origin' || name === 'frames' || name === 'frameAt')
 			return compileTraceIntrinsic(name, args, fn);
 		if (name === 'stack') return compileStackIntrinsic(args, fn);
@@ -3409,6 +3807,343 @@ export function compileWasm(
 		return target;
 	}
 
+	// `Buffer<T>(cap)` → a fresh runtime-length collection `[len=0][cap][elem×cap]`
+	// (payload at offset 8). Payload is left uninitialized: `get` and drop-glue
+	// are bounded by `len` (which starts 0), so a slot is only ever read/freed
+	// after `set` initialized it — the Rust `Vec::with_capacity` model.
+	function compileBufferCtor(
+		target: SymbolMap['type'],
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): Type {
+		const elem = target.family === 'data' ? target.elem : undefined;
+		if (!elem)
+			throw new Error('Buffer requires a type argument: Buffer<T>(capacity)');
+		if (!args)
+			throw new Error('Buffer<T>(capacity) requires a capacity');
+		const stride = fieldBytes(elem);
+		const cap = allocLocal(fn, I32);
+		const buf = allocLocal(fn, I32);
+		compileExpr(args, fn);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(cap, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(8, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(cap, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(stride, fn.body);
+		fn.body.push(OP_I32_MUL);
+		fn.body.push(OP_I32_ADD);
+		emitFixedCall(fn, allocBuilderIdx);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(buf, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(buf, fn.body);
+		fn.body.push(OP_I32_CONST, 0);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(0, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(buf, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(cap, fn.body);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(4, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(buf, fn.body);
+		return bufferTypeOf(elem);
+	}
+
+	function bufArgList(args: Node | undefined): Node[] {
+		if (!args) return [];
+		return args.kind === ',' ? args.children : [args];
+	}
+
+	function bufElemOf(bNode: Node, fn: FuncBuilder): Type {
+		const bt = inferType(bNode, fn);
+		return bt.kind === 'type' && bt.family === 'data' && bt.elem
+			? bt.elem
+			: BaseTypes.Unknown;
+	}
+
+	// `local.get baseLocal; i32.load off` — read a header word (len@0/cap@4).
+	function emitHeaderRead(baseLocal: number, off: number, fn: FuncBuilder) {
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(baseLocal, fn.body);
+		fn.body.push(OP_I32_LOAD);
+		uleb128(2, fn.body);
+		uleb128(off, fn.body);
+	}
+
+	// Address of slot `idx` in buffer `base`: base + 8 + idx*stride.
+	function emitSlotAddr(
+		base: number,
+		idx: number,
+		stride: number,
+		fn: FuncBuilder,
+	) {
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(base, fn.body);
+		fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(idx, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(stride, fn.body);
+		fn.body.push(OP_I32_MUL);
+		fn.body.push(OP_I32_ADD);
+	}
+
+	// Trap when the i32 already on the stack is non-zero (a failed bound).
+	function emitTrapIf(fn: FuncBuilder) {
+		fn.body.push(OP_IF, 0x40);
+		fn.body.push(0x00);
+		fn.body.push(OP_END);
+	}
+
+	// Free one heap element living at `addr` (a String pointer, a nested buffer
+	// pointer, or an inline record's heap members). Scalars own nothing.
+	function freeElemAt(addr: () => void, elem: Type, fn: FuncBuilder) {
+		if (!typeOwnsHeap(elem) || elem.kind !== 'type') return;
+		if (elem.family === 'string') {
+			addr();
+			fn.body.push(OP_I32_LOAD);
+			uleb128(2, fn.body);
+			uleb128(0, fn.body);
+			emitFixedCall(fn, freeBuilderIdx);
+			return;
+		}
+		if (elem.family === 'data' && elem.elem) {
+			const eptr = allocLocal(fn, I32);
+			addr();
+			fn.body.push(OP_I32_LOAD);
+			uleb128(2, fn.body);
+			uleb128(0, fn.body);
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(eptr, fn.body);
+			const loadEptr = () => {
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(eptr, fn.body);
+			};
+			emitCollectionElemFrees(loadEptr, elem.elem, fn);
+			loadEptr();
+			emitFixedCall(fn, freeBuilderIdx);
+			return;
+		}
+		emitDataMemberFrees(addr, elem, fn);
+	}
+
+	// `get(b, i): T` — bounds-checked (`i < len`) typed read. Scalar/String
+	// elements load by value; record elements yield an interior pointer.
+	function compileBufferGet(args: Node | undefined, fn: FuncBuilder): Type {
+		const [bNode, iNode] = bufArgList(args);
+		if (!bNode || !iNode)
+			throw new Error('get(buffer, i) requires two arguments');
+		const elem = bufElemOf(bNode, fn);
+		const stride = fieldBytes(elem);
+		const byValue = !(
+			elem.kind === 'type' &&
+			elem.family === 'data' &&
+			Object.keys(elem.members).length > 0
+		);
+		const base = allocLocal(fn, I32);
+		const idx = allocLocal(fn, I32);
+		compileExpr(bNode, fn);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(base, fn.body);
+		compileExpr(iNode, fn);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(idx, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(idx, fn.body);
+		emitHeaderRead(base, 0, fn);
+		fn.body.push(OP_I32_GE_U);
+		emitTrapIf(fn);
+		emitSlotAddr(base, idx, stride, fn);
+		if (byValue) emitFieldLoad(elem, 0, fn);
+		return elem;
+	}
+
+	// `set(b, i, x): Buffer<T>` — bounds-checked (`i <= len`, `i < cap`) typed
+	// write; appending at `i == len` bumps `len`, overwriting frees the old
+	// element first. Returns the (same) buffer.
+	function compileBufferSet(args: Node | undefined, fn: FuncBuilder): Type {
+		const [bNode, iNode, xNode] = bufArgList(args);
+		if (!bNode || !iNode || !xNode)
+			throw new Error('set(buffer, i, x) requires three arguments');
+		const bt = inferType(bNode, fn);
+		const elem =
+			bt.kind === 'type' && bt.family === 'data' && bt.elem
+				? bt.elem
+				: BaseTypes.Unknown;
+		const stride = fieldBytes(elem);
+		const base = allocLocal(fn, I32);
+		const idx = allocLocal(fn, I32);
+		const addrL = allocLocal(fn, I32);
+		compileExpr(bNode, fn);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(base, fn.body);
+		compileExpr(iNode, fn);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(idx, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(idx, fn.body);
+		emitHeaderRead(base, 0, fn);
+		fn.body.push(OP_I32_GT_U);
+		emitTrapIf(fn);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(idx, fn.body);
+		emitHeaderRead(base, 4, fn);
+		fn.body.push(OP_I32_GE_U);
+		emitTrapIf(fn);
+		emitSlotAddr(base, idx, stride, fn);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(addrL, fn.body);
+		if (typeOwnsHeap(elem)) {
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(idx, fn.body);
+			emitHeaderRead(base, 0, fn);
+			fn.body.push(OP_I32_LT_U);
+			fn.body.push(OP_IF, 0x40);
+			freeElemAt(
+				() => {
+					fn.body.push(OP_LOCAL_GET);
+					uleb128(addrL, fn.body);
+				},
+				elem,
+				fn,
+			);
+			fn.body.push(OP_END);
+		}
+		storeMember(xNode, elem, 0, addrL, fn);
+		// Embedding a heap element moves it into the buffer (which now owns it),
+		// so release an owned-ident value arg from this frame — the buffer's
+		// drop-glue frees it. A fresh temp or scalar arg is a no-op here.
+		releaseOwned(fn, xNode);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(idx, fn.body);
+		emitHeaderRead(base, 0, fn);
+		fn.body.push(OP_I32_EQ);
+		fn.body.push(OP_IF, 0x40);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(base, fn.body);
+		emitHeaderRead(base, 0, fn);
+		fn.body.push(OP_I32_CONST, 1, OP_I32_ADD);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(0, fn.body);
+		fn.body.push(OP_END);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(base, fn.body);
+		return bt;
+	}
+
+	// `capacity(b): Int32` — the cap header word (frees a fresh-temp arg).
+	function compileBufferCap(args: Node | undefined, fn: FuncBuilder): Type {
+		const [bNode] = bufArgList(args);
+		if (!bNode) throw new Error('capacity(buffer) requires an argument');
+		compileExpr(bNode, fn);
+		if (ownableExpr(bNode, fn)) {
+			const scratch = allocLocal(fn, I32);
+			fn.body.push(OP_LOCAL_TEE);
+			uleb128(scratch, fn.body);
+			fn.body.push(OP_I32_LOAD);
+			uleb128(2, fn.body);
+			uleb128(4, fn.body);
+			emitLoadLocal(scratch, fn);
+			emitFixedCall(fn, freeBuilderIdx);
+			return BaseTypes.Int32;
+		}
+		fn.body.push(OP_I32_LOAD);
+		uleb128(2, fn.body);
+		uleb128(4, fn.body);
+		return BaseTypes.Int32;
+	}
+
+	// `realloc(b, cap): Buffer<T>` — the single ownership-shifting primitive:
+	// move `b` in, copy the live payload (len*stride bytes) into a fresh block,
+	// carry `len` over, and free the OLD block shallowly (elements were
+	// byte-moved — no element walk). Handles both grow and shrink.
+	function compileBufferRealloc(args: Node | undefined, fn: FuncBuilder): Type {
+		const [bNode, nNode] = bufArgList(args);
+		if (!bNode || !nNode)
+			throw new Error('realloc(buffer, cap) requires two arguments');
+		const bt = inferType(bNode, fn);
+		const elem =
+			bt.kind === 'type' && bt.family === 'data' && bt.elem
+				? bt.elem
+				: BaseTypes.Unknown;
+		const stride = fieldBytes(elem);
+		const old = allocLocal(fn, I32);
+		const ncap = allocLocal(fn, I32);
+		const nb = allocLocal(fn, I32);
+		const len = allocLocal(fn, I32);
+		compileExpr(bNode, fn);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(old, fn.body);
+		compileExpr(nNode, fn);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(ncap, fn.body);
+		emitHeaderRead(old, 0, fn);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(len, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(8, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(ncap, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(stride, fn.body);
+		fn.body.push(OP_I32_MUL);
+		fn.body.push(OP_I32_ADD);
+		emitFixedCall(fn, allocBuilderIdx);
+		fn.body.push(OP_LOCAL_SET);
+		uleb128(nb, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(nb, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(len, fn.body);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(0, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(nb, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(ncap, fn.body);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(4, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(nb, fn.body);
+		fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(old, fn.body);
+		fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(len, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(stride, fn.body);
+		fn.body.push(OP_I32_MUL);
+		fn.body.push(0xfc, 0x0a, 0x00, 0x00);
+		// `realloc` consumes its buffer: free the old block (its elements were
+		// byte-moved into the fresh one, so a shallow block free is correct) and
+		// release an owned-ident arg from this frame so exit drop-glue does not
+		// double-free it. The arg is always owned by codegen time (a fresh temp,
+		// an owned local, or an owned-in param), so freeing it is sound.
+		const bOwned =
+			bNode.kind === 'ident'
+				? !!fn.owned?.some(o => o.sym === bNode.symbol)
+				: ownableExpr(bNode, fn);
+		if (bOwned) {
+			emitLoadLocal(old, fn);
+			emitFixedCall(fn, freeBuilderIdx);
+			releaseOwned(fn, bNode);
+		}
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(nb, fn.body);
+		return bt;
+	}
+
 	function compileErrorCtor(
 		target: Extract<SymbolMap['type'], { family: 'data' }>,
 		fn: FuncBuilder,
@@ -3595,6 +4330,8 @@ export function compileWasm(
 		if (callee.kind === 'typeident') {
 			const target = SCALAR_CTORS[callee.symbol.name ?? ''];
 			if (target) return compileScalarCtor(target, args, fn);
+			if (callee.symbol.kind === 'type' && callee.symbol.flags & Flags.Collection)
+				return compileBufferCtor(callee.symbol, args, fn);
 			if (callee.symbol.kind === 'type' && callee.symbol.family === 'string')
 				return compileStringCtor(args, fn);
 			if (callee.symbol.kind === 'type' && callee.symbol.family === 'char')
@@ -5239,10 +5976,12 @@ export function compileWasm(
 		const base = allocLocal(fn, I32);
 		const count = allocLocal(fn, I32);
 		const i = allocLocal(fn, I32);
-		const elemSize =
-			elemType.kind === 'type' && elemType.family === 'data'
-				? fieldLayout(elemType.members).total
-				: 4;
+		const stride = fieldBytes(elemType);
+		const byValue = !(
+			elemType.kind === 'type' &&
+			elemType.family === 'data' &&
+			Object.keys(elemType.members).length > 0
+		);
 		fn.body.push(OP_LOCAL_SET);
 		uleb128(base, fn.body);
 		fn.body.push(OP_LOCAL_GET);
@@ -5267,13 +6006,14 @@ export function compileWasm(
 		fn.body.push(OP_BR_IF, 1);
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(base, fn.body);
-		fn.body.push(OP_I32_CONST, 4, OP_I32_ADD);
+		fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(i, fn.body);
 		fn.body.push(OP_I32_CONST);
-		sleb128(elemSize, fn.body);
+		sleb128(stride, fn.body);
 		fn.body.push(OP_I32_MUL);
 		fn.body.push(OP_I32_ADD);
+		if (byValue) emitFieldLoad(elemType, 0, fn);
 		const rt = driveStages(rest, elemType, fn);
 		if (hasRuntimeValue(rt)) {
 			fn.body.push(OP_DROP);
@@ -6244,6 +6984,19 @@ export function compileWasm(
 		return restorePh;
 	}
 
+	// A monomorphized return type may reference a type-param placeholder that
+	// `getOrCreateSpec` restores to `unknown` after the body compiles. Detach
+	// it into a placeholder-free copy so `specReturn` — read by callers later —
+	// keeps the concrete element type (e.g. `Buffer<Int32>` for a caller's
+	// binding drop-glue), not `Buffer<unknown>`.
+	function detachType(t: Type, depth = 0): Type {
+		if (t.kind !== 'type' || depth > 8) return t;
+		if (t.family === 'data' && t.elem)
+			return bufferTypeOf(detachType(t.elem, depth + 1));
+		if (t.family === 'unknown') return t;
+		return { ...t };
+	}
+
 	function getOrCreateSpec(
 		template: NodeMap['fn'],
 		argTypes: Type[],
@@ -6294,7 +7047,7 @@ export function compileWasm(
 			template,
 			subst,
 		);
-		specReturn.set(builderIdx, returnType);
+		specReturn.set(builderIdx, detachType(returnType));
 		// Register BEFORE compiling the body so recursive calls inside the
 		// body resolve to this in-progress spec via the cache.
 		specCache.set(key, builderIdx);
@@ -6552,7 +7305,7 @@ export function compileWasm(
 			return unionTernaryTail(node.children[0], node.children[1], alt, rt, fn);
 		if (node.kind === 'call' && tryTailCall(node, fn)) return true;
 		if (node.kind === '>>' && tryTailPipe(node, fn)) return true;
-		releaseOwned(fn, node);
+		releaseTailOwned(fn, node);
 		const t = compileExpr(node, fn);
 		if (!hasRuntimeValue(rt)) {
 			if (hasRuntimeValue(t)) {
@@ -6574,6 +7327,17 @@ export function compileWasm(
 				for (let i = 0; i < params.length; i++) {
 					const p = params[i];
 					if (!p || !ownedIn[i]) continue;
+					// Only heap params carry drop-glue. A type-param value slot
+					// (e.g. `push`'s embedded `x: T`) is owned-in on the template
+					// but monomorphizes to a scalar in some specs — freeing that
+					// would treat a number as a pointer, so gate on the concrete
+					// element type here.
+					const pt = p.symbol.type;
+					if (
+						pt?.kind !== 'type' ||
+						(pt.family !== 'string' && pt.family !== 'data')
+					)
+						continue;
 					const localIdx = builder.paramMap.get(p.symbol);
 					if (localIdx === undefined) continue;
 					(builder.owned ??= []).push({
@@ -6892,6 +7656,12 @@ export function compileWasm(
 		for (const [builderIdx, sym] of builderSym) {
 			const b = funcBuilders[builderIdx];
 			if (!b?.relocs || b.relocTainted) continue;
+			// An owned-in param's contract is whole-program: this build marked it
+			// owned (its wasm frees the param) because every call site here feeds
+			// it fresh, but a consumer could add a call site that doesn't — its
+			// re-derived owned-in would then disagree with the baked free. Leave
+			// such fns as IR so the consumer derives the contract consistently.
+			if (ownedInParams.get(sym)?.some(Boolean)) continue;
 			const relocs: ObjReloc[] = [...b.relocs];
 			let ok = true;
 			for (const fix of b.callFixups) {
@@ -6926,8 +7696,18 @@ export function compileWasm(
 	) {
 		for (const { builder, fnNode } of fns) {
 			const obj = spliceByBuilder.get(builder);
-			if (obj) spliceObject(builder, obj);
-			else compileFnBody(builder, fnNode);
+			if (obj) {
+				spliceObject(builder, obj);
+				continue;
+			}
+			const before = internCalls;
+			compileFnBody(builder, fnNode);
+			if (builder.relocs && !builder.relocTainted) {
+				const dataRelocs = builder.relocs.filter(
+					r => r.kind === 'data',
+				).length;
+				if (internCalls - before > dataRelocs) builder.relocTainted = true;
+			}
 		}
 		if (objectSink) collectLibraryObjects(objectSink);
 	}

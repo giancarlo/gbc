@@ -580,6 +580,26 @@ main {
 			ast: "(call :size 'abc')",
 			out: ['3'],
 		});
+		expr({
+			p: 'A narrower integer argument adopts a wider integer arm: `5` selects the `Int64` arm when no exact `Int32` arm exists — no `Int64(5)` needed.',
+			pre: 'g = (n: Int64): Int64 { n + 1 } | (b: Bool): Int64 { 99 }',
+			src: 'g(5)',
+			ast: '(call :g 5)',
+			out: ['6'],
+		});
+		expr({
+			p: 'An exact arm still wins over an integer-widening one — `5` binds the `Int32` arm even when an `Int64` arm is present.',
+			pre: 'h = (n: Int32): Int32 { n } | (n: Int64): Int32 { 0 }',
+			src: 'h(5)',
+			ast: '(call :h 5)',
+			out: ['5'],
+		});
+		expr({
+			pre: 'g2 = (b: Bool): Int64 { 99 } | (n: Int64): Int64 { n + 1 }',
+			src: 'g2(5)',
+			ast: '(call :g2 5)',
+			out: ['6'],
+		});
 		compileError({
 			p: 'Every arm of an overload must return the same type. An overload is one operation with many input types, not unrelated functions sharing a name, so the result type never depends on which arm ran; arms that disagree on the return type are rejected.',
 			src: "f = (n: Int32): Int32 { n } | (s: String): Bool { length(s) == 0 }; main { f(5) >> out }",
@@ -719,6 +739,23 @@ main {
 			src: `main { d = [ 'abcd\${7}', 42 ]; length(d.0) >> out; d.1 >> out }`,
 			ast: `(root (main (def :d ? (data (, (interp 7) 42))) (>> (call :length @intrinsic (. :d 0)) :out) (>> (. :d 1) :out)))`,
 			out: ['5', '42'],
+		});
+		rule({
+			p: 'Positional access chains: `d.1.0` reads member 1 then member 0 — a `.N` right after a member dot is another index, not a decimal, so `d.1.0` is `(d.1).0`.',
+			src: `main { d = [ 9, [ 7, 8 ] ]; d.1.0 >> out }`,
+			ast: `(root (main (def :d ? (data (, 9 (data (, 7 8))))) (>> (. (. :d 1) 0) :out)))`,
+			out: ['7'],
+		});
+		rule({
+			src: `main { g = [ [ 1, 2 ], [ 3, 4 ] ]; g.0.1 >> out; g.1.0 >> out }`,
+			ast: `(root (main (def :g ? (data (, (data (, 1 2)) (data (, 3 4))))) (>> (. (. :g 0) 1) :out) (>> (. (. :g 1) 0) :out)))`,
+			out: ['2', '3'],
+		});
+		rule({
+			p: 'A decimal is still a float except right after a member dot — `3.14` is one float token; only the `.N` following a member access is an index.',
+			src: `main { 3.14 >> out; x = [ 5, 6 ]; x.1 >> out }`,
+			ast: `(root (main (>> 3.14 :out) (def :x ? (data (, 5 6))) (>> (. :x 1) :out)))`,
+			out: ['3.14', '6'],
 		});
 		rule({
 			p: 'A one-element block collapses to its element \u2014 as a value (`[x]` is `x`) and as a type (`[T]` is `T`); `[\u2026]` is a fixed product, not a variable-length collection. So a `[String]` parameter is a `String`.',
@@ -1981,6 +2018,48 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> ou
 		});
 	});
 
+	h('Buffer & Array (push)', ({ testBlock }) => {
+		testBlock({
+			p: '`Buffer<T>` primitives: `set` appends at `length` (bumping it) and `get` reads back; `capacity` is the fixed slot count; the prelude `push` appends, reallocating (doubling) when full; `each` streams the live elements.',
+			src: `export mk = (): Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 10); b2 = set(b1, 1, 20); next push(b2, 30) };
+export sumEach = (b: Buffer<Int32>): Int32 { total: var = 0; b >> each >> (n: Int32) { total = total + n; }; next total };
+#test {
+	equal(length(mk()), 3);
+	equal(capacity(mk()), 4);
+	equal(get(mk(), 0), 10);
+	equal(get(mk(), 2), 30);
+	equal(sumEach(mk()), 60)
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		testBlock({
+			p: '`realloc` relocates a buffer into a larger block, preserving the live elements and length, and reports the new capacity.',
+			src: `export grow4 = (): Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 7); b2 = set(b1, 1, 8); next realloc(b2, 4) };
+#test { equal(get(grow4(), 0), 7); equal(get(grow4(), 1), 8); equal(length(grow4()), 2); equal(capacity(grow4()), 4) }
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		testBlock({
+			p: 'push grows a scalar buffer flat: building and dropping a buffer every iteration reuses the heap — the doubling `realloc` frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
+			src: `export build = (b: Buffer<Int32>, n: Int32): Buffer<Int32> { n == 0 ? b : build(push(b, n), n - 1) };
+export step = (n: Int32): Int32 { b = build(Buffer<Int32>(2), 8); next length(b) };
+#test { equal(spin(50000, 0), 400000) }
+export spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) }`,
+			out: [],
+			maxPages: 3,
+		});
+		testBlock({
+			p: 'push of heap elements (`Buffer<String>`) stays flat: the value element is moved into the buffer (single owner), so per-iteration build-and-drop is bounded.',
+			src: `export buildS = (b: Buffer<String>, n: Int32): Buffer<String> { n == 0 ? b : buildS(push(b, '\${n}'), n - 1) };
+export stepS = (n: Int32): Int32 { b = buildS(Buffer<String>(2), 6); next length(b) };
+#test { equal(spinS(30000, 0), 180000) }
+export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc + stepS(n)) }`,
+			out: [],
+			maxPages: 3,
+		});
+	});
+
 	h('Tail calls', ({ rule }) => {
 		rule({
 			src: `sum = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : sum(n - 1, acc + n) };
@@ -2966,6 +3045,40 @@ main { }`,
 			entry: '/main.gb',
 			errors: 'not in the import map',
 		});
+		modules({
+			p: 'A single-name destructure `(a) = @…` binds that one export — same rule as `(a, b) = @…`; a module-ref RHS is what distinguishes it from a grouped assignment.',
+			files: {
+				'/lib.gb': `export foo = (): Int32 { 42 };
+export bar = (): Int32 { 7 };`,
+				'/main.gb': `(foo) = @.lib;
+main { foo() >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['42'],
+		});
+		modules({
+			files: {
+				'/lib.gb': `export foo = (): Int32 { 42 };
+export bar = (): Int32 { 7 };`,
+				'/main.gb': `(bar) = @.lib;
+main { bar() >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['7'],
+		});
+		modules({
+			p: 'The single-name form binds an exported type too.',
+			files: {
+				'/lib.gb': `export type Pt = [ x: Int32 ];
+export mk = (n: Int32): Pt { [ x = n ] };`,
+				'/main.gb': `(Pt) = @.lib;
+(mk) = @.lib;
+report = (p: Pt): Int32 { p.x };
+main { report(mk(9)) >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['9'],
+		});
 	});
 
 	h('Statement separators', ({ rule, ast, compileError }) => {
@@ -3113,11 +3226,11 @@ main { t = 'q\${1}'; length(id(t)) + length(t) >> out }`,
 			p: 'Error values, union payloads (branched on the live member\u2019s tag), and record literals are dropped like every owned value — error frees include the trace chain, so debug builds also run flat.',
 			debug: true,
 			src: `type Miss = Error & [ id: Int32 ];
-get = (n: Int32): Int32 | Miss { next n > 0 ? n : [ id = n ] };
-step = (n: Int32): Int32 { r = get(n - 50000); next r >> Int32 { $ } | Miss { 0 } };
+lookup = (n: Int32): Int32 | Miss { next n > 0 ? n : [ id = n ] };
+step = (n: Int32): Int32 { r = lookup(n - 50000); next r >> Int32 { $ } | Miss { 0 } };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
-			ast: `(root (type :Miss (& typeident (data (propdef :id typeident ?)))) (def :get ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (data (propdef :id ? :n)))))) (def :step ? (fn (parameter :n typeident ?) typeident (def :r ? (call :get (- :n 50000))) (next (>> :r (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
+			ast: `(root (type :Miss (& typeident (data (propdef :id typeident ?)))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (data (propdef :id ? :n)))))) (def :step ? (fn (parameter :n typeident ?) typeident (def :r ? (call :lookup (- :n 50000))) (next (>> :r (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
 			out: ['1250025000'],
 			maxPages: 3,
 		});

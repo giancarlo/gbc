@@ -642,11 +642,11 @@ export function Program(options?: ProgramOptions) {
 		const base = dirName(path);
 		const rel = (p: string) =>
 			base && p.startsWith(`${base}/`) ? p.slice(base.length + 1) : p;
+		const objects: LibraryObject[] = [];
 		const strip = (root: NodeMap['root']): NodeMap['root'] => ({
 			...root,
 			children: root.children.filter(c => c.kind !== 'test'),
 		});
-		const objects: LibraryObject[] = [];
 		try {
 			const emptyRoot: NodeMap['root'] = {
 				kind: 'root',
