@@ -1,9 +1,9 @@
-import { ParserApi, ScannerApi, matchers, stringEscape, text } from '../sdk/index.js';
+import { ParserApi, ScannerApi, text } from '../sdk/index.js';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
 
-export const keywords = ['fn', 'var', 'main'] as const;
+export const keywords: readonly string[] = [];
 
 type BaseNode = {
 	start: number;
@@ -12,15 +12,17 @@ type BaseNode = {
 	source: string;
 };
 type WordNode = BaseNode & { kind: 'word' };
+type RedirectOperator = '>' | '>>' | '<' | '<>' | '>|' | '<<' | '<<-' | '<&' | '>&';
+type RedirectNode = BaseNode & {
+	kind: 'redirect';
+	operator: RedirectOperator;
+	io?: WordNode;
+	target: WordNode;
+};
 type CommandNode = BaseNode & {
 	kind: 'command';
 	parts: TermNode[];
 	redirects: RedirectNode[];
-};
-type RedirectNode = BaseNode & {
-	kind: 'redirect';
-	operator: '>' | '>>' | '<';
-	target: WordNode;
 };
 type GroupNode = BaseNode & {
 	kind: 'group';
@@ -32,190 +34,153 @@ type BinaryNode = BaseNode & {
 	kind: '|' | '&&' | '||';
 	children: [Node, Node];
 };
-type RootNode = BaseNode & {
-	kind: 'root';
+type ListNode = BaseNode & {
+	kind: 'list';
 	children: Node[];
+	separators: (';' | '&' | 'newline')[];
 };
+type RootNode = BaseNode & { kind: 'root'; children: Node[] };
 type TermNode = WordNode | GroupNode;
 export type Node =
 	| RootNode
+	| ListNode
 	| CommandNode
 	| RedirectNode
 	| GroupNode
 	| BinaryNode
 	| WordNode;
 
-const {
-	alpha,
-	digitUnderscore: digit,
-	hexDigitUnderscore: hexDigit,
-	binaryDigitUnderscore: binaryDigit,
-	ident,
-} = matchers;
-
-const identFirst = (ch: string) => ch === '_' || alpha(ch);
-const notIdent = (ch: string | undefined) => ch === undefined || !ident(ch);
-const notEol = (ch: string) => ch !== '\n';
-const stringCh = (ch: string) => ch !== "'";
-
-export function scan(source: string) {
-	const {
-		current,
-		eof,
-		tk,
-		matchWhile,
-		createTrieMatcher,
-		error,
-		skipWhitespace,
-		backtrack,
-		matchEnclosed,
-	} = ScannerApi({ source });
-
-	const keywordMatcher = createTrieMatcher(keywords, notIdent);
-
-	function scanNumber(ch: string, la: string) {
-		if (ch === '0' && la === 'x') {
-			const consumed = matchWhile(hexDigit, 2);
-			if (consumed === 2 || ident(current(consumed)))
-				throw error('Expected hexadecimal digit', consumed + 1);
-			return tk('number', consumed);
-		}
-		if (ch === '0' && la === 'b') {
-			const consumed = matchWhile(binaryDigit, 2);
-			if (consumed === 2 || ident(current(consumed)))
-				throw error('Expected binary digit', consumed + 1);
-			return tk('number', consumed);
-		}
-		let consumed = matchWhile(digit, 1);
-		if (consumed && current(consumed) === '.') {
-			const decimals = matchWhile(digit, ++consumed);
-			if (decimals === consumed) throw error('Expected digit', consumed);
-			consumed = decimals;
-		}
-		if (ident(current(consumed)))
-			throw error('Expected digit', consumed + 1);
-		return tk('number', consumed);
-	}
-
-	function next() {
-		skipWhitespace();
-
-		if (eof()) return tk('eof', 0);
-
-		const ch = current();
-		const la = current(1);
-
-		switch (ch) {
-			// 2-char operators
-			case '=':
-				return la === '='
-					? tk('==', 2)
-					: la === '>'
-					? tk('=>', 2)
-					: tk('=', 1);
-			case '|':
-				return la === '|' ? tk('||', 2) : tk('|', 1);
-			case '&':
-				return la === '&' ? tk('&&', 2) : tk('&', 1);
-			case '>':
-				return la === '='
-					? tk('>=', 2)
-					: la === '>'
-					? tk('>>', 2)
-					: tk('>', 1);
-			case '<':
-				return la === '='
-					? tk('<=', 2)
-					: la === '<'
-					? tk('<<', 2)
-					: la === ':'
-					? tk('<:', 2)
-					: tk('<', 1);
-			case '!':
-				return la === '=' ? tk('!=', 2) : tk('!', 1);
-			case '+':
-				return la === '+' ? tk('++', 2) : tk('+', 1);
-			case '-':
-				return la === '-' ? tk('--', 2) : tk('-', 1);
-			case ':':
-				return la === '>' ? tk(':>', 2) : tk(':', 1);
-			// 1-char operators
-			case '{':
-			case '}':
-			case '.':
-			case ',':
-			case '?':
-			case '*':
-			case '/':
-			case '~':
-			case '(':
-			case ')':
-			case '^':
-			case '$':
-			case '@':
-			case '[':
-			case ']':
-				return tk(ch, 1);
-			case "'": {
-				const n = matchEnclosed(stringCh, stringEscape);
-				if (current(n) !== "'") throw error('Unterminated string', n);
-				return tk('string', n + 1);
-			}
-			case '#': {
-				const n = matchWhile(notEol, 1);
-				return tk('comment', n);
-			}
-
-			// Number
-			case '0':
-			case '1':
-			case '2':
-			case '3':
-			case '4':
-			case '5':
-			case '6':
-			case '7':
-			case '8':
-			case '9':
-				return scanNumber(ch, la);
-			default: {
-				// Keywords
-				const keywordToken = keywordMatcher();
-				if (keywordToken) return keywordToken;
-
-				// Identifiers
-				if (identFirst(ch)) return tk('ident', matchWhile(ident, 1));
-
-				throw error(`Invalid character "${ch}"`, 1);
-			}
-		}
-	}
-
-	return { next, backtrack };
-}
-
-const controlKinds = new Set<Kind>([
-	'eof',
-	'comment',
-	'|',
+const operators = [
+	'<<-',
 	'&&',
 	'||',
-	'>',
 	'>>',
+	'<<',
+	'<>',
+	'>|',
+	'<&',
+	'>&',
+	'|',
+	';',
+	'&',
+	'>',
 	'<',
 	'(',
 	')',
 	'{',
 	'}',
-]);
-const groupKinds: Record<string, true> = {
-	'(': true,
-	'{': true,
-};
+] as const;
 
-function isControl(kind: Kind) {
-	return controlKinds.has(kind);
+const isSpace = (ch: string) => ch === ' ' || ch === '\t' || ch === '\r';
+const isControl = (ch: string) =>
+	ch === '' || ch === '\n' || isSpace(ch) || '|&;(){}<>'.includes(ch);
+
+export function scan(source: string) {
+	const { current, eof, tk, matchString, matchUntil, error, skip, backtrack } = ScannerApi({
+		source,
+	});
+
+	function scanQuoted(quote: string, consumed: number) {
+		for (;;) {
+			const ch = current(consumed);
+			if (!ch) throw error('Unterminated string', consumed);
+			if (ch === quote) return consumed + 1;
+			if (ch === '\\' && current(consumed + 1)) {
+				consumed += 2;
+				continue;
+			}
+			consumed++;
+		}
+	}
+
+	function scanEnclosed(open: string, close: string, consumed: number) {
+		const matches = (value: string, offset: number) =>
+			[...value].every((ch, index) => current(offset + index) === ch);
+		let depth = 1;
+		while (depth) {
+			const ch = current(consumed);
+			if (!ch) throw error(`Unterminated ${open}${close} expansion`, consumed);
+			if (ch === "'" || ch === '"') {
+				consumed = scanQuoted(ch, consumed + 1);
+				continue;
+			}
+			if (ch === '\\' && current(consumed + 1)) {
+				consumed += 2;
+				continue;
+			}
+			if (matches(open, consumed)) {
+				depth++;
+				consumed += open.length;
+			} else if (matches(close, consumed)) {
+				depth--;
+				consumed += close.length;
+			} else consumed++;
+		}
+		return consumed;
+	}
+
+	function scanWord() {
+		let consumed = 0;
+		while (!isControl(current(consumed))) {
+			const ch = current(consumed);
+			if (ch === "'" || ch === '"') {
+				consumed = scanQuoted(ch, consumed + 1);
+				continue;
+			}
+			if (ch === '\\' && current(consumed + 1)) {
+				consumed += 2;
+				continue;
+			}
+			if (ch === '$' && current(consumed + 1) === '(')
+				consumed = scanEnclosed('(', ')', consumed + 2);
+			else if (ch === '$' && current(consumed + 1) === '{')
+				consumed = scanEnclosed('{', '}', consumed + 2);
+			else if (ch === '`') consumed = scanQuoted('`', consumed + 1);
+			else consumed++;
+		}
+		return tk('word', consumed);
+	}
+
+	function next() {
+		while (isSpace(current())) skip();
+		if (eof()) return tk('eof', 0);
+		if (current() === '\n') return tk('newline', 1);
+		if (current() === '#') return tk('comment', matchUntil(ch => ch === '\n'));
+		for (const operator of operators) {
+			const consumed = matchString(operator);
+			if (consumed) return tk(operator, consumed);
+		}
+		return scanWord();
+	}
+
+	return { next, backtrack };
 }
+
+function isRedirectKind(kind: Kind): kind is RedirectOperator {
+	return (
+		kind === '>' ||
+		kind === '>>' ||
+		kind === '<' ||
+		kind === '<>' ||
+		kind === '>|' ||
+		kind === '<<' ||
+		kind === '<<-' ||
+		kind === '<&' ||
+		kind === '>&'
+	);
+}
+const commandEndKinds = new Set<Kind>([
+	'eof',
+	'comment',
+	'newline',
+	';',
+	'&',
+	'|',
+	'&&',
+	'||',
+	')',
+	'}',
+]);
 
 function createParser(source: string) {
 	const api = ParserApi(scan);
@@ -223,32 +188,18 @@ function createParser(source: string) {
 	const { current, next, consume, error } = api;
 
 	function parseWord(): WordNode {
-		const first = current();
-		if (isControl(first.kind))
-			throw error(`Unexpected "${first.kind}"`, first);
-
-		let end = first.end;
+		const token = current();
+		if (token.kind !== 'word') throw error('Expected shell word', token);
 		next();
-		while (current().kind !== 'eof') {
-			const token = current();
-			if (isControl(token.kind) || token.start !== end) break;
-			end = token.end;
-			next();
-		}
-
-		return {
-			...first,
-			kind: 'word',
-			end,
-		};
+		return { ...token, kind: 'word' };
 	}
 
 	function parseGroup(): GroupNode {
 		const opener = current();
-		const openerKind = String(opener.kind);
+		const openerKind = opener.kind;
 		const closer = openerKind === '(' ? ')' : '}';
 		next();
-		const child = parseExpression();
+		const child = parseList();
 		const close = consume(closer);
 		return {
 			...opener,
@@ -260,51 +211,51 @@ function createParser(source: string) {
 		};
 	}
 
-	function parseAtom(): TermNode {
-		const token = current();
-		if (groupKinds[String(token.kind)]) return parseGroup();
-		return parseWord();
+	function parseRedirect(io?: WordNode): RedirectNode {
+		const operator = current();
+		if (!isRedirectKind(operator.kind)) throw error('Expected redirect', operator);
+		next();
+		const target = parseWord();
+		return {
+			...operator,
+			kind: 'redirect',
+			operator: operator.kind,
+			io,
+			target,
+			end: target.end,
+		};
 	}
 
 	function parseCommand(): CommandNode {
 		const first = current();
 		const parts: TermNode[] = [];
 		const redirects: RedirectNode[] = [];
-		let start = first.start;
 		let end = first.end;
-
-		while (String(current().kind) !== 'eof') {
-			const token = current();
-			const kind = String(token.kind);
-			if (kind === 'comment' || kind === ')' || kind === '}') break;
-			if (kind === '|' || kind === '&&' || kind === '||') break;
-			if (kind === '>' || kind === '>>' || kind === '<') {
-				next();
-				const target = parseWord();
-				redirects.push({
-					...token,
-					kind: 'redirect',
-					operator: kind === '>' ? '>' : kind === '>>' ? '>>' : '<',
-					target,
-					end: target.end,
-				});
-				end = target.end;
+		while (!commandEndKinds.has(current().kind)) {
+			if (isRedirectKind(current().kind)) {
+				const previous = parts.at(-1);
+				const io =
+					previous?.kind === 'word' &&
+					previous.end === current().start &&
+					/^\d+$/.test(text(previous))
+						? (parts.pop(), previous)
+						: undefined;
+				const redirect = parseRedirect(io);
+				redirects.push(redirect);
+				end = redirect.end;
 				continue;
 			}
-
-			const atom = parseAtom();
-			parts.push(atom);
-			start = parts[0]?.start ?? start;
-			end = atom.end;
+			const part = current().kind === '(' || current().kind === '{'
+				? parseGroup()
+				: parseWord();
+			parts.push(part);
+			end = part.end;
 		}
-
-		if (!parts.length && !redirects.length)
-			throw error('Expected command', first);
-
+		if (!parts.length && !redirects.length) throw error('Expected command', first);
 		return {
 			...first,
 			kind: 'command',
-			start,
+			start: first.start,
 			end,
 			parts,
 			redirects,
@@ -313,97 +264,112 @@ function createParser(source: string) {
 
 	function parsePipe(): Node {
 		let left: Node = parseCommand();
-		while (String(current().kind) === '|') {
-			const op = current();
+		while (current().kind === '|') {
+			const operator = current();
 			next();
 			const right = parseCommand();
-			const bin: BinaryNode = {
-				...op,
+			left = {
+				...operator,
 				kind: '|',
 				start: left.start,
-				children: [left, right],
 				end: right.end,
+				children: [left, right],
 			};
-			left = bin;
 		}
 		return left;
 	}
 
 	function parseLogical(): Node {
-		let left: Node = parsePipe();
-		while (String(current().kind) === '&&' || String(current().kind) === '||') {
-			const op = current();
+		let left = parsePipe();
+		while (current().kind === '&&' || current().kind === '||') {
+			const operator = current();
+			const kind = operator.kind === '&&' ? '&&' : '||';
 			next();
 			const right = parsePipe();
-			const bin: BinaryNode = {
-				...op,
-				kind: String(op.kind) === '&&' ? '&&' : '||',
+			left = {
+				...operator,
+				kind,
 				start: left.start,
-				children: [left, right],
 				end: right.end,
+				children: [left, right],
 			};
-			left = bin;
 		}
 		return left;
 	}
 
-	function parseExpression(): Node {
-		return parseLogical();
-	}
-
-	function parseRoot(): RootNode {
+	function parseList(): ListNode {
+		const first = current();
 		const children: Node[] = [];
-		while (String(current().kind) !== 'eof') {
-			if (String(current().kind) === 'comment') {
+		const separators: ListNode['separators'] = [];
+		while (current().kind !== 'eof' && current().kind !== ')' && current().kind !== '}') {
+			if (current().kind === 'comment') {
 				next();
 				continue;
 			}
-			children.push(parseExpression());
+			if (current().kind === 'newline') {
+				next();
+				continue;
+			}
+			children.push(parseLogical());
+			if (current().kind === ';' || current().kind === '&' || current().kind === 'newline') {
+				separators.push(
+					current().kind === ';'
+						? ';'
+						: current().kind === '&'
+							? '&'
+							: 'newline',
+				);
+				next();
+			}
 		}
-		const eof = current();
+		const last = children.at(-1) ?? first;
 		return {
-			...eof,
-			kind: 'root',
+			...first,
+			kind: 'list',
 			children,
+			separators,
+			start: children[0]?.start ?? first.start,
+			end: last.end,
 		};
 	}
 
-	return {
-		parse: parseRoot,
-	};
-}
+	function parseRoot(): RootNode {
+		const list = parseList();
+		const eof = current();
+		return { ...eof, kind: 'root', children: list.children.length ? [list] : [] };
+	}
 
-function compileWord(node: WordNode) {
-	return text(node);
+	return { parse: parseRoot };
 }
 
 function compileNode(node: Node): string {
 	switch (node.kind) {
 		case 'root':
 			return node.children.map(compileNode).join('\n');
+		case 'list':
+			return node.children
+				.map((child, index) => {
+					const separator = node.separators[index];
+					return `${compileNode(child)}${
+						separator === 'newline' ? '\n' : separator ? ` ${separator} ` : ''
+					}`;
+				})
+				.join('')
+				.trimEnd();
 		case 'word':
-			return compileWord(node);
+			return text(node);
 		case 'group':
 			return node.opener === '('
 				? `(${compileNode(node.children[0])})`
 				: `{ ${compileNode(node.children[0])} ; }`;
 		case 'command':
-			return [
-				...node.parts.map(compileNode),
-				...node.redirects.map(
-					r => `${r.operator} ${compileWord(r.target)}`,
-				),
-			].join(' ');
+			return [...node.parts.map(compileNode), ...node.redirects.map(compileNode)].join(' ');
 		case 'redirect':
-			return `${node.operator} ${compileWord(node.target)}`;
+			return `${node.io ? compileNode(node.io) : ''}${node.operator} ${compileNode(node.target)}`;
 		case '|':
 		case '&&':
 		case '||':
-			return `${compileNode(node.children[0])} ${node.kind} ${compileNode(
-				node.children[1],
-			)}`;
-		default:
-			return '';
+			return `${compileNode(node.children[0])} ${node.kind} ${compileNode(node.children[1])}`;
 	}
 }
 
@@ -413,23 +379,14 @@ export function compiler(node: Node) {
 
 export function program() {
 	function parse(src: string) {
-		const parser = createParser(src);
-		const root = parser.parse();
-		const errors: never[] = [];
-		return { root, errors };
+		const root = createParser(src).parse();
+		return { root, errors: [] };
 	}
 
 	function compile(src: string) {
 		const parsed = parse(src);
-		return {
-			output: compiler(parsed.root),
-			ast: parsed.root,
-			errors: parsed.errors,
-		};
+		return { output: compiler(parsed.root), ast: parsed.root, errors: parsed.errors };
 	}
 
-	return {
-		parse,
-		compile,
-	};
+	return { parse, compile };
 }
