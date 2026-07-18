@@ -37,6 +37,41 @@ export default spec('cmd', s => {
 			return result;
 		}
 
+		function word(src: string) {
+			const root = program().parse(src).root;
+			const list = root.children[0];
+			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			const command = list.children[0];
+			if (!command || command.kind !== 'command')
+				throw new Error('Expected command');
+			const result = command.parts[0];
+			if (!result || result.kind !== 'word') throw new Error('Expected word');
+			return result;
+		}
+
+		function metadata(src: string) {
+			const {
+				kind,
+				value,
+				literal,
+				hasExpansion,
+				hasParameterExpansion,
+				hasCommandSubstitution,
+				hasBackticks,
+				hasNonliteralConstruct,
+			} = word(src);
+			return {
+				kind,
+				value,
+				literal,
+				hasExpansion,
+				hasParameterExpansion,
+				hasCommandSubstitution,
+				hasBackticks,
+				hasNonliteralConstruct,
+			};
+		}
+
 		it.should('scan shell words', a => {
 			match(a, `'hello'`, {
 				kind: 'word',
@@ -147,6 +182,47 @@ export default spec('cmd', s => {
 				cmd.compile(`command 2>>errors.log 0<&3 1>&2 <>input`).output,
 				`command 2>> errors.log 0<& 3 1>& 2 <> input`,
 			);
+		});
+
+		it.should('expose literal word values in the AST', a => {
+			const literal = {
+				kind: 'word',
+				literal: true,
+				hasExpansion: false,
+				hasParameterExpansion: false,
+				hasCommandSubstitution: false,
+				hasBackticks: false,
+				hasNonliteralConstruct: false,
+			};
+			a.equalValues(metadata('plain'), { ...literal, value: 'plain' });
+			a.equalValues(metadata("'$HOME'"), { ...literal, value: '$HOME' });
+			a.equalValues(metadata('"two words"'), {
+				...literal,
+				value: 'two words',
+			});
+			const ansi = ["$'first", 'second\\nthird\\u0021\''].join('\n');
+			a.equalValues(metadata(ansi), {
+				...literal,
+				value: 'first\nsecond\nthird!',
+			});
+		});
+
+		it.should('mark unsafe shell words in the AST', a => {
+			a.equalValues(metadata('${name}'), {
+				kind: 'word',
+				value: undefined,
+				literal: false,
+				hasExpansion: true,
+				hasParameterExpansion: true,
+				hasCommandSubstitution: false,
+				hasBackticks: false,
+				hasNonliteralConstruct: true,
+			});
+			a.equalValues(metadata('$(date)').hasCommandSubstitution, true);
+			a.equalValues(metadata('`date`').hasBackticks, true);
+			a.equalValues(metadata('$((1 + 1))').hasNonliteralConstruct, true);
+			a.equalValues(metadata('$"localized"').literal, false);
+			a.equalValues(metadata('*.ts').literal, false);
 		});
 	});
 });

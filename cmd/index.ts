@@ -11,7 +11,16 @@ type BaseNode = {
 	line: number;
 	source: string;
 };
-type WordNode = BaseNode & { kind: 'word' };
+export type WordNode = BaseNode & {
+	kind: 'word';
+	value: string | undefined;
+	literal: boolean;
+	hasExpansion: boolean;
+	hasParameterExpansion: boolean;
+	hasCommandSubstitution: boolean;
+	hasBackticks: boolean;
+	hasNonliteralConstruct: boolean;
+};
 type RedirectOperator = '>' | '>>' | '<' | '<>' | '>|' | '<<' | '<<-' | '<&' | '>&';
 type RedirectNode = BaseNode & {
 	kind: 'redirect';
@@ -74,6 +83,190 @@ const operators = [
 const isSpace = (ch: string) => ch === ' ' || ch === '\t' || ch === '\r';
 const isControl = (ch: string) =>
 	ch === '' || ch === '\n' || isSpace(ch) || '|&;(){}<>'.includes(ch);
+const isNameStart = (ch: string) => /[A-Za-z_]/.test(ch);
+const isSpecialParameter = (ch: string) => '@*#?$!-0123456789'.includes(ch);
+
+type WordState = Omit<WordNode, keyof BaseNode | 'kind'>;
+
+function decodeAnsiEscape(source: string, index: number) {
+	const ch = source[index];
+	if (!ch) return { value: '\\', end: index };
+	const simple: Record<string, string> = {
+		a: '\u0007',
+		b: '\b',
+		e: '\u001b',
+		E: '\u001b',
+		f: '\f',
+		n: '\n',
+		r: '\r',
+		t: '\t',
+		v: '\v',
+		'\\': '\\',
+		"'": "'",
+		'"': '"',
+		'?': '?',
+	};
+	if (ch in simple) return { value: simple[ch], end: index + 1 };
+	if (/[0-7]/.test(ch)) {
+		let end = index + 1;
+		while (end < index + 3 && /[0-7]/.test(source.charAt(end))) end++;
+		return { value: String.fromCharCode(parseInt(source.slice(index, end), 8)), end };
+	}
+	if (ch === 'x' || ch === 'u' || ch === 'U') {
+		const limit = ch === 'x' ? 2 : ch === 'u' ? 4 : 8;
+		let end = index + 1;
+		while (end < index + 1 + limit && /[0-9A-Fa-f]/.test(source.charAt(end))) end++;
+		if (end > index + 1) {
+			const value = parseInt(source.slice(index + 1, end), 16);
+			return { value: String.fromCodePoint(value), end };
+		}
+	}
+	if (ch === 'c' && source[index + 1])
+		return { value: String.fromCharCode(source.charCodeAt(index + 1) % 32), end: index + 2 };
+	return { value: `\\${ch}`, end: index + 1 };
+}
+
+function inspectWord({ source, start, end }: BaseNode): WordState {
+	let value = '';
+	let index = start;
+	const state = {
+		hasParameterExpansion: false,
+		hasCommandSubstitution: false,
+		hasBackticks: false,
+		hasNonliteralConstruct: false,
+	};
+
+	const markParameter = () => {
+		state.hasParameterExpansion = true;
+		state.hasNonliteralConstruct = true;
+	};
+	const markCommand = () => {
+		state.hasCommandSubstitution = true;
+		state.hasNonliteralConstruct = true;
+	};
+	const markOther = () => {
+		state.hasNonliteralConstruct = true;
+	};
+
+	function readQuoted(quote: "'" | '"', ansi = false) {
+		index++;
+		while (index < end && source[index] !== quote) {
+			const ch = source.charAt(index);
+			if (ch === '\\') {
+				if (ansi) {
+					const escape = decodeAnsiEscape(source, index + 1);
+					value += escape.value;
+					index = escape.end;
+					continue;
+				}
+				const next = source[index + 1];
+				if (quote === '"' && next && '$`"\\\n'.includes(next)) {
+					if (next !== '\n') value += next;
+					index += 2;
+					continue;
+				}
+				if (quote === "'" || next === undefined) {
+					value += '\\';
+					index++;
+					continue;
+				}
+				value += `\\${next}`;
+				index += 2;
+				continue;
+			}
+			if (quote === '"' && ch === '$') {
+				readDollar();
+				continue;
+			}
+			if (quote === '"' && ch === '`') {
+				state.hasBackticks = true;
+				markCommand();
+				index++;
+				continue;
+			}
+			value += ch;
+			index++;
+		}
+		if (source[index] === quote) index++;
+	}
+
+	function readDollar() {
+		const next = source[index + 1];
+		if (next === "'") {
+			index++;
+			readQuoted("'", true);
+			return;
+		}
+		if (next === '(') {
+			if (source[index + 2] === '(') markOther();
+			else markCommand();
+			index += 2;
+			return;
+		}
+		if (next === '"') markOther();
+		if (next === '{' || (next !== undefined && (isNameStart(next) || isSpecialParameter(next)))) {
+			markParameter();
+			index += 2;
+			return;
+		}
+		value += '$';
+		index++;
+	}
+
+	while (index < end) {
+		const ch = source.charAt(index);
+		if (ch === "'") {
+			readQuoted("'");
+			continue;
+		}
+		if (ch === '"') {
+			readQuoted('"');
+			continue;
+		}
+		if (ch === '$') {
+			readDollar();
+			continue;
+		}
+		if (ch === '`') {
+			state.hasBackticks = true;
+			markCommand();
+			index++;
+			continue;
+		}
+		if (ch === '\\') {
+			const next = source[index + 1];
+			if (next === '\n') index += 2;
+			else {
+				value += next ?? '\\';
+				index += next === undefined ? 1 : 2;
+			}
+			continue;
+		}
+		if (
+			(index === start && ch === '~') ||
+			ch === '*' ||
+			ch === '?' ||
+			ch === '[' ||
+			ch === ']' ||
+			ch === '{' ||
+			ch === '}'
+		)
+			markOther();
+		value += ch;
+		index++;
+	}
+
+	const hasExpansion = state.hasNonliteralConstruct;
+	return {
+		value: state.hasNonliteralConstruct ? undefined : value,
+		literal: !state.hasNonliteralConstruct,
+		hasExpansion,
+		hasParameterExpansion: state.hasParameterExpansion,
+		hasCommandSubstitution: state.hasCommandSubstitution,
+		hasBackticks: state.hasBackticks,
+		hasNonliteralConstruct: state.hasNonliteralConstruct,
+	};
+}
 
 export function scan(source: string) {
 	const { current, eof, tk, matchString, matchUntil, error, skip, backtrack } = ScannerApi({
@@ -191,7 +384,7 @@ function createParser(source: string) {
 		const token = current();
 		if (token.kind !== 'word') throw error('Expected shell word', token);
 		next();
-		return { ...token, kind: 'word' };
+		return { ...token, kind: 'word', ...inspectWord(token) };
 	}
 
 	function parseGroup(): GroupNode {
