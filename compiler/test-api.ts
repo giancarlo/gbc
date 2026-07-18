@@ -101,6 +101,7 @@ export class SpecApi extends TestApiBase<SpecApi> {
 	 * On mismatch the captured errors are dumped to the test log.
 	 */
 	compileError = ({
+		p,
 		pre,
 		src,
 		expected,
@@ -111,7 +112,13 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		src: string;
 		expected: string;
 		testMode?: boolean;
-	}) => {
+	}): void => {
+		if (p) {
+			this.p(p, api =>
+				api.compileError({ pre, src, expected, testMode }),
+			);
+			return;
+		}
 		const wrapped = pre ? `${pre}; ${src}` : src;
 		const program = Program();
 		const result = testMode
@@ -135,7 +142,13 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		}
 	};
 
-	rule = ({ src, ast, out, maxPages, debug, exit, test }: RuleDef) => {
+	rule = ({ p, src, ast, out, maxPages, debug, exit, test }: RuleDef): void => {
+		if (p) {
+			this.p(p, api =>
+				api.rule({ src, ast, out, maxPages, debug, exit, test }),
+			);
+			return;
+		}
 		const { ast: rootAst } = this.parse(src);
 		this.equal(printAst(rootAst), ast);
 		if (out !== undefined || maxPages !== undefined || exit !== undefined) {
@@ -164,6 +177,7 @@ export class SpecApi extends TestApiBase<SpecApi> {
 	 * `out` is the expected sequence of `out` captures.
 	 */
 	expr = ({
+		p,
 		pre,
 		src,
 		ast,
@@ -176,7 +190,11 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		ast: string;
 		out?: OutValue[];
 		test?: (result: WasmRunResult) => void;
-	}) => {
+	}): void => {
+		if (p) {
+			this.p(p, api => api.expr({ pre, src, ast, out, test }));
+			return;
+		}
 		let depth = 0;
 		let isMulti = false;
 		for (const c of src) {
