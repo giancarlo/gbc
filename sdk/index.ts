@@ -651,11 +651,23 @@ export function parserTable<
 		parseTableApi(tableFn, api).expression;
 }
 
-export function findNodeAtIndex(node: BaseNode, index: number) {
+type NodeAtIndex<Node extends BaseNode, Seen = never> = Node extends Seen
+	? Node
+	: Node extends { children: (infer Child extends BaseNode)[] }
+		? Node | NodeAtIndex<Child, Seen | Node>
+		: Node;
+
+export function findNodeAtIndex<Node extends BaseNode>(
+	node: Node,
+	index: number,
+): NodeAtIndex<Node> | undefined;
+export function findNodeAtIndex(node: BaseNode, index: number): BaseNode | undefined {
+	if (index < node.start || index >= node.end) return;
 	if (node.children) {
-		for (const child of node.children)
-			if (child.children) findNodeAtIndex(child, index);
-			else if (child.start <= index && child.end >= index) return child;
+		for (const child of node.children) {
+			const result = findNodeAtIndex(child, index);
+			if (result) return result;
+		}
 	}
 	return node;
 }

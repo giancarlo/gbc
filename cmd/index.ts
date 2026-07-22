@@ -27,11 +27,13 @@ type RedirectNode = BaseNode & {
 	operator: RedirectOperator;
 	io?: WordNode;
 	target: WordNode;
+	children: WordNode[];
 };
 type CommandNode = BaseNode & {
 	kind: 'command';
 	parts: TermNode[];
 	redirects: RedirectNode[];
+	children: (TermNode | RedirectNode)[];
 };
 type GroupNode = BaseNode & {
 	kind: 'group';
@@ -415,6 +417,8 @@ function createParser(source: string) {
 			operator: operator.kind,
 			io,
 			target,
+			children: io ? [io, target] : [target],
+			start: io?.start ?? operator.start,
 			end: target.end,
 		};
 	}
@@ -423,6 +427,7 @@ function createParser(source: string) {
 		const first = current();
 		const parts: TermNode[] = [];
 		const redirects: RedirectNode[] = [];
+		const children: (TermNode | RedirectNode)[] = [];
 		let end = first.end;
 		while (!commandEndKinds.has(current().kind)) {
 			if (isRedirectKind(current().kind)) {
@@ -431,10 +436,15 @@ function createParser(source: string) {
 					previous?.kind === 'word' &&
 					previous.end === current().start &&
 					/^\d+$/.test(text(previous))
-						? (parts.pop(), previous)
+						? previous
 						: undefined;
+				if (io) {
+					parts.pop();
+					children.pop();
+				}
 				const redirect = parseRedirect(io);
 				redirects.push(redirect);
+				children.push(redirect);
 				end = redirect.end;
 				continue;
 			}
@@ -442,6 +452,7 @@ function createParser(source: string) {
 				? parseGroup()
 				: parseWord();
 			parts.push(part);
+			children.push(part);
 			end = part.end;
 		}
 		if (!parts.length && !redirects.length) throw error('Expected command', first);
@@ -452,6 +463,7 @@ function createParser(source: string) {
 			end,
 			parts,
 			redirects,
+			children,
 		};
 	}
 
@@ -529,12 +541,17 @@ function createParser(source: string) {
 	function parseRoot(): RootNode {
 		const list = parseList();
 		const eof = current();
-		return { ...eof, kind: 'root', children: list.children.length ? [list] : [] };
+		return {
+			...eof,
+			kind: 'root',
+			children: list.children.length ? [list] : [],
+			start: 0,
+			end: source.length,
+		};
 	}
 
 	return { parse: parseRoot };
 }
-
 function compileNode(node: Node): string {
 	switch (node.kind) {
 		case 'root':

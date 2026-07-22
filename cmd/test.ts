@@ -1,5 +1,5 @@
 import { TestApi, spec } from '@cxl/spec';
-import { each, Token } from '../sdk/index.js';
+import { each, findNodeAtIndex, Token } from '../sdk/index.js';
 
 import { scan, program } from './index.js';
 //import { ast } from './debug.js';
@@ -223,6 +223,71 @@ export default spec('cmd', s => {
 			a.equalValues(metadata('$((1 + 1))').hasNonliteralConstruct, true);
 			a.equalValues(metadata('$"localized"').literal, false);
 			a.equalValues(metadata('*.ts').literal, false);
+		});
+
+		it.should('find the most specific node at an offset', a => {
+			const root = program().parse('echo hi | cat').root;
+			const list = root.children[0]!;
+			if (list.kind !== 'list') throw new Error('Expected list');
+			const pipe = list.children[0]!;
+			if (pipe.kind !== '|') throw new Error('Expected pipe');
+			const left = pipe.children[0];
+			const right = pipe.children[1];
+			if (left.kind !== 'command' || right.kind !== 'command')
+				throw new Error('Expected commands');
+
+			a.equal(findNodeAtIndex(root, 0), left.parts[0]);
+			a.equal(findNodeAtIndex(root, 4), left);
+			a.equal(findNodeAtIndex(root, 5), left.parts[1]);
+			a.equal(findNodeAtIndex(root, 8), pipe);
+			a.equal(findNodeAtIndex(root, 9), pipe);
+			a.equal(findNodeAtIndex(root, 10), right.parts[0]);
+		});
+
+		it.should('find canonical redirect, group, and list children', a => {
+			const redirectRoot = program().parse('cat 2>out').root;
+			const redirectList = redirectRoot.children[0]!;
+			if (redirectList.kind !== 'list') throw new Error('Expected list');
+			const command = redirectList.children[0]!;
+			if (command.kind !== 'command') throw new Error('Expected command');
+			const redirect = command.redirects[0]!;
+
+			a.equalValues(command.children, [command.parts[0], redirect]);
+			a.equalValues(redirect.children, [redirect.io, redirect.target]);
+			a.equal(findNodeAtIndex(redirectRoot, 4), redirect.io);
+			a.equal(findNodeAtIndex(redirectRoot, 5), redirect);
+			a.equal(findNodeAtIndex(redirectRoot, 6), redirect.target);
+
+			const groupRoot = program().parse('(echo)').root;
+			const groupList = groupRoot.children[0]!;
+			if (groupList.kind !== 'list') throw new Error('Expected list');
+			const groupCommand = groupList.children[0]!;
+			if (groupCommand.kind !== 'command') throw new Error('Expected command');
+			const group = groupCommand.parts[0]!;
+			if (group.kind !== 'group') throw new Error('Expected group');
+
+			a.equal(findNodeAtIndex(groupRoot, 0), group);
+			a.equal(findNodeAtIndex(groupRoot, 1)?.kind, 'word');
+			a.equal(findNodeAtIndex(groupRoot, 5), group);
+
+			const listRoot = program().parse('echo;cat').root;
+			const list = listRoot.children[0]!;
+			if (list.kind !== 'list') throw new Error('Expected list');
+			a.equal(findNodeAtIndex(listRoot, 4), list);
+			a.equal(findNodeAtIndex(listRoot, 5)?.kind, 'word');
+		});
+
+		it.should('handle source boundaries and empty input', a => {
+			const root = program().parse('echo ').root;
+			a.equalValues({ start: root.start, end: root.end }, { start: 0, end: 5 });
+			a.equal(findNodeAtIndex(root, 4), root);
+			a.equal(findNodeAtIndex(root, 5), undefined);
+			a.equal(findNodeAtIndex(root, -1), undefined);
+			a.equal(findNodeAtIndex(root, 6), undefined);
+
+			const empty = program().parse('').root;
+			a.equal(findNodeAtIndex(empty, 0), undefined);
+			a.equal(findNodeAtIndex(empty, 1), undefined);
 		});
 	});
 });

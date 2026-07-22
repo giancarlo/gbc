@@ -1,11 +1,44 @@
 import { spec } from '@cxl/spec';
-import { ScannerApi, stringEscape } from './index.js';
+import { BaseNode, findNodeAtIndex, ScannerApi, stringEscape } from './index.js';
 
 const _ident = /\w/;
 const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => ch === undefined || !ident(ch);
 
 export default spec('sdk', s => {
+	s.test('findNodeAtIndex', it => {
+		const source = 'ab';
+		const left: BaseNode = { start: 0, end: 1, line: 0, source };
+		const right: BaseNode = { start: 1, end: 2, line: 0, source };
+		const branch: BaseNode = {
+			start: 0,
+			end: 2,
+			line: 0,
+			source,
+			children: [left, right],
+		};
+		const root: BaseNode = {
+			start: 0,
+			end: 2,
+			line: 0,
+			source,
+			children: [branch],
+		};
+
+		it.should('return the most specific nested node', a => {
+			a.equal(findNodeAtIndex(root, 0), left);
+		});
+
+		it.should('use half-open source boundaries', a => {
+			a.equal(findNodeAtIndex(branch, 1), right);
+		});
+
+		it.should('return undefined outside the node span', a => {
+			a.equal(findNodeAtIndex(root, -1), undefined);
+			a.equal(findNodeAtIndex(root, 2), undefined);
+		});
+	});
+
 	s.test('ScannerApi', s => {
 		s.test('createTrieMatcher', it => {
 			it.should('parse keywords that contain each other', a => {

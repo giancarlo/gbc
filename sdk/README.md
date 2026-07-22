@@ -14,4 +14,3 @@ Compiler SDK
 ## Installation
 
 	npm install @cxl/gbc.sdk
-
