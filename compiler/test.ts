@@ -3232,7 +3232,30 @@ main { report(mk(9)) >> out }`,
 		});
 	});
 
-	h('Ownership', ({ expr, compileError, rule }) => {
+	h('Ownership', ({ expr, compileError, rule, p }) => {
+		p(
+			`Ownership belongs to bindings and crosses function boundaries explicitly. A plain heap parameter \`x: T\` is a shared borrow; \`x: var T\` is an exclusive mutable borrow for that call; and \`x: own T\` moves the value from caller to callee. A plain heap result \`: T\` is borrowed, while \`: own T\` moves ownership to the caller. \`own\` is valid only on parameter and result slots, never on locals, fields, or type aliases. Copy values (\`Int32\`, \`Float64\`, \`Bool\`, \`Char\`, and static literals) keep their ordinary copy behavior through every mode, so generic contracts such as \`value: own T\` work for both Copy and heap-owning substitutions.
+
+			 \`next\` preserves its input mode: it copies a Copy value, propagates a shared borrow, or moves an owned value. It never upgrades a borrow into an owner. An \`own T\` result therefore accepts only owned or Copy emissions, and a plain heap \`T\` result accepts only borrowed or static emissions; every branch and emission of that result must agree. Emitting an exclusive \`var T\` borrow is rejected because mutable access is call-scoped and cannot escape. When result annotations are omitted, type and ownership mode are inferred locally under the same rules.
+
+			 Borrow provenance is part of the function type, not source syntax: a function that emits a borrowed parameter or an element reached through it records that parameter as an origin. Alternative branches may add multiple origins. The summary is serialized with libraries and propagated at calls, so checking never depends on callee names or whole-program call sites. A derived borrow remains valid only while all of its possible owners remain live. Borrow lifetimes end at last use; a temporary passed to a borrow-returning call is retained by the caller until the last derived borrow dies.
+
+			 Binding an owner creates the owner; binding an existing heap name creates a shared alias with the same provenance. An owner cannot move, drop, or be mutably borrowed while a shared alias remains live, and a mutable borrow conflicts with every other live borrow or move of that owner. Two conflicting arguments in one call are rejected. Mutable borrows cannot be stored, embedded, returned, or emitted. At a control-flow join a value is unavailable if any continuing branch moved it, and borrow origins are the union of the continuing branches.
+
+			 Records and collections own their heap fields and elements. Embedding an owned value moves it to the container; the old name becomes a shared borrow of that container-owned value and becomes invalid when the container moves. A borrowed value cannot be embedded. Element reads produce Copy values for Copy elements and shared borrows tied to the collection for heap elements. Removing a heap element must transfer ownership by consuming the collection and returning both owners.
+
+			 Contracts compose uniformly through generics and recursion: \`push(a: own Array<T>, value: own T): own Array<T>\` consumes and returns the Array ownership thread; \`get(a: Array<T>, index: Int32): T\` borrows an element; and \`take(a: own Array<T>, index: Int32): own [Array<T>, T]\` returns two owners. Recursive calls obey these declared modes, including tail re-passes, without ownership inference from their call sites.
+
+			 Raw host calls are the unsafe lifetime boundary. Plain exported heap parameters borrow host-held module-memory values, and \`own\` parameters transfer such values so the host must not reuse them. Borrowed results retain their recorded host-input origins. Owned heap results are rejected until the host ABI exposes typed destruction; Copy results cross directly. Inside GB, the checker enforces the same contracts on exported functions as on every other call.`,
+			({ rule }) => {
+				rule({
+					src: `id = (s: String): String { s };
+main { t = 'q\${1}'; length(id(t)) + length(t) >> out }`,
+					ast: `(root (def :id ? (fn @sequence (parameter :s typeident ?) typeident :s)) (main (def :t ? (interp 1)) (>> (+ (call :length @intrinsic (call :id :t)) (call :length @intrinsic :t)) :out)))`,
+					out: ['4'],
+				});
+			},
+		);
 		rule({
 			p: 'Drop glue: an owned heap value not moved out is freed at its block’s exit, so repeated allocation runs in constant memory (the free list is reused).',
 			src: `step = (t: String): Int32 { s = 'xxxxxxxx\${t}yyyyyyyy'; next length(s) };
@@ -3251,7 +3274,7 @@ main { spin(50000, 0) >> out }`,
 			maxPages: 3,
 		});
 		rule({
-			p: 'A binding of a call whose every return path is fresh — including `next` of a local the callee owns, the constructor idiom — is owned by the binding block and freed at its exit.',
+			p: 'A binding of an owned call result becomes its owner and frees it at block exit unless it moves again.',
 			src: `mkpad = (n: Int32): String { s = 'p\${n}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; next s };
 probe = (n: Int32): Int32 { b = mkpad(n); next length(b) };
 churn = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : churn(n - 1, acc + probe(n)) };
@@ -3259,13 +3282,6 @@ main { churn(50000, 0) >> out }`,
 			ast: `(root (def :mkpad ? (fn (parameter :n typeident ?) typeident (def :s ? (interp :n)) (next :s))) (def :probe ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mkpad :n)) (next (call :length @intrinsic :b)))) (def :churn ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :churn (, (- :n 1) (+ :acc (call :probe :n))))))) (main (>> (call :churn (, 50000 0)) :out)))`,
 			out: ['1888894'],
 			maxPages: 3,
-		});
-		rule({
-			p: 'A call whose result may alias a borrow (any return path yields a param or local) is never freed as a temporary — the owner’s value survives the call.',
-			src: `id = (s: String): String { s };
-main { t = 'q\${1}'; length(id(t)) + length(t) >> out }`,
-			ast: `(root (def :id ? (fn @sequence (parameter :s typeident ?) typeident :s)) (main (def :t ? (interp 1)) (>> (+ (call :length @intrinsic (call :id :t)) (call :length @intrinsic :t)) :out)))`,
-			out: ['4'],
 		});
 		rule({
 			p: 'Error values, union payloads (branched on the live member\u2019s tag), and record literals are dropped like every owned value — error frees include the trace chain, so debug builds also run flat.',
@@ -3312,7 +3328,7 @@ main { gen(3) >> each >> out }`,
 			expected: 'cannot embed borrowed',
 		});
 		rule({
-			p: 'A fresh value passed where the callee cannot retain it (scalar return, or every return path fresh) is freed by the caller after the call. A tail call to another fn demotes to a plain call rather than orphan the temp; self-recursion keeps `return_call`.',
+			p: 'A fresh value passed to a borrowing parameter remains caller-owned and is freed after its last derived borrow. A tail call demotes to a plain call when caller-owned temporaries must be released; self-recursion can retain `return_call` when ownership is re-passed.',
 			src: `use = (s: String): Int32 { length(s) };
 step = (n: Int32): Int32 { use('x\${n}') };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
@@ -3322,7 +3338,7 @@ main { spin(100000, 0) >> out }`,
 			maxPages: 3,
 		});
 		rule({
-			p: 'A borrow-returning call\u2019s bound result adopts its fresh arguments: they live exactly as long as the binder\u2019s name — freed with the block, or carried along when the name moves out. Emitting a name that borrows a value dying with its block is rejected.',
+			p: 'A bound borrowed result retains its fresh argument owners until the result’s last use. Emitting a borrow whose recorded owner dies in the current block is rejected.',
 			src: `pick = (a: String, b: String, k: Int32): String { k > 0 ? a : b };
 step = (n: Int32): Int32 { r = pick('x\${n}', 'y', n); next length(r) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
@@ -3337,7 +3353,7 @@ main { f() >> out }`,
 			expected: 'dies with this block',
 		});
 		rule({
-			p: 'A self-recursive fn whose every call site passes a fresh value owns that heap param: each iteration frees the previous accumulator (a bare re-pass at the tail moves it instead), so accumulator recursion runs near its final size — with `return_call` kept, proven here by the depth.',
+			p: 'An `own` recursive accumulator is an explicit ownership thread: each iteration frees or moves the previous accumulator, and a tail re-pass moves it into the next call while retaining `return_call`.',
 			src: `build = (n: Int32, acc: String): String { n == 0 ? acc : build(n - 1, '\${acc}x') };
 main { length(build(200000, '')) >> out }`,
 			ast: `(root (def :build ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :build (, (- :n 1) (interp :acc)))))) (main (>> (call :length @intrinsic (call :build (, 200000 ''))) :out)))`,
@@ -3353,7 +3369,7 @@ main { total: var = 0; loop >> (i: Int32) { i >= 50000 ? break; m = 'x\${i}'; ge
 			maxPages: 3,
 		});
 		rule({
-			p: 'A value moved out with `next` is not freed by its creating block — the receiver reads it after later allocations.',
+			p: 'An owned value emitted through an `own` result moves to the receiver and is not freed by its creating block.',
 			src: `mk = (n: Int32): String { s = 'm\${n}'; next s };
 main { a = mk(1); b = mk(2); a >> out; b >> out; }`,
 			ast: `(root (def :mk ? (fn (parameter :n typeident ?) typeident (def :s ? (interp :n)) (next :s))) (main (def :a ? (call :mk 1)) (def :b ? (call :mk 2)) (>> :a :out) (>> :b :out)))`,
@@ -3374,26 +3390,26 @@ main { t = 'q\${1}'; peek(t) >> out; peek(t) >> out; t >> out; }`,
 			out: ['10'],
 		});
 		expr({
-			p: 'A heap value (a computed `String`, a data block, …) is owned by the block that creates it and freed at that block’s exit, its owned fields freed with it. Reading it — a field access, `length`, or passing it to a function — borrows it and leaves it valid; a value leaves its block only through `next`.',
+			p: 'A heap value (a computed `String`, a data block, …) is owned by the block that creates it and freed at that block’s exit, with its owned fields. Reading it — a field access, `length`, or a plain parameter — borrows it; ownership leaves only through `next` to an `own` result, an `own` parameter, or embedding.',
 			pre: 'twice = (s: String): Int32 { length(s) + length(s) }',
 			src: "twice('hi')",
 			ast: "(call :twice 'hi')",
 			out: ['4'],
 		});
 		expr({
-			p: '`next` of a borrowed value — a parameter, or an element drawn from one — emits a reference, not a move: it may be emitted repeatedly and forwarded freely, and the owner still frees it once. This is what makes `triple(x){x,x,x}` and `filter` expressible.',
+			p: '`next` of a borrowed value — a plain parameter, alias, or heap element — propagates the borrow and its owner provenance, never a move. It may be emitted repeatedly while the owner remains live, which makes `triple(x){x,x,x}` and `filter` expressible.',
 			pre: 'triple = (s: String) { next s; next s; next s }',
 			src: "triple('hi')",
 			ast: "(call :triple 'hi')",
 			out: ['hi', 'hi', 'hi'],
 		});
 		compileError({
-			p: '`next` of a value owned here moves it to the receiver; the block no longer owns it, so using it again is an error. Emitting an owned value twice would need a copy, and there is no implicit copy.',
+			p: '`next` of a value owned here moves it through an `own` result; the block no longer owns it, so later use is an error. Emitting an owned value twice would require an explicit copy operation.',
 			src: "g = () { s = '${Char(65)}'; next s; next s }; main { g() >> out }",
 			expected: 'used after move',
 		});
 		expr({
-			p: 'Nothing transfers ownership but `next`; a binding never does. `b = a` borrows — both names read the one value, freed once at block exit. There is no clone: to hold a value past its owner it must be moved there (a fresh value), never duplicated.',
+			p: 'A binding never transfers ownership: `b = a` borrows, so both names read one value that is freed once. Ownership transfers only when `next` crosses an `own` result, an argument crosses an `own` parameter, or a value is embedded in an owning field; none of these implicitly clones.',
 			pre: "dup = (): Int32 { s = '${Char(65)}'; b = s; next length(b) + length(s) }",
 			src: 'dup()',
 			ast: '(call :dup ?)',
