@@ -14,6 +14,7 @@ Language features must avoid breaking these rules:
 3. **Transparency:** No hidden or implicit behavior.
 4. **No Bloat:** Only essential features.
 5. **Readable:** Prioritize clarity.
+6. **Performant:** Adapt the language when code generation requires it.
 
 */
 export default spec('Language Reference', ({ h }) => {
@@ -22,7 +23,7 @@ export default spec('Language Reference', ({ h }) => {
 			`
 		 This is a sample of a simple "Hello World" program. The _main_ block is our entry point.
 		 No code is allowed outside of it other than type and function definitions.
-		 The standard library is always available through the _@_ operator.
+		 The standard library is a global prelude whose symbols are available unqualified.
 		 The pipe \`>>\` operator will call the \`out\` function passing its left value as an argument.
 		`,
 			({ rule }) => {
@@ -689,6 +690,7 @@ main {
 
 	h('Data Blocks', ({ expr, compileError, rule }) => {
 		expr({
+			p: 'A data block is fixed-shape tuple or record storage. Labels use `name = value`, are unique compile-time aliases for positions, and disappear during iteration. Labeled and positional members may be mixed; every member remains accessible through the single `.` operator by label or constant numeric position.',
 			src: `[ 'string', 2, true, 4.5 ]`,
 			ast: `(data (, 'string' 2 :true 4.5))`,
 		});
@@ -777,6 +779,7 @@ main { wrap([ 'p', 'q' ]) >> out }`,
 			expected: 'not assignable',
 		});
 		expr({
+			p: 'Piping passes a data block as one value. Iteration is explicit through `each`, which emits the member values without their labels.',
 			src: `[ 1, 2 ] >> each`,
 			ast: `(>> (data (, 1 2)) :each)`,
 			out: ['1', '2'],
@@ -834,6 +837,7 @@ main { ps = [ [ x = 1, y = 2 ], [ x = 3, y = 4 ] ]; length(ps) >> out; ps >> eac
 
 	h('Code Blocks', ({ expr, ast, h, compileError }) => {
 		expr({
+			p: 'A call uses parentheses and passes one argument value. Multiple arguments form one data block that the parameter list destructures; juxtaposition is never a call.',
 			src: `(a) { a }`,
 			ast: `(fn @sequence (parameter :a ? ?) :a)`,
 		});
@@ -1610,6 +1614,7 @@ a = {
 			ast: `(def @variable :retries ? 0)`,
 		});
 		rule({
+			p: '`var` modifies the binding type, so mutability is written after `:` consistently for bindings, parameters, and fields. Bindings without it are immutable.',
 			src: `score: var = 0; main { score = score + 10; score >> out; }`,
 			ast: `(root (def @variable :score ? 0) (main (= :score @variable (+ :score @variable 10)) (>> :score @variable :out)))`,
 			out: ['10'],
@@ -1634,6 +1639,7 @@ a = {
 
 	h('Types', ({ expr, rule, compileError }) => {
 		rule({
+			p: 'Type names begin uppercase and storage widths are explicit: signed and unsigned integers use `Int8`…`Int64` and `Uint8`…`Uint64`; floats use `Float32` or `Float64`. Other built-ins include `String`, `Bool`, `Void`, `Error`, and `Fn`. Value names and special values are lowercase.',
 			src: `count: Int32 = 42; main { count >> out }`,
 			ast: `(root (def :count typeident 42) (main (>> :count :out)))`,
 			out: ['42'],
@@ -2096,6 +2102,7 @@ export target = (): Int32 { 0 }`,
 
 	h('Tail calls', ({ rule }) => {
 		rule({
+			p: 'Calls in tail position do not grow the stack. Tail positions include a function’s final emitted expression, either branch of a tail-position ternary, and the final stage of a tail-position pipe.',
 			src: `sum = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : sum(n - 1, acc + n) };
 main {
 	sum(100, 0) >> out
@@ -2177,6 +2184,7 @@ export dbl = (n: Int32): Int32 { n * 2 };`,
 
 	h('Data block layout', ({ rule }) => {
 		rule({
+			p: 'Data blocks use headerless, per-field layout. Field offsets and arity are compile-time facts; each field retains its full aligned representation, and union fields carry a compiler-owned discriminant separate from their payload.',
 			src: `type Point = [ x: Int32, y: Float64 ];
 mk = (): Point { [ x = 7, y = 3.5 ] };
 main {
@@ -2431,6 +2439,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; s >> each >> (f: Frame
 
 	h('Nominal vs structural', ({ rule, compileError }) => {
 		rule({
+			p: 'Every named type has declaration identity; unnamed literals and parameter lists are structural. A structural value may acquire a named type at a typed boundary, but one named type is not assignable to a different same-shaped named type. Composition with `&` supplies the language’s subtype relationship.',
 			src: `type A = [ v: Int32 ]; f = (x: A): Int32 { next x.v }; main { f([ v = 5 ]) >> out }`,
 			ast: `(root (type :A (data (propdef :v typeident ?))) (def :f ? (fn (parameter :x typeident ?) typeident (next (. :x :v)))) (main (>> (call :f (data (propdef :v ? 5))) :out)))`,
 			out: ['5'],
@@ -2885,6 +2894,7 @@ main { triple(3) >> out }`,
 	h('Built-in identifiers', ({ h }) => {
 		h('length', ({ expr }) => {
 			expr({
+				p: '`length` is total and is the canonical basis for emptiness tests: it returns zero for `void`, one for a scalar, the member count for data, and the byte count for `String`.',
 				src: `length('hello')`,
 				ast: `(call :length @intrinsic 'hello')`,
 				out: ['5'],
@@ -3148,6 +3158,7 @@ main { report(mk(9)) >> out }`,
 	h('Statements', ({ h }) => {
 		h('loop', ({ rule }) => {
 			rule({
+				p: '`loop` is the single infinite emitter and yields `0, 1, 2, …`. `break` stops the nearest pipe chain, while `done` ends the nearest statement-body function.',
 				src: `range = (n: Int32) { loop >> { $ >= n ? break : $ } }; main { range(3) >> out }`,
 				ast: '(root (def :range ? (fn @sequence (parameter :n typeident ?) (>> loop (fn @sequence (? (>= $ :n) break $))))) (main (>> (call :range 3) :out)))',
 				out: ['0', '1', '2'],

@@ -116,7 +116,7 @@ export function isNumericType(t?: Type): boolean {
 	return isIntType(t) || isFloatType(t);
 }
 
-// Numeric promotion (D14): the result type of an arithmetic op on `lt`/`rt` —
+// Numeric promotion: the result type of an arithmetic op on `lt`/`rt` —
 // Float64 if either is float, else Int64 if either is 64-bit, else Int32.
 // `undefined` when the operands aren't a promotable numeric pair. (The checker
 // layers `DivByZero` onto the int result for `/`,`%`.)
@@ -407,7 +407,7 @@ export const BaseTypes = {
 	Void: { name: 'Void', kind: 'type', flags: 0, family: 'void', size: 0 },
 	Fn: { name: 'Fn', kind: 'type', flags: 0, family: 'fn', size: 4 },
 	Unknown: { name: 'Unknown', kind: 'type', flags: 0, family: 'unknown', size: 0 },
-	// D50/Trace: the lazy trace handle — one hidden word (`__trace` is not a
+	// The lazy trace handle — one hidden word (`__trace` is not a
 	// scannable identifier, so user code can never name or collide with it).
 	// `Error = Trace` composes it into every error as a prefix slot.
 	Trace: {

@@ -78,7 +78,7 @@ export function parseType(
 			const elem = a?.kind === 'typeident' ? a.symbol : AnyData;
 			return { ...node, symbol: bufferTypeOf(elem) };
 		}
-		// D43: chain-defined or forward-declared (recursive) type-functions
+		// Chain-defined or forward-declared recursive type functions
 		// reduce on demand in the checker — defer as an application symbol
 		// carrying the arg nodes (composes inside unions/data). Concrete
 		// data/union aliases substitute eagerly here.
@@ -121,7 +121,7 @@ export function parseType(
 						};
 					}
 					const node = expectSymbol(name, n);
-					// D43: generic type application `Name<arg, ...>`.
+					// Generic type application `Name<arg, ...>`.
 					if (
 						node.symbol.kind === 'type' &&
 						node.symbol.typeParams?.length &&
@@ -221,7 +221,7 @@ export function parseType(
 					};
 				},
 			},
-			// String literal as a type (D14): `'on' | 'off'` etc.
+			// String literal as a type: `'on' | 'off'` etc.
 			string: {
 				prefix(tk) {
 					const raw = text(tk);
@@ -453,7 +453,7 @@ export function parseType(
 	return parser(api);
 }
 
-// D43: parse `<T, U: Constraint, ...>`, registering each param as a
+// Parse `<T, U: Constraint, ...>`, registering each param as a
 // placeholder type in a pushed scope (caller pops after parsing the body).
 // Returns the param nodes plus a `,` list node wrapping them (the single
 // typeParameters child shared by `type X<...>` and value `<...>(`).

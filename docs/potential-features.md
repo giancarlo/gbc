@@ -98,7 +98,7 @@ fib = fn(n: Int) => n <= 1 ? n : fib(n - 1) + fib(n - 2)
 add = fn(a, b) => a + b
 ```
 
-Currently rejected (see `decisions.md` D16): there are already two forms — anonymous
+Currently rejected: there are already two forms — anonymous
 blocks `{ expr }` auto-emit, and `fn(...) { body }` requires explicit `next`. Adding
 `=>` is a third way to express auto-emit with named parameters — a One Way violation
 with only ergonomic gain (~50% character reduction for short helpers).
@@ -297,15 +297,15 @@ while { x < 2 } >> { x++ } >> std.out # Prints 1
 
 ## Pattern Matching
 
-Chains + nested ternary + `is` (D21) already cover most of pattern matching's utility:
+Type dispatch and nested ternaries already cover most of pattern matching's utility:
 
 | PM feature | Existing GB equivalent |
 |---|---|
 | Value cases | `value >> { $ == X ? A : $ == Y ? B : C }` |
-| Type cases | `value >> { $ is T ? A : $ is U ? B : C }` |
-| Type narrowing in arm | D21 — `is` narrows in truthy branch automatically |
+| Type cases | `value >> T { A } \| U { B }` |
+| Type narrowing in arm | A typed dispatch arm narrows `$` to its accepted type |
 | Guards | nested ternary already takes any Bool expression |
-| Default / catch-all | the final `: default` branch |
+| Default / catch-all | a final arm accepting the remaining union member or shared component |
 | Multiple alternatives per arm | `$ == X \|\| $ == Y ? ...` |
 
 What chain-based dispatch doesn't cover — and what a future Pattern Matching feature would add:
@@ -327,7 +327,7 @@ Open design questions:
 - Whether sum types are added as a distinct feature first
 - Compile-time exhaustiveness — needs closed type sets
 - Compiler lowering — `br_table` for dense int patterns, decision tree otherwise
-- Relationship to D21 narrowing — match arms should produce the same narrowing
+- Relationship to dispatch narrowing — match arms should narrow identically
 
 Subsumes the retired `### switch` sketch.
 
@@ -581,14 +581,14 @@ counter()    # Output: 2
 Design worked out for cross-module resolution, the per-module artifact, and the
 bundler. **None of this is needed yet.** The only near-term piece is
 `@module.symbol` resolution. Recorded here so the design isn't lost; supersedes
-parts of D42 (see "Revises D42" below).
+parts of the compilation model below.
 
 ### Status
 
-- **D22** — module = file; `export` inline modifier; `@module.name` is the sole
+- Module = file; `export` is an inline modifier; `@module.name` is the sole
   cross-module access form; `@` means only "external boundary."
-- **D46** — stdlib is a global prelude, loaded by a general `loadModule`.
-- **D42** — per-module artifact → bundle to one WASM per entry (walk imports,
+- The stdlib is a global prelude, loaded by a general `loadModule`.
+- Per-module artifacts bundle to one WASM per entry (walk imports,
   monomorphize, tree-shake).
 
 Built: `loadModule` (parse+check one module → root+scope), prelude injection,
@@ -639,7 +639,7 @@ refs (no string lookups at link); precomputed `deps` (walk, not re-derive);
 spec-key dedup (each specialization compiled once); content-hash (incremental
 phase 1); minimal relocation set (only cross-module index kinds).
 
-### Revises D42
+### Relocatable artifact
 
 `.gbo` is a **relocatable object** (the `wasm-ld` shape, specialized to gb), not
 "a valid standalone WASM module." Rationale: WASM has no runtime module system —
@@ -663,7 +663,7 @@ programs own everything, so no orphan can arise).
 
 ### Open decisions
 
-- **Import surface** — inline `@module.name` only (D22), or also a `use`/import
+- **Import surface** — inline `@module.name` only, or also a `use`/import
   statement to bind a short name? Biggest unsettled question.
 - **Module resolution** — name→path, search roots, extensions.
 - **Relocation set** — exact index kinds needing patch (funcidx, globalidx,

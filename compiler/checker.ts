@@ -17,7 +17,7 @@ import type { Symbol, SymbolMap, Type } from './symbol-table.js';
 const typeSymbol = Symbol('type');
 type CheckedNode = Node & { [typeSymbol]?: Type };
 
-// D31: the stdlib `DivByZero` type, injected at program init so the free
+// The stdlib `DivByZero` type, injected at program init so the free
 // type-resolution layer can build `Int32 | DivByZero` for runtime division.
 let divByZero: Type | undefined;
 export function setDivByZero(t: Type | undefined): void {
@@ -190,7 +190,7 @@ function resolveNumericOp(node: InfixNode): Type | undefined {
 	if (!isNumericType(lType) || !isNumericType(rType)) return;
 	const base = numericResultType(lType, rType) ?? BT.Int32;
 	if (isFloatType(base)) return base;
-	// D31: integer division by a value that isn't a known non-zero literal can
+	// Integer division by a value that isn't a known non-zero literal can
 	// fail, so the result type carries `DivByZero` (const-fold narrows the
 	// literal case back to plain `Int`).
 	if ((node.kind === '/' || node.kind === '%') && divByZero) {
@@ -647,7 +647,7 @@ function canAssignCoercion(to: SymbolMap['type'], a: SymbolMap['type']): boolean
 
 function canAssignData(to: SymbolMap['type'], a: SymbolMap['type']): boolean {
 	if (to.family !== 'data' || a.family !== 'data') return false;
-	// D49: a named type is nominal — its identity is the type-symbol instance,
+	// A named type is nominal — its identity is the type-symbol instance,
 	// not its structure. The `to === a` test in `canAssign` is that identity
 	// check, so reaching here means the instances already differ; two types that
 	// each carry a declared identity are therefore distinct and never assign,
@@ -655,7 +655,7 @@ function canAssignData(to: SymbolMap['type'], a: SymbolMap['type']): boolean {
 	// identity, so it coerces structurally into a named type.
 	if (to.name !== '__data' && a.name !== '__data') return false;
 	for (const key of Object.keys(to.members)) {
-		// The hidden trace slot is compiler-filled at construction (D50/Trace),
+		// The hidden trace slot is compiler-filled at construction,
 		// never written in a literal.
 		if (key === '__trace') continue;
 		const toType = to.members[key]?.type;
@@ -716,7 +716,7 @@ function getListTypes(node: NodeMap[',']) {
 	return node.children.map(resolver);
 }
 
-// --- D43 type-level reduction engine ---
+// --- Type-level reduction engine ---
 
 const EMPTY_BINDINGS: Map<string, Type> = new Map();
 const MAX_REDUCE = 256;
@@ -729,8 +729,8 @@ function dataTypeOf(members: Type[]): Type {
 	return { kind: 'type', flags: 0, name: '__data', family: 'data', size: 0, members: m };
 }
 
-// Head-rest split of a type (D39): scalar lifts to head + Void rest; data
-// peels first member as head, remainder as rest (D10 collapse / Void).
+// Head-rest split of a type: scalar lifts to head + Void rest; data peels its
+// first member as head and its remainder as a collapsing rest.
 function headRestOf(t: Type): { head: Type; rest: Type } | undefined {
 	if (t.kind !== 'type' || t.family === 'void' || t.family === 'unknown')
 		return undefined;
@@ -757,8 +757,8 @@ function containsApp(t: Type, seen = new Set<Type>()): boolean {
 	return false;
 }
 
-// Reduce a record type's members under bindings, applying D40 (drop `Void`
-// members) and D10 (a single member collapses to its type).
+// Reduce a record type's members under bindings, dropping `Void` members and
+// collapsing a single member to its type.
 function reduceDataMembers(
 	members: Record<string, Symbol>,
 	bindings: Map<string, Type>,
@@ -769,12 +769,12 @@ function reduceDataMembers(
 		const mt = members[k]?.type;
 		if (!mt) continue;
 		const r = reduceType(mt, bindings, depth + 1);
-		if (r.kind === 'type' && r.family === 'void') continue; // D40 drop
+		if (r.kind === 'type' && r.family === 'void') continue;
 		reduced.push(r);
 	}
 	if (reduced.length === 0) return BT.Void;
 	const first = reduced[0];
-	if (reduced.length === 1 && first) return first; // D10 collapse
+	if (reduced.length === 1 && first) return first;
 	return dataTypeOf(reduced);
 }
 
@@ -838,7 +838,7 @@ function reduceChain(
 		if (out === undefined)
 			// Indeterminate when the input is an unresolved type param (e.g.
 			// reducing a generic template's declared return); only a concrete
-			// no-match collapses to Void (D40).
+			// No match collapses to Void.
 			return input.kind === 'type' && input.family === 'unknown'
 				? BT.Unknown
 				: BT.Void;
@@ -1339,7 +1339,7 @@ export function checker({
 						: undefined;
 			if (emitted && refsAny(emitted, bindings))
 				error(
-					'function captures an enclosing binding; closures are not allowed (D45)',
+					'function captures an enclosing binding; closures are not allowed',
 					emitted,
 				);
 		});
@@ -1922,7 +1922,7 @@ export function checker({
 					inner?.kind === ',' ? inner.children : inner ? [inner] : [];
 				if (items.length === 0)
 					error(
-						'empty data block `[]` is not a value (type-level `[]` is Void, D40)',
+						'empty data block `[]` is not a value (type-level `[]` is Void)',
 						node,
 					);
 				return checkEach(items);
@@ -2052,7 +2052,7 @@ export function checker({
 		p: Symbol,
 		inputType: SymbolMap['type'],
 	) {
-		// D39: single slot binds the whole upstream value.
+		// A single slot binds the whole upstream value.
 		const declared = paramDeclaredType(stage, 0) ?? p.type;
 		if (
 			declared &&
@@ -2071,7 +2071,7 @@ export function checker({
 		if (!p.type) p.type = declared ?? inputType;
 	}
 
-	// D39 rest slot: [] → Void; one → that type (D10 collapse); many → data.
+	// Rest slot: [] → Void; one → that type; many → data.
 	function restSlotType(
 		members: Record<string, Symbol>,
 		keys: string[],
@@ -2105,7 +2105,7 @@ export function checker({
 		params: Symbol[],
 		inputType: SymbolMap['type'],
 	) {
-		// D39: last slot binds rest; scalar input lifts to [scalar] (D10).
+		// The last slot binds rest; scalar input lifts to [scalar].
 		const members: Record<string, Symbol> =
 			inputType.family === 'data'
 				? inputType.members

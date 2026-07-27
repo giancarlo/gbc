@@ -449,7 +449,7 @@ export function parseExpression(
 
 	/**
 	 * Parse a ternary branch: either a statement form (`next X`, `done`,
-	 * `break`) per D33, or a value expression at the ternary precedence.
+	 * `break`), or a value expression at the ternary precedence.
 	 */
 	function parseBranchOrExpr(prec: number): Node {
 		const k = current().kind;
@@ -966,7 +966,7 @@ export function parseExpression(
 	const exprParser = parser(api);
 
 	/**
-	 * Parses a definition statement (D6 — `var` is a type modifier, not a
+	 * Parses a definition statement (`var` is a type modifier, not a
 	 * binding modifier):
 	 *  - `identifier = expression`
 	 *  - `identifier : type = expression`

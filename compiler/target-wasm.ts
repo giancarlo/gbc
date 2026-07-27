@@ -46,13 +46,13 @@ declare class TextEncoder {
 // WASM value type codes
 const I32 = 0x7f;
 
-// D31: the stdlib `DivByZero` type, injected at program init so integer
+// The stdlib `DivByZero` type, injected at program init so integer
 // division codegen can build and tag the error value.
 let divByZeroType: Type | undefined;
 export function setDivByZeroType(t: Type | undefined): void {
 	divByZeroType = t;
 }
-// D50/Trace: the stdlib `Trace` and `Frame` types, injected at program init.
+// The stdlib `Trace` and `Frame` types, injected at program init.
 // Every Error-composed value carries a hidden one-word `__trace` slot filled
 // at construction with a static origin-frame pointer; `origin(e)` retypes it.
 let traceType: Type | undefined;
@@ -1244,7 +1244,7 @@ export function compileWasm(
 	 */
 	const fnTemplates = new Map<GbcSymbol, NodeMap['fn']>();
 	const specCache = new Map<string, number>();
-	// D17: depth guard for inlining emit-position calls (re-emission). Bounded
+	// Depth guard for inlining emit-position calls (re-emission). Bounded
 	// recursion (e.g. `each` over fixed-arity data) unrolls; unbounded runtime
 	// recursion hits the cap and falls back to a plain call.
 	let emitInlineDepth = 0;
@@ -1254,7 +1254,7 @@ export function compileWasm(
 	// keep the checker's slot types.
 	let inTemplateInline = 0;
 	const inliningStages = new Set<GbcSymbol>();
-	// D43: a spec's actual return type (after type-param/return reduction),
+	// A spec's actual return type after type-param and return reduction,
 	// keyed by builder index — used so a template call reports the concrete
 	// result type, not the template's abstract one.
 	const specReturn = new Map<number, Type>();
@@ -1269,7 +1269,7 @@ export function compileWasm(
 		}
 		return id;
 	}
-	// D45: function-typed params are bound to a concrete function at each call
+	// Function-typed params are bound to a concrete function at each call
 	// site (monomorphized, never a runtime funcref). Active during a spec body.
 	const fnArgBindings = new Map<GbcSymbol, SymbolMap['function']>();
 
@@ -1750,7 +1750,7 @@ export function compileWasm(
 		return BaseTypes.Int32;
 	}
 
-	// D17/D43: inline a generic Sequence template (e.g. `each`) in emit
+	// Inline a generic Sequence template (e.g. `each`) in emit
 	// position — monomorphize the type-params, inline the body driving the
 	// current fusion. Recursive calls re-enter here with a shrunk arg type and
 	// terminate when it reduces to Void / empty data.
@@ -1791,7 +1791,7 @@ export function compileWasm(
 		const savedParamTypes = valueParams.map(p => p.symbol.type);
 		valueParams.forEach((p, i) => {
 			const at = argTypes[i];
-			// Leave function-typed params alone — they bind by symbol (D41).
+			// Leave function-typed params alone — they bind by symbol.
 			if (at && p.symbol.type?.kind !== 'function') p.symbol.type = at;
 		});
 		// Template params are shared per-process symbols — restore even
@@ -1814,7 +1814,7 @@ export function compileWasm(
 		}
 	}
 
-	// D17: re-emit a callee's emissions by inlining its body so its `next`s
+	// Re-emit a callee's emissions by inlining its body so its `next`s
 	// drive the current fusion (empty stages → emit flows to savedFusion).
 	function tryInlineEmitCall(val: Node, fn: FuncBuilder): boolean {
 		if (val.kind !== 'call' || !fn.fusion) return false;
@@ -2781,7 +2781,7 @@ export function compileWasm(
 							: OP_I32_DIV_S;
 	}
 
-	// D31: integer `/`/`%` by a divisor not known-non-zero returns
+	// Integer `/`/`%` by a divisor not known non-zero returns
 	// `Int | DivByZero` — emit a zero-check that builds the tagged error value
 	// instead of letting `div_s`/`rem_s` trap. Returns undefined (caller falls
 	// through to a plain op) when the checked form doesn't apply.
@@ -2901,7 +2901,7 @@ export function compileWasm(
 			(useWide ? BaseTypes.Int64 : BaseTypes.Int32);
 		const payWasm = useWide ? I64 : I32;
 
-		// D31: integer division by a divisor that isn't a known non-zero literal
+		// Integer division by a divisor that isn't a known non-zero literal
 		// returns `Int | DivByZero` — emit a zero-check that builds the tagged
 		// error value instead of letting `div_s`/`rem_s` trap.
 		if (node.kind === '/' || node.kind === '%') {
@@ -4237,7 +4237,7 @@ export function compileWasm(
 	// An inline fn literal passed as a higher-order argument (`reduce(t, 0, (a,
 	// b){ a + b })`) is lifted to a real top-level function — declared and
 	// compiled on first use — so it gets a `builderIdx` and binds to the param
-	// like a named fn. Untyped params fall back to the Int32 default (D14).
+	// like a named fn. Untyped params fall back to the Int32 default.
 	function liftFnArg(node: Node): SymbolMap['function'] | undefined {
 		if (node.kind !== 'fn') return undefined;
 		const sym = node.symbol;
@@ -5331,7 +5331,7 @@ export function compileWasm(
 	): void {
 		const pSym = p.symbol;
 		if (pSym.type?.kind === 'function') {
-			// D41: a function-valued argument binds by symbol (like the
+			// A function-valued argument binds by symbol (like the
 			// monomorphization path) rather than compiling as a value.
 			const fa = resolveFnArg(argNode);
 			if (fa) {
@@ -5596,7 +5596,7 @@ export function compileWasm(
 		return inputType;
 	}
 
-	// D39/D43: re-derive an unannotated multi-data slot's type from the concrete
+	// Re-derive an unannotated multi-data slot's type from the concrete
 	// input every call (recursion needs the shrinking per-level type); annotated
 	// slots keep their declared type.
 	function rederiveSlotType(
@@ -5628,7 +5628,7 @@ export function compileWasm(
 			restKeys.length === 1 &&
 			!(singleRest?.kind === 'type' && singleRest.family === 'data')
 		)
-			// D10: a single SCALAR rest collapses to the value. A record
+			// A single scalar rest collapses to the value. A record
 			// element stays wrapped — collapsing it would be
 			// indistinguishable from a block of its fields.
 			p.symbol.type = singleRest ?? BaseTypes.Int32;
@@ -5653,9 +5653,9 @@ export function compileWasm(
 		}
 	}
 
-	// D39: scalar input lifts to [scalar] — head slot = the value (on stack),
+	// Scalar input lifts to [scalar] — head slot = the value (on stack),
 	// remaining slots = Void. Used by recursive generic stages when the data has
-	// collapsed to a scalar (D10).
+	// collapsed to a scalar.
 	function bindScalarLift(
 		params: NodeMap['parameter'][],
 		inputType: Type,
@@ -5843,7 +5843,7 @@ export function compileWasm(
 			if (!pSym.type) pSym.type = BaseTypes.Int32;
 			const ptype = pSym.type;
 			const isLast = idx === headCount;
-			// D39: empty rest binds Void.
+			// Empty rest binds Void.
 			if (isLast && ptype.kind === 'type' && ptype.family === 'void') {
 				const localIdx = allocLocal(fn, I32);
 				fn.body.push(OP_I32_CONST);
@@ -5854,8 +5854,8 @@ export function compileWasm(
 				return;
 			}
 			const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
-			// D39: multi-element rest materializes a sub-data-block; a
-			// single-element rest (D10 collapse) falls through to slot read.
+			// Multi-element rest materializes a sub-data-block; a
+			// single-element rest falls through to slot read.
 			if (isLast && ptype.kind === 'type' && ptype.family === 'data') {
 				bindRestSubBlock(pSym, ptype, localIdx);
 				return;
@@ -6019,7 +6019,7 @@ export function compileWasm(
 		return BaseTypes.Void;
 	}
 
-	// D17: drive a generic Sequence template as a pipe stage. The piped value
+	// Drive a generic Sequence template as a pipe stage. The piped value
 	// (already on the stack) becomes the template's first value-param; mirrors
 	// tryInlineEmitTemplate but sources its input from the pipe, not call args.
 	function driveTemplateStage(
@@ -6774,7 +6774,7 @@ export function compileWasm(
 		return returnType;
 	}
 
-	// D43: reduce an applied type-level chain return (e.g. `First<T>`) using the
+	// Reduce an applied type-level chain return (e.g. `First<T>`) using the
 	// now-concrete type-param placeholders (getOrCreateSpec mutated them first).
 	function reduceAppliedReturn(returnType: Type): Type {
 		if (
@@ -6948,12 +6948,12 @@ export function compileWasm(
 	 * unaffected.
 	 */
 	/**
-	 * D43: structurally unify a value-param's declared type against the call's
+	 * Structurally unify a value-param's declared type against the call's
 	 * concrete arg type, binding type-param placeholders (by name) to concrete
 	 * types. Handles direct params (`x: T`) and nested data (`p: [T, U]`).
 	 */
 
-	// D43: bind type-param placeholders to the call's concrete arg types,
+	// Bind type-param placeholders to the call's concrete arg types,
 	// mutating each placeholder in place (value params and the return type all
 	// reference it); returns the saved originals to restore after body compile.
 	function bindTypeParamPlaceholders(
@@ -7108,7 +7108,7 @@ export function compileWasm(
 		return [inferType(args, fn)];
 	}
 
-	// D32: a direct call whose result types match this fn's are emitted as a
+	// A direct call whose result types match this fn's is emitted as a
 	// WASM tail call (`return_call`), so tail recursion doesn't grow the stack.
 	// A body with owned locals to free cannot `return_call` (the callee may
 	// borrow them), so it falls back to a plain call + frees + return.
@@ -7180,7 +7180,7 @@ export function compileWasm(
 		return true;
 	}
 
-	// D32: a pipe whose final stage is a direct single-param fn call, in tail
+	// A pipe whose final stage is a direct single-param fn call, in tail
 	// position (`(n - 1) >> f`). Compiles the input to the last stage as a value,
 	// then `return_call`s the stage fn — so recursion through a pipe stays flat.
 	function tryTailPipe(node: NodeMap['>>'], fn: FuncBuilder): boolean {
@@ -7213,7 +7213,7 @@ export function compileWasm(
 	}
 
 	// Compile `node` as the function's tail/return: emits `return_call` for a
-	// tail call (D32), recurses into `next` and ternary branches, otherwise
+	// tail call, recurses into `next` and ternary branches, otherwise
 	// leaves the return value on the stack. Returns true when the compiled
 	// path exits via `return_call` (it never falls through) — ownership
 	// bookkeeping only merges the states of branches that can fall through.
@@ -7258,7 +7258,7 @@ export function compileWasm(
 		return exits1 && exits2;
 	}
 
-	// D32: union-return ternary in tail position. WASM `if` can't yield the
+	// Union-return ternary in tail position. WASM `if` can't yield the
 	// union's two-value `[payload][tag]` shape via a single block type, so we
 	// route each branch through scratch locals (mirrors the value-context
 	// path in `compileTernary`). Recursing per branch lets a branch that ends
