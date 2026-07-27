@@ -1046,7 +1046,7 @@ export function compileWasm(
 				paramOwner.set(p.symbol, { info, idx: i }),
 			);
 		// Walk the body; true when `sym` appears at an arg position of a
-		// `set`/`realloc` call that `match(name, argIndex)` accepts. Buffer args
+		// `set`/`transfer` call that `match(name, argIndex)` accepts. Buffer args
 		// (arg 0) are relocated; a `set` value arg (arg 2) is embedded — both
 		// move `sym` into the buffer, so the param must be owned-in.
 		const paramFlowsInto = (
@@ -1061,7 +1061,7 @@ export function compileWasm(
 					callee.symbol.kind !== 'function' ||
 					!(callee.symbol.flags & Flags.Intrinsic) ||
 					(callee.symbol.name !== 'set' &&
-						callee.symbol.name !== 'realloc')
+						callee.symbol.name !== 'transfer')
 				)
 					return false;
 				const a = n.children[1];
@@ -1095,7 +1095,13 @@ export function compileWasm(
 			return hit;
 		};
 		const consumesBuffer = (fnNode: NodeMap['fn'], sym: GbcSymbol): boolean =>
-			paramFlowsInto(fnNode, sym, (_nm, i) => i === 0);
+			paramFlowsInto(
+				fnNode,
+				sym,
+				(name, i) =>
+					(name === 'set' && i === 0) ||
+					(name === 'transfer' && (i === 0 || i === 1)),
+			);
 		const embedsValue = (fnNode: NodeMap['fn'], sym: GbcSymbol): boolean =>
 			paramFlowsInto(fnNode, sym, (nm, i) => nm === 'set' && i === 2);
 		const flagsOf = new Map<Info, boolean[]>();
@@ -1320,7 +1326,7 @@ export function compileWasm(
 		return rt;
 	}
 
-	// `get(b,i)` → the buffer's element type; `set`/`grow` → the buffer type.
+	// `get(b,i)` → the buffer's element type; mutations → a buffer type.
 	function inferBufferIntrinsic(
 		sym: GbcSymbol,
 		node: NodeMap['call'],
@@ -1328,12 +1334,14 @@ export function compileWasm(
 		if (!(sym.kind === 'function' && sym.flags & Flags.Intrinsic))
 			return undefined;
 		const name = sym.name;
-		if (name !== 'get' && name !== 'set' && name !== 'realloc')
+		if (name !== 'get' && name !== 'set' && name !== 'transfer')
 			return undefined;
 		const argsNode = node.children[1];
-		const first = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
-		if (!first) return undefined;
-		const bt = inferType(first);
+		const args =
+			argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
+		const value = args[name === 'transfer' ? 1 : 0];
+		if (!value) return undefined;
+		const bt = inferType(value);
 		if (bt.kind !== 'type' || bt.family !== 'data' || !bt.elem) return undefined;
 		return name === 'get' ? bt.elem : bt;
 	}
@@ -1858,7 +1866,7 @@ export function compileWasm(
 			fn.owned = fn.owned.filter(o => o.sym !== node.symbol);
 	}
 
-	/** Is `callee` a reference to the named prelude intrinsic (`set`/`realloc`/…)? */
+	/** Is `callee` a reference to the named prelude intrinsic? */
 	function isIntrinsicCallee(callee: Node, name: string): boolean {
 		return (
 			callee.kind === 'ident' &&
@@ -1870,7 +1878,7 @@ export function compileWasm(
 
 	/** A tail expression that moves an owned buffer out: a bare owned ident, or
 	 * a `set(b, …)` passthrough whose buffer is itself moved out (`set` returns
-	 * its buffer unchanged). `realloc` releases at its own call site. */
+	 * its buffer unchanged). `transfer` releases at its own call site. */
 	function releaseTailOwned(fn: FuncBuilder, node: Node | undefined) {
 		if (!node) return;
 		if (node.kind === 'ident') return releaseOwned(fn, node);
@@ -1965,9 +1973,7 @@ export function compileWasm(
 		if (callee.kind === 'typeident')
 			return typeidentOwnable(callee, args, fn);
 		if (callee.kind !== 'ident') return false;
-		// `realloc` returns a fresh block; `set` carries its buffer arg's
-		// ownership through. Other intrinsics yield a borrow or a scalar.
-		if (isIntrinsicCallee(callee, 'realloc')) return true;
+		if (isIntrinsicCallee(callee, 'transfer')) return true;
 		if (isIntrinsicCallee(callee, 'set')) {
 			const a0 = args?.kind === ',' ? args.children[0] : args;
 			return !!a0 && ownableExpr(a0, fn);
@@ -2061,7 +2067,7 @@ export function compileWasm(
 		if (node.kind === 'ident') return returnIdentOwned(node, fnNode);
 		// `set(b, i, x)` returns its buffer arg unchanged — the return owns a
 		// value iff that buffer does (an owned-in param, an owned local, or a
-		// fresh block). `realloc` already reports owned via `ownableExpr` below.
+		// fresh block). `transfer` already reports owned via `ownableExpr` below.
 		if (node.kind === 'call' && isIntrinsicCallee(node.children[0], 'set')) {
 			const argsNode = node.children[1];
 			const a0 = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
@@ -3348,7 +3354,7 @@ export function compileWasm(
 		if (name === 'get') return compileBufferGet(args, fn);
 		if (name === 'set') return compileBufferSet(args, fn);
 		if (name === 'capacity') return compileBufferCap(args, fn);
-		if (name === 'realloc') return compileBufferRealloc(args, fn);
+		if (name === 'transfer') return compileBufferTransfer(args, fn);
 		if (name === 'origin' || name === 'frames' || name === 'frameAt')
 			return compileTraceIntrinsic(name, args, fn);
 		if (name === 'stack') return compileStackIntrinsic(args, fn);
@@ -4061,86 +4067,60 @@ export function compileWasm(
 		return BaseTypes.Int32;
 	}
 
-	// `realloc(b, cap): Buffer<T>` — the single ownership-shifting primitive:
-	// move `b` in, copy the live payload (len*stride bytes) into a fresh block,
-	// carry `len` over, and free the OLD block shallowly (elements were
-	// byte-moved — no element walk). Handles both grow and shrink.
-	function compileBufferRealloc(args: Node | undefined, fn: FuncBuilder): Type {
-		const [bNode, nNode] = bufArgList(args);
-		if (!bNode || !nNode)
-			throw new Error('realloc(buffer, cap) requires two arguments');
-		const bt = inferType(bNode, fn);
+	function compileBufferTransfer(args: Node | undefined, fn: FuncBuilder): Type {
+		const [sourceNode, destinationNode] = bufArgList(args);
+		if (!sourceNode || !destinationNode)
+			throw new Error('transfer requires source and destination buffers');
+		const bt = inferType(destinationNode, fn);
 		const elem =
 			bt.kind === 'type' && bt.family === 'data' && bt.elem
 				? bt.elem
 				: BaseTypes.Unknown;
 		const stride = fieldBytes(elem);
-		const old = allocLocal(fn, I32);
-		const ncap = allocLocal(fn, I32);
-		const nb = allocLocal(fn, I32);
+		const source = allocLocal(fn, I32);
+		const destination = allocLocal(fn, I32);
 		const len = allocLocal(fn, I32);
-		compileExpr(bNode, fn);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(old, fn.body);
-		compileExpr(nNode, fn);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(ncap, fn.body);
-		emitHeaderRead(old, 0, fn);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(len, fn.body);
-		fn.body.push(OP_I32_CONST);
-		sleb128(8, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(ncap, fn.body);
-		fn.body.push(OP_I32_CONST);
-		sleb128(stride, fn.body);
-		fn.body.push(OP_I32_MUL);
-		fn.body.push(OP_I32_ADD);
-		emitFixedCall(fn, allocBuilderIdx);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(nb, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(nb, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(len, fn.body);
+		compileExpr(sourceNode, fn);
+		emitStoreLocal(source, fn);
+		compileExpr(destinationNode, fn);
+		emitStoreLocal(destination, fn);
+		emitLoadLocal(source, fn);
+		emitLoadLocal(destination, fn);
+		fn.body.push(OP_I32_EQ);
+		emitTrapIf(fn);
+		emitHeaderRead(destination, 0, fn);
+		emitTrapIf(fn);
+		emitHeaderRead(source, 0, fn);
+		emitStoreLocal(len, fn);
+		emitLoadLocal(len, fn);
+		emitHeaderRead(destination, 4, fn);
+		fn.body.push(OP_I32_GT_U);
+		emitTrapIf(fn);
+		emitLoadLocal(destination, fn);
+		emitLoadLocal(len, fn);
 		fn.body.push(OP_I32_STORE);
 		uleb128(2, fn.body);
 		uleb128(0, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(nb, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(ncap, fn.body);
-		fn.body.push(OP_I32_STORE);
-		uleb128(2, fn.body);
-		uleb128(4, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(nb, fn.body);
+		emitLoadLocal(destination, fn);
 		fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(old, fn.body);
+		emitLoadLocal(source, fn);
 		fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(len, fn.body);
+		emitLoadLocal(len, fn);
 		fn.body.push(OP_I32_CONST);
 		sleb128(stride, fn.body);
 		fn.body.push(OP_I32_MUL);
 		fn.body.push(0xfc, 0x0a, 0x00, 0x00);
-		// `realloc` consumes its buffer: free the old block (its elements were
-		// byte-moved into the fresh one, so a shallow block free is correct) and
-		// release an owned-ident arg from this frame so exit drop-glue does not
-		// double-free it. The arg is always owned by codegen time (a fresh temp,
-		// an owned local, or an owned-in param), so freeing it is sound.
-		const bOwned =
-			bNode.kind === 'ident'
-				? !!fn.owned?.some(o => o.sym === bNode.symbol)
-				: ownableExpr(bNode, fn);
-		if (bOwned) {
-			emitLoadLocal(old, fn);
+		const sourceOwned =
+			sourceNode.kind === 'ident'
+				? !!fn.owned?.some(o => o.sym === sourceNode.symbol)
+				: ownableExpr(sourceNode, fn);
+		if (sourceOwned) {
+			emitLoadLocal(source, fn);
 			emitFixedCall(fn, freeBuilderIdx);
-			releaseOwned(fn, bNode);
+			releaseOwned(fn, sourceNode);
 		}
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(nb, fn.body);
+		releaseOwned(fn, destinationNode);
+		emitLoadLocal(destination, fn);
 		return bt;
 	}
 

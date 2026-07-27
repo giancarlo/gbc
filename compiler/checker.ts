@@ -80,14 +80,14 @@ function bufferCtorType(node: NodeMap['call']): Type | undefined {
 	return bufferTypeOf(BT.Unknown);
 }
 
-// `get(b,i)` → the buffer's element type; `set`/`realloc` → the buffer type.
+// `get(b,i)` → the buffer's element type; `set` → the buffer type.
 function bufferIntrinsicReturn(node: NodeMap['call']): Type | undefined {
 	const callee = node.children[0];
 	if (callee.kind !== 'ident') return undefined;
 	const sym = callee.symbol;
 	if (!(sym.kind === 'function' && sym.flags & Flags.Intrinsic)) return undefined;
 	const name = sym.name;
-	if (name !== 'get' && name !== 'set' && name !== 'realloc') return undefined;
+	if (name !== 'get' && name !== 'set') return undefined;
 	const argsNode = node.children[1];
 	const first = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
 	if (!first) return undefined;
@@ -118,10 +118,14 @@ function substituteGenericReturn(rt: Type, node: NodeMap['call']): Type {
 				: undefined;
 	const fnNode =
 		fnSym?.definition?.kind === 'fn' ? fnSym.definition : undefined;
-	const tparams = fnNode?.typeParameters;
+	const tparams =
+		fnSym?.typeParams ??
+		fnNode?.typeParameters
+			?.map(p => p.symbol.type)
+			.filter((t): t is Type => !!t);
 	if (!tparams?.length) return rt;
 	const names = new Set(
-		tparams.map(t => t.symbol.name).filter((n): n is string => !!n),
+		tparams.map(t => t.name).filter((n): n is string => !!n),
 	);
 	const params = fnSym?.parameters ?? [];
 	const argsNode = node.children[1];
@@ -1003,6 +1007,28 @@ export function checker({
 		return fn;
 	}
 
+	function callTypeBindings(
+		chosen: SymbolMap['function'],
+		argTypes: Type[],
+	): Map<string, Type> {
+		const fnNode =
+			chosen.definition?.kind === 'fn' ? chosen.definition : undefined;
+		const typeParams =
+			chosen.typeParams ??
+			fnNode?.typeParameters
+				?.map(p => p.symbol.type)
+				.filter((t): t is Type => !!t) ??
+			[];
+		const names = new Set(
+			typeParams.map(t => t.name).filter((n): n is string => !!n),
+		);
+		const bindings = new Map<string, Type>();
+		(chosen.parameters ?? []).forEach((p, i) =>
+			unifyTypeParam(p.type, argTypes[i], names, bindings),
+		);
+		return bindings;
+	}
+
 	function checkCallArgs(
 		chosen: SymbolMap['function'],
 		argTypes: Type[],
@@ -1021,11 +1047,13 @@ export function checker({
 				? argsNode.children
 				: [argsNode]
 			: [];
+		const bindings = callTypeBindings(chosen, argTypes);
 
 		for (let i = 0; i < argTypes.length; i++) {
 			const typeA = argTypes[i];
-			const typeB = params[i]?.type;
-			if (!typeA || !typeB) continue;
+			const parameterType = params[i]?.type;
+			if (!typeA || !parameterType) continue;
+			const typeB = reduceType(parameterType, bindings);
 			const isVoidArg =
 				typeA.kind === 'type' && typeA.family === 'void';
 			const hasDefault = !!paramNodes?.[i]?.value;
@@ -1158,13 +1186,7 @@ export function checker({
 			chosen.definition?.kind === 'fn' ? chosen.definition : undefined;
 		const tparams = fnNode?.typeParameters;
 		if (!tparams?.length) return;
-		const names = new Set(
-			tparams.map(t => t.symbol.name).filter((n): n is string => !!n),
-		);
-		const subst = new Map<string, Type>();
-		(chosen.parameters ?? []).forEach((p, i) =>
-			unifyTypeParam(p.type, argTypes[i], names, subst),
-		);
+		const subst = callTypeBindings(chosen, argTypes);
 		for (const tp of tparams) {
 			if (!tp.type) continue;
 			const constraint = resolveType(tp.type);
@@ -1468,11 +1490,7 @@ export function checker({
 			);
 		}
 	}
-	// `realloc(x, …)` relocates and frees `x`'s block — a move of an owned
-	// local (like `next x`). `set(x, …)` mutates in place and returns the same
-	// block, so it is an alias, not a move: `x` stays the owner and reads after
-	// it remain valid.
-	function markReallocMoves(
+	function markConsumingMoves(
 		n: Node,
 		owned: Set<Symbol>,
 		moved: Set<Symbol>,
@@ -1480,22 +1498,27 @@ export function checker({
 		if (n.kind === 'fn' || n.kind === 'main' || n.kind === 'test') return;
 		if (n.kind === 'call') {
 			const callee = n.children[0];
-			if (
-				callee.kind === 'ident' &&
-				callee.symbol.kind === 'function' &&
-				callee.symbol.flags & Flags.Intrinsic &&
-				callee.symbol.name === 'realloc'
-			) {
+			if (callee.kind === 'ident' && callee.symbol.kind === 'function') {
 				const a = n.children[1];
-				const a0 = a?.kind === ',' ? a.children[0] : a;
-				if (a0?.kind === 'ident' && owned.has(a0.symbol))
-					moved.add(a0.symbol);
+				const args = a?.kind === ',' ? a.children : a ? [a] : [];
+				const indices =
+					callee.symbol.flags & Flags.Intrinsic &&
+					callee.symbol.name === 'transfer'
+						? [0, 1]
+						: callee.symbol.name === 'realloc'
+							? [0]
+							: [];
+				for (const i of indices) {
+					const arg = args[i];
+					if (arg?.kind === 'ident' && owned.has(arg.symbol))
+						moved.add(arg.symbol);
+				}
 			}
 		}
 		if ('children' in n && n.children)
 			for (let i = 0; i < n.children.length; i++) {
 				const k = n.children[i];
-				if (k) markReallocMoves(k, owned, moved);
+				if (k) markConsumingMoves(k, owned, moved);
 			}
 	}
 	function checkMoves(node: { statements?: Node[] }): void {
@@ -1505,7 +1528,7 @@ export function checker({
 		const borrowed = new Map<Symbol, Symbol>();
 		for (const s of node.statements) {
 			flagMovedUses(s, moved, borrowed);
-			markReallocMoves(s, owned, moved);
+			markConsumingMoves(s, owned, moved);
 			if (s.kind === 'def') {
 				walkEmbeds(s.value, new Set(), owned, borrowed, m => {
 					owned.delete(m);

@@ -145,6 +145,59 @@ export function numericResultType(lt: Type, rt: Type): Type | undefined {
 // recording type-param → concrete-type bindings in `out`. Used by both the
 // checker (constraint checking) and the WASM backend (monomorphization), so the
 // two stay in lockstep. Only `names` (the fn's declared type params) are bound.
+function unifyFunctionTypeParam(
+	paramType: Type | undefined,
+	argType: Type | undefined,
+	names: Set<string>,
+	out: Map<string, Type>,
+): boolean {
+	if (paramType?.kind !== 'function' || argType?.kind !== 'function')
+		return false;
+	const pp = paramType.parameters ?? [];
+	const ap = argType.parameters ?? [];
+	for (let i = 0; i < pp.length; i++)
+		unifyTypeParam(pp[i]?.type, ap[i]?.type, names, out);
+	unifyTypeParam(paramType.returnType, argType.returnType, names, out);
+	return true;
+}
+
+function bindNamedTypeParam(
+	paramType: Type,
+	argType: Type,
+	names: Set<string>,
+	out: Map<string, Type>,
+): boolean {
+	if (!(
+		paramType.kind === 'type' &&
+		paramType.family === 'unknown' &&
+		paramType.name &&
+		names.has(paramType.name)
+	))
+		return false;
+	if (argType.kind === 'type' && !out.has(paramType.name))
+		out.set(paramType.name, argType);
+	return true;
+}
+
+function unifyCollectionTypeParam(
+	paramType: Type,
+	argType: Type,
+	names: Set<string>,
+	out: Map<string, Type>,
+): boolean {
+	if (!(
+		paramType.kind === 'type' &&
+		paramType.family === 'data' &&
+		paramType.elem &&
+		argType.kind === 'type' &&
+		argType.family === 'data' &&
+		argType.elem
+	))
+		return false;
+	unifyTypeParam(paramType.elem, argType.elem, names, out);
+	return true;
+}
+
 export function unifyTypeParam(
 	paramType: Type | undefined,
 	argType: Type | undefined,
@@ -152,16 +205,9 @@ export function unifyTypeParam(
 	out: Map<string, Type>,
 ): void {
 	if (!paramType || !argType) return;
-	if (
-		paramType.kind === 'type' &&
-		paramType.family === 'unknown' &&
-		paramType.name &&
-		names.has(paramType.name)
-	) {
-		if (argType.kind === 'type' && !out.has(paramType.name))
-			out.set(paramType.name, argType);
-		return;
-	}
+	if (unifyFunctionTypeParam(paramType, argType, names, out)) return;
+	if (bindNamedTypeParam(paramType, argType, names, out)) return;
+	if (unifyCollectionTypeParam(paramType, argType, names, out)) return;
 	if (
 		paramType.kind === 'type' &&
 		paramType.family === 'data' &&
@@ -264,6 +310,13 @@ export function isCollection(t: Type): boolean {
 }
 
 export function ProgramSymbolTable() {
+	const transferType: SymbolMap['type'] = {
+		kind: 'type',
+		name: 'T',
+		flags: 0,
+		family: 'unknown',
+		size: 4,
+	};
 	return SymbolTable<Symbol>({
 		true: literal(true, BaseTypes.Bool),
 		false: literal(false, BaseTypes.Bool),
@@ -282,10 +335,8 @@ export function ProgramSymbolTable() {
 		frameAt: FrameAtIntrinsic,
 		stack: StackIntrinsic,
 		// `Buffer<T>` primitives — the safe memory floor the stdlib `Array<T>`
-		// is built on. `realloc` is the single ownership-shifting op (moves its
-		// buffer in, frees the old block, returns the relocated one). Return
-		// types that depend on the element type (`get` → T, `set`/`realloc` →
-		// Buffer<T>) are computed from the argument (registered here as Unknown).
+		// is built on. Return types that depend on the element type are computed
+		// from the argument.
 		get: {
 			kind: 'function',
 			name: 'get',
@@ -311,12 +362,16 @@ export function ProgramSymbolTable() {
 			parameters: [param('b', BaseTypes.Unknown)],
 			returnType: BaseTypes.Int32,
 		},
-		realloc: {
+		transfer: {
 			kind: 'function',
-			name: 'realloc',
+			name: 'transfer',
 			flags: Flags.Intrinsic,
-			parameters: [param('b', BaseTypes.Unknown), param('n', BaseTypes.Int32)],
-			returnType: BaseTypes.Unknown,
+			typeParams: [transferType],
+			parameters: [
+				param('source', bufferTypeOf(transferType)),
+				param('destination', bufferTypeOf(transferType)),
+			],
+			returnType: bufferTypeOf(transferType),
 		},
 		out_buffer: {
 			kind: 'function',

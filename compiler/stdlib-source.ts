@@ -20,6 +20,10 @@ export take = <T>(t: T, n: Int32) { t >> (h, r) { n > 0 ? h, take(r, n - 1) } };
 export drop = <T>(t: T, n: Int32) { t >> (h, r) { n <= 0 ? h, drop(r, n - 1) } };
 export reverse = <T>(t: T) { t >> (h, r) { reverse(r), h } };
 
+export realloc = <T>(a: Buffer<T>, capacity: Int32): Buffer<T> {
+	transfer(a, Buffer<T>(capacity))
+};
+
 export push = <T>(a: Buffer<T>, x: T): Buffer<T> {
 	length(a) < capacity(a)
 		? set(a, length(a), x)

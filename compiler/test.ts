@@ -2018,7 +2018,7 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> ou
 		});
 	});
 
-	h('Buffer & Array (push)', ({ testBlock }) => {
+	h('Buffer & Array (push)', ({ testBlock, compileError }) => {
 		testBlock({
 			p: '`Buffer<T>` primitives: `set` appends at `length` (bumping it) and `get` reads back; `capacity` is the fixed slot count; the prelude `push` appends, reallocating (doubling) when full; `each` streams the live elements.',
 			src: `export mk = (): Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 10); b2 = set(b1, 1, 20); next push(b2, 30) };
@@ -2039,6 +2039,23 @@ export target = (): Int32 { 0 }`,
 #test { equal(get(grow4(), 0), 7); equal(get(grow4(), 1), 8); equal(length(grow4()), 2); equal(capacity(grow4()), 4) }
 export target = (): Int32 { 0 }`,
 			out: [],
+		});
+		testBlock({
+			p: '`transfer` moves a buffer payload into a distinct empty destination, preserving owned elements and adopting the destination capacity.',
+			src: `export moved = (): Buffer<String> { s0 = Buffer<String>(2); s1 = set(s0, 0, 'a'); s2 = set(s1, 1, 'b'); next transfer(s2, Buffer<String>(4)) };
+#test { equal(get(moved(), 0), 'a'); equal(get(moved(), 1), 'b'); equal(length(moved()), 2); equal(capacity(moved()), 4) }
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		compileError({
+			p: '`transfer` requires source and destination buffers with the same element type.',
+			src: `main { source = Buffer<Int32>(1); destination = Buffer<String>(1); transfer(source, destination) >> length >> out }`,
+			expected: 'not assignable',
+		});
+		compileError({
+			p: '`transfer` consumes both buffers, so neither input can be used afterward.',
+			src: `main { source = Buffer<Int32>(1); destination = Buffer<Int32>(1); moved = transfer(source, destination); length(source) >> out; length(moved) >> out }`,
+			expected: 'used after move',
 		});
 		testBlock({
 			p: 'push grows a scalar buffer flat: building and dropping a buffer every iteration reuses the heap — the doubling `realloc` frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
