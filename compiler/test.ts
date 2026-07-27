@@ -2075,6 +2075,23 @@ export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc +
 			out: [],
 			maxPages: 3,
 		});
+		testBlock({
+			p: 'The prelude `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
+			src: `export ints = (): Buffer<Int32> { b0 = Buffer<Int32>(4); b1 = set(b0, 0, 3); b2 = set(b1, 1, 5); next set(b2, 2, 7) };
+export strs = (): Buffer<String> { s0 = Buffer<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
+#test {
+	equal(indexOf(ints(), 5), 1);
+	equal(indexOf(ints(), 9), 0 - 1);
+	ok(contains(ints(), 7));
+	ok(!contains(ints(), 8));
+	equal(length(ints()), 3);
+	equal(indexOf(strs(), 'b'), 1);
+	equal(indexOf(strs(), 'z'), 0 - 1);
+	ok(contains(strs(), 'a'))
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
 	});
 
 	h('Tail calls', ({ rule }) => {
@@ -2734,30 +2751,30 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; s >> each >> (f: Frame
 				out: ['10'],
 			});
 			expr({
-				pre: `reduce = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : reduce(r, f(acc, h), f) } }; add = (a: Int32, b: Int32): Int32 { a + b }`,
-				src: `reduce([1, 2, 3], 0, add)`,
-				ast: `(call :reduce (, (data (, 1 2 3)) 0 :add))`,
+				pre: `dfold = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : dfold(r, f(acc, h), f) } }; add = (a: Int32, b: Int32): Int32 { a + b }`,
+				src: `dfold([1, 2, 3], 0, add)`,
+				ast: `(call :dfold (, (data (, 1 2 3)) 0 :add))`,
 				out: ['6'],
 			});
 			// A higher-order arg may also be an inline function literal, not just a
 			// named fn: it is lifted to a real function and bound to the param.
 			expr({
-				pre: `reduce = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : reduce(r, f(acc, h), f) } }`,
-				src: `reduce([1, 2, 3], 0, (a: Int32, b: Int32): Int32 { a + b })`,
-				ast: `(call :reduce (, (data (, 1 2 3)) 0 (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))))`,
+				pre: `dfold = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : dfold(r, f(acc, h), f) } }`,
+				src: `dfold([1, 2, 3], 0, (a: Int32, b: Int32): Int32 { a + b })`,
+				ast: `(call :dfold (, (data (, 1 2 3)) 0 (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))))`,
 				out: ['6'],
 			});
 			// A recursive generic monomorphized over a non-Int32 element (Float64):
 			// each spec's param must take its concrete arg's wasm type (f64), not
 			// the Int32 default left by the in-place type-param placeholder.
 			expr({
-				pre: `reduce = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : reduce(r, f(acc, h), f) } }; addF = (a: Float64, b: Float64): Float64 { a + b }`,
-				src: `reduce([1.5, 2.5, 3.5], 0.5, addF)`,
-				ast: `(call :reduce (, (data (, 1.5 2.5 3.5)) 0.5 :addF))`,
+				pre: `dfold = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : dfold(r, f(acc, h), f) } }; addF = (a: Float64, b: Float64): Float64 { a + b }`,
+				src: `dfold([1.5, 2.5, 3.5], 0.5, addF)`,
+				ast: `(call :dfold (, (data (, 1.5 2.5 3.5)) 0.5 :addF))`,
 				out: ['8'],
 			});
 			rule({
-				p: 'A generic may recurse on a value with a fixed type — it monomorphizes once and self-calls, terminating at runtime like any recursion (termination is not proven, mirroring non-generic recursion). Type-reducing recursion (`reduce` above) still unrolls per level.',
+				p: 'A generic may recurse on a value with a fixed type — it monomorphizes once and self-calls, terminating at runtime like any recursion (termination is not proven, mirroring non-generic recursion). Type-reducing recursion (`dfold` above) still unrolls per level.',
 				src: `rep = <T>(x: T, n: Int32): String { n <= 0 ? '' : '\${x}\${rep(x, n - 1)}' };
 main { rep('ab', 3) >> out }`,
 				ast: `(root (def :rep ? (fn @sequence (, (parameter :T ? ?)) (parameter :x typeident ?) (parameter :n typeident ?) typeident (? (<= :n 0) '' (interp :x (call :rep (, :x (- :n 1))))))) (main (>> (call :rep (, 'ab' 3)) :out)))`,

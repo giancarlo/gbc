@@ -30,6 +30,26 @@ export push = <T>(a: Buffer<T>, x: T): Buffer<T> {
 		: set(realloc(a, capacity(a) * 2), length(a), x)
 };
 
+indexAt = <T>(a: Buffer<T>, i: Int32, x: T): Int32 {
+	i == length(a) ? 0 - 1 : (get(a, i) == x ? i : indexAt(a, i + 1, x))
+};
+export indexOf = <T>(a: Buffer<T>, x: T): Int32 { indexAt(a, 0, x) };
+export contains = <T>(a: Buffer<T>, x: T): Bool { indexOf(a, x) >= 0 };
+
+mapAt = <T, U>(a: Buffer<T>, i: Int32, dst: Buffer<U>, f: (T): U): Buffer<U> {
+	i == length(a) ? dst : mapAt(a, i + 1, push(dst, f(get(a, i))), f)
+};
+export map = <T, U>(a: Buffer<T>, f: (T): U): Buffer<U> {
+	mapAt(a, 0, Buffer<U>(length(a)), f)
+};
+
+reduceAt = <T, A>(a: Buffer<T>, i: Int32, acc: A, f: (A, T): A): A {
+	i == length(a) ? acc : reduceAt(a, i + 1, f(acc, get(a, i)), f)
+};
+export reduce = <T, A>(a: Buffer<T>, acc: A, f: (A, T): A): A {
+	reduceAt(a, 0, acc, f)
+};
+
 negDigits = (n: Int32): String {
 	n > -10
 		? String(Char(Uint8(48 - n)))

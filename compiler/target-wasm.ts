@@ -966,19 +966,16 @@ export function compileWasm(
 			const fnNode = child.value;
 			const params = fnNode.parameters ?? [];
 			if (!params.length) continue;
-			// Higher-order (function-typed) and dispatch (union-typed) params
-			// are handled by other machinery — skip those fns. A generic fn is
-			// allowed: the per-param type gate excludes type-param value params
-			// (`x: T`, unknown family) while a concrete `Buffer<T>` param still
-			// qualifies as a consuming/accumulator slot.
-			const hasFnOrUnionParam = params.some(p => {
+			// Dispatch (union-typed) params are handled by other machinery — skip
+			// those fns. Function and type-param value params are fine: the fn is
+			// analyzed and the per-param type gate excludes them, while a concrete
+			// `Buffer<U>` accumulator alongside a function param (e.g. `map`'s
+			// destination) still qualifies.
+			const hasUnionParam = params.some(p => {
 				const t = p.symbol.type;
-				return (
-					t?.kind === 'function' ||
-					(t?.kind === 'type' && t.family === 'union')
-				);
+				return t?.kind === 'type' && t.family === 'union';
 			});
-			if (hasFnOrUnionParam) continue;
+			if (hasUnionParam) continue;
 			if (hostExports && child.symbol.flags & Flags.Export) continue;
 			infos.set(child.symbol, {
 				defSym: child.symbol,
@@ -1120,6 +1117,16 @@ export function compileWasm(
 				if (isOwnedInParam(a.symbol)) return true;
 				const def = a.symbol.definition;
 				if (def?.kind === 'def' && ownableExpr(def.value)) return true;
+			}
+			// A call to a higher-order (function-typed) param produces a value the
+			// caller relinquishes into the consumer — treat it as movable so a
+			// consumer like `push` stays owned-in even when one caller feeds it
+			// `f(get(a, i))` (as `map` does). Sound when `f` returns a fresh value;
+			// a passthrough/identity `f` over heap elements would alias.
+			if (a.kind === 'call') {
+				const callee = a.children[0];
+				if (callee.kind === 'ident' && callee.symbol.type?.kind === 'function')
+					return true;
 			}
 			return false;
 		};
@@ -6737,6 +6744,19 @@ export function compileWasm(
 		)
 			returnType = fnNode.symbol.returnType;
 		returnType = substituteTypeArg(returnType, typeArgs);
+		// A parameterized collection return (`Buffer<U>`) resolves its element by
+		// NAME — needed when `U` binds only through a higher-order arg, whose
+		// placeholder the return annotation may not share. Only the element is
+		// reduced, so record returns keep their exact (uncollapsed) shape.
+		if (
+			typeArgs &&
+			returnType.kind === 'type' &&
+			returnType.family === 'data' &&
+			returnType.elem
+		) {
+			const e = reduceType(returnType.elem, typeArgs);
+			if (e !== returnType.elem) returnType = bufferTypeOf(e);
+		}
 		returnType = reduceAppliedReturn(returnType);
 		return inferReturnFromBody(returnType, fnNode);
 	}
@@ -6941,6 +6961,7 @@ export function compileWasm(
 		params: NodeMap['parameter'][],
 		argTypes: Type[],
 		subst: Map<string, Type>,
+		bindings: Map<GbcSymbol, SymbolMap['function']>,
 	): { ph: object; saved: object }[] {
 		const tparams = template.typeParameters ?? [];
 		const restorePh: { ph: object; saved: object }[] = [];
@@ -6948,9 +6969,23 @@ export function compileWasm(
 		const names = new Set(
 			tparams.map(tp => tp.symbol.name).filter((n): n is string => !!n),
 		);
-		params.forEach((p, i) =>
-			unifyTypeParam(p.symbol.type, argTypes[i], names, subst),
-		);
+		params.forEach((p, i) => {
+			// A higher-order arg is bound (not passed by value), so its inferred
+			// `argType` need not carry the concrete signature. Unify the param's
+			// function type against the BOUND fn's parameters/return so a type
+			// var appearing only there (e.g. `map`'s `U` in `f: (T): U`) binds.
+			const bound = bindings.get(p.symbol);
+			const pt = p.symbol.type;
+			if (bound && pt?.kind === 'function') {
+				const pp = pt.parameters ?? [];
+				const bp = bound.parameters ?? [];
+				for (let j = 0; j < pp.length; j++)
+					unifyTypeParam(pp[j]?.type, bp[j]?.type, names, subst);
+				unifyTypeParam(pt.returnType, bound.returnType, names, subst);
+				return;
+			}
+			unifyTypeParam(pt, argTypes[i], names, subst);
+		});
 		for (const tp of tparams) {
 			const ph = tp.symbol.type;
 			const concrete = tp.symbol.name
@@ -7010,6 +7045,7 @@ export function compileWasm(
 			params,
 			argTypes,
 			subst,
+			bindings,
 		);
 		// Bind each value param to its concrete arg type BEFORE building the
 		// function signature, so the param's wasm type uses the actual element
