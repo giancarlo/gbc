@@ -12,6 +12,7 @@ export const keywords = [
 	'loop',
 	'main',
 	'next',
+	'own',
 	'type',
 	'var',
 ] as const;

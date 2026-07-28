@@ -7,6 +7,7 @@ import {
 } from '../sdk/index.js';
 import {
 	EmptyFunction,
+	OwnershipMode,
 	ScopeOwner,
 	Symbol,
 	SymbolMap,
@@ -185,13 +186,35 @@ export function parseExpression(
 	 * the Variable flag on the provided slot symbol; otherwise we parse a
 	 * regular type expression.
 	 */
-	function maybeVarType(symbol: SymbolMap['variable']) {
+	function slotType(
+		symbol: SymbolMap['variable'],
+		mode: 'field' | 'local' | 'parameter',
+	) {
 		if (current().kind === 'var') {
+			if (mode !== 'local')
+				throw error(
+					'`var` is a local binding modifier, not a parameter or field type',
+					current(),
+				);
 			api.next();
 			symbol.flags |= Flags.Variable;
 			return current().kind === '=' ? undefined : expectType();
 		}
+		if (current().kind === 'own') {
+			if (mode !== 'parameter')
+				throw error(
+					'`own` is valid only on function parameters and results',
+					current(),
+				);
+			api.next();
+			symbol.ownership = 'own';
+		}
 		return expectType();
+	}
+
+	function resultType(): { mode: OwnershipMode; type: Node } {
+		const mode = current().kind === 'own' ? (api.next(), 'own') : 'borrow';
+		return { mode, type: expectType() };
 	}
 
 	/**
@@ -214,6 +237,7 @@ export function parseExpression(
 		}) => N,
 		valuePrec?: number,
 		bindAfter?: boolean,
+		mode: 'field' | 'local' | 'parameter' = 'field',
 	): N {
 		const name = text(ident);
 		const symbol: SymbolMap['variable'] = bindAfter
@@ -223,7 +247,8 @@ export function parseExpression(
 					kind: 'variable',
 					flags: 0,
 			  });
-		const type = optional(':') ? maybeVarType(symbol) : undefined;
+		if (mode === 'parameter') symbol.ownership = 'borrow';
+		const type = optional(':') ? slotType(symbol, mode) : undefined;
 		const value = optional('=')
 			? expectNode(exprParser(valuePrec), 'Expected value')
 			: undefined;
@@ -251,6 +276,8 @@ export function parseExpression(
 				children: [slot.label, slot.type, slot.value],
 			}),
 			2,
+			false,
+			'parameter',
 		);
 	}
 
@@ -265,7 +292,8 @@ export function parseExpression(
 		return parseBlock(tk, node => {
 			blockParameters(node);
 			if (optional(':')) {
-				const rt = expectType();
+				const result = resultType();
+				const rt = result.type;
 				// Bare `Void` here states nothing the body doesn't already:
 				// return types are inferred. (`T | Void` and the `T:Void`
 				// stage form carry meaning and stay.)
@@ -278,6 +306,8 @@ export function parseExpression(
 						'return types are inferred — a fn that produces no value needs no `: Void` annotation',
 						rt,
 					);
+				node.returnOwnership = result.mode;
+				node.symbol.returnOwnership = result.mode;
 				node.children.push((node.returnType = rt));
 			}
 			consume('{');
@@ -297,7 +327,8 @@ export function parseExpression(
 			};
 			if (typeNode.kind === 'typeident' && typeNode.symbol.kind === 'type')
 				anonSym.type = typeNode.symbol;
-			const returnTypeNode = optional(':') ? expectType() : undefined;
+			const result = optional(':') ? resultType() : undefined;
+			const returnTypeNode = result?.type;
 			// `T:R` asserts a real emitted type; "emits nothing" is inferred
 			// from the body, so `T:Void` states nothing — same rule as fn
 			// returns. (This was Void's last writable surface.)
@@ -310,7 +341,11 @@ export function parseExpression(
 					'return types are inferred — a stage that emits nothing needs no `:Void` annotation',
 					returnTypeNode,
 				);
-			if (returnTypeNode) node.returnType = returnTypeNode;
+			if (returnTypeNode) {
+				node.returnType = returnTypeNode;
+				node.returnOwnership = result.mode;
+				node.symbol.returnOwnership = result.mode;
+			}
 			const param: NodeMap['parameter'] = {
 				...tk,
 				kind: 'parameter',
@@ -1010,7 +1045,7 @@ export function parseExpression(
 				children: [slot.label, slot.type, value],
 				value,
 			};
-		});
+		}, undefined, false, 'local');
 	}
 
 	/**

@@ -4,6 +4,7 @@ import type { Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
 import { AnyData, Flags, bufferTypeOf } from './symbol-table.js';
 import type {
+	OwnershipMode,
 	Symbol,
 	SymbolMap,
 	Type,
@@ -22,6 +23,14 @@ export function parseType(
 		const node: NodeMap['typeident'] = { ...tk, kind: 'typeident', symbol };
 		(symbol.references ||= []).push(node);
 		return node;
+	}
+
+	function slotOwnership(): OwnershipMode {
+		if (current().kind === 'own') {
+			api.next();
+			return 'own';
+		}
+		return 'borrow';
 	}
 
 	function collectUnionMembers(n: Node, out: Type[]) {
@@ -147,6 +156,7 @@ export function parseType(
 									api.next();
 								} else api.backtrack(first);
 							}
+							const ownership = slotOwnership();
 							const pt = expectNode(
 								expression(),
 								'Expected parameter type',
@@ -166,6 +176,7 @@ export function parseType(
 									kind: 'variable',
 									name: labelTok ? text(labelTok) : '',
 									flags: 0,
+									ownership,
 									type:
 										pt.kind === 'typeident'
 											? pt.symbol
@@ -178,8 +189,10 @@ export function parseType(
 						} while (optional(','));
 					}
 					const close = consume(')');
+					let returnOwnership: OwnershipMode | undefined;
 					const returnType = optional(':')
-						? expectNode(expression(), 'Expected return type')
+						? ((returnOwnership = slotOwnership()),
+							expectNode(expression(), 'Expected return type'))
 						: undefined;
 					// An omitted return already means "no value" — bare
 					// `Void` adds nothing (`T | Void` unions stay).
@@ -207,6 +220,7 @@ export function parseType(
 							returnType?.kind === 'typeident'
 								? returnType.symbol
 								: undefined,
+						returnOwnership,
 					};
 					return {
 						...tk,
@@ -214,6 +228,7 @@ export function parseType(
 						end: (returnType ?? close).end,
 						parameters: params,
 						returnType,
+						returnOwnership,
 						symbol: fnSymbol,
 						children: returnType
 							? [...params, returnType]

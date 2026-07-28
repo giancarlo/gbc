@@ -955,7 +955,38 @@ export function compileWasm(
 	 * only at the fn's own tail (the thread-through accumulator); any
 	 * other bare-ident argument, a non-call use of the fn (stage, value),
 	 * or a host export disqualifies the slot. */
-	function computeOwnedInParams(rootNode: Node) {
+	function computeDeclaredOwnedInParams(rootNode: Node) {
+		if (rootNode.kind !== 'root') return;
+		ownedInParams.clear();
+		const definitions: {
+			definition: NodeMap['def'];
+			fn: NodeMap['fn'];
+		}[] = [];
+		for (const child of rootNode.children)
+			if (child.kind === 'def' && child.value.kind === 'fn')
+				definitions.push({ definition: child, fn: child.value });
+		if (
+			definitions.some(({ fn }) =>
+				(fn.parameters ?? []).some(
+					p => p.symbol.ownership === undefined,
+				),
+			)
+		)
+			computeInferredOwnedInParams(rootNode);
+		for (const { definition, fn } of definitions) {
+			const explicit = (fn.parameters ?? []).every(
+				p => p.symbol.ownership !== undefined,
+			);
+			if (!explicit) continue;
+			const flags = (fn.parameters ?? []).map(
+				p => p.symbol.ownership === 'own',
+			);
+			ownedInParams.set(definition.symbol, flags);
+			ownedInParams.set(fn.symbol, flags);
+		}
+	}
+
+	function computeInferredOwnedInParams(rootNode: Node) {
 		if (rootNode.kind !== 'root') return;
 		interface Info {
 			defSym: GbcSymbol;
@@ -1053,18 +1084,17 @@ export function compileWasm(
 		const paramFlowsInto = (
 			fnNode: NodeMap['fn'],
 			sym: GbcSymbol,
-			match: (name: string, argIndex: number) => boolean,
 		): boolean => {
 			const flowsAtCall = (n: NodeMap['call']): boolean => {
 				const callee = n.children[0];
-				if (
-					callee.kind !== 'ident' ||
-					callee.symbol.kind !== 'function' ||
-					!(callee.symbol.flags & Flags.Intrinsic) ||
-					(callee.symbol.name !== 'set' &&
-						callee.symbol.name !== 'transfer')
-				)
-					return false;
+				if (callee.kind !== 'ident') return false;
+				const fn =
+					callee.symbol.kind === 'function'
+						? callee.symbol
+						: callee.symbol.type?.kind === 'function'
+							? callee.symbol.type
+							: undefined;
+				if (!fn) return false;
 				const a = n.children[1];
 				const args = a?.kind === ',' ? a.children : a ? [a] : [];
 				for (let k = 0; k < args.length; k++) {
@@ -1072,7 +1102,7 @@ export function compileWasm(
 					if (
 						ak?.kind === 'ident' &&
 						ak.symbol === sym &&
-						match(callee.symbol.name ?? '', k)
+						fn.parameters?.[k]?.ownership === 'own'
 					)
 						return true;
 				}
@@ -1096,15 +1126,9 @@ export function compileWasm(
 			return hit;
 		};
 		const consumesBuffer = (fnNode: NodeMap['fn'], sym: GbcSymbol): boolean =>
-			paramFlowsInto(
-				fnNode,
-				sym,
-				(name, i) =>
-					(name === 'set' && i === 0) ||
-					(name === 'transfer' && (i === 0 || i === 1)),
-			);
+			paramFlowsInto(fnNode, sym);
 		const embedsValue = (fnNode: NodeMap['fn'], sym: GbcSymbol): boolean =>
-			paramFlowsInto(fnNode, sym, (nm, i) => nm === 'set' && i === 2);
+			paramFlowsInto(fnNode, sym);
 		const flagsOf = new Map<Info, boolean[]>();
 		const meta = new Map<Info, { paramSyms: GbcSymbol[]; tails: Set<Node> }>();
 		const isOwnedInParam = (sym: GbcSymbol): boolean => {
@@ -1890,27 +1914,24 @@ export function compileWasm(
 			fn.owned = fn.owned.filter(o => o.sym !== node.symbol);
 	}
 
-	/** Is `callee` a reference to the named prelude intrinsic? */
-	function isIntrinsicCallee(callee: Node, name: string): boolean {
-		return (
-			callee.kind === 'ident' &&
-			callee.symbol.kind === 'function' &&
-			!!(callee.symbol.flags & Flags.Intrinsic) &&
-			callee.symbol.name === name
-		);
+	function returnedArgument(node: NodeMap['call']): Node | undefined {
+		const callee = node.children[0];
+		if (callee.kind !== 'ident' || callee.symbol.kind !== 'function')
+			return;
+		const origin = callee.symbol.returnBorrowOrigins?.[0];
+		if (origin === undefined) return;
+		const args = node.children[1];
+		return args?.kind === ','
+			? args.children[origin]
+			: origin === 0
+				? args
+				: undefined;
 	}
 
-	/** A tail expression that moves an owned buffer out: a bare owned ident, or
-	 * a `set(b, …)` passthrough whose buffer is itself moved out (`set` returns
-	 * its buffer unchanged). `transfer` releases at its own call site. */
 	function releaseTailOwned(fn: FuncBuilder, node: Node | undefined) {
 		if (!node) return;
 		if (node.kind === 'ident') return releaseOwned(fn, node);
-		if (node.kind !== 'call' || !isIntrinsicCallee(node.children[0], 'set'))
-			return;
-		const argsNode = node.children[1];
-		const a0 = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
-		releaseTailOwned(fn, a0);
+		if (node.kind === 'call') releaseTailOwned(fn, returnedArgument(node));
 	}
 
 	/** `String(x)` allocates for these argument families — via a ctor arm
@@ -1997,11 +2018,11 @@ export function compileWasm(
 		if (callee.kind === 'typeident')
 			return typeidentOwnable(callee, args, fn);
 		if (callee.kind !== 'ident') return false;
-		if (isIntrinsicCallee(callee, 'transfer')) return true;
-		if (isIntrinsicCallee(callee, 'set')) {
-			const a0 = args?.kind === ',' ? args.children[0] : args;
-			return !!a0 && ownableExpr(a0, fn);
-		}
+		if (
+			callee.symbol.kind === 'function' &&
+			callee.symbol.returnOwnership === 'own'
+		)
+			return true;
 		if (
 			callee.symbol.kind === 'function' &&
 			callee.symbol.flags & Flags.Intrinsic
@@ -2039,6 +2060,8 @@ export function compileWasm(
 	const returnsOwnedMemo = new Map<NodeMap['fn'], boolean>();
 
 	function fnReturnsOwned(fnNode: NodeMap['fn']): boolean {
+		if (fnNode.symbol.returnOwnership)
+			return fnNode.symbol.returnOwnership === 'own';
 		const memo = returnsOwnedMemo.get(fnNode);
 		if (memo !== undefined) return memo;
 		returnsOwnedMemo.set(fnNode, true);
@@ -2060,13 +2083,7 @@ export function compileWasm(
 		node: NodeMap['ident'],
 		fnNode: NodeMap['fn'],
 	): boolean {
-		const flags = ownedInParams.get(fnNode.symbol);
-		if (flags) {
-			const idx = (fnNode.parameters ?? []).findIndex(
-				p => p.symbol === node.symbol,
-			);
-			if (idx >= 0 && flags[idx]) return true;
-		}
+		if (node.symbol.ownership === 'own') return true;
 		const def = node.symbol.definition;
 		return (
 			def?.kind === 'def' &&
@@ -2089,13 +2106,9 @@ export function compileWasm(
 						returnPathOwned(node.children[2], fnNode)
 				: false;
 		if (node.kind === 'ident') return returnIdentOwned(node, fnNode);
-		// `set(b, i, x)` returns its buffer arg unchanged — the return owns a
-		// value iff that buffer does (an owned-in param, an owned local, or a
-		// fresh block). `transfer` already reports owned via `ownableExpr` below.
-		if (node.kind === 'call' && isIntrinsicCallee(node.children[0], 'set')) {
-			const argsNode = node.children[1];
-			const a0 = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
-			return a0 ? returnPathOwned(a0, fnNode) : false;
+		if (node.kind === 'call') {
+			const returned = returnedArgument(node);
+			if (returned) return returnPathOwned(returned, fnNode);
 		}
 		return ownableExpr(node);
 	}
@@ -4076,6 +4089,7 @@ export function compileWasm(
 		fn.body.push(OP_END);
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(base, fn.body);
+		releaseOwned(fn, bNode);
 		return bt;
 	}
 
@@ -5386,7 +5400,13 @@ export function compileWasm(
 			if (!p) return false;
 			const argNode = resolved[i];
 			if (!argNode) return false;
-			bindOneParam(p, argNode, ownArgs, ownedIn?.[i], fn);
+			bindOneParam(
+				p,
+				argNode,
+				ownArgs,
+				p.symbol.ownership === 'own' || ownedIn?.[i],
+				fn,
+			);
 		}
 		return true;
 	}
@@ -6725,7 +6745,14 @@ export function compileWasm(
 				);
 			stampErrorData(a, p.type);
 			const at = compileExpr(a, fn);
-			trackCallArgOwned(a, at, ownedIn?.[i], ownArgs, noArgFrees, fn);
+			trackCallArgOwned(
+				a,
+				at,
+				p.ownership === 'own' || ownedIn?.[i],
+				ownArgs,
+				noArgFrees,
+				fn,
+			);
 			coerceIntWidth(at, p.type, fn);
 			maybeUpcastAdjust(at, p.type, fn);
 		}
@@ -7415,8 +7442,10 @@ export function compileWasm(
 	function compileFnBody(builder: FuncBuilder, fnNode: NodeMap['fn']) {
 		inliningStages.add(fnNode.symbol);
 		try {
-			const ownedIn = ownedInParams.get(fnNode.symbol);
-			if (ownedIn) {
+			const ownedIn = (fnNode.parameters ?? []).map(
+				p => p.symbol.ownership === 'own',
+			);
+			if (ownedIn.some(Boolean)) {
 				const params = fnNode.parameters ?? [];
 				for (let i = 0; i < params.length; i++) {
 					const p = params[i];
@@ -7659,7 +7688,7 @@ export function compileWasm(
 	function declareTopLevel(): { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] {
 		const fnsToCompile: { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] = [];
 		if (root.kind !== 'root') return fnsToCompile;
-		computeOwnedInParams(root);
+		computeDeclaredOwnedInParams(root);
 		for (const child of root.children) {
 			if (child.kind !== 'def') continue;
 			if (child.value.kind === 'fn') {

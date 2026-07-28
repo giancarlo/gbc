@@ -634,10 +634,22 @@ function canAssignFunction(
 	to: SymbolMap['function'],
 	a: SymbolMap['function'],
 ): boolean {
+	if (
+		to.returnOwnership &&
+		a.returnOwnership &&
+		to.returnOwnership !== a.returnOwnership
+	)
+		return false;
 	const tp = to.parameters ?? [];
 	const ap = a.parameters ?? [];
 	if (tp.length !== ap.length) return false;
 	for (let i = 0; i < tp.length; i++) {
+		if (
+			tp[i]?.ownership &&
+			ap[i]?.ownership &&
+			tp[i]?.ownership !== ap[i]?.ownership
+		)
+			return false;
 		const tt = tp[i]?.type;
 		const at = ap[i]?.type;
 		if (tt && at && !canAssign(tt, at)) return false;
@@ -1433,6 +1445,11 @@ export function checker({
 		const v = def.value;
 		if (v.kind === 'ident') return false;
 		const t = resolver(v);
+		if (v.kind === 'call') {
+			const callee = resolveFunctionType(v.children[0]);
+			if (callee?.returnOwnership)
+				return callee.returnOwnership === 'own';
+		}
 		return (
 			t.kind === 'type' &&
 			(t.family === 'string' || t.family === 'data')
@@ -1514,40 +1531,67 @@ export function checker({
 			);
 		}
 	}
+	function markCallMoves(
+		node: NodeMap['call'],
+		owned: Set<Symbol>,
+		moved: Set<Symbol>,
+	): void {
+		const fn = resolveFunctionType(node.children[0]);
+		if (!fn) return;
+		const list = node.children[1];
+		const args = list?.kind === ',' ? list.children : list ? [list] : [];
+		const seenExclusive = new Set<Symbol>();
+		for (let i = 0; i < args.length; i++) {
+			const arg = args[i];
+			const mode = fn.parameters?.[i]?.ownership;
+			if (!arg || arg.kind !== 'ident') continue;
+			const type = resolver(arg);
+			const heap =
+				type.kind === 'type' &&
+				(type.family === 'string' || type.family === 'data');
+			if (!heap) continue;
+			if (mode === 'own') {
+				if (seenExclusive.has(arg.symbol))
+					error(
+						`"${arg.symbol.name ?? ''}" is passed to conflicting ownership slots`,
+						arg,
+					);
+				seenExclusive.add(arg.symbol);
+			}
+			if (mode !== 'own') continue;
+			if (!owned.has(arg.symbol))
+				error(
+					`cannot move borrowed "${arg.symbol.name ?? ''}" into an \`own\` parameter`,
+					arg,
+				);
+			else moved.add(arg.symbol);
+		}
+	}
+
 	function markConsumingMoves(
 		n: Node,
 		owned: Set<Symbol>,
 		moved: Set<Symbol>,
 	): void {
 		if (n.kind === 'fn' || n.kind === 'main' || n.kind === 'test') return;
-		if (n.kind === 'call') {
-			const callee = n.children[0];
-			if (callee.kind === 'ident' && callee.symbol.kind === 'function') {
-				const a = n.children[1];
-				const args = a?.kind === ',' ? a.children : a ? [a] : [];
-				const indices =
-					callee.symbol.flags & Flags.Intrinsic &&
-					callee.symbol.name === 'transfer'
-						? [0, 1]
-						: callee.symbol.name === 'realloc'
-							? [0]
-							: [];
-				for (const i of indices) {
-					const arg = args[i];
-					if (arg?.kind === 'ident' && owned.has(arg.symbol))
-						moved.add(arg.symbol);
-				}
-			}
-		}
+		if (n.kind === 'call') markCallMoves(n, owned, moved);
 		if ('children' in n && n.children)
 			for (let i = 0; i < n.children.length; i++) {
 				const k = n.children[i];
 				if (k) markConsumingMoves(k, owned, moved);
 			}
 	}
-	function checkMoves(node: { statements?: Node[] }): void {
+	function checkMoves(node: {
+		parameters?: NodeMap['parameter'][];
+		statements?: Node[];
+		symbol?: SymbolMap['function'];
+	}): void {
 		if (!node.statements) return;
-		const owned = new Set<Symbol>();
+		const owned = new Set<Symbol>(
+			node.parameters
+				?.filter(p => p.symbol.ownership === 'own')
+				.map(p => p.symbol) ?? [],
+		);
 		const moved = new Set<Symbol>();
 		const borrowed = new Map<Symbol, Symbol>();
 		for (const s of node.statements) {
@@ -1580,9 +1624,61 @@ export function checker({
 					walkEmbeds(v, new Set(), owned, borrowed, m => {
 						owned.delete(m);
 						moved.add(m);
-					});
+				});
 			}
 		}
+		checkDeclaredOwnedReturn(node, owned);
+	}
+
+	function checkDeclaredOwnedReturn(
+		node: {
+			statements?: Node[];
+			symbol?: SymbolMap['function'];
+		},
+		owned: Set<Symbol>,
+	): void {
+		const fn = node.symbol;
+		if (fn?.returnOwnership !== 'own') return;
+		const statements = node.statements;
+		const tail = statements?.[statements.length - 1];
+		if (tail) checkOwnedReturn(tail, owned, fn);
+	}
+
+	function checkOwnedReturn(
+		node: Node,
+		owned: Set<Symbol>,
+		fn: SymbolMap['function'],
+	): void {
+		if (node.kind === 'next') {
+			const value = node.children?.[0];
+			if (value) checkOwnedReturn(value, owned, fn);
+			return;
+		}
+		if (node.kind === '?') {
+			checkOwnedReturn(node.children[1], owned, fn);
+			const alternate = node.children[2];
+			if (alternate) checkOwnedReturn(alternate, owned, fn);
+			return;
+		}
+		const type = resolver(node);
+		if (
+			type.kind === 'type' &&
+			type.family !== 'string' &&
+			type.family !== 'data'
+		)
+			return;
+		if (node.kind === 'ident' && owned.has(node.symbol)) return;
+		if (node.kind === 'string' || node.kind === 'interp' || node.kind === 'data')
+			return;
+		if (node.kind === 'call') {
+			const callee = resolveFunctionType(node.children[0]);
+			if (callee?.returnOwnership === 'own') return;
+			if (node.children[0].kind === 'typeident') return;
+		}
+		error(
+			`function "${fn.name ?? ''}" declares an \`own\` result but emits a borrowed value`,
+			node,
+		);
 	}
 
 	function checkFnDef(node: NodeMap['fn']) {

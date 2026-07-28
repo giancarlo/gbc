@@ -20,22 +20,22 @@ export take = <T>(t: T, n: Int32) { t >> (h, r) { n > 0 ? h, take(r, n - 1) } };
 export drop = <T>(t: T, n: Int32) { t >> (h, r) { n <= 0 ? h, drop(r, n - 1) } };
 export reverse = <T>(t: T) { t >> (h, r) { reverse(r), h } };
 
-export realloc = <T>(a: Buffer<T>, capacity: Int32): Buffer<T> {
+export realloc = <T>(a: own Buffer<T>, capacity: Int32): own Buffer<T> {
 	transfer(a, Buffer<T>(capacity))
 };
 
-export push = <T>(a: Buffer<T>, x: T): Buffer<T> {
+export push = <T>(a: own Buffer<T>, x: own T): own Buffer<T> {
 	length(a) < capacity(a)
 		? set(a, length(a), x)
 		: set(realloc(a, capacity(a) * 2), length(a), x)
 };
 
-rangeFrom = (a: Buffer<Int32>, n: Int32, end: Int32): Buffer<Int32> {
+rangeFrom = (a: own Buffer<Int32>, n: Int32, end: Int32): own Buffer<Int32> {
 	n >= end
 		? a
 		: rangeFrom([ a, length(a), n ] >> set, n + 1, end)
 };
-export range = (start: Int32, end: Int32): Buffer<Int32> {
+export range = (start: Int32, end: Int32): own Buffer<Int32> {
 	end <= start
 		? Buffer<Int32>(0)
 		: rangeFrom(Buffer<Int32>(end - start), start, end)
@@ -47,53 +47,53 @@ indexAt = <T>(a: Buffer<T>, i: Int32, x: T): Int32 {
 export indexOf = <T>(a: Buffer<T>, x: T): Int32 { indexAt(a, 0, x) };
 export contains = <T>(a: Buffer<T>, x: T): Bool { indexOf(a, x) >= 0 };
 
-mapAt = <T, U>(a: Buffer<T>, i: Int32, dst: Buffer<U>, f: (T): U): Buffer<U> {
+mapAt = <T, U>(a: Buffer<T>, i: Int32, dst: own Buffer<U>, f: (T): own U): own Buffer<U> {
 	i == length(a) ? dst : mapAt(a, i + 1, push(dst, f(get(a, i))), f)
 };
-export map = <T, U>(a: Buffer<T>, f: (T): U): Buffer<U> {
+export map = <T, U>(a: Buffer<T>, f: (T): own U): own Buffer<U> {
 	mapAt(a, 0, Buffer<U>(length(a)), f)
 };
 
-reduceAt = <T, A>(a: Buffer<T>, i: Int32, acc: A, f: (A, T): A): A {
+reduceAt = <T, A>(a: Buffer<T>, i: Int32, acc: own A, f: (own A, T): own A): own A {
 	i == length(a) ? acc : reduceAt(a, i + 1, f(acc, get(a, i)), f)
 };
-export reduce = <T, A>(a: Buffer<T>, acc: A, f: (A, T): A): A {
+export reduce = <T, A>(a: Buffer<T>, acc: own A, f: (own A, T): own A): own A {
 	reduceAt(a, 0, acc, f)
 };
 
-negDigits = (n: Int32): String {
+negDigits = (n: Int32): own String {
 	n > -10
 		? String(Char(Uint8(48 - n)))
 		: '\${negDigits(n / 10)}\${Char(Uint8(48 - (n - n / 10 * 10)))}'
 };
-negDigits64 = (n: Int64): String {
+negDigits64 = (n: Int64): own String {
 	n > -10
 		? String(Char(Uint8(48 - Int32(n))))
 		: '\${negDigits64(n / 10)}\${Char(Uint8(48 - Int32(n - n / 10 * 10)))}'
 };
-uDigits = (n: Uint32): String {
+uDigits = (n: Uint32): own String {
 	n < 10
 		? String(Char(Uint8(48 + n)))
 		: '\${uDigits(n / 10)}\${Char(Uint8(48 + (n - n / 10 * 10)))}'
 };
-uDigits64 = (n: Uint64): String {
+uDigits64 = (n: Uint64): own String {
 	n < 10
 		? String(Char(Uint8(48 + Uint32(n))))
 		: '\${uDigits64(n / 10)}\${Char(Uint8(48 + Uint32(n - n / 10 * 10)))}'
 };
 
-extend String (n: Int32): String { n < 0 ? '-\${negDigits(n)}' : negDigits(0 - n) };
-extend String (n: Int64): String { n < 0 ? '-\${negDigits64(n)}' : negDigits64(0 - n) };
-extend String (n: Uint32): String { uDigits(n) };
-extend String (n: Uint64): String { uDigits64(n) };
-extend String (b: Bool): String { b ? 'true' : 'false' };
+extend String (n: Int32): own String { n < 0 ? '-\${negDigits(n)}' : negDigits(0 - n) };
+extend String (n: Int64): own String { n < 0 ? '-\${negDigits64(n)}' : negDigits64(0 - n) };
+extend String (n: Uint32): own String { uDigits(n) };
+extend String (n: Uint64): own String { uDigits64(n) };
+extend String (b: Bool): own String { b ? 'true' : 'false' };
 
-stackText = (e: Error, i: Int32): String {
+stackText = (e: Error, i: Int32): own String {
 	i >= frames(e)
 		? ''
 		: ' <- \${frameAt(e, i).fn}:\${frameAt(e, i).line}\${stackText(e, i + 1)}'
 };
-extend String (e: Error): String {
+extend String (e: Error): own String {
 	'\${origin(e).name} at \${origin(e).fn}:\${origin(e).line}\${length(origin(e).file) > 0 ? ' (\${origin(e).file})' : ''}\${stackText(e, 1)}'
 };
 

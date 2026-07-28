@@ -11,6 +11,8 @@ export enum Flags {
 	Collection = 64,
 }
 
+export type OwnershipMode = 'borrow' | 'own';
+
 type BaseSymbol = {
 	name?: string;
 	definition?: Node;
@@ -20,6 +22,7 @@ type BaseSymbol = {
 	typeParams?: Type[];
 	components?: Type[];
 	application?: { fn: Type; argNodes: Node[] };
+	ownership?: OwnershipMode;
 };
 export type TypeFamily =
 	| 'int'
@@ -71,6 +74,8 @@ type SymbolProp = {
 	function: {
 		parameters?: Symbol[];
 		returnType?: Type;
+		returnOwnership?: OwnershipMode;
+		returnBorrowOrigins?: number[];
 		overloads?: SymbolMap['function'][];
 	};
 	parameter: unknown;
@@ -261,8 +266,12 @@ function literal(value: number | boolean | undefined, type: SymbolMap['type']) {
 /**
  * Build a parameter symbol for stdlib declarations.
  */
-function param(name: string, type: Type): SymbolMap['variable'] {
-	return { kind: 'variable', name, flags: 0, type };
+function param(
+	name: string,
+	type: Type,
+	ownership: OwnershipMode = 'borrow',
+): SymbolMap['variable'] {
+	return { kind: 'variable', name, flags: 0, type, ownership };
 }
 
 export const AnyData: SymbolMap['type'] = {
@@ -355,11 +364,13 @@ export function ProgramSymbolTable() {
 			flags: Flags.Intrinsic,
 			typeParams: [setType],
 			parameters: [
-				param('b', bufferTypeOf(setType)),
+				param('b', bufferTypeOf(setType), 'own'),
 				param('i', BaseTypes.Int32),
-				param('x', setType),
+				param('x', setType, 'own'),
 			],
 			returnType: bufferTypeOf(setType),
+			returnOwnership: 'own',
+			returnBorrowOrigins: [0],
 		},
 		capacity: {
 			kind: 'function',
@@ -375,10 +386,12 @@ export function ProgramSymbolTable() {
 			flags: Flags.Intrinsic,
 			typeParams: [transferType],
 			parameters: [
-				param('source', bufferTypeOf(transferType)),
-				param('destination', bufferTypeOf(transferType)),
+				param('source', bufferTypeOf(transferType), 'own'),
+				param('destination', bufferTypeOf(transferType), 'own'),
 			],
 			returnType: bufferTypeOf(transferType),
+			returnOwnership: 'own',
+			returnBorrowOrigins: [1],
 		},
 		out_buffer: {
 			kind: 'function',

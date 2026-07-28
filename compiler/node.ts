@@ -1,6 +1,12 @@
 import { MakeNodeMap } from '../sdk/index.js';
 
-import type { Symbol, SymbolMap, Scope, Type } from './symbol-table.js';
+import type {
+	OwnershipMode,
+	Symbol,
+	SymbolMap,
+	Scope,
+	Type,
+} from './symbol-table.js';
 
 type Infix = { children: [Node, Node] };
 type MakeInfix<T extends string> = { [K in T]: Infix };
@@ -79,6 +85,7 @@ export type BaseNodeMap = {
 		children: Node[];
 		symbol: SymbolMap['function'];
 		returnType?: Node;
+		returnOwnership?: OwnershipMode;
 	};
 	'[': { children: [Node, Node] };
 	'(': { children: [Node] };

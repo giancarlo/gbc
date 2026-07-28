@@ -756,9 +756,9 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			src: `main { [ x = 1, x = 2 ] >> out }`,
 			expected: 'Duplicate label "x"',
 		});
-		expr({
-			src: `[ name: var = 'Alice', :var = 30 ]`,
-			ast: `(data (, (propdef @variable :name ? 'Alice') (propdef @variable ? ? 30)))`,
+		compileError({
+			src: `main { [ name: var = 'Alice' ] >> out }`,
+			expected: '`var` is a local binding modifier',
 		});
 		rule({
 			p: 'Positional members type like labeled ones wherever they appear \u2014 `d.0` is the member, not a fallback scalar.',
@@ -1638,7 +1638,7 @@ a = {
 			ast: `(def @variable :retries ? 0)`,
 		});
 		rule({
-			p: '`var` modifies the binding type, so mutability is written after `:` consistently for bindings, parameters, and fields. Bindings without it are immutable.',
+			p: '`var` makes a local scalar binding reassignable. Parameters and fields are never `var`; ownership transfer across calls uses `own`.',
 			src: `score: var = 0; main { score = score + 10; score >> out; }`,
 			ast: `(root (def @variable :score ? 0) (main (= :score @variable (+ :score @variable 10)) (>> :score @variable :out)))`,
 			out: ['10'],
@@ -1798,12 +1798,12 @@ a = {
 			out: ['2'],
 		});
 		rule({
-			src: `pick = (n: Int32): Int32 | String { next n > 0 ? 42 : 'hi' }; main { pick(1) >> Int32 { 0 - 1 } | String { 99 } >> out; pick(0) >> Int32 { 0 - 1 } | String { 99 } >> out; }`,
+			src: `pick = (n: Int32): own Int32 | String { next n > 0 ? 42 : 'hi' }; main { pick(1) >> Int32 { 0 - 1 } | String { 99 } >> out; pick(0) >> Int32 { 0 - 1 } | String { 99 } >> out; }`,
 			ast: `(root (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) 42 'hi')))) (main (>> (call :pick 1) (| (fn @sequence (parameter ? typeident ?) (- 0 1)) (fn @sequence (parameter ? typeident ?) 99)) :out) (>> (call :pick 0) (| (fn @sequence (parameter ? typeident ?) (- 0 1)) (fn @sequence (parameter ? typeident ?) 99)) :out)))`,
 			out: ['-1', '99'],
 		});
 		rule({
-			src: `d = (n: Int32): Int32 | DivByZero { 10 / n }; f = (u: Int32 | DivByZero): Int32 { u >> Int32 { $ } | DivByZero { 0 - 1 } }; main { f(d(2)) >> out; f(d(0)) >> out; }`,
+			src: `d = (n: Int32): own Int32 | DivByZero { 10 / n }; f = (u: Int32 | DivByZero): Int32 { u >> Int32 { $ } | DivByZero { 0 - 1 } }; main { f(d(2)) >> out; f(d(0)) >> out; }`,
 			ast: `(root (def :d ? (fn @sequence (parameter :n typeident ?) typeident (/ 10 :n))) (def :f ? (fn @sequence (parameter :u typeident ?) typeident (>> :u (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) (- 0 1)))))) (main (>> (call :f (call :d 2)) :out) (>> (call :f (call :d 0)) :out)))`,
 			out: ['5', '-1'],
 		});
@@ -1813,17 +1813,17 @@ a = {
 			out: ['5', '0'],
 		});
 		rule({
-			src: `pick = (n: Int32): Int32 | String | Bool { next n > 5 ? 1 : (n > 0 ? 'mid' : true) }; main { pick(9) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; pick(3) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; pick(0) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; }`,
+			src: `pick = (n: Int32): own Int32 | String | Bool { next n > 5 ? 1 : (n > 0 ? 'mid' : true) }; main { pick(9) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; pick(3) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; pick(0) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; }`,
 			ast: `(root (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 5) 1 (? (> :n 0) 'mid' :true))))) (main (>> (call :pick 9) (| (| (fn @sequence (parameter ? typeident ?) 100) (fn @sequence (parameter ? typeident ?) 200)) (fn @sequence (parameter ? typeident ?) 300)) :out) (>> (call :pick 3) (| (| (fn @sequence (parameter ? typeident ?) 100) (fn @sequence (parameter ? typeident ?) 200)) (fn @sequence (parameter ? typeident ?) 300)) :out) (>> (call :pick 0) (| (| (fn @sequence (parameter ? typeident ?) 100) (fn @sequence (parameter ? typeident ?) 200)) (fn @sequence (parameter ? typeident ?) 300)) :out)))`,
 			out: ['100', '200', '300'],
 		});
 		rule({
-			src: `mixed = (n: Int32): Float64 | String { next n > 0 ? 3.14 : 'hi' }; main { mixed(1) >> Float64 { $ } | String { 0.0 } >> out; mixed(0) >> Float64 { 1.5 } | String { 2.5 } >> out; }`,
+			src: `mixed = (n: Int32): own Float64 | String { next n > 0 ? 3.14 : 'hi' }; main { mixed(1) >> Float64 { $ } | String { 0.0 } >> out; mixed(0) >> Float64 { 1.5 } | String { 2.5 } >> out; }`,
 			ast: `(root (def :mixed ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) 3.14 'hi')))) (main (>> (call :mixed 1) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out) (>> (call :mixed 0) (| (fn @sequence (parameter ? typeident ?) 1.5) (fn @sequence (parameter ? typeident ?) 2.5)) :out)))`,
 			out: ['3.14', '2.5'],
 		});
 		rule({
-			src: `mixed = (n: Int32): Float64 | String { next n > 0 ? 3.14 : 'hello' }; main { mixed(1) >> out; mixed(0) >> out; }`,
+			src: `mixed = (n: Int32): own Float64 | String { next n > 0 ? 3.14 : 'hello' }; main { mixed(1) >> out; mixed(0) >> out; }`,
 			ast: `(root (def :mixed ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) 3.14 'hello')))) (main (>> (call :mixed 1) :out) (>> (call :mixed 0) :out)))`,
 			out: ['3.14', 'hello'],
 		});
@@ -1983,7 +1983,7 @@ main { classify(Uint32(5)) >> out; classify(5) >> out }`,
 	h('Heap', ({ rule }) => {
 		rule({
 			p: 'The heap grows on demand — allocation is not bounded by the initial 64KB memory page. Freed neighbors coalesce and oversized blocks split on reuse, so even a monotonically growing buffer plateaus near its final size instead of retaining every intermediate copy.',
-			src: `fill = (n: Int32): String { n == 0 ? '' : '\${fill(n - 1)}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' };
+			src: `fill = (n: Int32): own String { n == 0 ? '' : '\${fill(n - 1)}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' };
 main { length(fill(1200)) >> out }`,
 			ast: `(root (def :fill ? (fn @sequence (parameter :n typeident ?) typeident (? (== :n 0) '' (interp (call :fill (- :n 1)))))) (main (>> (call :length @intrinsic (call :fill 1200)) :out)))`,
 			out: ['76800'],
@@ -2051,8 +2051,8 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> ou
 	h('Buffer & Array (push)', ({ testBlock, compileError, runtimeTrap }) => {
 		testBlock({
 			p: '`Buffer<T>` is the sealed memory floor. Its complete primitive boundary is `Buffer<T>(capacity): own Buffer<T>`, borrowing `length(buffer): Int32`, `capacity(buffer): Int32`, and `get(buffer, index): T`, consuming `set(buffer: own Buffer<T>, index, value: own T): own Buffer<T>`, and `transfer(source: own Buffer<T>, destination: own Buffer<T>): own Buffer<T>`. `get` copies Copy elements and borrows heap elements from the Buffer. Array access, `realloc`, iteration, growth policy, and algorithms are GB source over these primitives.',
-			src: `export mk = (): Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 10); b2 = set(b1, 1, 20); next push(b2, 30) };
-export sum = (b: Buffer<Int32>): Int32 { reduce(b, 0, (total: Int32, n: Int32): Int32 { total + n }) };
+			src: `export mk = (): own Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 10); b2 = set(b1, 1, 20); next push(b2, 30) };
+export sum = (b: Buffer<Int32>): Int32 { reduce(b, 0, (total: own Int32, n: Int32): own Int32 { total + n }) };
 #test {
 	equal(length(mk()), 3);
 	equal(capacity(mk()), 4);
@@ -2066,8 +2066,8 @@ export target = (): Int32 { 0 }`,
 		testBlock({
 			p: 'Intrinsics are ordinary function symbols: call syntax and pipe syntax use the same signature, data-block argument spreading, type checking, and backend lowering. Their names have no parser or pipe-stage grammar special case.',
 			src: `type Boom = Error & [ id: Int32 ];
-boom = (): Boom { [ id = 1 ] };
-export one = (): Buffer<Int32> { set(Buffer<Int32>(2), 0, 7) };
+boom = (): own Boom { [ id = 1 ] };
+export one = (): own Buffer<Int32> { set(Buffer<Int32>(2), 0, 7) };
 export pipeGet = (): Int32 { [ one(), 0 ] >> get };
 export pipeSet = (): Int32 { [ Buffer<Int32>(1), 0, 9 ] >> set >> length };
 export pipeTransfer = (): Int32 { [ one(), Buffer<Int32>(1) ] >> transfer >> length };
@@ -2093,14 +2093,14 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: '`realloc` relocates a buffer into a larger block, preserving the live elements and length, and reports the new capacity.',
-			src: `export grow4 = (): Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 7); b2 = set(b1, 1, 8); next realloc(b2, 4) };
+			src: `export grow4 = (): own Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 7); b2 = set(b1, 1, 8); next realloc(b2, 4) };
 #test { equal(get(grow4(), 0), 7); equal(get(grow4(), 1), 8); equal(length(grow4()), 2); equal(capacity(grow4()), 4) }
 export target = (): Int32 { 0 }`,
 			out: [],
 		});
 		testBlock({
 			p: '`transfer` moves a buffer payload into a distinct empty destination, preserving owned elements and adopting the destination capacity.',
-			src: `export moved = (): Buffer<String> { s0 = Buffer<String>(2); s1 = set(s0, 0, 'a'); s2 = set(s1, 1, 'b'); next transfer(s2, Buffer<String>(4)) };
+			src: `export moved = (): own Buffer<String> { s0 = Buffer<String>(2); s1 = set(s0, 0, 'a'); s2 = set(s1, 1, 'b'); next transfer(s2, Buffer<String>(4)) };
 #test { equal(get(moved(), 0), 'a'); equal(get(moved(), 1), 'b'); equal(length(moved()), 2); equal(capacity(moved()), 4) }
 export target = (): Int32 { 0 }`,
 			out: [],
@@ -2139,9 +2139,10 @@ export target = (): Int32 { 0 }`,
 		runtimeTrap({
 			src: `main { b = set(Buffer<Int32>(1), 0, 7); set(b, 1, 8) >> length >> out }`,
 		});
-		runtimeTrap({
+		compileError({
 			p: '`transfer` requires distinct buffers, an empty destination, and destination capacity at least the source length.',
 			src: `main { b = Buffer<Int32>(1); transfer(b, b) >> length >> out }`,
+			expected: 'conflicting ownership slots',
 		});
 		runtimeTrap({
 			src: `main { source = set(Buffer<Int32>(1), 0, 7); destination = set(Buffer<Int32>(1), 0, 8); transfer(source, destination) >> length >> out }`,
@@ -2151,7 +2152,7 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: 'push grows a scalar buffer flat: building and dropping a buffer every iteration reuses the heap — the doubling `realloc` frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
-			src: `export build = (b: Buffer<Int32>, n: Int32): Buffer<Int32> { n == 0 ? b : build(push(b, n), n - 1) };
+			src: `export build = (b: own Buffer<Int32>, n: Int32): own Buffer<Int32> { n == 0 ? b : build(push(b, n), n - 1) };
 export step = (n: Int32): Int32 { b = build(Buffer<Int32>(2), 8); next length(b) };
 #test { equal(spin(50000, 0), 400000) }
 export spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) }`,
@@ -2160,7 +2161,7 @@ export spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + s
 		});
 		testBlock({
 			p: 'push of heap elements (`Buffer<String>`) stays flat: the value element is moved into the buffer (single owner), so per-iteration build-and-drop is bounded.',
-			src: `export buildS = (b: Buffer<String>, n: Int32): Buffer<String> { n == 0 ? b : buildS(push(b, '\${n}'), n - 1) };
+			src: `export buildS = (b: own Buffer<String>, n: Int32): own Buffer<String> { n == 0 ? b : buildS(push(b, '\${n}'), n - 1) };
 export stepS = (n: Int32): Int32 { b = buildS(Buffer<String>(2), 6); next length(b) };
 #test { equal(spinS(30000, 0), 180000) }
 export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc + stepS(n)) }`,
@@ -2173,7 +2174,7 @@ export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc +
 	equal(length(range(3, 7)), 4);
 	equal(get(range(3, 7), 0), 3);
 	equal(get(range(3, 7), 3), 6);
-	equal(reduce(range(3, 7), 0, (total: Int32, n: Int32): Int32 { total + n }), 18);
+	equal(reduce(range(3, 7), 0, (total: own Int32, n: Int32): own Int32 { total + n }), 18);
 	equal(length(range(5, 5)), 0);
 	equal(length(range(7, 3)), 0);
 	equal(length(range(0, 100000)), 100000)
@@ -2184,8 +2185,8 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: 'The prelude `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
-			src: `export ints = (): Buffer<Int32> { b0 = Buffer<Int32>(4); b1 = set(b0, 0, 3); b2 = set(b1, 1, 5); next set(b2, 2, 7) };
-export strs = (): Buffer<String> { s0 = Buffer<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
+			src: `export ints = (): own Buffer<Int32> { b0 = Buffer<Int32>(4); b1 = set(b0, 0, 3); b2 = set(b1, 1, 5); next set(b2, 2, 7) };
+export strs = (): own Buffer<String> { s0 = Buffer<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
 #test {
 	equal(indexOf(ints(), 5), 1);
 	equal(indexOf(ints(), 9), 0 - 1);
@@ -2419,7 +2420,7 @@ main {
 		rule({
 			p: 'Every error carries a lazy origin trace: `Error = Trace`, one hidden word filled at construction with a static frame pointer — nothing is walked or copied until read. `String(e)`/`out` render it.',
 			src: `type NotFound = Error & [ resource: String ];
-nf = (r: String): NotFound { [ resource = r ] };
+nf = (r: String): own NotFound { [ resource = r ] };
 main { nf('/etc') >> out }`,
 			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence (parameter :r typeident ?) typeident (data (propdef :resource ? :r)))) (main (>> (call :nf '/etc') :out)))`,
 			out: ['NotFound at nf:2'],
@@ -2427,7 +2428,7 @@ main { nf('/etc') >> out }`,
 		rule({
 			p: 'A field-less error’s structure is `[]` — Void — so its default constructor is `Boom()`: the compiler fills the trace, the slot that gives the value existence. An error with fields constructs from its labeled block (`NotFound([ resource = r ])`) or by declared-return coercion.',
 			src: `type Boom = Error;
-guard = (n: Int32): Int32 | Boom { next n > 0 ? n : Boom() };
+guard = (n: Int32): own Int32 | Boom { next n > 0 ? n : Boom() };
 main { guard(0) >> Int32 { 'ok' } | Boom { String($) } >> out }`,
 			ast: `(root (type :Boom typeident) (def :guard ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call typeident ?))))) (main (>> (call :guard 0) (| (fn @sequence (parameter ? typeident ?) 'ok') (fn @sequence (parameter ? typeident ?) (call typeident $))) :out)))`,
 			out: ['Boom at guard:2'],
@@ -2436,9 +2437,9 @@ main { guard(0) >> Int32 { 'ok' } | Boom { String($) } >> out }`,
 			p: 'Debug builds maintain a shadow call stack; construction snapshots it, and the trace renders the physical chain innermost-first. Release builds carry only the origin (same handle, `frames(e)` = 1).',
 			debug: true,
 			src: `type NotFound = Error & [ resource: String ];
-nf = (r: String): NotFound { [ resource = r ] };
-inner = (r: String): NotFound { b = nf(r); next b };
-outer = (r: String): NotFound { b = inner(r); next b };
+nf = (r: String): own NotFound { [ resource = r ] };
+inner = (r: String): own NotFound { b = nf(r); next b };
+outer = (r: String): own NotFound { b = inner(r); next b };
 main { String(outer('/x')) >> out }`,
 			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence (parameter :r typeident ?) typeident (data (propdef :resource ? :r)))) (def :inner ? (fn (parameter :r typeident ?) typeident (def :b ? (call :nf :r)) (next :b))) (def :outer ? (fn (parameter :r typeident ?) typeident (def :b ? (call :inner :r)) (next :b))) (main (>> (call typeident (call :outer '/x')) :out)))`,
 			out: ['NotFound at nf:2 <- nf:2 <- inner:3 <- outer:4'],
@@ -2447,8 +2448,8 @@ main { String(outer('/x')) >> out }`,
 			p: 'A tail call replaces its shadow frame exactly as it replaces the physical one, so TCO chains collapse instead of growing — deep recursion stays flat even in debug builds.',
 			debug: true,
 			src: `type Boom = Error & [ at: Int32 ];
-mk = (n: Int32): Boom { [ at = n ] };
-spin = (n: Int32): Int32 | Boom { next n == 0 ? mk(n) : spin(n - 1) };
+mk = (n: Int32): own Boom { [ at = n ] };
+spin = (n: Int32): own Int32 | Boom { next n == 0 ? mk(n) : spin(n - 1) };
 main { spin(200000) >> Int32 { 'ok' } | Error { String($) } >> out }`,
 			ast: `(root (type :Boom (& typeident (data (propdef :at typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :at ? :n)))) (def :spin ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) (call :mk :n) (call :spin (- :n 1)))))) (main (>> (call :spin 200000) (| (fn @sequence (parameter ? typeident ?) 'ok') (fn @sequence (parameter ? typeident ?) (call typeident $))) :out)))`,
 			out: ['Boom at mk:2 <- mk:2 <- spin:3'],
@@ -2456,8 +2457,8 @@ main { spin(200000) >> Int32 { 'ok' } | Error { String($) } >> out }`,
 		rule({
 			p: '`origin(e)` reads the trace as a `Frame [name, fn, line]`; payload fields are untouched by the hidden slot, and the origin survives upcast to `Error`.',
 			src: `type NotFound = Error & [ resource: String ];
-nf = (r: String): NotFound { [ resource = r ] };
-check = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf('/y') };
+nf = (r: String): own NotFound { [ resource = r ] };
+check = (n: Int32): own Int32 | NotFound { next n > 0 ? n : nf('/y') };
 main {
 	e = nf('/x');
 	'\${origin(e).fn}:\${origin(e).line} \${e.resource}' >> out;
@@ -2467,22 +2468,22 @@ main {
 			out: ['nf:2 /x', 'NotFound at nf:2'],
 		});
 		rule({
-			src: `type NotFound = Error & [ resource: String ]; notFound = (r: String): NotFound { [ resource = r ] }; main { notFound('/x') >> Error { 1 } >> out }`,
+			src: `type NotFound = Error & [ resource: String ]; notFound = (r: String): own NotFound { [ resource = r ] }; main { notFound('/x') >> Error { 1 } >> out }`,
 			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :notFound ? (fn @sequence (parameter :r typeident ?) typeident (data (propdef :resource ? :r)))) (main (>> (call :notFound '/x') (fn @sequence (parameter ? typeident ?) 1) :out)))`,
 			out: ['1'],
 		});
 		rule({
-			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } | NotFound { 0 } >> out }`,
+			src: `type NotFound = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; lookup = (n: Int32): own Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } | NotFound { 0 } >> out }`,
 			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 5) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out)))`,
 			out: ['5'],
 		});
 		rule({
-			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; fb = (): Forbidden { [ resource = 'y' ] }; pick = (n: Int32): Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(0 - 1) >> Int32 { 1 } | NotFound { 2 } | Forbidden { 3 } >> out }`,
+			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; fb = (): own Forbidden { [ resource = 'y' ] }; pick = (n: Int32): own Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(0 - 1) >> Int32 { 1 } | NotFound { 2 } | Forbidden { 3 } >> out }`,
 			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (type :Forbidden (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :fb ? (fn @sequence typeident (data (propdef :resource ? 'y')))) (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :nf ?) (call :fb ?))))) (main (>> (call :pick (- 0 1)) (| (| (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 2)) (fn @sequence (parameter ? typeident ?) 3)) :out)))`,
 			out: ['3'],
 		});
 		rule({
-			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(0) >> Int32 { 1 } | Error { 9 } >> out }`,
+			src: `type NotFound = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; lookup = (n: Int32): own Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(0) >> Int32 { 1 } | Error { 9 } >> out }`,
 			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 0) (| (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 9)) :out)))`,
 			out: ['9'],
 		});
@@ -2491,18 +2492,18 @@ main {
 			expected: 'not assignable',
 		});
 		compileError({
-			src: `type NotFound = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; lookup = (n: Int32): Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } >> out }`,
+			src: `type NotFound = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; lookup = (n: Int32): own Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } >> out }`,
 			expected: 'does not consume',
 		});
 		compileError({
-			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): NotFound { [ resource = 'x' ] }; fb = (): Forbidden { [ resource = 'y' ] }; pick = (n: Int32): Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(1) >> Int32 { 1 } | NotFound { 2 } >> out }`,
+			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; fb = (): own Forbidden { [ resource = 'y' ] }; pick = (n: Int32): own Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(1) >> Int32 { 1 } | NotFound { 2 } >> out }`,
 			expected: 'does not consume "Forbidden"',
 		});
 		rule({
 			p: '`runtime.stack(e)` materializes the whole trace as a collection of `Frame`s — `[count][frame…]`, elements inline — so source-level collection algorithms read it through the Buffer primitives. Outside debug builds it holds the single origin frame.',
 			src: `type Boom = Error & [ id: Int32 ];
-mk = (n: Int32): Boom { [ id = n ] };
-renderFrame = (text: String, f: Frame): String { '\${text}\${f.fn}:\${f.line};' };
+mk = (n: Int32): own Boom { [ id = n ] };
+renderFrame = (text: own String, f: Frame): own String { '\${text}\${f.fn}:\${f.line};' };
 main { b = mk(5); length(runtime.stack(b)) >> out; reduce(runtime.stack(b), '', renderFrame) >> out }`,
 			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :renderFrame ? (fn @sequence (parameter :text typeident ?) (parameter :f typeident ?) typeident (interp :text (. :f :fn) (. :f :line)))) (main (def :b ? (call :mk 5)) (>> (call :length @intrinsic (call (. :runtime :stack) :b)) :out) (>> (call :reduce (, (call (. :runtime :stack) :b) '' :renderFrame)) :out)))`,
 			out: ['1', 'mk:2;'],
@@ -2511,8 +2512,8 @@ main { b = mk(5); length(runtime.stack(b)) >> out; reduce(runtime.stack(b), '', 
 			p: 'In debug builds the collection carries the captured chain \u2014 the same frames `frameAt` reads, origin first \u2014 and reading it churns flat: the collection is fresh, owned by its consumer, block-freed (its words are static frames).',
 			debug: true,
 			src: `type Boom = Error & [ id: Int32 ];
-mk = (n: Int32): Boom { [ id = n ] };
-step = (n: Int32): Int32 { b = mk(n); next reduce(runtime.stack(b), 0, (k: Int32, f: Frame): Int32 { k + f.line }) + length(runtime.stack(b)) };
+mk = (n: Int32): own Boom { [ id = n ] };
+step = (n: Int32): Int32 { b = mk(n); next reduce(runtime.stack(b), 0, (k: own Int32, f: Frame): own Int32 { k + f.line }) + length(runtime.stack(b)) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
 			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (next (+ (call :reduce (, (call (. :runtime :stack) :b) 0 (fn @sequence (parameter :k typeident ?) (parameter :f typeident ?) typeident (+ :k (. :f :line))))) (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
@@ -2521,8 +2522,8 @@ main { spin(100000, 0) >> out }`,
 		});
 		rule({
 			src: `type Boom = Error & [ id: Int32 ];
-mk = (n: Int32): Boom { [ id = n ] };
-step = (n: Int32): Int32 { b = mk(n); next reduce(runtime.stack(b), 0, (k: Int32, f: Frame): Int32 { k + f.line }) + length(runtime.stack(b)) };
+mk = (n: Int32): own Boom { [ id = n ] };
+step = (n: Int32): Int32 { b = mk(n); next reduce(runtime.stack(b), 0, (k: own Int32, f: Frame): own Int32 { k + f.line }) + length(runtime.stack(b)) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
 			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (next (+ (call :reduce (, (call (. :runtime :stack) :b) 0 (fn @sequence (parameter :k typeident ?) (parameter :f typeident ?) typeident (+ :k (. :f :line))))) (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
@@ -2532,8 +2533,8 @@ main { spin(100000, 0) >> out }`,
 		rule({
 			debug: true,
 			src: `type Boom = Error & [ id: Int32 ];
-mk = (n: Int32): Boom { [ id = n ] };
-appendName = (text: String, f: Frame): String { '\${text}\${f.fn},' };
+mk = (n: Int32): own Boom { [ id = n ] };
+appendName = (text: own String, f: Frame): own String { '\${text}\${f.fn},' };
 main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendName) >> out }`,
 			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :appendName ? (fn @sequence (parameter :text typeident ?) (parameter :f typeident ?) typeident (interp :text (. :f :fn)))) (main (def :b ? (call :mk 9)) (def :s ? (call (. :runtime :stack) :b)) (>> (call :length @intrinsic :s) :out) (>> (call :reduce (, :s '' :appendName)) :out)))`,
 			out: ['2', 'mk,mk,'],
@@ -3337,13 +3338,13 @@ main { report(mk(9)) >> out }`,
 
 	h('Ownership', ({ expr, compileError, rule, p }) => {
 		p(
-			`Ownership belongs to bindings and crosses function boundaries explicitly. A plain heap parameter \`x: T\` is a shared borrow; \`x: var T\` is an exclusive mutable borrow for that call; and \`x: own T\` moves the value from caller to callee. A plain heap result \`: T\` is borrowed, while \`: own T\` moves ownership to the caller. \`own\` is valid only on parameter and result slots, never on locals, fields, or type aliases. Copy values (\`Int32\`, \`Float64\`, \`Bool\`, \`Char\`, and static literals) keep their ordinary copy behavior through every mode, so generic contracts such as \`value: own T\` work for both Copy and heap-owning substitutions.
+			`Ownership belongs to bindings and crosses function boundaries explicitly. A plain heap parameter \`x: T\` is a shared borrow, while \`x: own T\` moves the value from caller to callee. A plain heap result \`: T\` is borrowed, while \`: own T\` moves ownership to the caller. \`own\` is valid only on parameter and result slots, never on locals, fields, or type aliases. \`var\` remains a local scalar binding modifier and is not an ownership mode. Copy values (\`Int32\`, \`Float64\`, \`Bool\`, \`Char\`, and static literals) keep their ordinary copy behavior through every mode, so generic contracts such as \`value: own T\` work for both Copy and heap-owning substitutions.
 
-			 \`next\` preserves its input mode: it copies a Copy value, propagates a shared borrow, or moves an owned value. It never upgrades a borrow into an owner. An \`own T\` result therefore accepts only owned or Copy emissions, and a plain heap \`T\` result accepts only borrowed or static emissions; every branch and emission of that result must agree. Emitting an exclusive \`var T\` borrow is rejected because mutable access is call-scoped and cannot escape. When result annotations are omitted, type and ownership mode are inferred locally under the same rules.
+			 \`next\` preserves its input mode: it copies a Copy value, propagates a shared borrow, or moves an owned value. It never upgrades a borrow into an owner. An \`own T\` result therefore accepts only owned or Copy emissions, and a plain heap \`T\` result accepts only borrowed or static emissions; every branch and emission of that result must agree. When result annotations are omitted, type and ownership mode are inferred locally under the same rules.
 
 			 Borrow provenance is part of the function type, not source syntax: a function that emits a borrowed parameter or an element reached through it records that parameter as an origin. Alternative branches may add multiple origins. The summary is serialized with libraries and propagated at calls, so checking never depends on callee names or whole-program call sites. A derived borrow remains valid only while all of its possible owners remain live. Borrow lifetimes end at last use; a temporary passed to a borrow-returning call is retained by the caller until the last derived borrow dies.
 
-			 Binding an owner creates the owner; binding an existing heap name creates a shared alias with the same provenance. An owner cannot move, drop, or be mutably borrowed while a shared alias remains live, and a mutable borrow conflicts with every other live borrow or move of that owner. Two conflicting arguments in one call are rejected. Mutable borrows cannot be stored, embedded, returned, or emitted. At a control-flow join a value is unavailable if any continuing branch moved it, and borrow origins are the union of the continuing branches.
+			 Binding an owner creates the owner; binding an existing heap name creates a shared alias with the same provenance. An owner cannot move or drop while a shared alias remains live. Passing one owner to two consuming arguments in the same call is rejected. At a control-flow join a value is unavailable if any continuing branch moved it, and borrow origins are the union of the continuing branches.
 
 			 Records and collections own their heap fields and elements. Embedding an owned value moves it to the container; the old name becomes a shared borrow of that container-owned value and becomes invalid when the container moves. A borrowed value cannot be embedded. Element reads produce Copy values for Copy elements and shared borrows tied to the collection for heap elements. Removing a heap element must transfer ownership by consuming the collection and returning both owners.
 
@@ -3378,7 +3379,7 @@ main { spin(50000, 0) >> out }`,
 		});
 		rule({
 			p: 'A binding of an owned call result becomes its owner and frees it at block exit unless it moves again.',
-			src: `mkpad = (n: Int32): String { s = 'p\${n}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; next s };
+			src: `mkpad = (n: Int32): own String { s = 'p\${n}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; next s };
 probe = (n: Int32): Int32 { b = mkpad(n); next length(b) };
 churn = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : churn(n - 1, acc + probe(n)) };
 main { churn(50000, 0) >> out }`,
@@ -3390,7 +3391,7 @@ main { churn(50000, 0) >> out }`,
 			p: 'Error values, union payloads (branched on the live member\u2019s tag), and record literals are dropped like every owned value — error frees include the trace chain, so debug builds also run flat.',
 			debug: true,
 			src: `type Miss = Error & [ id: Int32 ];
-lookup = (n: Int32): Int32 | Miss { next n > 0 ? n : [ id = n ] };
+lookup = (n: Int32): own Int32 | Miss { next n > 0 ? n : [ id = n ] };
 step = (n: Int32): Int32 { r = lookup(n - 50000); next r >> Int32 { $ } | Miss { 0 } };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
@@ -3457,7 +3458,7 @@ main { f() >> out }`,
 		});
 		rule({
 			p: 'An `own` recursive accumulator is an explicit ownership thread: each iteration frees or moves the previous accumulator, and a tail re-pass moves it into the next call while retaining `return_call`.',
-			src: `build = (n: Int32, acc: String): String { n == 0 ? acc : build(n - 1, '\${acc}x') };
+			src: `build = (n: Int32, acc: own String): own String { n == 0 ? acc : build(n - 1, '\${acc}x') };
 main { length(build(200000, '')) >> out }`,
 			ast: `(root (def :build ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :build (, (- :n 1) (interp :acc)))))) (main (>> (call :length @intrinsic (call :build (, 200000 ''))) :out)))`,
 			out: ['200000'],
@@ -3473,7 +3474,7 @@ main { total: var = 0; loop >> (i: Int32) { i >= 50000 ? break; m = 'x\${i}'; ge
 		});
 		rule({
 			p: 'An owned value emitted through an `own` result moves to the receiver and is not freed by its creating block.',
-			src: `mk = (n: Int32): String { s = 'm\${n}'; next s };
+			src: `mk = (n: Int32): own String { s = 'm\${n}'; next s };
 main { a = mk(1); b = mk(2); a >> out; b >> out; }`,
 			ast: `(root (def :mk ? (fn (parameter :n typeident ?) typeident (def :s ? (interp :n)) (next :s))) (main (def :a ? (call :mk 1)) (def :b ? (call :mk 2)) (>> :a :out) (>> :b :out)))`,
 			out: ['m1', 'm2'],
@@ -3484,6 +3485,35 @@ main { a = mk(1); b = mk(2); a >> out; b >> out; }`,
 main { t = 'q\${1}'; peek(t) >> out; peek(t) >> out; t >> out; }`,
 			ast: `(root (def :peek ? (fn @sequence (parameter :s typeident ?) typeident (call :length @intrinsic :s))) (main (def :t ? (interp 1)) (>> (call :peek :t) :out) (>> (call :peek :t) :out) (>> :t :out)))`,
 			out: ['2', '2', 'q1'],
+		});
+		rule({
+			p: '`own` function contracts consume heap arguments and return ownership without callee-name rules.',
+			src: `consume = <T>(value: own T): Int32 { length(value) };
+make = (n: Int32): own String { 'v\${n}' };
+main { consume(make(1)) >> out }`,
+			ast: `(root (def :consume ? (fn @sequence (, (parameter :T ? ?)) (parameter :value typeident ?) typeident (call :length @intrinsic :value))) (def :make ? (fn @sequence (parameter :n typeident ?) typeident (interp :n))) (main (>> (call :consume (call :make 1)) :out)))`,
+			out: ['2'],
+		});
+		compileError({
+			src: `consume = (value: own String): Int32 { length(value) };
+main { value = 'v\${1}'; consume(value) >> out; length(value) >> out }`,
+			expected: 'used after move',
+		});
+		compileError({
+			src: `consume = (value: own String): Int32 { length(value) };
+relay = (value: String): Int32 { consume(value) };
+main { relay('v') >> out }`,
+			expected: 'cannot move borrowed',
+		});
+		compileError({
+			src: `invalid = (value: String): own String { value };
+main { invalid('v') >> out }`,
+			expected: 'emits a borrowed value',
+		});
+		compileError({
+			src: `join = (left: own String, right: own String): Int32 { length(left) + length(right) };
+main { value = 'v\${1}'; join(value, value) >> out }`,
+			expected: 'conflicting ownership slots',
 		});
 		expr({
 			p: 'Scalars (`Int32`, `Float64`, `Bool`, `Char`) and interned string literals are copied, not owned — they may be rebound and read any number of times.',
