@@ -2024,17 +2024,45 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> ou
 		});
 	});
 
-	h('Buffer & Array (push)', ({ testBlock, compileError }) => {
+	h('Buffer & Array (push)', ({ testBlock, compileError, runtimeTrap }) => {
 		testBlock({
-			p: '`Buffer<T>` primitives: `set` appends at `length` (bumping it) and `get` reads back; `capacity` is the fixed slot count; the prelude `push` appends, reallocating (doubling) when full; `each` streams the live elements.',
+			p: '`Buffer<T>` is the sealed memory floor. Its complete primitive boundary is `Buffer<T>(capacity): own Buffer<T>`, borrowing `length(buffer): Int32`, `capacity(buffer): Int32`, and `get(buffer, index): T`, consuming `set(buffer: own Buffer<T>, index, value: own T): own Buffer<T>`, and `transfer(source: own Buffer<T>, destination: own Buffer<T>): own Buffer<T>`. `get` copies Copy elements and borrows heap elements from the Buffer. Array access, `realloc`, iteration, growth policy, and algorithms are GB source over these primitives.',
 			src: `export mk = (): Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 10); b2 = set(b1, 1, 20); next push(b2, 30) };
-export sumEach = (b: Buffer<Int32>): Int32 { total: var = 0; b >> each >> (n: Int32) { total = total + n; }; next total };
+export sum = (b: Buffer<Int32>): Int32 { reduce(b, 0, (total: Int32, n: Int32): Int32 { total + n }) };
 #test {
 	equal(length(mk()), 3);
 	equal(capacity(mk()), 4);
 	equal(get(mk(), 0), 10);
 	equal(get(mk(), 2), 30);
-	equal(sumEach(mk()), 60)
+	equal(sum(mk()), 60)
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		testBlock({
+			p: 'Intrinsics are ordinary function symbols: call syntax and pipe syntax use the same signature, data-block argument spreading, type checking, and backend lowering. Their names have no parser or pipe-stage grammar special case.',
+			src: `type Boom = Error & [ id: Int32 ];
+boom = (): Boom { [ id = 1 ] };
+export one = (): Buffer<Int32> { set(Buffer<Int32>(2), 0, 7) };
+export pipeGet = (): Int32 { [ one(), 0 ] >> get };
+export pipeSet = (): Int32 { [ Buffer<Int32>(1), 0, 9 ] >> set >> length };
+export pipeTransfer = (): Int32 { [ one(), Buffer<Int32>(1) ] >> transfer >> length };
+export pipeOrigin = (): Int32 { b = boom(); next (b >> origin).line };
+export callOrigin = (): Int32 { b = boom(); next origin(b).line };
+export pipeFrameAt = (): Int32 { b = boom(); next ([ b, 0 ] >> frameAt).line };
+export callFrameAt = (): Int32 { b = boom(); next frameAt(b, 0).line };
+export pipeFrames = (): Int32 { b = boom(); next b >> frames };
+export pipeStack = (): Int32 { b = boom(); next b >> runtime.stack >> length };
+#test {
+	equal(length(one()), (one() >> length));
+	equal(capacity(one()), (one() >> capacity));
+	equal(get(one(), 0), pipeGet());
+	equal(pipeSet(), 1);
+	equal(pipeTransfer(), 1);
+	equal(pipeOrigin(), callOrigin());
+	equal(pipeFrameAt(), callFrameAt());
+	equal(pipeFrames(), frames(boom()));
+	equal(pipeStack(), length(runtime.stack(boom())))
 }
 export target = (): Int32 { 0 }`,
 			out: [],
@@ -2062,6 +2090,40 @@ export target = (): Int32 { 0 }`,
 			p: '`transfer` consumes both buffers, so neither input can be used afterward.',
 			src: `main { source = Buffer<Int32>(1); destination = Buffer<Int32>(1); moved = transfer(source, destination); length(source) >> out; length(moved) >> out }`,
 			expected: 'used after move',
+		});
+		runtimeTrap({
+			p: 'Buffer capacity is nonnegative and its byte size must fit signed runtime allocation arithmetic.',
+			src: `main { Buffer<Int32>(0 - 1) >> length >> out }`,
+		});
+		runtimeTrap({
+			src: `main { Buffer<Int64>(268435455) >> length >> out }`,
+		});
+		runtimeTrap({
+			p: '`get` requires `0 <= index < length`.',
+			src: `main { b = set(Buffer<Int32>(1), 0, 7); get(b, 1) >> out }`,
+		});
+		runtimeTrap({
+			src: `main { b = set(Buffer<Int32>(1), 0, 7); get(b, 0 - 1) >> out }`,
+		});
+		runtimeTrap({
+			p: '`set` overwrites a live slot or appends exactly at `length`; it rejects negative indices, gaps, and appends at capacity.',
+			src: `main { set(Buffer<Int32>(1), 0 - 1, 7) >> length >> out }`,
+		});
+		runtimeTrap({
+			src: `main { set(Buffer<Int32>(2), 1, 7) >> length >> out }`,
+		});
+		runtimeTrap({
+			src: `main { b = set(Buffer<Int32>(1), 0, 7); set(b, 1, 8) >> length >> out }`,
+		});
+		runtimeTrap({
+			p: '`transfer` requires distinct buffers, an empty destination, and destination capacity at least the source length.',
+			src: `main { b = Buffer<Int32>(1); transfer(b, b) >> length >> out }`,
+		});
+		runtimeTrap({
+			src: `main { source = set(Buffer<Int32>(1), 0, 7); destination = set(Buffer<Int32>(1), 0, 8); transfer(source, destination) >> length >> out }`,
+		});
+		runtimeTrap({
+			src: `main { source = set(set(Buffer<Int32>(2), 0, 7), 1, 8); transfer(source, Buffer<Int32>(1)) >> length >> out }`,
 		});
 		testBlock({
 			p: 'push grows a scalar buffer flat: building and dropping a buffer every iteration reuses the heap — the doubling `realloc` frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
@@ -2398,32 +2460,33 @@ main {
 			expected: 'does not consume "Forbidden"',
 		});
 		rule({
-			p: '`runtime.stack(e)` materializes the whole trace as a collection of `Frame`s \u2014 `[count][frame\u2026]`, elements inline \u2014 so it streams and measures like any record collection. Outside debug builds it holds the single origin frame.',
+			p: '`runtime.stack(e)` materializes the whole trace as a collection of `Frame`s — `[count][frame…]`, elements inline — so source-level collection algorithms read it through the Buffer primitives. Outside debug builds it holds the single origin frame.',
 			src: `type Boom = Error & [ id: Int32 ];
 mk = (n: Int32): Boom { [ id = n ] };
-main { b = mk(5); length(runtime.stack(b)) >> out; runtime.stack(b) >> each >> (f: Frame) { '\${f.fn}:\${f.line}' >> out } }`,
-			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (main (def :b ? (call :mk 5)) (>> (call :length @intrinsic (call (. :runtime :stack) :b)) :out) (>> (call (. :runtime :stack) :b) :each (fn @sequence (parameter :f typeident ?) (>> (interp (. :f :fn) (. :f :line)) :out)))))`,
-			out: ['1', 'mk:2'],
+renderFrame = (text: String, f: Frame): String { '\${text}\${f.fn}:\${f.line};' };
+main { b = mk(5); length(runtime.stack(b)) >> out; reduce(runtime.stack(b), '', renderFrame) >> out }`,
+			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :renderFrame ? (fn @sequence (parameter :text typeident ?) (parameter :f typeident ?) typeident (interp :text (. :f :fn) (. :f :line)))) (main (def :b ? (call :mk 5)) (>> (call :length @intrinsic (call (. :runtime :stack) :b)) :out) (>> (call :reduce (, (call (. :runtime :stack) :b) '' :renderFrame)) :out)))`,
+			out: ['1', 'mk:2;'],
 		});
 		rule({
 			p: 'In debug builds the collection carries the captured chain \u2014 the same frames `frameAt` reads, origin first \u2014 and reading it churns flat: the collection is fresh, owned by its consumer, block-freed (its words are static frames).',
 			debug: true,
 			src: `type Boom = Error & [ id: Int32 ];
 mk = (n: Int32): Boom { [ id = n ] };
-step = (n: Int32): Int32 { b = mk(n); k: var = 0; runtime.stack(b) >> each >> (f: Frame) { k = k + f.line; }; next k + length(runtime.stack(b)) };
+step = (n: Int32): Int32 { b = mk(n); next reduce(runtime.stack(b), 0, (k: Int32, f: Frame): Int32 { k + f.line }) + length(runtime.stack(b)) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
-			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (def @variable :k ? 0) (>> (call (. :runtime :stack) :b) :each (fn @sequence (parameter :f typeident ?) (= :k @variable (+ :k @variable (. :f :line))))) (next (+ :k @variable (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
+			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (next (+ (call :reduce (, (call (. :runtime :stack) :b) 0 (fn @sequence (parameter :k typeident ?) (parameter :f typeident ?) typeident (+ :k (. :f :line))))) (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
 			out: ['1499995'],
 			maxPages: 3,
 		});
 		rule({
 			src: `type Boom = Error & [ id: Int32 ];
 mk = (n: Int32): Boom { [ id = n ] };
-step = (n: Int32): Int32 { b = mk(n); k: var = 0; runtime.stack(b) >> each >> (f: Frame) { k = k + f.line; }; next k + length(runtime.stack(b)) };
+step = (n: Int32): Int32 { b = mk(n); next reduce(runtime.stack(b), 0, (k: Int32, f: Frame): Int32 { k + f.line }) + length(runtime.stack(b)) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
-			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (def @variable :k ? 0) (>> (call (. :runtime :stack) :b) :each (fn @sequence (parameter :f typeident ?) (= :k @variable (+ :k @variable (. :f :line))))) (next (+ :k @variable (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
+			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (next (+ (call :reduce (, (call (. :runtime :stack) :b) 0 (fn @sequence (parameter :k typeident ?) (parameter :f typeident ?) typeident (+ :k (. :f :line))))) (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
 			out: ['300000'],
 			maxPages: 3,
 		});
@@ -2431,9 +2494,10 @@ main { spin(100000, 0) >> out }`,
 			debug: true,
 			src: `type Boom = Error & [ id: Int32 ];
 mk = (n: Int32): Boom { [ id = n ] };
-main { b = mk(9); s = runtime.stack(b); length(s) >> out; s >> each >> (f: Frame) { f.fn >> out } }`,
-			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (main (def :b ? (call :mk 9)) (def :s ? (call (. :runtime :stack) :b)) (>> (call :length @intrinsic :s) :out) (>> :s :each (fn @sequence (parameter :f typeident ?) (>> (. :f :fn) :out)))))`,
-			out: ['2', 'mk', 'mk'],
+appendName = (text: String, f: Frame): String { '\${text}\${f.fn},' };
+main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendName) >> out }`,
+			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :appendName ? (fn @sequence (parameter :text typeident ?) (parameter :f typeident ?) typeident (interp :text (. :f :fn)))) (main (def :b ? (call :mk 9)) (def :s ? (call (. :runtime :stack) :b)) (>> (call :length @intrinsic :s) :out) (>> (call :reduce (, :s '' :appendName)) :out)))`,
+			out: ['2', 'mk,mk,'],
 		});
 	});
 

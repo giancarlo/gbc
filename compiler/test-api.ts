@@ -142,6 +142,29 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		}
 	};
 
+	runtimeTrap = ({ p, src }: { p?: string; src: string }): void => {
+		if (p) {
+			this.p(p, api => api.runtimeTrap({ src }));
+			return;
+		}
+		const compiled = Program().compile(src);
+		if (compiled.errors.length) {
+			this.printErrors(compiled.errors);
+			throw 'Errors found';
+		}
+		this.assert(compiled.bytes);
+		let failure: unknown;
+		try {
+			this.runWasmBytes(compiled.bytes);
+		} catch (error) {
+			failure = error;
+		}
+		this.assert(
+			failure instanceof Error && failure.message.includes('unreachable'),
+			`Expected a WebAssembly unreachable trap, got ${String(failure)}`,
+		);
+	};
+
 	rule = ({ p, src, ast, out, maxPages, debug, exit, test }: RuleDef): void => {
 		if (p) {
 			this.p(p, api =>

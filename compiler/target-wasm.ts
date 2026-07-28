@@ -505,12 +505,16 @@ function isUnionType(t: Type): boolean {
 	return true;
 }
 
+function isInlineData(t: Type): boolean {
+	return t.kind === 'type' && t.family === 'data' && !t.elem;
+}
+
 function fieldBytes(t: Type): number {
 	if (isUnionType(t)) return (unionPayloadWasm(t) === I64 ? 8 : 4) + 4;
 	if (t.kind === 'type') {
 		if (t.family === 'float') return t.size === 4 ? 4 : 8;
 		if (t.family === 'int' || t.family === 'uint') return t.size;
-		if (t.family === 'data') return fieldLayout(t.members).total;
+		if (t.family === 'data') return isInlineData(t) ? fieldLayout(t.members).total : 4;
 	}
 	return 4;
 }
@@ -1379,6 +1383,10 @@ export function compileWasm(
 	}
 
 	function inferStageReturn(stage: Node): Type {
+		if (stage.kind === '.') {
+			const fnSym = resolveStaticMemberFn(stage);
+			if (fnSym) return fnSym.returnType ?? BaseTypes.Void;
+		}
 		if (stage.kind === 'ident') {
 			const sym = stage.symbol;
 			const fnSym =
@@ -3840,6 +3848,16 @@ export function compileWasm(
 		compileExpr(args, fn);
 		fn.body.push(OP_LOCAL_SET);
 		uleb128(cap, fn.body);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(cap, fn.body);
+		fn.body.push(OP_I32_CONST, 0, OP_I32_LT_S);
+		emitTrapIf(fn);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(cap, fn.body);
+		fn.body.push(OP_I32_CONST);
+		sleb128(Math.floor((0x7fffffff - 8) / stride), fn.body);
+		fn.body.push(OP_I32_GT_S);
+		emitTrapIf(fn);
 		fn.body.push(OP_I32_CONST);
 		sleb128(8, fn.body);
 		fn.body.push(OP_LOCAL_GET);
@@ -4570,7 +4588,7 @@ export function compileWasm(
 			uleb128(off + payBytes, fn.body);
 			return;
 		}
-		if (ft.kind === 'type' && ft.family === 'data') {
+		if (isInlineData(ft)) {
 			// A record member embeds by value — the source block is dead
 			// after the copy. Free it (shallow) when this literal owns it:
 			// its heap members now live in the inline copy.
@@ -4797,7 +4815,7 @@ export function compileWasm(
 		off: number,
 		fn: FuncBuilder,
 	): Type {
-		if (ft.kind === 'type' && ft.family === 'data') {
+		if (isInlineData(ft)) {
 			fn.body.push(OP_LOCAL_GET);
 			uleb128(baseLocal, fn.body);
 			if (off !== 0) {
@@ -5812,7 +5830,7 @@ export function compileWasm(
 					: (headCount + i) * itemSize;
 				const dstOff = restLayout.offs[i] ?? 0;
 				// A record element copies whole (its bytes, not a slot load).
-				if (rft.kind === 'type' && rft.family === 'data') {
+				if (isInlineData(rft)) {
 					fn.body.push(OP_LOCAL_GET);
 					uleb128(localIdx, fn.body);
 					fn.body.push(OP_I32_CONST);
@@ -5856,7 +5874,7 @@ export function compileWasm(
 			const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
 			// Multi-element rest materializes a sub-data-block; a
 			// single-element rest falls through to slot read.
-			if (isLast && ptype.kind === 'type' && ptype.family === 'data') {
+			if (isLast && isInlineData(ptype)) {
 				bindRestSubBlock(pSym, ptype, localIdx);
 				return;
 			}
@@ -5877,7 +5895,7 @@ export function compileWasm(
 			}
 			// A record element binds as an interior pointer into the block —
 			// a borrow of the collection, never a value load.
-			if (sft.kind === 'type' && sft.family === 'data') {
+			if (isInlineData(sft)) {
 				fn.body.push(OP_LOCAL_GET);
 				uleb128(dataLocal, fn.body);
 				if (sOff !== 0) {
@@ -5952,73 +5970,6 @@ export function compileWasm(
 		return BaseTypes.Void;
 	}
 
-	// A runtime-length collection can't type-unroll — drive its elements
-	// with a real loop: each iteration pushes an interior pointer (a borrow
-	// of the block) through the downstream stages.
-	function driveRuntimeEach(
-		elemType: Type,
-		rest: Node[],
-		fn: FuncBuilder,
-	): Type {
-		const base = allocLocal(fn, I32);
-		const count = allocLocal(fn, I32);
-		const i = allocLocal(fn, I32);
-		const stride = fieldBytes(elemType);
-		const byValue = !(
-			elemType.kind === 'type' &&
-			elemType.family === 'data' &&
-			Object.keys(elemType.members).length > 0
-		);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(base, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(base, fn.body);
-		fn.body.push(OP_I32_LOAD);
-		uleb128(2, fn.body);
-		uleb128(0, fn.body);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(count, fn.body);
-		fn.body.push(OP_I32_CONST, 0);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(i, fn.body);
-		fn.body.push(OP_BLOCK, 0x40);
-		fn.blockDepth++;
-		fn.body.push(OP_LOOP, 0x40);
-		fn.blockDepth++;
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(i, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(count, fn.body);
-		fn.body.push(OP_I32_GE_S);
-		fn.body.push(OP_BR_IF, 1);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(base, fn.body);
-		fn.body.push(OP_I32_CONST, 8, OP_I32_ADD);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(i, fn.body);
-		fn.body.push(OP_I32_CONST);
-		sleb128(stride, fn.body);
-		fn.body.push(OP_I32_MUL);
-		fn.body.push(OP_I32_ADD);
-		if (byValue) emitFieldLoad(elemType, 0, fn);
-		const rt = driveStages(rest, elemType, fn);
-		if (hasRuntimeValue(rt)) {
-			fn.body.push(OP_DROP);
-			if (isUnionType(rt)) fn.body.push(OP_DROP);
-		}
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(i, fn.body);
-		fn.body.push(OP_I32_CONST, 1, OP_I32_ADD);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(i, fn.body);
-		fn.body.push(OP_BR, 0);
-		fn.body.push(OP_END);
-		fn.blockDepth--;
-		fn.body.push(OP_END);
-		fn.blockDepth--;
-		return BaseTypes.Void;
-	}
-
 	// Drive a generic Sequence template as a pipe stage. The piped value
 	// (already on the stack) becomes the template's first value-param; mirrors
 	// tryInlineEmitTemplate but sources its input from the pipe, not call args.
@@ -6062,27 +6013,40 @@ export function compileWasm(
 	// Spread a data-block input (already on the stack) into positional call args
 	// for a multi-param fn stage, matching block members to params by label and
 	// otherwise by position — the pipe-stage form of `resolveArgNodes`.
-	function spreadDataToStack(
+	function pipeArgFields(
 		inputType: Type,
 		paramSyms: GbcSymbol[],
-		fn: FuncBuilder,
-	): void {
-		const ptr = allocLocal(fn, I32);
-		emitStoreLocal(ptr, fn);
+	): { type: Type; offset: number }[] {
 		const data =
 			inputType.kind === 'type' && inputType.family === 'data'
 				? inputType
 				: undefined;
-		const layout = data ? fieldLayout(data.members) : undefined;
-		const keys = layout?.keys ?? [];
-		for (let i = 0; i < paramSyms.length; i++) {
+		if (!data || data.elem)
+			throw new Error('A multi-parameter pipe stage requires a data block');
+		const layout = fieldLayout(data.members);
+		const keys = layout.keys;
+		return paramSyms.map((_, i) => {
 			const pname = paramSyms[i]?.name;
 			const named = pname ? keys.indexOf(pname) : -1;
 			const idx = named >= 0 ? named : i;
-			const ft = data?.members[keys[idx] ?? '']?.type ?? BaseTypes.Int32;
-			const off = layout?.offs[idx] ?? 0;
-			emitFieldRead(ptr, ft, off, fn);
+			const ft = data.members[keys[idx] ?? '']?.type ?? BaseTypes.Int32;
+			const off = layout.offs[idx] ?? 0;
+			return { type: ft, offset: off };
+		});
+	}
+
+	function spreadDataToStack(
+		inputType: Type,
+		paramSyms: GbcSymbol[],
+		fn: FuncBuilder,
+	): { type: Type; offset: number }[] {
+		const ptr = allocLocal(fn, I32);
+		emitStoreLocal(ptr, fn);
+		const fields = pipeArgFields(inputType, paramSyms);
+		for (const field of fields) {
+			emitFieldRead(ptr, field.type, field.offset, fn);
 		}
+		return fields;
 	}
 
 	function driveDirectCallStage(
@@ -6112,20 +6076,11 @@ export function compileWasm(
 
 	function driveSequenceTemplate(
 		template: NodeMap['fn'],
-		sym: GbcSymbol,
+		_sym: GbcSymbol,
 		inputType: Type,
 		rest: Node[],
 		fn: FuncBuilder,
 	): Type {
-		// A runtime-length collection can't type-unroll; `each` over one
-		// drives a real loop instead.
-		if (
-			sym.name === 'each' &&
-			inputType.kind === 'type' &&
-			inputType.family === 'data' &&
-			inputType.elem
-		)
-			return driveRuntimeEach(inputType.elem, rest, fn);
 		return driveTemplateStage(template, inputType, rest, fn);
 	}
 
@@ -6149,6 +6104,62 @@ export function compileWasm(
 		return driveStages(rest, sym.returnType ?? BaseTypes.Void, fn);
 	}
 
+	function driveIntrinsicStage(
+		position: NodeMap['ident'],
+		intrinsic: SymbolMap['function'],
+		inputType: Type,
+		rest: Node[],
+		fn: FuncBuilder,
+	): Type {
+		const params = intrinsic.parameters ?? [];
+		if (params.length === 0) {
+			if (hasRuntimeValue(inputType)) fn.body.push(OP_DROP);
+			const result = compileIntrinsic(intrinsic.name ?? '', undefined, fn);
+			return driveStages(rest, result, fn);
+		}
+		const argTypes =
+			params.length === 1
+				? [inputType]
+				: spreadDataToStack(inputType, params, fn).map(
+						field => field.type,
+					);
+		const locals = argTypes.map(type => allocLocal(fn, gbcToWasm(type)));
+		for (let i = locals.length - 1; i >= 0; i--) {
+			const local = locals[i];
+			if (local !== undefined) emitStoreLocal(local, fn);
+		}
+		const args = argTypes.map((type, i): NodeMap['ident'] => {
+			const local = locals[i];
+			if (local === undefined)
+				throw new Error('Intrinsic stage argument has no local');
+			const argSym: GbcSymbol = {
+				kind: 'variable',
+				name: params[i]?.name ?? '',
+				flags: 0,
+				type,
+			};
+			fn.paramMap.set(argSym, local);
+			return { ...position, symbol: argSym };
+		});
+		const spreadArgs: NodeMap[','] = {
+			...position,
+			kind: ',',
+			children: args,
+		};
+		const argNode: Node | undefined =
+			args.length === 0
+				? undefined
+				: args.length === 1
+					? args[0]
+					: spreadArgs;
+		try {
+			const result = compileIntrinsic(intrinsic.name ?? '', argNode, fn);
+			return driveStages(rest, result, fn);
+		} finally {
+			for (const arg of args) fn.paramMap.delete(arg.symbol);
+		}
+	}
+
 	function driveIdentStage(
 		stage: NodeMap['ident'],
 		inputType: Type,
@@ -6156,6 +6167,8 @@ export function compileWasm(
 		fn: FuncBuilder,
 	): Type {
 		const sym = stage.symbol;
+		if (sym.kind === 'function' && sym.flags & Flags.Intrinsic)
+			return driveIntrinsicStage(stage, sym, inputType, rest, fn);
 		const template = fnTemplates.get(sym);
 		if (template && template.symbol.flags & Flags.Sequence)
 			return driveSequenceTemplate(template, sym, inputType, rest, fn);
@@ -6321,6 +6334,20 @@ export function compileWasm(
 		if (!stage) return BaseTypes.Void;
 
 		if (stage.kind === '.') {
+			const intrinsic = resolveStaticMemberFn(stage);
+			const field = stage.children[1];
+			if (
+				intrinsic &&
+				intrinsic.flags & Flags.Intrinsic &&
+				field.kind === 'ident'
+			)
+				return driveIntrinsicStage(
+					field,
+					intrinsic,
+					inputType,
+					rest,
+					fn,
+				);
 			const outType = emitHostStage(stage, fn);
 			return driveStages(rest, outType, fn);
 		}

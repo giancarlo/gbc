@@ -448,6 +448,10 @@ function resolvePipeType(node: NodeMap['>>']): Type {
 		return tail ? resolver(tail) : BT.Unknown;
 	}
 	if (last.kind === 'ident') return resolveReturnType(last) ?? resolver(last);
+	if (last.kind === '.') {
+		const t = resolveMemberType(last);
+		return t.kind === 'function' ? (t.returnType ?? BT.Void) : t;
+	}
 	if (last.kind === '|') {
 		// A `|`-dispatch stage emits the union of its arms' returns; each
 		// arm's `$` is its declared (matched) variant type.
@@ -1717,16 +1721,9 @@ export function checker({
 			if (accepts.some(a => a === undefined)) return undefined;
 			return unionOf(accepts.filter((a): a is Type => a !== undefined));
 		}
-		if (stage.kind === 'ident') {
-			const sym = stage.symbol;
-			const fsym =
-				sym.kind === 'function'
-					? sym
-					: sym.definition?.kind === 'def' &&
-						  sym.definition.value.kind === 'fn'
-						? resolveFnType(sym.definition.value)
-						: undefined;
-			if (!fsym || fsym.kind !== 'function') return undefined;
+		if (stage.kind === 'ident' || stage.kind === '.') {
+			const fsym = pipeStageFn(stage);
+			if (!fsym) return undefined;
 			const cands = fsym.overloads ? [fsym, ...fsym.overloads] : [fsym];
 			const parts: Type[] = [];
 			for (const c of cands) {
@@ -1760,6 +1757,8 @@ export function checker({
 			walk(stage);
 			return unionOf(parts);
 		}
+		const fsym = pipeStageFn(stage);
+		if (fsym) return fsym.returnType ?? BT.Void;
 		return BT.Unknown;
 	}
 
@@ -2199,6 +2198,10 @@ export function checker({
 
 	function pipeStageFn(stage: Node): SymbolMap['function'] | undefined {
 		if (stage.kind === 'fn') return stage.symbol;
+		if (stage.kind === '.') {
+			const t = resolveMemberType(stage);
+			return t.kind === 'function' ? t : undefined;
+		}
 		if (stage.kind === 'ident') {
 			const sym = stage.symbol;
 			if (sym.kind === 'function') return sym;
