@@ -33,7 +33,7 @@ export push = <T>(a: Buffer<T>, x: T): Buffer<T> {
 rangeFrom = (a: Buffer<Int32>, n: Int32, end: Int32): Buffer<Int32> {
 	n >= end
 		? a
-		: rangeFrom(([ a, length(a), n ] >> set), n + 1, end)
+		: rangeFrom([ a, length(a), n ] >> set, n + 1, end)
 };
 export range = (start: Int32, end: Int32): Buffer<Int32> {
 	end <= start

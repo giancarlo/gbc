@@ -5076,6 +5076,16 @@ export function compileWasm(
 			compileFnSource(source, stages, fn);
 			return BaseTypes.Void;
 		}
+		if (source.kind === ',') {
+			const savedFusion = fn.fusion;
+			fn.fusion = makeFusion(stages, savedFusion, fn);
+			try {
+				compileComma(source, fn);
+			} finally {
+				fn.fusion = savedFusion;
+			}
+			return BaseTypes.Void;
+		}
 		if (source.kind === '?' && source.children[2] === undefined) {
 			compileOptionalSource(source, stages, fn);
 			return BaseTypes.Void;

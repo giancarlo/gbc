@@ -507,6 +507,8 @@ export function parseExpression(
 		);
 	}
 
+	const commaPrecedence = 1;
+	const pipePrecedence = 1.5;
 	const parser = parserTable<NodeMap, ScannerToken>(
 		({
 			expression: expr,
@@ -517,17 +519,17 @@ export function parseExpression(
 			current,
 		}) => ({
 			'>>': {
-				precedence: 1,
+				precedence: pipePrecedence,
 				infix(tk, left) {
-					const right = expectExpression();
+					const right = expectExpression(pipePrecedence);
 					const node: NodeMap['>>'] = {
 						...tk,
 						kind: '>>',
 						start: left.start,
 						end: right.end,
 						children:
-							right.kind === '>>'
-								? [left, ...right.children]
+							left.kind === '>>'
+								? [...left.children, right]
 								: [left, right],
 					};
 					return node;
@@ -679,9 +681,9 @@ export function parseExpression(
 				},
 			},
 			',': {
-				precedence: 1,
+				precedence: commaPrecedence,
 				infix(tk, left) {
-					const right = expectExpression(2);
+					const right = expectExpression(commaPrecedence);
 					const node: NodeMap[','] = {
 						...tk,
 						kind: ',',

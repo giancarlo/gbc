@@ -104,10 +104,34 @@ main {
 		token('<:', 'Bitwise Shift Left', '<:');
 
 		expr({
-			p: 'Binding from tightest: call/member (`f(x)`, `.`), unary (`!` `~` `-`), `*` `/` `%`, `+` `-`, `<:` `:>`, comparisons, `==` `!=`, `&`, `^`, `|`, `&&`, `||`, ternary `?`, then `>>` and `,`. Note `&`/`^`/`|` bind looser than `==` — `1 & 3 == 3` is `1 & (3 == 3)`.',
+			p: 'Binding from tightest: call/member (`f(x)`, `.`), unary (`!` `~` `-`), `*` `/` `%`, `+` `-`, `<:` `:>`, comparisons, `==` `!=`, `&`, `^`, `|`, `&&`, `||`, ternary `?`, `>>`, then `,`. Comma emits each value in order and binds looser than pipe: `a, b >> f` emits `a` followed by `b >> f`; use `(a, b) >> f` to pipe both emissions. Note `&`/`^`/`|` bind looser than `==` — `1 & 3 == 3` is `1 & (3 == 3)`.',
 			src: '1 + 2 * 3',
 			ast: '(+ 1 (* 2 3))',
 			out: ['7'],
+		});
+		rule({
+			src: `inc = (n: Int32): Int32 { n + 10 };
+main { 1, 2 >> inc >> out }`,
+			ast: `(root (def :inc ? (fn @sequence (parameter :n typeident ?) typeident (+ :n 10))) (main (, 1 (>> 2 :inc :out))))`,
+			out: ['12'],
+		});
+		rule({
+			src: `inc = (n: Int32): Int32 { n + 10 };
+main { (1, 2) >> inc >> out }`,
+			ast: `(root (def :inc ? (fn @sequence (parameter :n typeident ?) typeident (+ :n 10))) (main (>> (, 1 2) :inc :out)))`,
+			out: ['11', '12'],
+		});
+		rule({
+			src: `inc = (n: Int32): Int32 { n + 10 };
+main { 1 >> inc >> out, 2 >> out }`,
+			ast: `(root (def :inc ? (fn @sequence (parameter :n typeident ?) typeident (+ :n 10))) (main (, (>> 1 :inc :out) (>> 2 :out))))`,
+			out: ['11', '2'],
+		});
+		rule({
+			src: `sum = (a: Int32, b: Int32): Int32 { a + b };
+main { sum([1, 2] >> length, 2) >> out }`,
+			ast: `(root (def :sum ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))) (main (>> (call :sum (, (>> (data (, 1 2)) :length @intrinsic) 2)) :out)))`,
+			out: ['4'],
 		});
 		expr({
 			src: '1 + 2 < 4 <: 1',
@@ -171,7 +195,7 @@ main {
 		);
 		match('~0b100100, ~0xff', '~', 'number', ',', '~', 'number');
 		expr({
-			src: '!false, !true, !!!!false',
+			src: '(!false, !true, !!!!false)',
 			ast: '(, (! :false) (! :true) (! (! (! (! :false)))))',
 		});
 
