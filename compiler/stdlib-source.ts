@@ -30,6 +30,17 @@ export push = <T>(a: Buffer<T>, x: T): Buffer<T> {
 		: set(realloc(a, capacity(a) * 2), length(a), x)
 };
 
+rangeFrom = (a: Buffer<Int32>, n: Int32, end: Int32): Buffer<Int32> {
+	n >= end
+		? a
+		: rangeFrom(([ a, length(a), n ] >> set), n + 1, end)
+};
+export range = (start: Int32, end: Int32): Buffer<Int32> {
+	end <= start
+		? Buffer<Int32>(0)
+		: rangeFrom(Buffer<Int32>(end - start), start, end)
+};
+
 indexAt = <T>(a: Buffer<T>, i: Int32, x: T): Int32 {
 	i == length(a) ? 0 - 1 : (get(a, i) == x ? i : indexAt(a, i + 1, x))
 };

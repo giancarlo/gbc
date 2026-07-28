@@ -80,46 +80,37 @@ function bufferCtorType(node: NodeMap['call']): Type | undefined {
 	return bufferTypeOf(BT.Unknown);
 }
 
-// `get(b,i)` → the buffer's element type; `set` → the buffer type.
-function bufferIntrinsicReturn(node: NodeMap['call']): Type | undefined {
-	const callee = node.children[0];
-	if (callee.kind !== 'ident') return undefined;
-	const sym = callee.symbol;
-	if (!(sym.kind === 'function' && sym.flags & Flags.Intrinsic)) return undefined;
-	const name = sym.name;
-	if (name !== 'get' && name !== 'set') return undefined;
-	const argsNode = node.children[1];
-	const first = argsNode?.kind === ',' ? argsNode.children[0] : argsNode;
-	if (!first) return undefined;
-	const bt = resolver(first);
-	if (bt.kind !== 'type' || bt.family !== 'data' || !bt.elem) return undefined;
-	return name === 'get' ? bt.elem : bt;
-}
-
 function callReturnType(node: NodeMap['call']): Type | undefined {
-	const buf = bufferCtorType(node) ?? bufferIntrinsicReturn(node);
+	const buf = bufferCtorType(node);
 	if (buf) return buf;
 	const rt = resolveReturnType(node.children[0]);
 	if (!rt || rt.kind !== 'type') return rt;
-	return substituteGenericReturn(rt, node);
+	const fnSym = resolveFunctionType(node.children[0]);
+	if (!fnSym) return rt;
+	const argsNode = node.children[1];
+	const args =
+		argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
+	return substituteFunctionReturn(rt, fnSym, args.map(resolver));
 }
 
-// Generic return: unify each parameter against its argument to bind the type
-// variables, then substitute them into the declared return. Resolves not just
-// a bare `T` return but parameterized ones like `Buffer<T>` -> `Buffer<Int32>`
-// (via `reduceType`'s data/elem case). Non-generic callees return `rt` as-is.
-function substituteGenericReturn(rt: Type, node: NodeMap['call']): Type {
-	const ft = resolver(node.children[0]);
-	const fnSym =
-		ft.kind === 'function'
-			? ft
-			: ft.type?.kind === 'function'
-				? ft.type
-				: undefined;
+function resolveFunctionType(node: Node): SymbolMap['function'] | undefined {
+	const ft = resolver(node);
+	return ft.kind === 'function'
+		? ft
+		: ft.type?.kind === 'function'
+			? ft.type
+			: undefined;
+}
+
+function substituteFunctionReturn(
+	rt: Type,
+	fnSym: SymbolMap['function'],
+	args: Type[],
+): Type {
 	const fnNode =
-		fnSym?.definition?.kind === 'fn' ? fnSym.definition : undefined;
+		fnSym.definition?.kind === 'fn' ? fnSym.definition : undefined;
 	const tparams =
-		fnSym?.typeParams ??
+		fnSym.typeParams ??
 		fnNode?.typeParameters
 			?.map(p => p.symbol.type)
 			.filter((t): t is Type => !!t);
@@ -127,17 +118,37 @@ function substituteGenericReturn(rt: Type, node: NodeMap['call']): Type {
 	const names = new Set(
 		tparams.map(t => t.name).filter((n): n is string => !!n),
 	);
-	const params = fnSym?.parameters ?? [];
-	const argsNode = node.children[1];
-	const args =
-		argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
 	const subst = new Map<string, Type>();
-	for (let i = 0; i < params.length; i++) {
-		const pt = params[i]?.type;
-		const arg = args[i];
-		if (pt && arg) unifyTypeParam(pt, resolver(arg), names, subst);
-	}
+	(fnSym.parameters ?? []).forEach((p, i) =>
+		unifyTypeParam(p.type, args[i], names, subst),
+	);
 	return reduceType(rt, subst);
+}
+
+function pipeArgumentTypes(
+	input: Type,
+	fnSym: SymbolMap['function'],
+): Type[] {
+	const params = fnSym.parameters ?? [];
+	if (params.length <= 1) return params.length === 0 ? [] : [input];
+	if (input.kind !== 'type' || input.family !== 'data' || input.elem)
+		return [input];
+	const keys = Object.keys(input.members);
+	return params.map((p, i) => {
+		const named = p.name ? keys.indexOf(p.name) : -1;
+		const key = keys[named >= 0 ? named : i];
+		return key === undefined
+			? BT.Unknown
+			: (input.members[key]?.type ?? BT.Unknown);
+	});
+}
+
+function resolveFunctionStageReturn(stage: Node, input: Type): Type | undefined {
+	const fnSym = resolveFunctionType(stage);
+	const rt = fnSym?.returnType;
+	if (!fnSym || !rt) return undefined;
+	const args = pipeArgumentTypes(input, fnSym);
+	return substituteFunctionReturn(rt, fnSym, args);
 }
 
 function resolveReturnType(node: Node) {
@@ -447,8 +458,17 @@ function resolvePipeType(node: NodeMap['>>']): Type {
 		const tail = last.statements?.[last.statements.length - 1];
 		return tail ? resolver(tail) : BT.Unknown;
 	}
-	if (last.kind === 'ident') return resolveReturnType(last) ?? resolver(last);
+	if (last.kind === 'ident') {
+		const input = kids.length > 1 ? kids[kids.length - 2] : undefined;
+		const specialized =
+			input && resolveFunctionStageReturn(last, resolver(input));
+		return specialized ?? resolveReturnType(last) ?? resolver(last);
+	}
 	if (last.kind === '.') {
+		const input = kids.length > 1 ? kids[kids.length - 2] : undefined;
+		const specialized =
+			input && resolveFunctionStageReturn(last, resolver(input));
+		if (specialized) return specialized;
 		const t = resolveMemberType(last);
 		return t.kind === 'function' ? (t.returnType ?? BT.Void) : t;
 	}
@@ -1737,7 +1757,7 @@ export function checker({
 		return undefined;
 	}
 
-	function stageEmitType(stage: Node): Type {
+	function stageEmitType(stage: Node, input: Type | undefined): Type {
 		if (stage.kind === 'fn') {
 			const ft = resolveFnType(stage);
 			return ft.kind === 'function' && ft.returnType
@@ -1752,10 +1772,14 @@ export function checker({
 					walk(n.children[1]);
 					return;
 				}
-				parts.push(stageEmitType(n));
+				parts.push(stageEmitType(n, input));
 			};
 			walk(stage);
 			return unionOf(parts);
+		}
+		if (input) {
+			const specialized = resolveFunctionStageReturn(stage, input);
+			if (specialized) return specialized;
 		}
 		const fsym = pipeStageFn(stage);
 		if (fsym) return fsym.returnType ?? BT.Void;
@@ -1847,7 +1871,7 @@ export function checker({
 						);
 				}
 			}
-			emit = stageEmitType(stage);
+			emit = stageEmitType(stage, emit);
 		}
 	}
 
@@ -2215,6 +2239,7 @@ export function checker({
 	}
 
 	function walkPipes(node: Node) {
+		if (node.kind === 'fn') resolveFnType(node);
 		if (node.kind === '>>') inferPipeStageParams(node.children);
 		switch (node.kind) {
 			case 'string':

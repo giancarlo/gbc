@@ -1320,8 +1320,6 @@ export function compileWasm(
 		}
 		if (callee.kind !== 'ident') return BaseTypes.Unknown;
 		const sym = callee.symbol;
-		const buf = inferBufferIntrinsic(sym, node);
-		if (buf) return buf;
 		const bound = fnArgBindings.get(sym);
 		if (bound) return bound.returnType ?? BaseTypes.Void;
 		const fnSym =
@@ -1331,61 +1329,60 @@ export function compileWasm(
 					? sym.type
 					: undefined;
 		if (!fnSym) return BaseTypes.Unknown;
-		const rt = fnSym.returnType ?? BaseTypes.Void;
-		if (rt.kind === 'type' && rt.family === 'unknown' && rt.name)
-			return inferGenericReturn(fnSym, rt, node);
-		return rt;
+		const template = fnTemplates.get(sym);
+		return inferFunctionReturn(
+			fnSym,
+			argListFromCall(node.children[1]).map(arg => inferType(arg)),
+			template?.typeParameters
+				?.map(p => p.symbol.type)
+				.filter((t): t is Type => !!t),
+		);
 	}
 
-	// `get(b,i)` → the buffer's element type; mutations → a buffer type.
-	function inferBufferIntrinsic(
-		sym: GbcSymbol,
-		node: NodeMap['call'],
-	): Type | undefined {
-		if (!(sym.kind === 'function' && sym.flags & Flags.Intrinsic))
-			return undefined;
-		const name = sym.name;
-		if (name !== 'get' && name !== 'set' && name !== 'transfer')
-			return undefined;
-		const argsNode = node.children[1];
-		const args =
-			argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
-		const value = args[name === 'transfer' ? 1 : 0];
-		if (!value) return undefined;
-		const bt = inferType(value);
-		if (bt.kind !== 'type' || bt.family !== 'data' || !bt.elem) return undefined;
-		return name === 'get' ? bt.elem : bt;
-	}
-
-	// When a fn's declared return is itself a type parameter, recover the
-	// concrete return by matching that parameter against the call's args.
-	function inferGenericReturn(
+	function inferFunctionReturn(
 		fnSym: SymbolMap['function'],
-		rt: SymbolMap['type'],
-		node: NodeMap['call'],
+		args: Type[],
+		templateTypeParams?: Type[],
 	): Type {
-		const params = fnSym.parameters ?? [];
-		const argNodes = argListFromCall(node.children[1]);
-		for (let i = 0; i < params.length; i++) {
-			const pt = params[i]?.type;
-			const an = argNodes[i];
-			if (
-				pt?.kind === 'type' &&
-				pt.family === 'unknown' &&
-				pt.name === rt.name &&
-				an
-			) {
-				const at = inferType(an);
-				if (at.kind === 'type' && at.family !== 'unknown') return at;
-			}
-		}
-		return rt;
+		const rt = fnSym.returnType ?? BaseTypes.Void;
+		const typeParams = fnSym.typeParams ?? templateTypeParams ?? [];
+		if (typeParams.length === 0) return rt;
+		const names = new Set(
+			typeParams.map(t => t.name).filter((n): n is string => !!n),
+		);
+		const bindings = new Map<string, Type>();
+		(fnSym.parameters ?? []).forEach((p, i) =>
+			unifyTypeParam(p.type, args[i], names, bindings),
+		);
+		return reduceType(rt, bindings);
 	}
 
-	function inferStageReturn(stage: Node): Type {
+	function inferStageArgumentTypes(
+		input: Type,
+		fnSym: SymbolMap['function'],
+	): Type[] {
+		const params = fnSym.parameters ?? [];
+		if (params.length <= 1) return params.length === 0 ? [] : [input];
+		if (input.kind !== 'type' || input.family !== 'data' || input.elem)
+			return [input];
+		const keys = Object.keys(input.members);
+		return params.map((p, i) => {
+			const named = p.name ? keys.indexOf(p.name) : -1;
+			const key = keys[named >= 0 ? named : i];
+			return key === undefined
+				? BaseTypes.Unknown
+				: (input.members[key]?.type ?? BaseTypes.Unknown);
+		});
+	}
+
+	function inferStageReturn(stage: Node, input: Type): Type {
 		if (stage.kind === '.') {
 			const fnSym = resolveStaticMemberFn(stage);
-			if (fnSym) return fnSym.returnType ?? BaseTypes.Void;
+			if (fnSym)
+				return inferFunctionReturn(
+					fnSym,
+					inferStageArgumentTypes(input, fnSym),
+				);
 		}
 		if (stage.kind === 'ident') {
 			const sym = stage.symbol;
@@ -1395,7 +1392,15 @@ export function compileWasm(
 					: sym.type?.kind === 'function'
 						? sym.type
 						: undefined;
-			if (fnSym) return fnSym.returnType ?? BaseTypes.Void;
+			if (fnSym)
+				return inferFunctionReturn(
+					fnSym,
+					inferStageArgumentTypes(input, fnSym),
+					fnTemplates
+						.get(sym)
+						?.typeParameters?.map(p => p.symbol.type)
+						.filter((t): t is Type => !!t),
+				);
 		}
 		if (stage.kind === 'fn') return stage.symbol.returnType ?? BaseTypes.Unknown;
 		return BaseTypes.Unknown;
@@ -1403,10 +1408,14 @@ export function compileWasm(
 
 	function inferPipeType(node: NodeMap['>>'], fn?: FuncBuilder): Type {
 		const flat = flattenPipe(node.children);
-		const last = flat[flat.length - 1];
-		if (!last) return BaseTypes.Unknown;
-		if (flat.length === 1) return inferType(last, fn);
-		return inferStageReturn(last);
+		const first = flat[0];
+		if (!first) return BaseTypes.Unknown;
+		let output = inferType(first, fn);
+		for (let i = 1; i < flat.length; i++) {
+			const stage = flat[i];
+			if (stage) output = inferStageReturn(stage, output);
+		}
+		return output;
 	}
 
 	function inferMemberType(node: NodeMap['.'], fn?: FuncBuilder): Type {
@@ -5011,11 +5020,43 @@ export function compileWasm(
 		fn.blockDepth--;
 	}
 
+	function compileDataCallPipe(
+		source: NodeMap['data'],
+		stages: Node[],
+		fn: FuncBuilder,
+	): Type | undefined {
+		const stage = stages[0];
+		if (!stage) return undefined;
+		const fnSym =
+			stage.kind === '.'
+				? resolveStaticMemberFn(stage)
+				: stage.kind === 'ident'
+					? stage.symbol.kind === 'function'
+						? stage.symbol
+						: stage.symbol.type?.kind === 'function'
+							? stage.symbol.type
+							: undefined
+					: undefined;
+		if ((fnSym?.parameters?.length ?? 0) <= 1) return undefined;
+		const args = source.children[0];
+		const result =
+			stage.kind === '.'
+				? compileMemberCall(stage, args, fn)
+				: stage.kind === 'ident'
+					? compileIdentCall(stage.symbol, args, fn)
+					: BaseTypes.Unknown;
+		return driveStages(stages.slice(1), result, fn);
+	}
+
 	function compilePipe(children: Node[], fn: FuncBuilder): Type {
 		const flat = flattenPipe(children);
 		let source = flat[0];
 		let stages = flat.slice(1);
 		if (!source) throw new Error('Invalid pipe');
+		if (source.kind === 'data') {
+			const result = compileDataCallPipe(source, stages, fn);
+			if (result) return result;
+		}
 
 		let originalUnion: SymbolMap['type'] | undefined;
 		while (source.kind === 'call') {

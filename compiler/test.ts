@@ -2144,6 +2144,21 @@ export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc +
 			maxPages: 3,
 		});
 		testBlock({
+			p: '`range(start, end)` is GB source that produces an ascending, start-inclusive and end-exclusive `Buffer<Int32>`. Its recursive chain threads the owner returned by the intrinsic `set` stage; equal or descending endpoints produce an empty Buffer.',
+			src: `#test {
+	equal(length(range(3, 7)), 4);
+	equal(get(range(3, 7), 0), 3);
+	equal(get(range(3, 7), 3), 6);
+	equal(reduce(range(3, 7), 0, (total: Int32, n: Int32): Int32 { total + n }), 18);
+	equal(length(range(5, 5)), 0);
+	equal(length(range(7, 3)), 0);
+	equal(length(range(0, 100000)), 100000)
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+			maxPages: 8,
+		});
+		testBlock({
 			p: 'The prelude `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
 			src: `export ints = (): Buffer<Int32> { b0 = Buffer<Int32>(4); b1 = set(b0, 0, 3); b2 = set(b1, 1, 5); next set(b2, 2, 7) };
 export strs = (): Buffer<String> { s0 = Buffer<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
@@ -3223,8 +3238,8 @@ main { report(mk(9)) >> out }`,
 		h('loop', ({ rule }) => {
 			rule({
 				p: '`loop` is the single infinite emitter and yields `0, 1, 2, …`. `break` stops the nearest pipe chain, while `done` ends the nearest statement-body function.',
-				src: `range = (n: Int32) { loop >> { $ >= n ? break : $ } }; main { range(3) >> out }`,
-				ast: '(root (def :range ? (fn @sequence (parameter :n typeident ?) (>> loop (fn @sequence (? (>= $ :n) break $))))) (main (>> (call :range 3) :out)))',
+				src: `until = (n: Int32) { loop >> { $ >= n ? break : $ } }; main { until(3) >> out }`,
+				ast: '(root (def :until ? (fn @sequence (parameter :n typeident ?) (>> loop (fn @sequence (? (>= $ :n) break $))))) (main (>> (call :until 3) :out)))',
 				out: ['0', '1', '2'],
 			});
 			rule({

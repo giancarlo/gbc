@@ -310,13 +310,17 @@ export function isCollection(t: Type): boolean {
 }
 
 export function ProgramSymbolTable() {
-	const transferType: SymbolMap['type'] = {
+	const typeParam = (): SymbolMap['type'] => ({
 		kind: 'type',
 		name: 'T',
 		flags: 0,
 		family: 'unknown',
 		size: 4,
-	};
+	});
+	const getType = typeParam();
+	const setType = typeParam();
+	const capacityType = typeParam();
+	const transferType = typeParam();
 	return SymbolTable<Symbol>({
 		true: literal(true, BaseTypes.Bool),
 		false: literal(false, BaseTypes.Bool),
@@ -334,32 +338,35 @@ export function ProgramSymbolTable() {
 		frames: FramesIntrinsic,
 		frameAt: FrameAtIntrinsic,
 		stack: StackIntrinsic,
-		// `Buffer<T>` primitives — the safe memory floor the stdlib `Array<T>`
-		// is built on. Return types that depend on the element type are computed
-		// from the argument.
 		get: {
 			kind: 'function',
 			name: 'get',
 			flags: Flags.Intrinsic,
-			parameters: [param('b', BaseTypes.Unknown), param('i', BaseTypes.Int32)],
-			returnType: BaseTypes.Unknown,
+			typeParams: [getType],
+			parameters: [
+				param('b', bufferTypeOf(getType)),
+				param('i', BaseTypes.Int32),
+			],
+			returnType: getType,
 		},
 		set: {
 			kind: 'function',
 			name: 'set',
 			flags: Flags.Intrinsic,
+			typeParams: [setType],
 			parameters: [
-				param('b', BaseTypes.Unknown),
+				param('b', bufferTypeOf(setType)),
 				param('i', BaseTypes.Int32),
-				param('x', BaseTypes.Unknown),
+				param('x', setType),
 			],
-			returnType: BaseTypes.Unknown,
+			returnType: bufferTypeOf(setType),
 		},
 		capacity: {
 			kind: 'function',
 			name: 'capacity',
 			flags: Flags.Intrinsic,
-			parameters: [param('b', BaseTypes.Unknown)],
+			typeParams: [capacityType],
+			parameters: [param('b', bufferTypeOf(capacityType))],
 			returnType: BaseTypes.Int32,
 		},
 		transfer: {
