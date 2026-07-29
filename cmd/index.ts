@@ -380,7 +380,7 @@ const commandEndKinds = new Set<Kind>([
 function createParser(source: string) {
 	const api = ParserApi(scan);
 	api.start(source);
-	const { current, next, consume, error } = api;
+	const { current, next, consume, error, errors, catchAndRecover, pushError } = api;
 
 	function parseWord(): WordNode {
 		const token = current();
@@ -395,14 +395,17 @@ function createParser(source: string) {
 		const closer = openerKind === '(' ? ')' : '}';
 		next();
 		const child = parseList();
-		const close = consume(closer);
+		const close = catchAndRecover(
+			() => consume(closer),
+			() => undefined,
+		);
 		return {
 			...opener,
 			kind: 'group',
 			opener: openerKind === '(' ? '(' : '{',
 			closer,
 			children: [child],
-			end: close.end,
+			end: close?.end ?? child.end,
 		};
 	}
 
@@ -442,7 +445,18 @@ function createParser(source: string) {
 					parts.pop();
 					children.pop();
 				}
-				const redirect = parseRedirect(io);
+				const redirect = catchAndRecover(
+					() => parseRedirect(io),
+					() => undefined,
+				);
+				if (!redirect) {
+					if (io) {
+						parts.push(io);
+						children.push(io);
+						end = io.end;
+					}
+					break;
+				}
 				redirects.push(redirect);
 				children.push(redirect);
 				end = redirect.end;
@@ -472,7 +486,11 @@ function createParser(source: string) {
 		while (current().kind === '|') {
 			const operator = current();
 			next();
-			const right = parseCommand();
+			const right = catchAndRecover(
+				() => parseCommand(),
+				() => undefined,
+			);
+			if (!right) break;
 			left = {
 				...operator,
 				kind: '|',
@@ -490,7 +508,11 @@ function createParser(source: string) {
 			const operator = current();
 			const kind = operator.kind === '&&' ? '&&' : '||';
 			next();
-			const right = parsePipe();
+			const right = catchAndRecover(
+				() => parsePipe(),
+				() => undefined,
+			);
+			if (!right) break;
 			left = {
 				...operator,
 				kind,
@@ -515,7 +537,22 @@ function createParser(source: string) {
 				next();
 				continue;
 			}
-			children.push(parseLogical());
+			const child = catchAndRecover(
+				() => parseLogical(),
+				() => {
+					while (
+						current().kind !== 'eof' &&
+						current().kind !== ')' &&
+						current().kind !== '}' &&
+						current().kind !== ';' &&
+						current().kind !== '&' &&
+						current().kind !== 'newline'
+					)
+						next();
+					return undefined;
+				},
+			);
+			if (child) children.push(child);
 			if (current().kind === ';' || current().kind === '&' || current().kind === 'newline') {
 				separators.push(
 					current().kind === ';'
@@ -540,6 +577,18 @@ function createParser(source: string) {
 
 	function parseRoot(): RootNode {
 		const list = parseList();
+		while (current().kind !== 'eof') {
+			const unexpected = current();
+			pushError(error(`Unexpected "${unexpected.kind}"`, unexpected));
+			next();
+			const recovered = parseList();
+			if (recovered.children.length) {
+				if (list.children.length) list.separators.push('newline');
+				list.children.push(...recovered.children);
+				list.separators.push(...recovered.separators);
+				list.end = recovered.end;
+			}
+		}
 		const eof = current();
 		return {
 			...eof,
@@ -550,7 +599,7 @@ function createParser(source: string) {
 		};
 	}
 
-	return { parse: parseRoot };
+	return { parse: parseRoot, errors };
 }
 function compileNode(node: Node): string {
 	switch (node.kind) {
@@ -589,8 +638,9 @@ export function compiler(node: Node) {
 
 export function program() {
 	function parse(src: string) {
-		const root = createParser(src).parse();
-		return { root, errors: [] };
+		const parser = createParser(src);
+		const root = parser.parse();
+		return { root, errors: parser.errors };
 	}
 
 	function compile(src: string) {

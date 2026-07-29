@@ -225,6 +225,58 @@ export default spec('cmd', s => {
 			a.equalValues(metadata('*.ts').literal, false);
 		});
 
+		it.should('report malformed shell syntax with source spans', a => {
+			const diagnostics = (src: string) =>
+				program()
+					.parse(src)
+					.errors.map(({ message, position: { start, end } }) => ({
+						message,
+						start,
+						end,
+					}));
+
+			a.equalValues(diagnostics('"hello'), [
+				{ message: 'Unterminated string', start: 0, end: 6 },
+			]);
+			a.equalValues(diagnostics('echo ok &&'), [
+				{ message: 'Expected command', start: 10, end: 10 },
+			]);
+			a.equalValues(diagnostics('echo >'), [
+				{ message: 'Expected shell word', start: 6, end: 6 },
+			]);
+			a.equalValues(diagnostics('(echo'), [
+				{ message: 'Expected ")" but got "eof"', start: 5, end: 5 },
+			]);
+			a.equalValues(diagnostics('echo )'), [
+				{ message: 'Unexpected ")"', start: 5, end: 6 },
+			]);
+		});
+
+		it.should('return a partial AST after malformed trailing syntax', a => {
+			const parsed = program().parse('echo ok &&');
+			const list = parsed.root.children[0];
+			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			const command = list.children[0];
+			if (!command || command.kind !== 'command')
+				throw new Error('Expected command');
+			a.equalValues(command.parts.map(part => part.kind === 'word' && part.value), [
+				'echo',
+				'ok',
+			]);
+
+			const recovered = program().parse('echo ) cat').root.children[0];
+			if (!recovered || recovered.kind !== 'list')
+				throw new Error('Expected recovered command list');
+			a.equalValues(
+				recovered.children.map(node =>
+					node.kind === 'command' && node.parts[0]?.kind === 'word'
+						? node.parts[0].value
+						: undefined,
+				),
+				['echo', 'cat'],
+			);
+		});
+
 		it.should('find the most specific node at an offset', a => {
 			const root = program().parse('echo hi | cat').root;
 			const list = root.children[0]!;
