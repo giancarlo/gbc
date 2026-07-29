@@ -2050,10 +2050,10 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> ou
 
 	h('Buffer & Array (push)', ({ testBlock, compileError, runtimeTrap, modules }) => {
 		testBlock({
-			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. Construction converts an owned Buffer, zero-capacity push grows to one, update consumes and returns the Array, and append is the push spelling.',
-			src: `export empty = (): own Array<Int32> { array(Buffer<Int32>(0)) };
-export ints = (): own Array<Int32> { append(push(empty(), 3), 5) };
-export changed = (): own Array<Int32> { update(ints(), 0, 7) };
+			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set consumes and returns the Array.',
+			src: `export empty = (): own Array<Int32> { Array<Int32>(0) };
+export ints = (): own Array<Int32> { push(push(empty(), 3), 5) };
+export changed = (): own Array<Int32> { set(ints(), 0, 7) };
 #test {
 	equal(length(empty()), 0);
 	equal(length(ints()), 2);
@@ -2116,8 +2116,8 @@ export target = (): Int32 { 0 }`,
 			out: [],
 		});
 		compileError({
-			p: 'Array update consumes its input, so the previous owner cannot be read afterward.',
-			src: `main { a = push(Buffer<Int32>(1), 7); b = update(a, 0, 8); length(a) >> out; length(b) >> out }`,
+			p: 'Array set consumes its input, so the previous owner cannot be read afterward.',
+			src: `main { a = push(Array<Int32>(1), 7); b = set(a, 0, 8); length(a) >> out; length(b) >> out }`,
 			expected: 'used after move',
 		});
 		modules({
@@ -2128,7 +2128,7 @@ export target = (): Int32 { 0 }`,
 };
 export size = (a: Array<String>): Int32 { length(a) };
 export replace = (a: own Array<String>, value: own String): own Array<String> {
-	update(a, 0, value)
+	set(a, 0, value)
 };`,
 				'/main.gb': `(make, size, replace) = @.arrays;
 main {
@@ -2147,11 +2147,11 @@ main {
 			p: 'An imported consuming Array function moves its argument in the caller.',
 			files: {
 				'/arrays.gb': `export replace = (a: own Array<String>): own Array<String> {
-	update(a, 0, 'new')
+	set(a, 0, 'new')
 };`,
 				'/main.gb': `(replace) = @.arrays;
 main {
-	a = push(Buffer<String>(1), 'old');
+	a = push(Array<String>(1), 'old');
 	b = replace(a);
 	length(a) >> out;
 	length(b) >> out
@@ -2161,11 +2161,11 @@ main {
 			errors: 'used after move',
 		});
 		runtimeTrap({
-			p: 'Array update only replaces a live index; append and push are the growth operations.',
-			src: `main { update(push(Buffer<Int32>(2), 7), 1, 8) >> length >> out }`,
+			p: 'Array set replaces a live index or appends at length when capacity remains; it rejects gaps, while push is the automatic-growth operation.',
+			src: `main { set(push(Array<Int32>(2), 7), 2, 8) >> length >> out }`,
 		});
 		testBlock({
-			p: '`Buffer<T>` is the sealed memory floor. Its complete primitive boundary is `Buffer<T>(capacity): own Buffer<T>`, borrowing `length(buffer): Int32`, `capacity(buffer): Int32`, and `get(buffer, index): T`, consuming `set(buffer: own Buffer<T>, index, value: own T): own Buffer<T>`, and `transfer(source: own Buffer<T>, destination: own Buffer<T>): own Buffer<T>`. `get` copies Copy elements and borrows heap elements from the Buffer. Array access, `realloc`, iteration, growth policy, and algorithms are GB source over these primitives.',
+			p: '`Buffer<T>` is the sealed memory floor. Its complete primitive boundary is `Buffer<T>(capacity): own Buffer<T>`, borrowing `length(buffer): Int32`, `capacity(buffer): Int32`, and `get(buffer, index): T`, consuming `set(buffer: own Buffer<T>, index, value: own T): own Buffer<T>`, and `transfer(source: own Buffer<T>, destination: own Buffer<T>): own Buffer<T>`. `get` copies Copy elements and borrows heap elements from the Buffer. Array access, iteration, growth policy, and algorithms are GB source over these primitives.',
 			src: `export mk = (): own Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 10); b2 = set(b1, 1, 20); next push(b2, 30) };
 export sum = (b: Buffer<Int32>): Int32 { reduce(b, 0, (total: own Int32, n: Int32): own Int32 { total + n }) };
 #test {
@@ -2207,9 +2207,9 @@ export target = (): Int32 { 0 }`,
 			out: [],
 		});
 		testBlock({
-			p: '`realloc` relocates a buffer into a larger block, preserving the live elements and length, and reports the new capacity.',
-			src: `export grow4 = (): own Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 7); b2 = set(b1, 1, 8); next realloc(b2, 4) };
-#test { equal(get(grow4(), 0), 7); equal(get(grow4(), 1), 8); equal(length(grow4()), 2); equal(capacity(grow4()), 4) }
+			p: '`push` grows full storage internally, preserving live elements and length without exposing reallocation as an Array operation.',
+			src: `export grow4 = (): own Array<Int32> { push(push(push(Array<Int32>(2), 7), 8), 9) };
+#test { equal(get(grow4(), 0), 7); equal(get(grow4(), 1), 8); equal(get(grow4(), 2), 9); equal(length(grow4()), 3); equal(capacity(grow4()), 4) }
 export target = (): Int32 { 0 }`,
 			out: [],
 		});
@@ -2266,18 +2266,18 @@ export target = (): Int32 { 0 }`,
 			src: `main { source = set(set(Buffer<Int32>(2), 0, 7), 1, 8); transfer(source, Buffer<Int32>(1)) >> length >> out }`,
 		});
 		testBlock({
-			p: 'push grows a scalar buffer flat: building and dropping a buffer every iteration reuses the heap — the doubling `realloc` frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
+			p: 'push grows a scalar Array flat: building and dropping an Array every iteration reuses the heap — internal doubling frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
 			src: `export build = (b: own Array<Int32>, n: Int32): own Array<Int32> { n == 0 ? b : build(push(b, n), n - 1) };
-export step = (n: Int32): Int32 { b = build(array(Buffer<Int32>(0)), 8); next length(b) };
+export step = (n: Int32): Int32 { b = build(Array<Int32>(0), 8); next length(b) };
 #test { equal(spin(50000, 0), 400000) }
 export spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) }`,
 			out: [],
 			maxPages: 3,
 		});
 		testBlock({
-			p: 'push of heap elements (`Buffer<String>`) stays flat: the value element is moved into the buffer (single owner), so per-iteration build-and-drop is bounded.',
+			p: 'push of heap elements (`Array<String>`) stays flat: the value element is moved into the Array (single owner), so per-iteration build-and-drop is bounded.',
 			src: `export buildS = (b: own Array<String>, n: Int32): own Array<String> { n == 0 ? b : buildS(push(b, '\${n}'), n - 1) };
-export stepS = (n: Int32): Int32 { b = buildS(array(Buffer<String>(0)), 6); next length(b) };
+export stepS = (n: Int32): Int32 { b = buildS(Array<String>(0), 6); next length(b) };
 #test { equal(spinS(30000, 0), 180000) }
 export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc + stepS(n)) }`,
 			out: [],

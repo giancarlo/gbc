@@ -21,20 +21,13 @@ export take = <T>(t: T, n: Int32) { t >> (h, r) { n > 0 ? h, take(r, n - 1) } };
 export drop = <T>(t: T, n: Int32) { t >> (h, r) { n <= 0 ? h, drop(r, n - 1) } };
 export reverse = <T>(t: T) { t >> (h, r) { reverse(r), h } };
 
-export array = <T>(a: own Buffer<T>): own Array<T> { a };
-
-export realloc = <T>(a: own Array<T>, capacity: Int32): own Array<T> {
-	transfer(a, Buffer<T>(capacity))
+grow = <T>(a: own Array<T>): own Array<T> {
+	transfer(a, Array<T>(capacity(a) == 0 ? 1 : capacity(a) * 2))
 };
 
 export push = <T>(a: own Array<T>, x: own T): own Array<T> {
-	length(a) < capacity(a)
-		? set(a, length(a), x)
-		: set(realloc(a, capacity(a) == 0 ? 1 : capacity(a) * 2), length(a), x)
-};
-export append = <T>(a: own Array<T>, x: own T): own Array<T> { push(a, x) };
-export update = <T>(a: own Array<T>, i: Int32, x: own T): own Array<T> {
-	i < 0 || i >= length(a) ? set(a, capacity(a), x) : set(a, i, x)
+	i = length(a);
+	next i < capacity(a) ? set(a, i, x) : set(grow(a), i, x)
 };
 
 rangeFrom = (a: own Array<Int32>, n: Int32, end: Int32): own Array<Int32> {
@@ -44,8 +37,8 @@ rangeFrom = (a: own Array<Int32>, n: Int32, end: Int32): own Array<Int32> {
 };
 export range = (start: Int32, end: Int32): own Array<Int32> {
 	end <= start
-		? Buffer<Int32>(0)
-		: rangeFrom(Buffer<Int32>(end - start), start, end)
+		? Array<Int32>(0)
+		: rangeFrom(Array<Int32>(end - start), start, end)
 };
 
 export values = <T>(a: Array<T>) {
