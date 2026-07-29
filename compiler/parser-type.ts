@@ -420,6 +420,16 @@ export function parseType(
 								api.next();
 							} else api.backtrack(first);
 						}
+						if (current().kind === 'var')
+							throw api.error(
+								'`var` is a local binding modifier, not a parameter or field type',
+								current(),
+							);
+						if (current().kind === 'own')
+							throw api.error(
+								'`own` is valid only on function parameters and results',
+								current(),
+							);
 						const pt = expectNode(
 							expression(),
 							'Expected member type',

@@ -3260,6 +3260,18 @@ main { }`,
 			errors: 'cannot declare `main`',
 		});
 		modules({
+			p: 'Imported-module diagnostics retain the primary parser error and module location.',
+			files: {
+				'/lib.gb': `export bad = (value: var): Int32 { value };
+export good = (): Int32 { 1 };`,
+				'/main.gb': `(good) = @.lib;
+main { good() >> out }`,
+			},
+			entry: '/main.gb',
+			errors:
+				'module "/lib.gb" line 1: `var` is a local binding modifier',
+		});
+		modules({
 			p: 'An unmapped library name says exactly what to add.',
 			files: {
 				'/main.gb': `(a, b) = @nope;
@@ -3627,6 +3639,66 @@ main { value = 'v\${1}'; join(value, value) >> out }`,
 			p: 'A binding that is never read is rejected as unused.',
 			src: "main { s = 'hi'; b = s }",
 			expected: 'never used',
+		});
+	});
+
+	h('Diagnostics', ({ diagnostics }) => {
+		const invalidParameter =
+			'bad = (value: var): Int32 { value }; main { missing >> out }';
+		diagnostics({
+			p: 'Invalid declarations recover at the next statement and preserve independent diagnostics.',
+			src: invalidParameter,
+			expected: [
+				{
+					message:
+						'`var` is a local binding modifier, not a parameter or field type',
+					start: invalidParameter.indexOf('var'),
+					end: invalidParameter.indexOf('var') + 3,
+				},
+				{
+					message: 'Identifier not defined',
+					start: invalidParameter.indexOf('missing'),
+					end: invalidParameter.indexOf('missing') + 7,
+				},
+			],
+		});
+		const invalidField = 'type Bad = [value: own String]; main { }';
+		diagnostics({
+			src: invalidField,
+			expected: [
+				{
+					message:
+						'`own` is valid only on function parameters and results',
+					start: invalidField.indexOf('own'),
+					end: invalidField.indexOf('own') + 3,
+				},
+			],
+		});
+		const badArgument =
+			'id = (n: Int32): Int32 { n }; main { id(true) >> out }';
+		diagnostics({
+			src: badArgument,
+			expected: [
+				{
+					message:
+						'Argument of type "Bool" is not assignable to parameter of type "Int32".',
+					start: badArgument.lastIndexOf('id('),
+					end: badArgument.lastIndexOf('id(') + 8,
+				},
+			],
+		});
+		const moved =
+			'consume = (s: own String) { done }; main { a = String(1); consume(a); length(a) >> out }';
+		diagnostics({
+			src: moved,
+			expected: [
+				{
+					message:
+						'"a" used after move into `own` parameter "s" of "consume" at line 1, column 67',
+					start: moved.lastIndexOf('a)'),
+					end: moved.lastIndexOf('a)') + 1,
+				},
+			],
 		});
 	});
 });

@@ -50,7 +50,6 @@ export function parse(
 		node,
 		next,
 		catchAndRecover,
-		skipUntil,
 	} = api;
 	const typeParser = parseType(api, typesTable);
 
@@ -62,43 +61,54 @@ export function parse(
 		parser: () => Node | undefined,
 		endKind: ScannerToken['kind'],
 	): Node[] {
-		return catchAndRecover(
-			() => {
-				const result: Node[] = [];
-				while (
-					current().kind !== endKind &&
-					current().kind !== 'eof'
-				) {
+		const result: Node[] = [];
+		while (current().kind !== endKind && current().kind !== 'eof') {
+			const stmt = catchAndRecover(
+				() => {
 					const stmt = parser();
 					if (!stmt)
 						throw api.error('Unexpected token', current());
-					result.push(stmt);
 					if (stmt.kind === 'main' || stmt.kind === 'test') {
 						if (current().kind === ';')
 							throw api.error(
 								'";" is not allowed after a block statement',
 								current(),
 							);
-						continue;
+						return stmt;
 					}
-					if (stmt.kind === 'comment') continue;
+					if (stmt.kind === 'comment') return stmt;
 					const consumed = optional(';');
 					const after = current().kind;
 					const atEnd = after === endKind || after === 'eof';
 					if (!consumed && !atEnd)
 						throw api.error('Expected ";"', current());
-				}
-				return result;
-			},
-			() => {
-				skipUntil(
-					() =>
-						current().kind === endKind ||
-						current().kind === 'eof',
-				);
-				return [];
-			},
-		);
+					return stmt;
+				},
+				() => {
+					let depth = 0;
+					while (current().kind !== 'eof') {
+						const kind = current().kind;
+						if (
+							depth === 0 &&
+							(kind === endKind || kind === ';')
+						)
+							break;
+						if (kind === '(' || kind === '[' || kind === '{')
+							depth++;
+						else if (
+							depth > 0 &&
+							(kind === ')' || kind === ']' || kind === '}')
+						)
+							depth--;
+						next();
+					}
+					optional(';');
+					return undefined;
+				},
+			);
+			if (stmt) result.push(stmt);
+		}
+		return result;
 	}
 
 	const {

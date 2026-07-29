@@ -142,6 +142,33 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		}
 	};
 
+	diagnostics = ({
+		p,
+		src,
+		expected,
+	}: {
+		p?: string;
+		src: string;
+		expected: {
+			message: string;
+			start: number;
+			end: number;
+		}[];
+	}): void => {
+		if (p) {
+			this.p(p, api => api.diagnostics({ src, expected }));
+			return;
+		}
+		const errors = Program()
+			.compile(src)
+			.errors.map(error => ({
+				message: error.message,
+				start: error.position.start,
+				end: error.position.end,
+			}));
+		this.equalValues(errors, expected);
+	};
+
 	runtimeTrap = ({ p, src }: { p?: string; src: string }): void => {
 		if (p) {
 			this.p(p, api => api.runtimeTrap({ src }));

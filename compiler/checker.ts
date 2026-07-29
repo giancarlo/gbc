@@ -1099,7 +1099,7 @@ export function checker({
 				error(
 					`Argument of type "${typeToStr(
 						typeA,
-					)}' is not assignable to parameter of type "${typeToStr(
+					)}" is not assignable to parameter of type "${typeToStr(
 						typeB,
 					)}".`,
 					node,
@@ -1455,19 +1455,34 @@ export function checker({
 			(t.family === 'string' || t.family === 'data')
 		);
 	}
+	type Move = {
+		position: Position;
+		context: string;
+	};
+
+	function moveLocation(position: Position): string {
+		const lineStart = position.source.lastIndexOf('\n', position.start - 1);
+		return `line ${position.line + 1}, column ${position.start - lineStart}`;
+	}
+
 	function flagMovedUses(
 		n: Node,
-		moved: Set<Symbol>,
+		moved: Map<Symbol, Move>,
 		borrowed?: Map<Symbol, Symbol>,
 	): void {
 		if (n.kind === 'ident') {
-			if (moved.has(n.symbol))
-				error(`"${n.symbol.name ?? ''}" used after move`, n);
+			const move = moved.get(n.symbol);
+			if (move)
+				error(
+					`"${n.symbol.name ?? ''}" used after move ${move.context} at ${moveLocation(move.position)}`,
+					n,
+				);
 			else {
 				const owner = borrowed?.get(n.symbol);
-				if (owner && moved.has(owner))
+				const ownerMove = owner && moved.get(owner);
+				if (owner && ownerMove)
 					error(
-						`"${n.symbol.name ?? ''}" used after its value moved with "${owner.name ?? ''}"`,
+						`"${n.symbol.name ?? ''}" used after its value moved with "${owner.name ?? ''}" ${ownerMove.context} at ${moveLocation(ownerMove.position)}`,
 						n,
 					);
 			}
@@ -1485,7 +1500,7 @@ export function checker({
 		seen: Set<Symbol>,
 		owned: Set<Symbol>,
 		borrowed: Map<Symbol, Symbol>,
-		onMove: (sym: Symbol) => void,
+		onMove: (sym: Symbol, position: Position) => void,
 	): void {
 		if (value.kind !== 'data') return;
 		const inner = value.children[0];
@@ -1522,7 +1537,7 @@ export function checker({
 			}
 			seen.add(v.symbol);
 			if (owned.has(v.symbol)) {
-				onMove(v.symbol);
+				onMove(v.symbol, v);
 				continue;
 			}
 			error(
@@ -1531,10 +1546,31 @@ export function checker({
 			);
 		}
 	}
+
+	function consumingMove(
+		node: NodeMap['call'],
+		fn: SymbolMap['function'],
+		index: number,
+		position: Position,
+	): Move {
+		const parameter = fn.parameters?.[index];
+		const parameterName = parameter?.name
+			? `"${parameter.name}"`
+			: `${index + 1}`;
+		const callee = node.children[0];
+		const name =
+			fn.name ?? (callee.kind === 'ident' ? callee.symbol.name : undefined);
+		const functionName = name ? ` of "${name}"` : '';
+		return {
+			position,
+			context: `into \`own\` parameter ${parameterName}${functionName}`,
+		};
+	}
+
 	function markCallMoves(
 		node: NodeMap['call'],
 		owned: Set<Symbol>,
-		moved: Set<Symbol>,
+		moved: Map<Symbol, Move>,
 	): void {
 		const fn = resolveFunctionType(node.children[0]);
 		if (!fn) return;
@@ -1564,14 +1600,14 @@ export function checker({
 					`cannot move borrowed "${arg.symbol.name ?? ''}" into an \`own\` parameter`,
 					arg,
 				);
-			else moved.add(arg.symbol);
+			else moved.set(arg.symbol, consumingMove(node, fn, i, arg));
 		}
 	}
 
 	function markConsumingMoves(
 		n: Node,
 		owned: Set<Symbol>,
-		moved: Set<Symbol>,
+		moved: Map<Symbol, Move>,
 	): void {
 		if (n.kind === 'fn' || n.kind === 'main' || n.kind === 'test') return;
 		if (n.kind === 'call') markCallMoves(n, owned, moved);
@@ -1592,7 +1628,7 @@ export function checker({
 				?.filter(p => p.symbol.ownership === 'own')
 				.map(p => p.symbol) ?? [],
 		);
-		const moved = new Set<Symbol>();
+		const moved = new Map<Symbol, Move>();
 		const borrowed = new Map<Symbol, Symbol>();
 		for (const s of node.statements) {
 			flagMovedUses(s, moved, borrowed);
@@ -1619,11 +1655,17 @@ export function checker({
 						v,
 					);
 				else if (v && v.kind === 'ident' && owned.has(v.symbol))
-					moved.add(v.symbol);
+					moved.set(v.symbol, {
+						position: v,
+						context: 'with `next`',
+					});
 				else if (v && v.kind === 'data')
-					walkEmbeds(v, new Set(), owned, borrowed, m => {
+					walkEmbeds(v, new Set(), owned, borrowed, (m, position) => {
 						owned.delete(m);
-						moved.add(m);
+						moved.set(m, {
+							position,
+							context: 'into an emitted record',
+						});
 				});
 			}
 		}

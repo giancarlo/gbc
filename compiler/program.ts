@@ -94,6 +94,25 @@ interface Module {
 	errors: CompilerError[];
 }
 
+function normalizeErrors(errors: CompilerError[]): void {
+	const seen = new Set<string>();
+	const unique = errors.filter(error => {
+		const { source, start, end } = error.position;
+		const key = `${source}\0${start}\0${end}\0${error.message}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+	unique.sort(
+		(a, b) =>
+			a.position.line - b.position.line ||
+			a.position.start - b.position.start ||
+			a.position.end - b.position.end ||
+			a.message.localeCompare(b.message),
+	);
+	errors.splice(0, errors.length, ...unique);
+}
+
 /**
  * Parse + type-check one module from source, returning its AST root and
  * top-level symbol scope. Has no knowledge of "stdlib" — the same function
@@ -117,6 +136,7 @@ function loadModule(
 	const root = parse(api, symbolTable, typesTable, parseOptions);
 	if (!api.errors.length && !skipCheck)
 		checker({ root, errors: api.errors }).run();
+	normalizeErrors(api.errors);
 	typesTable.pop(typeScope);
 	symbolTable.pop(scope);
 	return { root, scope, errors: api.errors };
@@ -572,7 +592,7 @@ export function Program(options?: ProgramOptions) {
 		const parsed = parser(src, { loader: modeOptions.loader });
 		checker(parsed).run();
 		const hasMain = parsed.root.children.some(c => c.kind === 'main');
-		if (!testMode && requireMain && !hasMain)
+		if (!testMode && requireMain && !hasMain && parsed.errors.length === 0)
 			parsed.errors.push(
 				new CompilerError('a program requires a `main` block', parsed.root),
 			);
@@ -605,6 +625,7 @@ export function Program(options?: ProgramOptions) {
 				} else throw e;
 			}
 		}
+		normalizeErrors(parsed.errors);
 		return {
 			ast: parsed.root,
 			errors: parsed.errors,
