@@ -1798,6 +1798,7 @@ export function compileWasm(
 	function pipeTemplateBails(tbody: Node): boolean {
 		if (tbody.kind !== '>>') return false;
 		const flat = flattenPipe(tbody.children);
+		if (flat[0]?.kind === 'loop') return false;
 		const last = flat[flat.length - 1];
 		const innerStmts = last?.kind === 'fn' ? last.statements ?? [] : [];
 		return innerStmts.length === 1 && innerStmts[0]?.kind !== ',';
@@ -1822,7 +1823,9 @@ export function compileWasm(
 		if (
 			a0?.kind === 'type' &&
 			(a0.family === 'void' ||
-				(a0.family === 'data' && Object.keys(a0.members).length === 0))
+				(a0.family === 'data' &&
+					!a0.elem &&
+					Object.keys(a0.members).length === 0))
 		)
 			return true; // base case: nothing to emit
 		// Set each value-param's type to its concrete arg type for this level
@@ -6057,6 +6060,7 @@ export function compileWasm(
 		const isEmpty =
 			inputType.kind === 'type' &&
 			inputType.family === 'data' &&
+			!inputType.elem &&
 			Object.keys(inputType.members).length === 0;
 		if (isVoid || isEmpty) {
 			if (!isVoid) fn.body.push(OP_DROP);

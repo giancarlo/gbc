@@ -9,6 +9,7 @@ external exitHost: (code: Int32);
 type Frame = [ name: String, fn: String, file: String, line: Int32 ];
 type Error = Trace;
 type DivByZero = Error;
+export type Array<T> = Buffer<T>;
 
 type Each<T> = T >> [H, R] { H | Each<R> };
 each = <T>(t: T): Each<T> { t >> (h, r) { h, each(r) } };
@@ -20,44 +21,65 @@ export take = <T>(t: T, n: Int32) { t >> (h, r) { n > 0 ? h, take(r, n - 1) } };
 export drop = <T>(t: T, n: Int32) { t >> (h, r) { n <= 0 ? h, drop(r, n - 1) } };
 export reverse = <T>(t: T) { t >> (h, r) { reverse(r), h } };
 
-export realloc = <T>(a: own Buffer<T>, capacity: Int32): own Buffer<T> {
+export array = <T>(a: own Buffer<T>): own Array<T> { a };
+
+export realloc = <T>(a: own Array<T>, capacity: Int32): own Array<T> {
 	transfer(a, Buffer<T>(capacity))
 };
 
-export push = <T>(a: own Buffer<T>, x: own T): own Buffer<T> {
+export push = <T>(a: own Array<T>, x: own T): own Array<T> {
 	length(a) < capacity(a)
 		? set(a, length(a), x)
-		: set(realloc(a, capacity(a) * 2), length(a), x)
+		: set(realloc(a, capacity(a) == 0 ? 1 : capacity(a) * 2), length(a), x)
+};
+export append = <T>(a: own Array<T>, x: own T): own Array<T> { push(a, x) };
+export update = <T>(a: own Array<T>, i: Int32, x: own T): own Array<T> {
+	i < 0 || i >= length(a) ? set(a, capacity(a), x) : set(a, i, x)
 };
 
-rangeFrom = (a: own Buffer<Int32>, n: Int32, end: Int32): own Buffer<Int32> {
+rangeFrom = (a: own Array<Int32>, n: Int32, end: Int32): own Array<Int32> {
 	n >= end
 		? a
 		: rangeFrom([ a, length(a), n ] >> set, n + 1, end)
 };
-export range = (start: Int32, end: Int32): own Buffer<Int32> {
+export range = (start: Int32, end: Int32): own Array<Int32> {
 	end <= start
 		? Buffer<Int32>(0)
 		: rangeFrom(Buffer<Int32>(end - start), start, end)
 };
 
-indexAt = <T>(a: Buffer<T>, i: Int32, x: T): Int32 {
+export values = <T>(a: Array<T>) {
+	loop >> (offset: Int32) {
+		offset >= length(a) ? break : get(a, offset)
+	}
+};
+
+export slice = <T>(a: Array<T>, start: Int32, end: Int32) {
+	loop >> (offset: Int32) {
+		(start < 0 ? 0 : start) + offset >= end ||
+		(start < 0 ? 0 : start) + offset >= length(a)
+			? break
+			: get(a, (start < 0 ? 0 : start) + offset)
+	}
+};
+
+indexAt = <T>(a: Array<T>, i: Int32, x: T): Int32 {
 	i == length(a) ? 0 - 1 : (get(a, i) == x ? i : indexAt(a, i + 1, x))
 };
-export indexOf = <T>(a: Buffer<T>, x: T): Int32 { indexAt(a, 0, x) };
-export contains = <T>(a: Buffer<T>, x: T): Bool { indexOf(a, x) >= 0 };
+export indexOf = <T>(a: Array<T>, x: T): Int32 { indexAt(a, 0, x) };
+export contains = <T>(a: Array<T>, x: T): Bool { indexOf(a, x) >= 0 };
 
-mapAt = <T, U>(a: Buffer<T>, i: Int32, dst: own Buffer<U>, f: (T): own U): own Buffer<U> {
+mapAt = <T, U>(a: Array<T>, i: Int32, dst: own Array<U>, f: (T): own U): own Array<U> {
 	i == length(a) ? dst : mapAt(a, i + 1, push(dst, f(get(a, i))), f)
 };
-export map = <T, U>(a: Buffer<T>, f: (T): own U): own Buffer<U> {
+export map = <T, U>(a: Array<T>, f: (T): own U): own Array<U> {
 	mapAt(a, 0, Buffer<U>(length(a)), f)
 };
 
-reduceAt = <T, A>(a: Buffer<T>, i: Int32, acc: own A, f: (own A, T): own A): own A {
+reduceAt = <T, A>(a: Array<T>, i: Int32, acc: own A, f: (own A, T): own A): own A {
 	i == length(a) ? acc : reduceAt(a, i + 1, f(acc, get(a, i)), f)
 };
-export reduce = <T, A>(a: Buffer<T>, acc: own A, f: (own A, T): own A): own A {
+export reduce = <T, A>(a: Array<T>, acc: own A, f: (own A, T): own A): own A {
 	reduceAt(a, 0, acc, f)
 };
 

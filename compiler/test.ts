@@ -2050,6 +2050,81 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> ou
 
 	h('Buffer & Array (push)', ({ testBlock, compileError, runtimeTrap }) => {
 		testBlock({
+			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. Construction converts an owned Buffer, zero-capacity push grows to one, update consumes and returns the Array, and append is the push spelling.',
+			src: `export empty = (): own Array<Int32> { array(Buffer<Int32>(0)) };
+export ints = (): own Array<Int32> { append(push(empty(), 3), 5) };
+export changed = (): own Array<Int32> { update(ints(), 0, 7) };
+#test {
+	equal(length(empty()), 0);
+	equal(length(ints()), 2);
+	equal(capacity(ints()), 2);
+	equal(get(ints(), 0), 3);
+	equal(get(changed(), 0), 7);
+	equal(get(changed(), 1), 5)
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		testBlock({
+			p: '`values` and `slice` emit borrowed elements without consuming the Array. Slice is start-inclusive/end-exclusive, clamps a negative start to zero and stops at length.',
+			src: `export ints = (): own Array<Int32> { push(push(push(Buffer<Int32>(3), 2), 4), 6) };
+export sumValues = (a: Array<Int32>): Int32 {
+	total: var = 0;
+	values(a) >> (n: Int32) { total = total + n };
+	next total + length(a)
+};
+export sumSlice = (a: Array<Int32>, start: Int32, end: Int32): Int32 {
+	total: var = 0;
+	slice(a, start, end) >> (n: Int32) { total = total + n };
+	next total + length(a)
+};
+#test {
+	equal(sumValues(ints()), 15);
+	equal(sumSlice(ints(), 1, 3), 13);
+	equal(sumSlice(ints(), 3, 8), 3);
+	equal(sumSlice(ints(), 0 - 2, 1), 5);
+	equal(sumSlice(ints(), 2, 1), 3)
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		testBlock({
+			p: 'Array algorithms support heap-owning strings, inline records, nested Arrays, empty inputs, mapping, reduction, search, and borrowed slices.',
+			src: `type Item = [ id: Int32, name: String ];
+export strings = (): own Array<String> { push(push(Buffer<String>(2), 'a'), 'bb') };
+export records = (): own Array<Item> { push(push(Buffer<Item>(2), [ id = 1, name = 'one' ]), [ id = 2, name = 'two' ]) };
+export nested = (): own Array<Array<Int32> > { push(Buffer<Array<Int32> >(1), push(Buffer<Int32>(1), 9)) };
+export stringLengths = (): own Array<Int32> { map(strings(), (s: String): own Int32 { length(s) }) };
+export recordIds = (): own Array<Int32> { map(records(), (item: Item): own Int32 { item.id }) };
+export slicedText = (a: Array<String>): Int32 {
+	total: var = 0;
+	slice(a, 0, 2) >> (s: String) { total = total + length(s) };
+	next total + length(a)
+};
+#test {
+	equal(length(map(Buffer<Int32>(0), (n: Int32): own Int32 { n + 1 })), 0);
+	equal(reduce(strings(), 0, (n: own Int32, s: String): own Int32 { n + length(s) }), 3);
+	equal(get(stringLengths(), 1), 2);
+	equal(get(recordIds(), 1), 2);
+	equal(length(get(nested(), 0)), 1);
+	equal(get(get(nested(), 0), 0), 9);
+	equal(slicedText(strings()), 5);
+	ok(contains(strings(), 'bb'));
+	equal(indexOf(strings(), 'z'), 0 - 1)
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		compileError({
+			p: 'Array update consumes its input, so the previous owner cannot be read afterward.',
+			src: `main { a = push(Buffer<Int32>(1), 7); b = update(a, 0, 8); length(a) >> out; length(b) >> out }`,
+			expected: 'used after move',
+		});
+		runtimeTrap({
+			p: 'Array update only replaces a live index; append and push are the growth operations.',
+			src: `main { update(push(Buffer<Int32>(2), 7), 1, 8) >> length >> out }`,
+		});
+		testBlock({
 			p: '`Buffer<T>` is the sealed memory floor. Its complete primitive boundary is `Buffer<T>(capacity): own Buffer<T>`, borrowing `length(buffer): Int32`, `capacity(buffer): Int32`, and `get(buffer, index): T`, consuming `set(buffer: own Buffer<T>, index, value: own T): own Buffer<T>`, and `transfer(source: own Buffer<T>, destination: own Buffer<T>): own Buffer<T>`. `get` copies Copy elements and borrows heap elements from the Buffer. Array access, `realloc`, iteration, growth policy, and algorithms are GB source over these primitives.',
 			src: `export mk = (): own Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 10); b2 = set(b1, 1, 20); next push(b2, 30) };
 export sum = (b: Buffer<Int32>): Int32 { reduce(b, 0, (total: own Int32, n: Int32): own Int32 { total + n }) };
@@ -2152,8 +2227,8 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: 'push grows a scalar buffer flat: building and dropping a buffer every iteration reuses the heap — the doubling `realloc` frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
-			src: `export build = (b: own Buffer<Int32>, n: Int32): own Buffer<Int32> { n == 0 ? b : build(push(b, n), n - 1) };
-export step = (n: Int32): Int32 { b = build(Buffer<Int32>(2), 8); next length(b) };
+			src: `export build = (b: own Array<Int32>, n: Int32): own Array<Int32> { n == 0 ? b : build(push(b, n), n - 1) };
+export step = (n: Int32): Int32 { b = build(array(Buffer<Int32>(0)), 8); next length(b) };
 #test { equal(spin(50000, 0), 400000) }
 export spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) }`,
 			out: [],
@@ -2161,8 +2236,8 @@ export spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + s
 		});
 		testBlock({
 			p: 'push of heap elements (`Buffer<String>`) stays flat: the value element is moved into the buffer (single owner), so per-iteration build-and-drop is bounded.',
-			src: `export buildS = (b: own Buffer<String>, n: Int32): own Buffer<String> { n == 0 ? b : buildS(push(b, '\${n}'), n - 1) };
-export stepS = (n: Int32): Int32 { b = buildS(Buffer<String>(2), 6); next length(b) };
+			src: `export buildS = (b: own Array<String>, n: Int32): own Array<String> { n == 0 ? b : buildS(push(b, '\${n}'), n - 1) };
+export stepS = (n: Int32): Int32 { b = buildS(array(Buffer<String>(0)), 6); next length(b) };
 #test { equal(spinS(30000, 0), 180000) }
 export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc + stepS(n)) }`,
 			out: [],
