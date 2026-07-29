@@ -2048,7 +2048,7 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> ou
 		});
 	});
 
-	h('Buffer & Array (push)', ({ testBlock, compileError, runtimeTrap }) => {
+	h('Buffer & Array (push)', ({ testBlock, compileError, runtimeTrap, modules }) => {
 		testBlock({
 			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. Construction converts an owned Buffer, zero-capacity push grows to one, update consumes and returns the Array, and append is the push spelling.',
 			src: `export empty = (): own Array<Int32> { array(Buffer<Int32>(0)) };
@@ -2119,6 +2119,46 @@ export target = (): Int32 { 0 }`,
 			p: 'Array update consumes its input, so the previous owner cannot be read afterward.',
 			src: `main { a = push(Buffer<Int32>(1), 7); b = update(a, 0, 8); length(a) >> out; length(b) >> out }`,
 			expected: 'used after move',
+		});
+		modules({
+			p: 'Exported Array contracts preserve borrowing and ownership transfer across module boundaries.',
+			files: {
+				'/arrays.gb': `export make = (n: Int32): own Array<String> {
+	push(push(Buffer<String>(2), 'left\${n}'), 'right\${n}')
+};
+export size = (a: Array<String>): Int32 { length(a) };
+export replace = (a: own Array<String>, value: own String): own Array<String> {
+	update(a, 0, value)
+};`,
+				'/main.gb': `(make, size, replace) = @.arrays;
+main {
+	a = make(7);
+	size(a) >> out;
+	size(a) >> out;
+	b = replace(a, 'new');
+	get(b, 0) >> out;
+	get(b, 1) >> out
+}`,
+			},
+			entry: '/main.gb',
+			out: ['2', '2', 'new', 'right7'],
+		});
+		modules({
+			p: 'An imported consuming Array function moves its argument in the caller.',
+			files: {
+				'/arrays.gb': `export replace = (a: own Array<String>): own Array<String> {
+	update(a, 0, 'new')
+};`,
+				'/main.gb': `(replace) = @.arrays;
+main {
+	a = push(Buffer<String>(1), 'old');
+	b = replace(a);
+	length(a) >> out;
+	length(b) >> out
+}`,
+			},
+			entry: '/main.gb',
+			errors: 'used after move',
 		});
 		runtimeTrap({
 			p: 'Array update only replaces a live index; append and push are the growth operations.',
