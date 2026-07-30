@@ -21,8 +21,15 @@ export take = <T>(t: T, n: Int32) { t >> (h, r) { n > 0 ? h, take(r, n - 1) } };
 export drop = <T>(t: T, n: Int32) { t >> (h, r) { n <= 0 ? h, drop(r, n - 1) } };
 export reverse = <T>(t: T) { t >> (h, r) { reverse(r), h } };
 
+export reserveCapacity = <T>(a: own Array<T>, minimumCapacity: Int32): own Array<T> {
+	minimumCapacity >= 0 && minimumCapacity <= capacity(a)
+		? a
+		: transfer(a, Array<T>(minimumCapacity))
+};
+
 grow = <T>(a: own Array<T>): own Array<T> {
-	transfer(a, Array<T>(capacity(a) == 0 ? 1 : capacity(a) * 2))
+	c = capacity(a);
+	next a -> reserveCapacity(c == 0 ? 1 : c * 2)
 };
 
 export push = <T>(a: own Array<T>, x: own T): own Array<T> {

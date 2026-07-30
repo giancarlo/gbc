@@ -2095,6 +2095,33 @@ export target = (): Int32 { 0 }`,
 			out: [],
 		});
 		testBlock({
+			p: '`reserveCapacity(array, minimumCapacity)` consumes and returns an Array whose total capacity is at least the requested minimum. It preserves length and values, never shrinks, and composes through `->`.',
+			src: `export reserved = (): own Array<Int32> {
+	Array<Int32>(0) -> reserveCapacity(8) -> push(3) -> push(5)
+};
+export unchanged = (): own Array<Int32> {
+	Array<Int32>(4) -> push(7) -> reserveCapacity(2)
+};
+export strings = (): own Array<String> {
+	Array<String>(1) -> push('left') -> reserveCapacity(8) -> push('right')
+};
+#test {
+	equal(length(reserved()), 2);
+	equal(capacity(reserved()), 8);
+	equal(get(reserved(), 0), 3);
+	equal(get(reserved(), 1), 5);
+	equal(length(unchanged()), 1);
+	equal(capacity(unchanged()), 4);
+	equal(get(unchanged(), 0), 7);
+	equal(length(strings()), 2);
+	equal(capacity(strings()), 8);
+	equal(get(strings(), 0), 'left');
+	equal(get(strings(), 1), 'right')
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		testBlock({
 			p: '`values` and `slice` emit borrowed elements without consuming the Array. Slice is start-inclusive/end-exclusive, clamps a negative start to zero and stops at length.',
 			src: `export ints = (): own Array<Int32> { push(push(push(Buffer<Int32>(3), 2), 4), 6) };
 export sumValues = (a: Array<Int32>): Int32 {
@@ -2149,6 +2176,11 @@ export target = (): Int32 { 0 }`,
 			src: `main { a = push(Array<Int32>(1), 7); b = a -> set(0, 8); length(a) >> out; length(b) >> out }`,
 			expected: 'used after move',
 		});
+		compileError({
+			p: 'Array capacity reservation consumes its input even when the current capacity is already sufficient.',
+			src: `main { a = Array<Int32>(4); b = a -> reserveCapacity(2); length(a) >> out; length(b) >> out }`,
+			expected: 'used after move',
+		});
 		modules({
 			p: 'Exported Array contracts preserve borrowing and ownership transfer across module boundaries.',
 			files: {
@@ -2192,6 +2224,13 @@ main {
 		runtimeTrap({
 			p: 'Array set replaces a live index or appends at length when capacity remains; it rejects gaps, while push is the automatic-growth operation.',
 			src: `main { set(push(Array<Int32>(2), 7), 2, 8) >> length >> out }`,
+		});
+		runtimeTrap({
+			p: 'Array capacity reservation rejects negative and impossible capacities consistently with construction.',
+			src: `main { Array<Int32>(0) -> reserveCapacity(0 - 1) >> length >> out }`,
+		});
+		runtimeTrap({
+			src: `main { Array<Int64>(0) -> reserveCapacity(536870911) >> length >> out }`,
 		});
 		testBlock({
 			p: '`Buffer<T>` is the sealed memory floor. Its complete primitive boundary is `Buffer<T>(capacity): own Buffer<T>`, borrowing `length(buffer): Int32`, `capacity(buffer): Int32`, and `get(buffer, index): T`, consuming `set(buffer: own Buffer<T>, index, value: own T): own Buffer<T>`, and `transfer(source: own Buffer<T>, destination: own Buffer<T>): own Buffer<T>`. `get` copies Copy elements and borrows heap elements from the Buffer. Array access, iteration, growth policy, and algorithms are GB source over these primitives.',
@@ -2309,6 +2348,19 @@ export spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + s
 export stepS = (n: Int32): Int32 { b = buildS(Array<String>(0), 6); next length(b) };
 #test { equal(spinS(30000, 0), 180000) }
 export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc + stepS(n)) }`,
+			out: [],
+			maxPages: 3,
+		});
+		testBlock({
+			p: 'Repeated capacity reservation and drop with heap elements reuses memory and remains bounded.',
+			src: `export stepReserved = (n: Int32): Int32 {
+	a = Array<String>(0) -> reserveCapacity(32) -> push('\${n}');
+	next length(a) + capacity(a)
+};
+#test { equal(spinReserved(30000, 0), 990000) }
+export spinReserved = (n: Int32, acc: Int32): Int32 {
+	n == 0 ? acc : spinReserved(n - 1, acc + stepReserved(n))
+}`,
 			out: [],
 			maxPages: 3,
 		});
