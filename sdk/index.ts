@@ -74,7 +74,9 @@ export type MapNode<Map extends NodeMap> = Map[keyof Map];
 export type DistributeToken<T> = T extends Token<infer U> ? Token<U> : never;
 export type MapToToken<T extends string> = T extends infer U ? Token<U> : never;
 
-export type TrieNode = { [K in string]: TrieNode } & { [TrieMatch]?: string };
+export type TrieNode<Kind extends string = string> = {
+	[K in string]: TrieNode<Kind> | undefined;
+} & { [TrieMatch]?: Kind };
 const TrieMatch = Symbol('TrieMatch');
 
 const alpha = (ch: string) =>
@@ -366,11 +368,12 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		while (token.kind === kind) next();
 	}
 
-	function optional<K extends Node['kind']>(kind: K) {
+	function optional<K extends Node['kind']>(kind: K): Token<K> | undefined;
+	function optional(kind: Node['kind']): Token<Node['kind']> | undefined {
 		if (kind === token.kind) {
 			const result = token;
 			next();
-			return result as unknown as Token<K>;
+			return result;
 		}
 	}
 
@@ -437,22 +440,31 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 	}
 
 	/** Verify token is the correct kind and advance */
-	function consume<K extends Node['kind']>(kind: K): Token<K> {
+	function consume<K extends Node['kind']>(kind: K): Token<K>;
+	function consume(kind: Node['kind']): Token<Node['kind']> {
 		if (kind !== token.kind)
 			throw error(`Expected "${kind}" but got "${token.kind}"`, token);
 
-		const result = token as unknown as Token<K>;
+		const result = token;
 		next();
 		return result;
+	}
+
+	function narrowNodeKind<N extends Token<string>, K extends N['kind']>(
+		node: N,
+		kind: K,
+	): Extract<N, Token<K>>;
+	function narrowNodeKind(node: Token<string>, kind: string): Token<string> {
+		return { ...node, kind };
 	}
 
 	function expectNodeKind<N extends Token<string>, K extends N['kind']>(
 		node: N | undefined,
 		kind: K,
 		msg: string,
-	) {
-		if (!node || node.kind !== kind) throw error(msg, node || token);
-		return node as Extract<N, { kind: K }>;
+	): Extract<N, Token<K>> {
+		if (node?.kind !== kind) throw error(msg, node || token);
+		return narrowNodeKind(node, kind);
 	}
 
 	function expectNode<C>(node: C | undefined, msg: string) {
@@ -525,14 +537,18 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 ) {
 	const { current, next, consume, expectNode, optional } = api;
 
+	function operator<K extends ScannerToken['kind']>(kind: K) {
+		return table[kind];
+	}
+
 	function expression(precedence = 0) {
 		const left = current();
-		const prefixOp = table[left.kind as ScannerToken['kind']]?.prefix;
+		const prefixOp = operator(left.kind)?.prefix;
 		let result = prefixOp ? (next(), prefixOp(left)) : undefined;
 
 		while (result) {
 			const n = current();
-			const op = table[n.kind as ScannerToken['kind']];
+			const op = operator(n.kind);
 			if (op?.infix && precedence < op.precedence) {
 				next();
 				result = op.infix(n, result);
@@ -542,16 +558,31 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 		return result;
 	}
 
+	function createInfixNode<Node extends InfixNode<Map>>(
+		tk: Token<Node['kind']>,
+		left: MapNode<Map>,
+		right: MapNode<Map>,
+	): Node;
+	function createInfixNode(
+		tk: Token<string>,
+		left: MapNode<Map>,
+		right: MapNode<Map>,
+	) {
+		return {
+			...tk,
+			start: left.start,
+			children: [left, right],
+			end: right.end,
+		};
+	}
+
 	function infix<Node extends InfixNode<Map>>(
 		rbp: number,
 		cb?: (node: Node) => void,
 	) {
 		return (tk: Token<string>, left: MapNode<Map>) => {
-			const node = tk as Node;
-			node.start = left.start;
 			const right = expectExpression(rbp);
-			node.children = [left, right];
-			node.end = right.end;
+			const node = createInfixNode<Node>(tk, left, right);
 			cb?.(node);
 			return node;
 		};
@@ -568,18 +599,48 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 		};
 	}
 
+	function createUnaryNode<Node extends UnaryNode<Map>>(
+		tk: Token<Node['kind']>,
+		right: MapNode<Map>,
+	): Node;
+	function createUnaryNode(tk: Token<string>, right: MapNode<Map>) {
+		return {
+			...tk,
+			children: [right],
+			end: right.end,
+		};
+	}
+
 	function prefix<K extends UnaryNode<Map>['kind']>(
 		rbp = 0,
 		cb?: (node: UnaryNode<Map>) => MapNode<Map>,
 	) {
 		return (tk: Token<K>) => {
 			const right = expectExpression(rbp);
-			const result = {
-				...tk,
-				children: [right],
-				end: right.end,
-			} as unknown as UnaryNode<Map>;
+			const result = createUnaryNode<UnaryNode<Map>>(tk, right);
 			return cb ? cb(result) : result;
+		};
+	}
+
+	function createTernaryNode<
+		Node extends TernaryNode<Map, true> | TernaryNode<Map, false>,
+	>(
+		tk: Token<Node['kind']>,
+		left: MapNode<Map>,
+		right: MapNode<Map>,
+		child3: MapNode<Map> | undefined,
+	): Node;
+	function createTernaryNode(
+		tk: Token<string>,
+		left: MapNode<Map>,
+		right: MapNode<Map>,
+		child3: MapNode<Map> | undefined,
+	) {
+		return {
+			...tk,
+			start: left.start,
+			children: [left, right, child3],
+			end: child3?.end ?? right.end,
 		};
 	}
 
@@ -587,18 +648,13 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 		precedence: number,
 		operator2: ScannerToken['kind'],
 	) {
-		const _infix = infix(precedence);
 		return (node: Token<Node['kind']>, left: MapNode<Map>) => {
-			const result = _infix(
-				node as unknown as InfixNode<Map>,
-				left,
-			) as unknown as Node;
+			const right = expectExpression(precedence);
+			let child3: MapNode<Map> | undefined;
 			if (optional(operator2)) {
-				const child3 = expectExpression(precedence);
-				result.end = child3.end;
-				result.children.push(child3);
+				child3 = expectExpression(precedence);
 			}
-			return result;
+			return createTernaryNode<Node>(node, left, right, child3);
 		};
 	}
 
@@ -607,16 +663,10 @@ function parseTableApi<Map extends NodeMap, ScannerToken extends Token<string>>(
 		operator2: ScannerToken['kind'],
 	) {
 		return (node: Token<Node['kind']>, left: MapNode<Map>) => {
-			const result = infix(precedence)(
-				node as unknown as InfixNode<Map>,
-				left,
-			) as unknown as Node;
-
+			const right = expectExpression(precedence);
 			consume(operator2);
 			const child3 = expectExpression(precedence);
-			result.end = child3.end;
-			result.children.push(child3);
-			return result;
+			return createTernaryNode<Node>(node, left, right, child3);
 		};
 	}
 
@@ -676,11 +726,11 @@ export function findNodeAtIndex(node: BaseNode, index: number): BaseNode | undef
  * Builds a trie from the input map and
  */
 export function createTrie<T extends string>(...map: T[]) {
-	const trie: TrieNode = {};
+	const trie: TrieNode<T> = {};
 
 	// Build the trie from the input map
 	for (const token of map) {
-		let current: TrieNode = trie;
+		let current = trie;
 		for (const char of token) current = current[char] ??= {};
 		current[TrieMatch] = token;
 	}
@@ -792,15 +842,26 @@ export function ScannerApi({ source }: { source: string }) {
 		map: readonly T[],
 		end: MatchFn,
 	) {
+		function trieToken<Kind extends string>(
+			kind: Kind,
+			consumed: number,
+		): MapToToken<Kind>;
+		function trieToken(kind: string, consumed: number): Token<string> {
+			return tk(kind, consumed);
+		}
+
 		const trie = createTrie(...map);
 		return (consumed = 0) => {
 			let ch = source.at(index + consumed);
-			let node: TrieNode | undefined = trie;
-			while (ch && (node = node[ch] as TrieNode | undefined)) {
+			let node = trie;
+			while (ch) {
+				const child = node[ch];
+				if (!child) break;
+				node = child;
 				consumed++;
 				ch = source.at(index + consumed);
 				if (node[TrieMatch] && (!ch || end(ch)))
-					return tk(node[TrieMatch], consumed) as MapToToken<T>;
+					return trieToken(node[TrieMatch], consumed);
 			}
 		};
 	}
