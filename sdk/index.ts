@@ -454,8 +454,8 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		node: N,
 		kind: K,
 	): Extract<N, Token<K>>;
-	function narrowNodeKind(node: Token<string>, kind: string): Token<string> {
-		return { ...node, kind };
+	function narrowNodeKind(node: Token<string>, _kind: string): Token<string> {
+		return node;
 	}
 
 	function expectNodeKind<N extends Token<string>, K extends N['kind']>(
