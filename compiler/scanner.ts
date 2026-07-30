@@ -114,7 +114,7 @@ export function scan(source: string) {
 	}
 
 	function scanTwoCharOp(
-		ch: '=' | '|' | '&' | '>' | '<' | '!' | ':',
+		ch: '=' | '|' | '&' | '>' | '<' | '!' | ':' | '-',
 		la: string,
 	) {
 		switch (ch) {
@@ -140,6 +140,8 @@ export function scan(source: string) {
 				return la === '=' ? tk('!=', 2) : tk('!', 1);
 			case ':':
 				return la === '>' ? tk(':>', 2) : tk(':', 1);
+			case '-':
+				return la === '>' ? tk('->', 2) : tk('-', 1);
 		}
 	}
 
@@ -192,6 +194,7 @@ export function scan(source: string) {
 			case '<':
 			case '!':
 			case ':':
+			case '-':
 				return scanTwoCharOp(ch, la);
 			case '{': {
 				const t = tk('{', 1);
@@ -219,7 +222,6 @@ export function scan(source: string) {
 			case ']':
 			case ';':
 			case '+':
-			case '-':
 				return tk(ch, 1);
 			case "'": {
 				const t = scanStr(true);

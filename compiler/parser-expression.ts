@@ -570,6 +570,42 @@ export function parseExpression(
 					return node;
 				},
 			},
+			'->': {
+				precedence: pipePrecedence,
+				infix(tk, left) {
+					const right = expectExpression(pipePrecedence);
+					if (right.kind !== 'call')
+						throw error('`->` requires a function call on the right', right);
+					const currentArgs = right.children[1];
+					const prepended = left.kind === ',' ? left.children : [left];
+					const existing =
+						currentArgs?.kind === ','
+							? currentArgs.children
+							: currentArgs
+								? [currentArgs]
+								: [];
+					const children = [...prepended, ...existing];
+					const first = children[0];
+					const last = children[children.length - 1];
+					const args: Node | undefined =
+						children.length === 1
+							? first
+							: first
+								? {
+										...tk,
+										kind: ',',
+										start: first.start,
+										end: last?.end ?? first.end,
+										children,
+									}
+								: undefined;
+					return {
+						...right,
+						start: left.start,
+						children: [right.children[0], args],
+					};
+				},
+			},
 			'{': {
 				prefix: tk => parseBlock(tk, parseFnBody),
 			},

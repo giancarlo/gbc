@@ -68,7 +68,7 @@ export default spec('Language Reference', ({ h }) => {
 		);
 	});
 
-	h('Operators', ({ h, token, expr, match, rule }) => {
+	h('Operators', ({ h, token, expr, match, rule, compileError }) => {
 		rule({
 			p: '`&&`/`||` short-circuit: the right operand is evaluated only when the left does not decide the result.',
 			src: `hit = (): Bool { 'hit' >> out; next true };
@@ -97,6 +97,7 @@ main {
 		token('>', 'Greater than comparison', '>');
 		token('>=', 'Greater than or equal comparison', '>=');
 		token('>>', 'Pipe Operator', '>>');
+		token('->', 'Thread-first Operator', '->');
 		token('|', 'Bitwise OR', '|');
 		token('||', 'Short-circuiting logical OR', '||');
 		token('?', 'Conditional Ternary Operator', '?');
@@ -104,7 +105,7 @@ main {
 		token('<:', 'Bitwise Shift Left', '<:');
 
 		expr({
-			p: 'Binding from tightest: call/member (`f(x)`, `.`), unary (`!` `~` `-`), `*` `/` `%`, `+` `-`, `<:` `:>`, comparisons, `==` `!=`, `&`, `^`, `|`, `&&`, `||`, ternary `?`, `>>`, then `,`. Comma emits each value in order and binds looser than pipe: `a, b >> f` emits `a` followed by `b >> f`; use `(a, b) >> f` to pipe both emissions. Note `&`/`^`/`|` bind looser than `==` — `1 & 3 == 3` is `1 & (3 == 3)`.',
+			p: 'Binding from tightest: call/member (`f(x)`, `.`), unary (`!` `~` `-`), `*` `/` `%`, `+` `-`, `<:` `:>`, comparisons, `==` `!=`, `&`, `^`, `|`, `&&`, `||`, ternary `?`, thread/pipe (`->` `>>`), then `,`. Comma emits each value in order and binds looser than thread/pipe: `a, b >> f` emits `a` followed by `b >> f`; use `(a, b) >> f` to pipe both emissions. Note `&`/`^`/`|` bind looser than `==` — `1 & 3 == 3` is `1 & (3 == 3)`.',
 			src: '1 + 2 * 3',
 			ast: '(+ 1 (* 2 3))',
 			out: ['7'],
@@ -126,6 +127,34 @@ main { (1, 2) >> inc >> out }`,
 main { 1 >> inc >> out, 2 >> out }`,
 			ast: `(root (def :inc ? (fn @sequence (parameter :n typeident ?) typeident (+ :n 10))) (main (, (>> 1 :inc :out) (>> 2 :out))))`,
 			out: ['11', '2'],
+		});
+		rule({
+			p: '`->` is the thread-first operator: the value on its left is prepended to the call arguments on its right. Chains are left-associative and reuse ordinary call typing and evaluation.',
+			src: `add = (a: Int32, b: Int32): Int32 { a + b };
+multiply = (a: Int32, b: Int32): Int32 { a * b };
+main { 2 -> add(3) -> multiply(4) >> out }`,
+			ast: `(root (def :add ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))) (def :multiply ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (* :a :b))) (main (>> (call :multiply (, (call :add (, 2 3)) 4)) :out)))`,
+			out: ['20'],
+		});
+		rule({
+			p: 'A parenthesized comma list supplies multiple leading arguments in order; arithmetic binds before `->`, while comma remains looser.',
+			src: `sum3 = (a: Int32, b: Int32, c: Int32): Int32 { a + b + c };
+main { (1 + 1, 3) -> sum3(4) >> out }`,
+			ast: `(root (def :sum3 ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) (parameter :c typeident ?) typeident (+ (+ :a :b) :c))) (main (>> (call :sum3 (, (+ 1 1) 3 4)) :out)))`,
+			out: ['9'],
+		});
+		rule({
+			p: 'Thread-first calls use normal generic and overload resolution.',
+			src: `measure = <T>(value: T, extra: Int32): Int32 { length(value) + extra };
+choose = (n: Int32, offset: Int32): Int32 { n + offset } | (b: Bool, offset: Int32): Int32 { b ? offset : 0 };
+main { 7 -> measure(3) >> out; 5 -> choose(2) >> out; true -> choose(9) >> out }`,
+			ast: `(root (def :measure ? (fn @sequence (, (parameter :T ? ?)) (parameter :value typeident ?) (parameter :extra typeident ?) typeident (+ (call :length @intrinsic :value) :extra))) (def :choose ? (| (fn @sequence (parameter :n typeident ?) (parameter :offset typeident ?) typeident (+ :n :offset)) (fn @sequence (parameter :b typeident ?) (parameter :offset typeident ?) typeident (? :b :offset 0)))) (main (>> (call :measure (, 7 3)) :out) (>> (call :choose (, 5 2)) :out) (>> (call :choose (, :true 9)) :out)))`,
+			out: ['4', '7', '9'],
+		});
+		compileError({
+			p: 'The right side of `->` must be a function call.',
+			src: `main { 1 -> out }`,
+			expected: '`->` requires a function call on the right',
 		});
 		rule({
 			src: `sum = (a: Int32, b: Int32): Int32 { a + b };
@@ -2053,7 +2082,7 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> ou
 			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set consumes and returns the Array.',
 			src: `export empty = (): own Array<Int32> { Array<Int32>(0) };
 export ints = (): own Array<Int32> { push(push(empty(), 3), 5) };
-export changed = (): own Array<Int32> { set(ints(), 0, 7) };
+export changed = (): own Array<Int32> { empty() -> push(3) -> push(5) -> set(0, 7) };
 #test {
 	equal(length(empty()), 0);
 	equal(length(ints()), 2);
@@ -2117,7 +2146,7 @@ export target = (): Int32 { 0 }`,
 		});
 		compileError({
 			p: 'Array set consumes its input, so the previous owner cannot be read afterward.',
-			src: `main { a = push(Array<Int32>(1), 7); b = set(a, 0, 8); length(a) >> out; length(b) >> out }`,
+			src: `main { a = push(Array<Int32>(1), 7); b = a -> set(0, 8); length(a) >> out; length(b) >> out }`,
 			expected: 'used after move',
 		});
 		modules({
@@ -3164,7 +3193,7 @@ export triple = (n: Int32): Int32 { n * 3 };`,
 				'/geo.gb': `export area = (w: Int32, h: Int32): Int32 { w * h };`,
 				'/main.gb': `(double, triple) = @.util;
 geo = @.geo;
-main { double(21) >> out; triple(7) >> out; geo.area(6, 7) >> out }`,
+main { double(21) >> out; triple(7) >> out; 6 -> geo.area(7) >> out }`,
 			},
 			entry: '/main.gb',
 			out: ['42', '21', '42'],
