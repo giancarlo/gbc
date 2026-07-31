@@ -14,4 +14,3 @@ Markdown Parser
 ## Installation
 
 	npm install @cxl/gbc.markdown
-
