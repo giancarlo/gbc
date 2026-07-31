@@ -182,23 +182,24 @@ export function parseExpression(
 
 	/**
 	 * After `:` has been consumed, parse the type slot.
-	 * `var` is a slot-level modifier (not a type) — when present it sets
-	 * the Variable flag on the provided slot symbol; otherwise we parse a
-	 * regular type expression.
+	 * `var` is a slot-level access modifier (not a type).
 	 */
 	function slotType(
 		symbol: SymbolMap['variable'],
 		mode: 'field' | 'local' | 'parameter',
 	) {
 		if (current().kind === 'var') {
-			if (mode !== 'local')
+			if (mode === 'field')
 				throw error(
-					'`var` is a local binding modifier, not a parameter or field type',
+					'`var` is valid only on local bindings and function parameters',
 					current(),
 				);
 			api.next();
-			symbol.flags |= Flags.Variable;
-			return current().kind === '=' ? undefined : expectType();
+			if (mode === 'local') symbol.flags |= Flags.Variable;
+			else symbol.ownership = 'var';
+			return mode === 'local' && current().kind === '='
+				? undefined
+				: expectType();
 		}
 		if (current().kind === 'own') {
 			if (mode !== 'parameter')
@@ -213,6 +214,11 @@ export function parseExpression(
 	}
 
 	function resultType(): { mode: OwnershipMode; type: Node } {
+		if (current().kind === 'var')
+			throw error(
+				'`var` results require capability-preserving chains',
+				current(),
+			);
 		const mode = current().kind === 'own' ? (api.next(), 'own') : 'borrow';
 		return { mode, type: expectType() };
 	}

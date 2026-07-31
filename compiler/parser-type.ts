@@ -30,7 +30,20 @@ export function parseType(
 			api.next();
 			return 'own';
 		}
+		if (current().kind === 'var') {
+			api.next();
+			return 'var';
+		}
 		return 'borrow';
+	}
+
+	function resultOwnership(): OwnershipMode {
+		if (current().kind === 'var')
+			throw api.error(
+				'`var` results require capability-preserving chains',
+				current(),
+			);
+		return current().kind === 'own' ? (api.next(), 'own') : 'borrow';
 	}
 
 	function collectUnionMembers(n: Node, out: Type[]) {
@@ -191,7 +204,7 @@ export function parseType(
 					const close = consume(')');
 					let returnOwnership: OwnershipMode | undefined;
 					const returnType = optional(':')
-						? ((returnOwnership = slotOwnership()),
+						? ((returnOwnership = resultOwnership()),
 							expectNode(expression(), 'Expected return type'))
 						: undefined;
 					// An omitted return already means "no value" — bare
@@ -422,7 +435,7 @@ export function parseType(
 						}
 						if (current().kind === 'var')
 							throw api.error(
-								'`var` is a local binding modifier, not a parameter or field type',
+								'`var` is valid only on local bindings and function parameters',
 								current(),
 							);
 						if (current().kind === 'own')

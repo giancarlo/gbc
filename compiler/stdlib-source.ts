@@ -32,15 +32,20 @@ grow = <T>(a: own Array<T>): own Array<T> {
 	next a -> reserveCapacity(c == 0 ? 1 : c * 2)
 };
 
+setOwned = <T>(a: own Array<T>, i: Int32, x: own T): own Array<T> {
+	set(a, i, x);
+	next a
+};
+
 export push = <T>(a: own Array<T>, x: own T): own Array<T> {
 	i = length(a);
-	next i < capacity(a) ? set(a, i, x) : set(grow(a), i, x)
+	next i < capacity(a) ? setOwned(a, i, x) : setOwned(grow(a), i, x)
 };
 
 rangeFrom = (a: own Array<Int32>, n: Int32, end: Int32): own Array<Int32> {
 	n >= end
 		? a
-		: rangeFrom([ a, length(a), n ] >> set, n + 1, end)
+		: rangeFrom(setOwned(a, length(a), n), n + 1, end)
 };
 export range = (start: Int32, end: Int32): own Array<Int32> {
 	end <= start

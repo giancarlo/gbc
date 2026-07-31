@@ -226,8 +226,7 @@ function resolveDefType(node: NodeMap['def']): Type | undefined {
 	const declared = node.type ? resolveType(node.type) : undefined;
 	const value = resolveType(node.value);
 	resolving.delete(sym);
-	const isImmutable = !(sym.flags & Flags.Variable);
-	let t = isImmutable && value ? value : (declared ?? value);
+	let t = value ?? declared;
 	if (declared && t !== declared && literalFits(node.value, declared))
 		t = declared;
 	if (t) sym.type = t;
@@ -1211,6 +1210,68 @@ export function checker({
 		if (!chosen || !args) return;
 		checkTypeArgConstraints(chosen, argTypes, node);
 		checkCallArgs(chosen, argTypes, node);
+		checkMutableCallArgs(chosen, node);
+	}
+
+	function referencesSymbol(node: Node, symbol: Symbol): boolean {
+		if (node.kind === 'ident') return bindingRoot(node.symbol) === symbol;
+		if (!('children' in node) || !node.children) return false;
+		return node.children.some(child => !!child && referencesSymbol(child, symbol));
+	}
+
+	function bindingRoot(symbol: Symbol): Symbol {
+		const definition = symbol.definition;
+		return definition?.kind === 'def' && definition.value.kind === 'ident'
+			? bindingRoot(definition.value.symbol)
+			: symbol;
+	}
+
+	function mutableSymbol(symbol: SymbolMap['variable']): boolean {
+		return (
+			symbol.ownership === 'var' ||
+			symbol.ownership === 'own' ||
+			(symbol.definition?.kind === 'def' && ownedHere(symbol.definition))
+		);
+	}
+
+	function mutableArgRoot(arg: Node | undefined, node: Node): Symbol | undefined {
+		if (!arg || arg.kind !== 'ident' || arg.symbol.kind !== 'variable') {
+			error('a `var` parameter requires a mutable binding', arg ?? node);
+			return;
+		}
+		if (mutableSymbol(arg.symbol)) return arg.symbol;
+		error(`cannot mutably borrow shared binding "${arg.symbol.name}"`, arg);
+	}
+
+	function checkMutableCallArgs(
+		fn: SymbolMap['function'],
+		node: NodeMap['call'],
+	): void {
+		const raw = node.children[1];
+		const args = raw?.kind === ',' ? raw.children : raw ? [raw] : [];
+		const roots = new Map<Symbol, number>();
+		for (let i = 0; i < args.length; i++) {
+			if (fn.parameters?.[i]?.ownership !== 'var') continue;
+			const arg = args[i];
+			const root = mutableArgRoot(arg, node);
+			if (!root) continue;
+			const previous = roots.get(root);
+			if (previous !== undefined)
+				error(
+					`mutable borrow of "${root.name ?? ''}" overlaps another argument`,
+					arg ?? node,
+				);
+			else roots.set(root, i);
+		}
+		for (const [symbol, mutableIndex] of roots)
+			for (let i = 0; i < args.length; i++) {
+				const arg = args[i];
+				if (i !== mutableIndex && arg && referencesSymbol(arg, symbol))
+					error(
+						`mutable borrow of "${symbol.name ?? ''}" overlaps argument ${i + 1}`,
+						arg,
+					);
+			}
 	}
 
 	function checkTypeArgConstraints(
@@ -1267,34 +1328,9 @@ export function checker({
 			}
 	}
 
-	function checkVarBinding(node: NodeMap['def']) {
-		const t = node.symbol.type;
-		const scalar =
-			t?.kind === 'type' &&
-			(t.family === 'int' ||
-				t.family === 'uint' ||
-				t.family === 'float' ||
-				t.family === 'char' ||
-				t.family === 'bool');
-		if (scalar) return;
-		const shown =
-			t?.kind === 'type' &&
-			t.family === 'literal' &&
-			typeof t.value === 'string'
-				? 'String'
-				: t
-					? typeToStr(t)
-					: '?';
-		error(
-			`a \`var\` binding holds scalars only — "${shown}" values are single-assignment (create with a binding, move with \`next\`, or pipe)`,
-			node,
-		);
-	}
-
 	function checkDef(node: NodeMap['def']) {
 		const sym = node.symbol;
 		resolver(node);
-		if (sym.flags & Flags.Variable) checkVarBinding(node);
 		if (node.value.kind === '|') checkDispatchDef(node.value);
 		if (node.type) {
 			const declared = resolveType(node.type);
@@ -1323,14 +1359,8 @@ export function checker({
 
 	function checkAssign(node: NodeMap['=']) {
 		const left = node.children[0];
-		if (left.kind === 'ident') {
-			const sym = left.symbol;
-			if (!(sym.flags & Flags.Variable))
-				error(
-					`Cannot reassign immutable binding "${sym.name ?? ''}"`,
-					left,
-				);
-		}
+		if (left.kind === 'ident')
+			error(`Cannot reassign binding "${left.symbol.name ?? ''}"`, left);
 		check(node.children[1]);
 	}
 
@@ -1853,9 +1883,25 @@ export function checker({
 				'Statement body is reducible to comma form `{ X1, X2 }`',
 				c,
 			);
-		if (stmts) for (const s of stmts) checkStageConditions(s);
+		if (stmts)
+			for (const s of stmts) {
+				checkStageConditions(s);
+				rejectAssignments(s);
+			}
 		checkStageReturnType(c);
 		checkStageTail(c);
+	}
+
+	function rejectAssignments(node: Node): void {
+		if (node.kind === '=')
+			error(`Cannot reassign binding "${text(node.children[0])}"`, node.children[0]);
+		if ('children' in node && node.children)
+			for (let i = 0; i < node.children.length; i++) {
+				const child = node.children[i];
+				if (child) rejectAssignments(child);
+			}
+		if (node.kind === 'fn' && node.statements)
+			for (const statement of node.statements) rejectAssignments(statement);
 	}
 
 	function stageAcceptType(stage: Node): Type | undefined {
@@ -1896,6 +1942,7 @@ export function checker({
 	}
 
 	function stageEmitType(stage: Node, input: Type | undefined): Type {
+		if (stage.kind === 'loop') return input ?? BT.Unknown;
 		if (stage.kind === 'fn') {
 			const ft = resolveFnType(stage);
 			return ft.kind === 'function' && ft.returnType
@@ -1927,6 +1974,7 @@ export function checker({
 	function checkPipe(node: NodeMap['>>']) {
 		inferPipeStageParams(node.children);
 		const kids = node.children;
+		checkMutablePipeStages(kids);
 		for (let i = 0; i < kids.length; i++) {
 			const c = kids[i];
 			if (!c) continue;
@@ -2010,6 +2058,25 @@ export function checker({
 				}
 			}
 			emit = stageEmitType(stage, emit);
+		}
+	}
+
+	function mutableBinding(node: Node | undefined): boolean {
+		return (
+			node?.kind === 'ident' &&
+			node.symbol.kind === 'variable' &&
+			mutableSymbol(node.symbol)
+		);
+	}
+
+	function checkMutablePipeStages(children: Node[]): void {
+		for (let i = 1; i < children.length; i++) {
+			const stage = children[i];
+			const parameter = stage && pipeStageFn(stage)?.parameters?.[0];
+			if (parameter?.ownership !== 'var') continue;
+			const input = children[i - 1];
+			if (stage && !mutableBinding(input))
+				error('a `var` stage requires mutable access from its input', stage);
 		}
 	}
 
@@ -2343,7 +2410,11 @@ export function checker({
 	function inferPipeStageParams(children: Node[]) {
 		for (let i = 1; i < children.length; i++) {
 			const stage = children[i];
-			const input = children[i - 1];
+			if (stage?.kind === 'loop') continue;
+			const input =
+				children[i - 1]?.kind === 'loop'
+					? children[i - 2]
+					: children[i - 1];
 			if (!stage || !input) continue;
 			if (stage.kind === '|') {
 				// Each dispatch arm infers `$` from its own declared type.

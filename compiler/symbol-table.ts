@@ -11,7 +11,7 @@ export enum Flags {
 	Collection = 64,
 }
 
-export type OwnershipMode = 'borrow' | 'own';
+export type OwnershipMode = 'borrow' | 'var' | 'own';
 
 type BaseSymbol = {
 	name?: string;
@@ -364,13 +364,11 @@ export function ProgramSymbolTable() {
 			flags: Flags.Intrinsic,
 			typeParams: [setType],
 			parameters: [
-				param('b', bufferTypeOf(setType), 'own'),
+				param('b', bufferTypeOf(setType), 'var'),
 				param('i', BaseTypes.Int32),
 				param('x', setType, 'own'),
 			],
-			returnType: bufferTypeOf(setType),
-			returnOwnership: 'own',
-			returnBorrowOrigins: [0],
+			returnType: BaseTypes.Void,
 		},
 		capacity: {
 			kind: 'function',

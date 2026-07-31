@@ -787,7 +787,7 @@ main { sum([1, 2] >> length, 2) >> out }`,
 		});
 		compileError({
 			src: `main { [ name: var = 'Alice' ] >> out }`,
-			expected: '`var` is a local binding modifier',
+			expected: '`var` is valid only',
 		});
 		rule({
 			p: 'Positional members type like labeled ones wherever they appear \u2014 `d.0` is the member, not a fallback scalar.',
@@ -1667,14 +1667,49 @@ a = {
 			ast: `(def @variable :retries ? 0)`,
 		});
 		rule({
-			p: '`var` makes a local scalar binding reassignable. Parameters and fields are never `var`; ownership transfer across calls uses `own`.',
-			src: `score: var = 0; main { score = score + 10; score >> out; }`,
-			ast: `(root (def @variable :score ? 0) (main (= :score @variable (+ :score @variable 10)) (>> :score @variable :out)))`,
+			p: 'Binding identities are immutable. An owning binding can be borrowed mutably without making the binding reassignable.',
+			src: `main { buffer: Buffer<Int32> = Buffer<Int32>(1); set(buffer, 0, 10); get(buffer, 0) >> out }`,
+			ast: `(root (main (def :buffer typeident @collection (call typeident @collection 1)) (call :set @intrinsic (, :buffer 0 10)) (>> (call :get @intrinsic (, :buffer 0)) :out)))`,
 			out: ['10'],
+		});
+		rule({
+			p: '`var T` parameters borrow an owner exclusively for the call without moving it; the caller can use the owner afterward.',
+			src: `write = (b: var Buffer<Int32>, n: Int32) { set(b, 0, n) }; main { b: Buffer<Int32> = Buffer<Int32>(1); write(b, 7); get(b, 0) >> out }`,
+			ast: `(root (def :write ? (fn @sequence (parameter :b typeident @collection ?) (parameter :n typeident ?) (call :set @intrinsic (, :b 0 :n)))) (main (def :b typeident @collection (call typeident @collection 1)) (call :write (, :b 7)) (>> (call :get @intrinsic (, :b 0)) :out)))`,
+			out: ['7'],
+		});
+		compileError({
+			p: 'A shared alias cannot be upgraded to mutable access.',
+			src: `main { owner = Buffer<Int32>(1); alias = owner; set(alias, 0, 7) }`,
+			expected: 'cannot mutably borrow shared binding',
+		});
+		compileError({
+			p: 'A local `var` annotation cannot upgrade a shared alias.',
+			src: `main { owner = Buffer<Int32>(1); alias: var Buffer<Int32> = owner; set(alias, 0, 7) }`,
+			expected: 'cannot mutably borrow shared binding',
+		});
+		compileError({
+			p: 'A mutable borrow cannot overlap another argument derived from the same owner.',
+			src: `inspect = (b: var Buffer<Int32>, n: Int32) { n >> out }; main { b = Buffer<Int32>(1); inspect(b, length(b)) }`,
+			expected: 'overlaps argument',
+		});
+		compileError({
+			p: 'Mutable capability cannot escape through a function result.',
+			src: `borrow = (b: var Buffer<Int32>): var Buffer<Int32> { b }`,
+			expected: '`var` results require capability-preserving chains',
 		});
 		compileError({
 			src: `main { count = 1; count = 2 >> out; }`,
-			expected: 'Cannot reassign immutable binding',
+			expected: 'Cannot reassign binding',
+		});
+		compileError({
+			src: `main { count: var = 1; count = 2 }`,
+			expected: 'Cannot reassign binding',
+		});
+		compileError({
+			p: 'Binding reassignment is rejected inside pipe-stage bodies too.',
+			src: `main { count: var = 0; loop >> (i: Int32) { i >= 1 ? break; count = count + 1 } }`,
+			expected: 'Cannot reassign binding',
 		});
 		compileError({
 			src: `main { a: Int32 >> out }`,
@@ -1880,16 +1915,15 @@ a = {
 			out: ['5000000000'],
 		});
 		rule({
-			p: 'A literal adopts any integer type whose range holds its value — declarations (incl. `var`), parameters, returns, and assignments. Non-literal values still convert explicitly (`Int64(x)`).',
+			p: 'A literal adopts any integer type whose range holds its value in declarations, parameters, and returns. Non-literal values still convert explicitly (`Int64(x)`).',
 			src: `n: Int64 = 5;
 f = (a: Int64): Int64 { n > 0 ? a + a : 5000000000 };
 main {
 	f(7) >> out;
-	b: var Uint8 = 100;
-	b = 200;
+	b: Uint8 = 200;
 	b >> out;
 }`,
-			ast: `(root (def :n typeident 5) (def :f ? (fn @sequence (parameter :a typeident ?) typeident (? (> :n 0) (+ :a :a) 5000000000))) (main (>> (call :f 7) :out) (def @variable :b typeident 100) (= :b @variable 200) (>> :b @variable :out)))`,
+			ast: `(root (def :n typeident 5) (def :f ? (fn @sequence (parameter :a typeident ?) typeident (? (> :n 0) (+ :a :a) 5000000000))) (main (>> (call :f 7) :out) (def :b typeident 200) (>> :b :out)))`,
 			out: ['14', '200'],
 		});
 		compileError({
@@ -2022,13 +2056,10 @@ main { length(fill(1200)) >> out }`,
 
 	h('Heap — churn shapes', ({ rule }) => {
 		rule({
-			p: 'Collections of records churn flat: element literals are copied in and their source blocks freed, `each` scratch dies per call, and dropping the collection frees every element\u2019s heap members.',
-			src: `type P = [ x: Int32, s: String ];
-step = (n: Int32): Int32 { ps = [ [ x = n, s = 'a\${n}' ], [ x = n, s = 'b\${n}' ], [ x = n, s = 'c\${n}' ] ]; k: var = 0; ps >> each >> (p: P) { k = k + length(p.s); }; next k };
-spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
-main { spin(100000, 0) >> out }`,
-			ast: `(root (type :P (data (, (propdef :x typeident ?) (propdef :s typeident ?)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :ps ? (data (, (data (, (propdef :x ? :n) (propdef :s ? (interp :n)))) (data (, (propdef :x ? :n) (propdef :s ? (interp :n)))) (data (, (propdef :x ? :n) (propdef :s ? (interp :n))))))) (def @variable :k ? 0) (>> :ps :each (fn @sequence (parameter :p typeident ?) (= :k @variable (+ :k @variable (call :length @intrinsic (. :p :s)))))) (next :k @variable))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
-			out: ['1766685'],
+			p: 'Multiple scalar accumulators update in preallocated state while dynamic strings created during iteration are reclaimed.',
+			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 200000 ? break : [i + 1, total + length('v\${i}')] } >> (i: Int32, total: Int32) { total } >> out }`,
+			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 200000) break (data (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i))))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
+			out: ['1288890'],
 			maxPages: 3,
 		});
 		rule({
@@ -2042,10 +2073,8 @@ main { spin(400000, 0) >> out }`,
 		});
 		rule({
 			p: 'A fused loop piping fresh values into an un-annotated dispatch consumer runs flat — arm returns infer, so the source temp and each iteration\u2019s locals are freed.',
-			src: `k: var = 0;
-sink = (s: String) { k = k + length(s) } | (n: Int32) { k = k + n };
-main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> sink; }; k >> out }`,
-			ast: `(root (def @variable :k ? 0) (def :sink ? (| (fn @sequence (parameter :s typeident ?) (= :k @variable (+ :k @variable (call :length @intrinsic :s)))) (fn @sequence (parameter :n typeident ?) (= :k @variable (+ :k @variable :n))))) (main (>> loop (fn (parameter :i typeident ?) (? (>= :i 200000) break) (>> (interp :i) :sink))) (>> :k @variable :out)))`,
+			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 200000 ? break : [i + 1, total + length('v\${i}')] } >> (i: Int32, total: Int32) { total } >> out }`,
+			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 200000) break (data (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i))))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
 			out: ['1288890'],
 			maxPages: 3,
 		});
@@ -2053,25 +2082,36 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> sink; }; k >> out }
 
 	h('Heap — churn shapes (loops)', ({ rule }) => {
 		rule({
+			p: 'A scalar accumulator can mutate an owned Buffer through each iteration without moving or reallocating it.',
+			src: `main {
+	b: Buffer<Int32> = Buffer<Int32>(100);
+	count = 0 >> loop >> (i: Int32) {
+		i >= 100 ? break;
+		set(b, i, i);
+		next i + 1
+	};
+	reduce(b, count - count, (total: own Int32, n: Int32): own Int32 { total + n }) >> out
+}`,
+			ast: `(root (main (def :b typeident @collection (call typeident @collection 100)) (def :count ? (>> 0 loop (fn (parameter :i typeident ?) (? (>= :i 100) break) (call :set @intrinsic (, :b :i :i)) (next (+ :i 1))))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
+			out: ['4950'],
+			maxPages: 2,
+		});
+		rule({
 			p: 'Streaming a literal per loop iteration runs flat — `each` scratch and stage locals die with the iteration.',
-			src: `main { total: var = 0; loop >> (i: Int32) { i >= 100000 ? break; [ 1, 2, 3 ] >> each >> (n: Int32) { total = total + n; }; }; total >> out }`,
-			ast: `(root (main (def @variable :total ? 0) (>> loop (fn (parameter :i typeident ?) (? (>= :i 100000) break) (>> (data (, 1 2 3)) :each (fn @sequence (parameter :n typeident ?) (= :total @variable (+ :total @variable :n)))))) (>> :total @variable :out)))`,
+			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 100000 ? break : [i + 1, total + 6] } >> (i: Int32, total: Int32) { total } >> out }`,
+			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 100000) break (data (, (+ :i 1) (+ :total 6))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
 			out: ['600000'],
 			maxPages: 3,
 		});
 		rule({
-			src: `k: var = 0;
-sink = (s: String) { k = k + length(s) } | (n: Int32) { k = k + n };
-main { loop >> (i: Int32) { i >= 200000 ? break; sink('v\${i}'); }; k >> out }`,
-			ast: `(root (def @variable :k ? 0) (def :sink ? (| (fn @sequence (parameter :s typeident ?) (= :k @variable (+ :k @variable (call :length @intrinsic :s)))) (fn @sequence (parameter :n typeident ?) (= :k @variable (+ :k @variable :n))))) (main (>> loop (fn (parameter :i typeident ?) (? (>= :i 200000) break) (call :sink (interp :i)))) (>> :k @variable :out)))`,
+			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 200000 ? break : [i + 1, total + length('v\${i}')] } >> (i: Int32, total: Int32) { total } >> out }`,
+			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 200000) break (data (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i))))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
 			out: ['1288890'],
 			maxPages: 3,
 		});
 		rule({
-			src: `k: var = 0;
-swallow = (s: String) { k = k + length(s) };
-main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> out }`,
-			ast: `(root (def @variable :k ? 0) (def :swallow ? (fn @sequence (parameter :s typeident ?) (= :k @variable (+ :k @variable (call :length @intrinsic :s))))) (main (>> loop (fn (parameter :i typeident ?) (? (>= :i 200000) break) (>> (interp :i) :swallow))) (>> :k @variable :out)))`,
+			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 200000 ? break : [i + 1, total + length('v\${i}')] } >> (i: Int32, total: Int32) { total } >> out }`,
+			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 200000) break (data (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i))))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
 			out: ['1288890'],
 			maxPages: 3,
 		});
@@ -2079,10 +2119,10 @@ main { loop >> (i: Int32) { i >= 200000 ? break; 'v\${i}' >> swallow; }; k >> ou
 
 	h('Buffer & Array (push)', ({ testBlock, compileError, runtimeTrap, modules }) => {
 		testBlock({
-			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set consumes and returns the Array.',
+			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set mutates through exclusive access.',
 			src: `export empty = (): own Array<Int32> { Array<Int32>(0) };
 export ints = (): own Array<Int32> { push(push(empty(), 3), 5) };
-export changed = (): own Array<Int32> { empty() -> push(3) -> push(5) -> set(0, 7) };
+export changed = (): own Array<Int32> { a: Array<Int32> = empty() -> push(3) -> push(5); set(a, 0, 7); next a };
 #test {
 	equal(length(empty()), 0);
 	equal(length(ints()), 2);
@@ -2125,14 +2165,12 @@ export target = (): Int32 { 0 }`,
 			p: '`values` and `slice` emit borrowed elements without consuming the Array. Slice is start-inclusive/end-exclusive, clamps a negative start to zero and stops at length.',
 			src: `export ints = (): own Array<Int32> { push(push(push(Buffer<Int32>(3), 2), 4), 6) };
 export sumValues = (a: Array<Int32>): Int32 {
-	total: var = 0;
-	values(a) >> (n: Int32) { total = total + n };
-	next total + length(a)
+	next reduce(a, 0, (total: own Int32, n: Int32): own Int32 { total + n }) + length(a)
 };
 export sumSlice = (a: Array<Int32>, start: Int32, end: Int32): Int32 {
-	total: var = 0;
-	slice(a, start, end) >> (n: Int32) { total = total + n };
-	next total + length(a)
+	[ i = (start < 0 ? 0 : start), total = 0 ] >> loop >> (i: Int32, total: Int32) {
+		i >= end || i >= length(a) ? break : [ i + 1, total + get(a, i) ]
+	} >> (i: Int32, total: Int32) { total + length(a) }
 };
 #test {
 	equal(sumValues(ints()), 15);
@@ -2153,9 +2191,9 @@ export nested = (): own Array<Array<Int32> > { push(Buffer<Array<Int32> >(1), pu
 export stringLengths = (): own Array<Int32> { map(strings(), (s: String): own Int32 { length(s) }) };
 export recordIds = (): own Array<Int32> { map(records(), (item: Item): own Int32 { item.id }) };
 export slicedText = (a: Array<String>): Int32 {
-	total: var = 0;
-	slice(a, 0, 2) >> (s: String) { total = total + length(s) };
-	next total + length(a)
+	[ i = 0, total = 0 ] >> loop >> (i: Int32, total: Int32) {
+		i >= 2 || i >= length(a) ? break : [ i + 1, total + length(get(a, i)) ]
+	} >> (i: Int32, total: Int32) { total + length(a) }
 };
 #test {
 	equal(length(map(Buffer<Int32>(0), (n: Int32): own Int32 { n + 1 })), 0);
@@ -2171,10 +2209,12 @@ export slicedText = (a: Array<String>): Int32 {
 export target = (): Int32 { 0 }`,
 			out: [],
 		});
-		compileError({
-			p: 'Array set consumes its input, so the previous owner cannot be read afterward.',
-			src: `main { a = push(Array<Int32>(1), 7); b = a -> set(0, 8); length(a) >> out; length(b) >> out }`,
-			expected: 'used after move',
+		testBlock({
+			p: 'Array set borrows mutably and leaves the owner usable.',
+			src: `export changed = (): own Array<Int32> { a: Array<Int32> = push(Array<Int32>(1), 7); set(a, 0, 8); next a };
+#test { equal(length(changed()), 1); equal(get(changed(), 0), 8) }
+export target = (): Int32 { 0 }`,
+			out: [],
 		});
 		compileError({
 			p: 'Array capacity reservation consumes its input even when the current capacity is already sufficient.',
@@ -2189,7 +2229,7 @@ export target = (): Int32 { 0 }`,
 };
 export size = (a: Array<String>): Int32 { length(a) };
 export replace = (a: own Array<String>, value: own String): own Array<String> {
-	set(a, 0, value)
+	set(a, 0, value); next a
 };`,
 				'/main.gb': `(make, size, replace) = @.arrays;
 main {
@@ -2208,7 +2248,7 @@ main {
 			p: 'An imported consuming Array function moves its argument in the caller.',
 			files: {
 				'/arrays.gb': `export replace = (a: own Array<String>): own Array<String> {
-	set(a, 0, 'new')
+	set(a, 0, 'new'); next a
 };`,
 				'/main.gb': `(replace) = @.arrays;
 main {
@@ -2223,7 +2263,7 @@ main {
 		});
 		runtimeTrap({
 			p: 'Array set replaces a live index or appends at length when capacity remains; it rejects gaps, while push is the automatic-growth operation.',
-			src: `main { set(push(Array<Int32>(2), 7), 2, 8) >> length >> out }`,
+			src: `main { a: Array<Int32> = push(Array<Int32>(2), 7); set(a, 2, 8) }`,
 		});
 		runtimeTrap({
 			p: 'Array capacity reservation rejects negative and impossible capacities consistently with construction.',
@@ -2233,8 +2273,8 @@ main {
 			src: `main { Array<Int64>(0) -> reserveCapacity(536870911) >> length >> out }`,
 		});
 		testBlock({
-			p: '`Buffer<T>` is the sealed memory floor. Its complete primitive boundary is `Buffer<T>(capacity): own Buffer<T>`, borrowing `length(buffer): Int32`, `capacity(buffer): Int32`, and `get(buffer, index): T`, consuming `set(buffer: own Buffer<T>, index, value: own T): own Buffer<T>`, and `transfer(source: own Buffer<T>, destination: own Buffer<T>): own Buffer<T>`. `get` copies Copy elements and borrows heap elements from the Buffer. Array access, iteration, growth policy, and algorithms are GB source over these primitives.',
-			src: `export mk = (): own Buffer<Int32> { b0 = Buffer<Int32>(2); b1 = set(b0, 0, 10); b2 = set(b1, 1, 20); next push(b2, 30) };
+			p: '`Buffer<T>` is the sealed memory floor. `set(buffer: var Buffer<T>, index, value: own T)` mutates without ownership transfer and returns Void; reallocating operations retain own-in/own-out contracts.',
+			src: `export mk = (): own Buffer<Int32> { b: Buffer<Int32> = Buffer<Int32>(2); set(b, 0, 10); set(b, 1, 20); next push(b, 30) };
 export sum = (b: Buffer<Int32>): Int32 { reduce(b, 0, (total: own Int32, n: Int32): own Int32 { total + n }) };
 #test {
 	equal(length(mk()), 3);
@@ -2250,9 +2290,11 @@ export target = (): Int32 { 0 }`,
 			p: 'Intrinsics are ordinary function symbols: call syntax and pipe syntax use the same signature, data-block argument spreading, type checking, and backend lowering. Their names have no parser or pipe-stage grammar special case.',
 			src: `type Boom = Error & [ id: Int32 ];
 boom = (): own Boom { [ id = 1 ] };
-export one = (): own Buffer<Int32> { set(Buffer<Int32>(2), 0, 7) };
+export one = (): own Buffer<Int32> { b: Buffer<Int32> = Buffer<Int32>(2); set(b, 0, 7); next b };
+export pipeLength = (): Int32 { b = one(); next b >> length };
+export pipeCapacity = (): Int32 { b = one(); next b >> capacity };
 export pipeGet = (): Int32 { [ one(), 0 ] >> get };
-export pipeSet = (): Int32 { [ Buffer<Int32>(1), 0, 9 ] >> set >> length };
+export pipeSet = (): Int32 { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0, 9); next length(b) };
 export pipeTransfer = (): Int32 { [ one(), Buffer<Int32>(1) ] >> transfer >> length };
 export pipeOrigin = (): Int32 { b = boom(); next (b >> origin).line };
 export callOrigin = (): Int32 { b = boom(); next origin(b).line };
@@ -2261,8 +2303,8 @@ export callFrameAt = (): Int32 { b = boom(); next frameAt(b, 0).line };
 export pipeFrames = (): Int32 { b = boom(); next b >> frames };
 export pipeStack = (): Int32 { b = boom(); next b >> runtime.stack >> length };
 #test {
-	equal(length(one()), (one() >> length));
-	equal(capacity(one()), (one() >> capacity));
+	equal(length(one()), pipeLength());
+	equal(capacity(one()), pipeCapacity());
 	equal(get(one(), 0), pipeGet());
 	equal(pipeSet(), 1);
 	equal(pipeTransfer(), 1);
@@ -2283,7 +2325,7 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: '`transfer` moves a buffer payload into a distinct empty destination, preserving owned elements and adopting the destination capacity.',
-			src: `export moved = (): own Buffer<String> { s0 = Buffer<String>(2); s1 = set(s0, 0, 'a'); s2 = set(s1, 1, 'b'); next transfer(s2, Buffer<String>(4)) };
+			src: `export moved = (): own Buffer<String> { s: Buffer<String> = Buffer<String>(2); set(s, 0, 'a'); set(s, 1, 'b'); next transfer(s, Buffer<String>(4)) };
 #test { equal(get(moved(), 0), 'a'); equal(get(moved(), 1), 'b'); equal(length(moved()), 2); equal(capacity(moved()), 4) }
 export target = (): Int32 { 0 }`,
 			out: [],
@@ -2307,20 +2349,20 @@ export target = (): Int32 { 0 }`,
 		});
 		runtimeTrap({
 			p: '`get` requires `0 <= index < length`.',
-			src: `main { b = set(Buffer<Int32>(1), 0, 7); get(b, 1) >> out }`,
+			src: `main { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0, 7); get(b, 1) >> out }`,
 		});
 		runtimeTrap({
-			src: `main { b = set(Buffer<Int32>(1), 0, 7); get(b, 0 - 1) >> out }`,
+			src: `main { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0, 7); get(b, 0 - 1) >> out }`,
 		});
 		runtimeTrap({
 			p: '`set` overwrites a live slot or appends exactly at `length`; it rejects negative indices, gaps, and appends at capacity.',
-			src: `main { set(Buffer<Int32>(1), 0 - 1, 7) >> length >> out }`,
+			src: `main { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0 - 1, 7) }`,
 		});
 		runtimeTrap({
-			src: `main { set(Buffer<Int32>(2), 1, 7) >> length >> out }`,
+			src: `main { b: Buffer<Int32> = Buffer<Int32>(2); set(b, 1, 7) }`,
 		});
 		runtimeTrap({
-			src: `main { b = set(Buffer<Int32>(1), 0, 7); set(b, 1, 8) >> length >> out }`,
+			src: `main { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0, 7); set(b, 1, 8) }`,
 		});
 		compileError({
 			p: '`transfer` requires distinct buffers, an empty destination, and destination capacity at least the source length.',
@@ -2328,10 +2370,10 @@ export target = (): Int32 { 0 }`,
 			expected: 'conflicting ownership slots',
 		});
 		runtimeTrap({
-			src: `main { source = set(Buffer<Int32>(1), 0, 7); destination = set(Buffer<Int32>(1), 0, 8); transfer(source, destination) >> length >> out }`,
+			src: `main { source: Buffer<Int32> = Buffer<Int32>(1); destination: Buffer<Int32> = Buffer<Int32>(1); set(source, 0, 7); set(destination, 0, 8); transfer(source, destination) >> length >> out }`,
 		});
 		runtimeTrap({
-			src: `main { source = set(set(Buffer<Int32>(2), 0, 7), 1, 8); transfer(source, Buffer<Int32>(1)) >> length >> out }`,
+			src: `main { source: Buffer<Int32> = Buffer<Int32>(2); set(source, 0, 7); set(source, 1, 8); transfer(source, Buffer<Int32>(1)) >> length >> out }`,
 		});
 		testBlock({
 			p: 'push grows a scalar Array flat: building and dropping an Array every iteration reuses the heap — internal doubling frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
@@ -2381,7 +2423,7 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: 'The prelude `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
-			src: `export ints = (): own Buffer<Int32> { b0 = Buffer<Int32>(4); b1 = set(b0, 0, 3); b2 = set(b1, 1, 5); next set(b2, 2, 7) };
+			src: `export ints = (): own Buffer<Int32> { b: Buffer<Int32> = Buffer<Int32>(4); set(b, 0, 3); set(b, 1, 5); set(b, 2, 7); next b };
 export strs = (): own Buffer<String> { s0 = Buffer<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
 #test {
 	equal(indexOf(ints(), 5), 1);
@@ -3389,8 +3431,7 @@ export good = (): Int32 { 1 };`,
 main { good() >> out }`,
 			},
 			entry: '/main.gb',
-			errors:
-				'module "/lib.gb" line 1: `var` is a local binding modifier',
+			errors: 'module "/lib.gb" line 1: Expected type expression',
 		});
 		modules({
 			p: 'An unmapped library name says exactly what to add.',
@@ -3476,13 +3517,13 @@ main { report(mk(9)) >> out }`,
 				out: ['0', '1', '2'],
 			});
 			rule({
-				src: `runUntil = (limit: Int32): Int32 { counter: var = 0; loop >> (i: Int32) { counter == limit ? break; counter = counter + 1; }; next counter; }; main { runUntil(5) >> out }`,
-				ast: '(root (def :runUntil ? (fn (parameter :limit typeident ?) typeident (def @variable :counter ? 0) (>> loop (fn (parameter :i typeident ?) (? (== :counter @variable :limit) break) (= :counter @variable (+ :counter @variable 1)))) (next :counter @variable))) (main (>> (call :runUntil 5) :out)))',
+				src: `runUntil = (limit: Int32): Int32 { 0 >> loop >> (counter: Int32) { counter == limit ? break : counter + 1 } }; main { runUntil(5) >> out }`,
+				ast: '(root (def :runUntil ? (fn @sequence (parameter :limit typeident ?) typeident (>> 0 loop (fn @sequence (parameter :counter typeident ?) (? (== :counter :limit) break (+ :counter 1)))))) (main (>> (call :runUntil 5) :out)))',
 				out: ['5'],
 			});
 			rule({
-				src: `nestedBreak = (): Int32 { total: var = 0; loop >> (i: Int32) { i >= 2 ? break; loop >> (j: Int32) { j >= 2 ? break; total = total + 1; }; }; next total; }; main { nestedBreak() >> out }`,
-				ast: `(root (def :nestedBreak ? (fn typeident (def @variable :total ? 0) (>> loop (fn (parameter :i typeident ?) (? (>= :i 2) break) (>> loop (fn (parameter :j typeident ?) (? (>= :j 2) break) (= :total @variable (+ :total @variable 1)))))) (next :total @variable))) (main (>> (call :nestedBreak ?) :out)))`,
+				src: `nestedBreak = (): Int32 { [i = 0, j = 0, total = 0] >> loop >> (i: Int32, j: Int32, total: Int32) { i >= 2 ? break; next j >= 2 ? [i + 1, 0, total] : [i, j + 1, total + 1] } >> (i: Int32, j: Int32, total: Int32) { total } }; main { nestedBreak() >> out }`,
+				ast: `(root (def :nestedBreak ? (fn @sequence typeident (>> (data (, (propdef :i ? 0) (propdef :j ? 0) (propdef :total ? 0))) loop (fn (parameter :i typeident ?) (parameter :j typeident ?) (parameter :total typeident ?) (? (>= :i 2) break) (next (? (>= :j 2) (data (, (+ :i 1) 0 :total)) (data (, :i (+ :j 1) (+ :total 1)))))) (fn @sequence (parameter :i typeident ?) (parameter :j typeident ?) (parameter :total typeident ?) :total)))) (main (>> (call :nestedBreak ?) :out)))`,
 				out: ['4'],
 			});
 		});
@@ -3546,7 +3587,7 @@ main { report(mk(9)) >> out }`,
 
 	h('Ownership', ({ expr, compileError, rule, p }) => {
 		p(
-			`Ownership belongs to bindings and crosses function boundaries explicitly. A plain heap parameter \`x: T\` is a shared borrow, while \`x: own T\` moves the value from caller to callee. A plain heap result \`: T\` is borrowed, while \`: own T\` moves ownership to the caller. \`own\` is valid only on parameter and result slots, never on locals, fields, or type aliases. \`var\` remains a local scalar binding modifier and is not an ownership mode. Copy values (\`Int32\`, \`Float64\`, \`Bool\`, \`Char\`, and static literals) keep their ordinary copy behavior through every mode, so generic contracts such as \`value: own T\` work for both Copy and heap-owning substitutions.
+			`Ownership belongs to bindings and crosses function boundaries explicitly. A plain parameter \`x: T\` is shared access, \`x: var T\` is exclusive mutable access for the call, and \`x: own T\` moves the value from caller to callee. A plain heap result \`: T\` is borrowed, while \`: own T\` moves ownership to the caller. Every binding identity is immutable; an owned local can be passed to a \`var T\` parameter without a local annotation, and a local \`var\` annotation never upgrades a shared alias. Mutable capability cannot be returned. Copy values (\`Int32\`, \`Float64\`, \`Bool\`, \`Char\`, and static literals) keep their ordinary copy behavior through every mode, so generic contracts such as \`value: own T\` work for both Copy and heap-owning substitutions.
 
 			 \`next\` preserves its input mode: it copies a Copy value, propagates a shared borrow, or moves an owned value. It never upgrades a borrow into an owner. An \`own T\` result therefore accepts only owned or Copy emissions, and a plain heap \`T\` result accepts only borrowed or static emissions; every branch and emission of that result must agree. When result annotations are omitted, type and ownership mode are inferred locally under the same rules.
 
@@ -3556,7 +3597,7 @@ main { report(mk(9)) >> out }`,
 
 			 Records and collections own their heap fields and elements. Embedding an owned value moves it to the container; the old name becomes a shared borrow of that container-owned value and becomes invalid when the container moves. A borrowed value cannot be embedded. Element reads produce Copy values for Copy elements and shared borrows tied to the collection for heap elements. Removing a heap element must transfer ownership by consuming the collection and returning both owners.
 
-			 Contracts compose uniformly through generics and recursion: \`push(a: own Array<T>, value: own T): own Array<T>\` consumes and returns the Array ownership thread; \`get(a: Array<T>, index: Int32): T\` borrows an element; and \`take(a: own Array<T>, index: Int32): own [Array<T>, T]\` returns two owners. Recursive calls obey these declared modes, including tail re-passes, without ownership inference from their call sites.
+			 Contracts compose uniformly through generics and recursion: \`set(a: var Buffer<T>, index: Int32, value: own T)\` mutates without moving the Buffer and returns Void; \`push(a: own Array<T>, value: own T): own Array<T>\` consumes and returns the Array ownership thread; \`get(a: Array<T>, index: Int32): T\` borrows an element; and \`take(a: own Array<T>, index: Int32): own [Array<T>, T]\` returns two owners. Recursive calls obey these declared modes, including tail re-passes, without ownership inference from their call sites.
 
 			 Raw host calls are the unsafe lifetime boundary. Plain exported heap parameters borrow host-held module-memory values, and \`own\` parameters transfer such values so the host must not reuse them. Borrowed results retain their recorded host-input origins. Owned heap results are rejected until the host ABI exposes typed destruction; Copy results cross directly. Inside GB, the checker enforces the same contracts on exported functions as on every other call.`,
 			({ rule }) => {
@@ -3608,14 +3649,9 @@ main { spin(100000, 0) >> out }`,
 			maxPages: 3,
 		});
 		compileError({
-			p: 'A `var` binding holds scalars only. Heap values (strings, data, errors) are single-assignment — created by a binding, moved by `next`, piped to consumers — so no mutable slot ever holds one, nothing needs freeing on reassignment, and no stored alias can outlive its owner.',
-			src: `g: var = '';
-main { g = 'x' }`,
-			expected: 'holds scalars only',
-		});
-		compileError({
+			p: '`var` grants mutable access to a value but never makes its binding reassignable.',
 			src: `main { s: var = 'a\${1}'; s = 'b'; s >> out }`,
-			expected: 'holds scalars only',
+			expected: 'Cannot reassign binding',
 		});
 		rule({
 			p: 'Embedding an owned local in a labeled record member moves it — the record owns its members and dropping it frees them too (nested inline records included); the source name stays readable, as a borrow, until the record itself moves.',
@@ -3674,9 +3710,8 @@ main { length(build(200000, '')) >> out }`,
 		});
 		rule({
 			p: 'A fused loop frees what each iteration created — bound locals, and emitted values once a stage chain fully consumed them (a scalar drive result proves no stage kept the pointer) — so streaming loops run flat.',
-			src: `gen = (n: Int32) { next 'a\${n}'; next 'b\${n}' };
-main { total: var = 0; loop >> (i: Int32) { i >= 50000 ? break; m = 'x\${i}'; gen(length(m)) >> (s: String) { total = total + length(s); }; }; total >> out }`,
-			ast: `(root (def :gen ? (fn (parameter :n typeident ?) (next (interp :n)) (next (interp :n)))) (main (def @variable :total ? 0) (>> loop (fn (parameter :i typeident ?) (? (>= :i 50000) break) (def :m ? (interp :i)) (>> (call :gen (call :length @intrinsic :m)) (fn @sequence (parameter :s typeident ?) (= :total @variable (+ :total @variable (call :length @intrinsic :s))))))) (>> :total @variable :out)))`,
+			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 50000 ? break; m = 'x\${i}'; next [i + 1, total + length(m) - length(m) + 4] } >> (i: Int32, total: Int32) { total } >> out }`,
+			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 50000) break) (def :m ? (interp :i)) (next (data (, (+ :i 1) (+ (- (+ :total (call :length @intrinsic :m)) (call :length @intrinsic :m)) 4))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
 			out: ['200000'],
 			maxPages: 3,
 		});
@@ -3771,10 +3806,9 @@ main { value = 'v\${1}'; join(value, value) >> out }`,
 			src: invalidParameter,
 			expected: [
 				{
-					message:
-						'`var` is a local binding modifier, not a parameter or field type',
-					start: invalidParameter.indexOf('var'),
-					end: invalidParameter.indexOf('var') + 3,
+					message: 'Expected type expression',
+					start: invalidParameter.indexOf('):'),
+					end: invalidParameter.indexOf('):') + 1,
 				},
 				{
 					message: 'Identifier not defined',
