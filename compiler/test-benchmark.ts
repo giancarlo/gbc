@@ -17,13 +17,20 @@ odd = (i: Int32, total: Int32): Int32 {
 }`;
 
 function compileRun(source: string): () => number {
+	const entry = '/benchmark.gb';
 	const program = Program({
 		sys: {
-			readFile: () => source,
-			readBytes: () => new Uint8Array(),
+			readFile: path => {
+				if (path !== entry)
+					throw new Error(`unexpected benchmark source read: ${path}`);
+				return source;
+			},
+			readBytes: path => {
+				throw new Error(`unexpected benchmark byte read: ${path}`);
+			},
 		},
 	});
-	const result = program.compileFile('/benchmark.gb', { requireMain: false });
+	const result = program.compileFile(entry, { requireMain: false });
 	if (result.errors.length || !result.bytes)
 		throw new Error(result.errors.map(e => e.message).join('; '));
 	const instance = instantiateWasm(result.bytes);
