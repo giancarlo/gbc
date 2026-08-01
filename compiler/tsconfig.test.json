@@ -1,6 +1,6 @@
 {
 	"extends": "./tsconfig.json",
-	"files": ["test.ts", "test-api.ts"],
+	"files": ["test.ts", "test-api.ts", "test-benchmark.ts"],
 	"references": [
 		{
 			"path": "."

@@ -681,6 +681,8 @@ interface FuncBuilder {
 	 * binder adopts them — freed at block exit, or released together with
 	 * the binder if it escapes. */
 	bindingSym?: GbcSymbol;
+	selfLoopDepth?: number;
+	selfLoopUsed?: boolean;
 	relocs?: Reloc[];
 	relocTainted?: boolean;
 }
@@ -7213,8 +7215,8 @@ export function compileWasm(
 		return [inferType(args, fn)];
 	}
 
-	// A direct call whose result types match this fn's is emitted as a
-	// WASM tail call (`return_call`), so tail recursion doesn't grow the stack.
+	// A direct call whose result types match this fn's is emitted as a tail
+	// transfer, so tail recursion doesn't grow the stack.
 	function tailCallOwnedOk(
 		fn: FuncBuilder,
 		target: SymbolMap['function'],
@@ -7263,6 +7265,11 @@ export function compileWasm(
 		if (!tailCallOwnedOk(fn, fnSym)) return false;
 		if (!sameWasmShape(fnSym.returnType ?? BaseTypes.Void, fn.returnType))
 			return false;
+		if (
+			funcBuilders[builderIdx] === fn &&
+			trySelfLoopCall(node.children[1], fnSym, fn)
+		)
+			return true;
 		// A fresh heap arg would be orphaned by `return_call` (no frame left
 		// to free it). Only self-recursion is worth that trade — a non-self
 		// tail call saves one frame, so demote it to a plain call + frees.
@@ -7288,9 +7295,77 @@ export function compileWasm(
 		return true;
 	}
 
+	function trySelfLoopCall(
+		args: Node | undefined,
+		fnSym: SymbolMap['function'],
+		fn: FuncBuilder,
+	): boolean {
+		const params = fnSym.parameters ?? [];
+		return trySelfLoopArgs(
+			resolveArgNodes(params, argListFromCall(args)),
+			params,
+			fnSym,
+			fn,
+		);
+	}
+
+	function trySelfLoopArgs(
+		resolved: (Node | undefined)[],
+		params: GbcSymbol[],
+		fnSym: SymbolMap['function'],
+		fn: FuncBuilder,
+	): boolean {
+		if (fn.selfLoopDepth === undefined) return false;
+		const slots = params.map((p, i) => {
+			const target = p.type;
+			if (!target) return undefined;
+			const wasm = wasmTypesOf(target);
+			const param = fn.paramMap.get(p);
+			const arg = resolved[i];
+			return wasm.length === 1 && param !== undefined && arg
+				? { arg, param, type: wasm[0] ?? I32, target }
+				: undefined;
+		});
+		if (slots.some(s => !s)) return false;
+		const temps = slots.map(s => allocLocal(fn, s?.type ?? I32));
+		const ownedIn = ownedInParams.get(fnSym);
+		for (let i = 0; i < slots.length; i++) {
+			const slot = slots[i];
+			const p = params[i];
+			if (!slot || !p) return false;
+			stampErrorData(slot.arg, slot.target);
+			const at = compileExpr(slot.arg, fn);
+			trackCallArgOwned(
+				slot.arg,
+				at,
+				p.ownership === 'own' || ownedIn?.[i],
+				false,
+				true,
+				fn,
+			);
+			coerceIntWidth(at, slot.target, fn);
+			maybeUpcastAdjust(at, slot.target, fn);
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(temps[i] ?? 0, fn.body);
+		}
+		if (fn.owned?.length) emitOwnedFrees(fn);
+		for (let i = 0; i < slots.length; i++) {
+			const slot = slots[i];
+			if (!slot) return false;
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(temps[i] ?? 0, fn.body);
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(slot.param, fn.body);
+		}
+		fn.body.push(OP_BR);
+		uleb128(fn.blockDepth - fn.selfLoopDepth, fn.body);
+		fn.selfLoopUsed = true;
+		return true;
+	}
+
 	// A pipe whose final stage is a direct single-param fn call, in tail
 	// position (`(n - 1) >> f`). Compiles the input to the last stage as a value,
-	// then `return_call`s the stage fn — so recursion through a pipe stays flat.
+	// then transfers to the stage fn — so recursion through a pipe stays flat.
 	function tryTailPipe(node: NodeMap['>>'], fn: FuncBuilder): boolean {
 		const flat = flattenPipe(node.children);
 		if (flat.length !== 2) return false;
@@ -7305,6 +7380,11 @@ export function compileWasm(
 		if (params.length !== 1) return false;
 		if (!sameWasmShape(fnSym.returnType ?? BaseTypes.Void, fn.returnType))
 			return false;
+		if (
+			funcBuilders[builderIdx] === fn &&
+			trySelfLoopArgs([source], params, fnSym, fn)
+		)
+			return true;
 		const st = inferType(source, fn);
 		if (
 			funcBuilders[builderIdx] !== fn &&
@@ -7442,9 +7522,58 @@ export function compileWasm(
 		return false;
 	}
 
+	function compileFnStatements(builder: FuncBuilder, fnNode: NodeMap['fn']) {
+		const stmts = fnNode.statements ?? [];
+		if (stmts.length === 1 && stmts[0]?.kind === 'next') {
+			compileTail(stmts[0], builder);
+			return;
+		}
+		for (let i = 0; i < stmts.length; i++) {
+			const stmt = stmts[i];
+			if (!stmt) continue;
+			if (i === stmts.length - 1) {
+				compileTail(stmt, builder);
+				continue;
+			}
+			const t = compileExpr(stmt, builder);
+			if (hasRuntimeValue(t)) {
+				builder.body.push(OP_DROP);
+				if (isUnionType(t)) builder.body.push(OP_DROP);
+			}
+		}
+	}
+
+	function beginSelfLoop(builder: FuncBuilder): number | undefined {
+		if (isUnknownType(builder.returnType)) return;
+		const resultTypes = wasmTypesOf(builder.returnType);
+		if (resultTypes.length > 1) return;
+		const start = builder.body.length;
+		builder.body.push(OP_LOOP, resultTypes[0] ?? 0x40);
+		builder.blockDepth++;
+		builder.selfLoopDepth = builder.blockDepth;
+		builder.selfLoopUsed = false;
+		return start;
+	}
+
+	function endSelfLoop(builder: FuncBuilder, start: number | undefined) {
+		if (start === undefined) return;
+		builder.blockDepth--;
+		builder.selfLoopDepth = undefined;
+		if (builder.selfLoopUsed) builder.body.push(OP_END);
+		else {
+			builder.body.splice(start, 2);
+			for (const fixup of builder.callFixups)
+				if (fixup.offset >= start) fixup.offset -= 2;
+			for (const reloc of builder.relocs ?? [])
+				if (reloc.offset >= start) reloc.offset -= 2;
+		}
+		builder.selfLoopUsed = undefined;
+	}
+
 	function compileFnBody(builder: FuncBuilder, fnNode: NodeMap['fn']) {
 		inliningStages.add(fnNode.symbol);
 		try {
+			const loopStart = beginSelfLoop(builder);
 			const ownedIn = (fnNode.parameters ?? []).map(
 				p => p.symbol.ownership === 'own',
 			);
@@ -7474,26 +7603,9 @@ export function compileWasm(
 					});
 				}
 			}
-			const stmts = fnNode.statements ?? [];
-			if (stmts.length === 1 && stmts[0]?.kind === 'next') {
-				compileTail(stmts[0], builder);
-				emitOwnedFrees(builder);
-				return;
-			}
-			for (let i = 0; i < stmts.length; i++) {
-				const stmt = stmts[i];
-				if (!stmt) continue;
-				if (i === stmts.length - 1) {
-					compileTail(stmt, builder);
-					continue;
-				}
-				const t = compileExpr(stmt, builder);
-				if (hasRuntimeValue(t)) {
-					builder.body.push(OP_DROP);
-					if (isUnionType(t)) builder.body.push(OP_DROP);
-				}
-			}
+			compileFnStatements(builder, fnNode);
 			emitOwnedFrees(builder);
+			endSelfLoop(builder, loopStart);
 		} finally {
 			inliningStages.delete(fnNode.symbol);
 		}

@@ -1003,12 +1003,19 @@ main { ps = [ [ x = 1, y = 2 ], [ x = 3, y = 4 ] ]; length(ps) >> out; ps >> eac
 				out: ['100'],
 			});
 
-			// The final stage of a pipe in tail position emits `return_call`,
+			// The final self stage of a pipe lowers to the function loop backedge,
 			// so self-pipe recursion stays flat — 1M deep does not grow the stack.
 			rule({
 				src: `f = (n: Int32): Int32 { n <= 0 ? 100 : ((n - 1) >> f) }; main { f(1000000) >> out }`,
 				ast: `(root (def :f ? (fn @sequence (parameter :n typeident ?) typeident (? (<= :n 0) 100 (>> (- :n 1) :f)))) (main (>> (call :f 1000000) :out)))`,
 				out: ['100'],
+				wasm: {
+					fn: 'f',
+					loop: true,
+					tailCalls: 0,
+					selfTailCalls: 0,
+					locals: [0x7f],
+				},
 			});
 		});
 
@@ -2097,6 +2104,41 @@ main { spin(0, 0) >> out }`,
 			ast: `(root (def :spin ? (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) typeident (? (>= :i 100000) :total (call :spin (, (+ :i 1) (+ :total 6)))))) (main (>> (call :spin (, 0 0)) :out)))`,
 			out: ['600000'],
 			maxPages: 3,
+			wasm: {
+				fn: 'spin',
+				loop: true,
+				tailCalls: 0,
+				selfTailCalls: 0,
+				locals: [0x7f, 0x7f],
+			},
+		});
+		rule({
+			p: 'Recursive arguments are evaluated into typed temporaries before parameter locals update, preserving simultaneous swaps.',
+			src: `rotate = (n: Int32, a: Int32, b: Int32): Int32 { n == 0 ? a * 100 + b : rotate(n - 1, b, a + b) };
+main { rotate(3, 1, 2) >> out }`,
+			ast: `(root (def :rotate ? (fn @sequence (parameter :n typeident ?) (parameter :a typeident ?) (parameter :b typeident ?) typeident (? (== :n 0) (+ (* :a 100) :b) (call :rotate (, (- :n 1) :b (+ :a :b)))))) (main (>> (call :rotate (, 3 1 2)) :out)))`,
+			out: ['508'],
+			wasm: {
+				fn: 'rotate',
+				loop: true,
+				tailCalls: 0,
+				selfTailCalls: 0,
+				locals: [0x7f, 0x7f, 0x7f],
+			},
+		});
+		rule({
+			p: 'Loop-carried parameter locals retain their concrete WASM widths.',
+			src: `wide = (n: Int32, total: Int64): Int64 { n == 0 ? total : wide(n - 1, total + n) };
+main { wide(100000, 0) >> out }`,
+			ast: `(root (def :wide ? (fn @sequence (parameter :n typeident ?) (parameter :total typeident ?) typeident (? (== :n 0) :total (call :wide (, (- :n 1) (+ :total :n)))))) (main (>> (call :wide (, 100000 0)) :out)))`,
+			out: ['5000050000'],
+			wasm: {
+				fn: 'wide',
+				loop: true,
+				tailCalls: 0,
+				selfTailCalls: 0,
+				locals: [0x7f, 0x7e],
+			},
 		});
 	});
 
@@ -2440,6 +2482,7 @@ main {
 			out: ['5050'],
 		});
 		rule({
+			debug: true,
 			src: `countdown = (n: Int32): Int32 { n == 0 ? 0 : countdown(n - 1) };
 main {
 	countdown(1000000) >> out
@@ -2473,6 +2516,12 @@ main {
 }`,
 			ast: `(root (def :isEven ? (fn @sequence (parameter :n typeident ?) typeident (? (== :n 0) :true (call :isOdd (- :n 1))))) (def :isOdd ? (fn @sequence (parameter :n typeident ?) typeident (? (== :n 0) :false (call :isEven (- :n 1))))) (main (>> (call :isEven 10) :out) (>> (call :isEven 1000001) :out)))`,
 			out: ['true', 'false'],
+			wasm: {
+				fn: 'isEven',
+				loop: false,
+				tailCalls: 1,
+				selfTailCalls: 0,
+			},
 		});
 		rule({
 			p: '`main` may precede the definitions it calls.',
@@ -3659,7 +3708,7 @@ main { gen(3) >> each >> out }`,
 			expected: 'cannot embed borrowed',
 		});
 		rule({
-			p: 'A fresh value passed to a borrowing parameter remains caller-owned and is freed after its last derived borrow. A tail call demotes to a plain call when caller-owned temporaries must be released; self-recursion can retain `return_call` when ownership is re-passed.',
+			p: 'A fresh value passed to a borrowing parameter remains caller-owned and is freed after its last derived borrow. A tail call demotes to a plain call when caller-owned temporaries must be released; self-recursion can retain a loop backedge when ownership is re-passed.',
 			src: `use = (s: String): Int32 { length(s) };
 step = (n: Int32): Int32 { use('x\${n}') };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
@@ -3684,7 +3733,7 @@ main { f() >> out }`,
 			expected: 'dies with this block',
 		});
 		rule({
-			p: 'An `own` recursive accumulator is an explicit ownership thread: each iteration frees or moves the previous accumulator, and a tail re-pass moves it into the next call while retaining `return_call`.',
+			p: 'An `own` recursive accumulator is an explicit ownership thread: each iteration frees or moves the previous accumulator, and a tail re-pass moves it into the next loop iteration.',
 			src: `build = (n: Int32, acc: own String): own String { n == 0 ? acc : build(n - 1, '\${acc}x') };
 main { length(build(200000, '')) >> out }`,
 			ast: `(root (def :build ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :build (, (- :n 1) (interp :acc)))))) (main (>> (call :length @intrinsic (call :build (, 200000 ''))) :out)))`,

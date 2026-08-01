@@ -8,8 +8,12 @@ interface WasmModule {
 interface WasmMemory {
 	readonly buffer: ArrayBuffer;
 }
-interface WasmInstance {
-	readonly exports: { memory: WasmMemory; main?: () => void };
+export interface WasmInstance {
+	readonly exports: {
+		[name: string]: unknown;
+		memory: WasmMemory;
+		main?: () => void;
+	};
 }
 declare const WebAssembly: {
 	Module: new (bytes: Uint8Array) => WasmModule;
@@ -36,10 +40,10 @@ class ExitSignal {
 	constructor(readonly code: number) {}
 }
 
-export function runWasm(
+export function instantiateWasm(
 	bytes: Uint8Array,
-	write: (chunk: string) => void,
-): RunResult {
+	write: (chunk: string) => void = () => {},
+): WasmInstance {
 	const bound: { memory?: WasmMemory } = {};
 	const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), {
 		env: {
@@ -63,6 +67,15 @@ export function runWasm(
 	});
 	const memory = instance.exports.memory;
 	bound.memory = memory;
+	return instance;
+}
+
+export function runWasm(
+	bytes: Uint8Array,
+	write: (chunk: string) => void,
+): RunResult {
+	const instance = instantiateWasm(bytes, write);
+	const memory = instance.exports.memory;
 	if (!instance.exports.main)
 		throw new Error(
 			'module has no `main` export — built as a library? (its exports are host-callable instead)',

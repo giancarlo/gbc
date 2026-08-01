@@ -5,6 +5,7 @@ import { scan } from './scanner.js';
 import { Program } from './program.js';
 import { runWasm as runHostWasm } from './host.js';
 import { ast as printAst } from './debug.js';
+import { compileWasm, type LibraryObject } from './target-wasm.js';
 
 import type { NodeMap } from './node.js';
 
@@ -45,6 +46,13 @@ export type RuleDef = {
 	debug?: boolean;
 	/** Expected `runtime.exit` code (0 = ran to completion). */
 	exit?: number;
+	wasm?: {
+		fn: string;
+		loop: boolean;
+		tailCalls: number;
+		selfTailCalls: number;
+		locals?: number[];
+	};
 	test?: (ast: NodeMap['root']) => void;
 };
 
@@ -192,10 +200,10 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		);
 	};
 
-	rule = ({ p, src, ast, out, maxPages, debug, exit, test }: RuleDef): void => {
+	rule = ({ p, src, ast, out, maxPages, debug, exit, wasm, test }: RuleDef): void => {
 		if (p) {
 			this.p(p, api =>
-				api.rule({ src, ast, out, maxPages, debug, exit, test }),
+				api.rule({ src, ast, out, maxPages, debug, exit, wasm, test }),
 			);
 			return;
 		}
@@ -213,8 +221,41 @@ export class SpecApi extends TestApiBase<SpecApi> {
 					`exit code ${result.exitCode} (expected ${exit})`,
 				);
 		}
+		if (wasm) this.assertWasm(src, wasm);
 		test?.(rootAst);
 	};
+
+	private assertWasm(
+		src: string,
+		expected: NonNullable<RuleDef['wasm']>,
+	): void {
+		const { ast, errors } = this.parse(src);
+		if (errors.length) throw new Error('Cannot inspect invalid WASM source');
+		const objects: LibraryObject[] = [];
+		compileWasm(
+			{ ...ast, children: ast.children.filter(c => c.kind === 'def') },
+			false,
+			false,
+			undefined,
+			undefined,
+			objects,
+		);
+		const object = objects.find(o => o.sym.name === expected.fn);
+		if (!object) throw new Error(`No WASM object for ${expected.fn}`);
+		this.equal(object.code[0] === 0x03, expected.loop);
+		const selfTailCalls = object.relocs.filter(
+			r =>
+				r.kind === 'call' &&
+				r.sym.name === expected.fn &&
+				object.code[r.offset - 1] === 0x12,
+		).length;
+		const tailCalls = object.relocs.filter(
+			r => r.kind === 'call' && object.code[r.offset - 1] === 0x12,
+		).length;
+		this.equal(tailCalls, expected.tailCalls);
+		this.equal(selfTailCalls, expected.selfTailCalls);
+		if (expected.locals) this.equalValues(object.locals, expected.locals);
+	}
 
 	/**
 	 * Runtime-verified expression test. Wraps `src` as
