@@ -1656,7 +1656,7 @@ a = {
 		);
 	});
 
-	h('Assignment', ({ ast, rule, compileError }) => {
+	h('Assignment', ({ ast, rule, compileError, testBlock }) => {
 		ast({
 			src: `host = 'localhost'`,
 			ast: `(def :host ? 'localhost')`,
@@ -1704,6 +1704,20 @@ a = {
 			p: 'Mutable capability cannot escape through a function result.',
 			src: `borrow = (b: var Buffer<Int32>): var Buffer<Int32> { b }`,
 			expected: '`var` results require capability-preserving chains',
+		});
+		testBlock({
+			p: 'A mutable borrow emitted through a pipeline may be reborrowed mutably or shared without transferring ownership.',
+			src: `forward = (a: var Array<Int32>) { next a };
+write = (a: var Array<Int32>) { set(a, 0, 7) };
+read = (a: Array<Int32>): Int32 { get(a, 0) };
+#test { equal(target(), 7) }
+export target = (): Int32 {
+	a = Array<Int32>(1);
+	a >> forward >> write;
+	a >> forward >> read >> out;
+	next get(a, 0)
+}`,
+			out: ['7'],
 		});
 		compileError({
 			p: 'A mutable borrow emitted through a pipeline cannot move into an owning stage.',

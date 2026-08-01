@@ -929,6 +929,8 @@ export function checker({
 	root: Node;
 	errors: CompilerError[];
 }) {
+	const outputOwnershipChecked = new Set<SymbolMap['function']>();
+
 	function checkEach(node: Node[]) {
 		node.forEach(check);
 	}
@@ -1765,6 +1767,7 @@ export function checker({
 		checkUnusedValues(node);
 		if (node.statements) checkEach(node.statements);
 		checkMoves(node);
+		functionOutputOwnership(node);
 	}
 
 	function checkStageOnlyStmt(c: NodeMap['fn'], i: number) {
@@ -1991,8 +1994,7 @@ export function checker({
 			return;
 		}
 		inferPipeStageParams(kids);
-		checkMutablePipeStages(kids);
-		checkOwningPipeStages(kids);
+		checkPipeStageOwnership(kids);
 		for (let i = 0; i < kids.length; i++) {
 			const c = kids[i];
 			if (!c) continue;
@@ -2079,25 +2081,6 @@ export function checker({
 		}
 	}
 
-	function mutableBinding(node: Node | undefined): boolean {
-		return (
-			node?.kind === 'ident' &&
-			node.symbol.kind === 'variable' &&
-			mutableSymbol(node.symbol)
-		);
-	}
-
-	function checkMutablePipeStages(children: Node[]): void {
-		for (let i = 1; i < children.length; i++) {
-			const stage = children[i];
-			const parameter = stage && pipeStageFn(stage)?.parameters?.[0];
-			if (parameter?.ownership !== 'var') continue;
-			const input = children[i - 1];
-			if (stage && !mutableBinding(input))
-				error('a `var` stage requires mutable access from its input', stage);
-		}
-	}
-
 	function pipeFunctionNode(stage: Node): NodeMap['fn'] | undefined {
 		if (stage.kind === 'fn') return stage;
 		const symbol = stage.kind === 'ident' ? stage.symbol : undefined;
@@ -2135,6 +2118,9 @@ export function checker({
 	function functionOutputOwnership(
 		fn: NodeMap['fn'],
 	): OwnershipMode | undefined {
+		if (outputOwnershipChecked.has(fn.symbol))
+			return fn.symbol.returnOwnership;
+		outputOwnershipChecked.add(fn.symbol);
 		if (fn.symbol.returnOwnership) return fn.symbol.returnOwnership;
 		const statements = fn.statements ?? [];
 		const emissions = fn.symbol.flags & Flags.Sequence
@@ -2146,9 +2132,13 @@ export function checker({
 		for (const emission of emissions) {
 			const current = expressionOwnership(emission);
 			if (!current) continue;
-			if (mode && mode !== current) return 'borrow';
+			if (mode && mode !== current) {
+				fn.symbol.returnOwnership = 'borrow';
+				return 'borrow';
+			}
 			mode = current;
 		}
+		if (mode) fn.symbol.returnOwnership = mode;
 		return mode;
 	}
 
@@ -2158,15 +2148,22 @@ export function checker({
 		return expressionOwnership(node);
 	}
 
-	function checkOwningPipeStages(children: Node[]): void {
+	function checkPipeStageOwnership(children: Node[]): void {
 		for (let i = 1; i < children.length; i++) {
 			const stage = children[i];
 			const input = children[i - 1];
 			if (!stage || !input) continue;
 			const parameter = pipeStageFn(stage)?.parameters?.[0];
-			if (parameter?.ownership !== 'own') continue;
+			const expected = parameter?.ownership;
+			if (expected !== 'own' && expected !== 'var') continue;
 			const mode = pipeOutputOwnership(input);
-			if (mode === 'var') error('cannot move mutable borrow into `own` stage', stage);
+			if (expected === 'var') {
+				if (mode !== 'own' && mode !== 'var')
+					error('a `var` stage requires mutable access from its input', stage);
+				continue;
+			}
+			if (mode === 'var')
+				error('cannot move mutable borrow into `own` stage', stage);
 			else if (mode === 'borrow')
 				error('cannot move shared borrow into `own` stage', stage);
 		}
