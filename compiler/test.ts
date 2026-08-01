@@ -1706,6 +1706,20 @@ a = {
 			expected: '`var` results require capability-preserving chains',
 		});
 		compileError({
+			p: 'A mutable borrow emitted through a pipeline cannot move into an owning stage.',
+			src: `consume = (a: own Array<Int32>) { length(a) >> out };
+forwardThenWrite = (a: var Array<Int32>) { next a; set(a, 0, 99) };
+main { a = Array<Int32>(1); set(a, 0, 7); a >> forwardThenWrite >> consume }`,
+			expected: 'cannot move mutable borrow',
+		});
+		compileError({
+			p: 'A shared borrow emitted through a pipeline cannot move into an owning stage.',
+			src: `consume = (a: own Array<Int32>) { length(a) >> out };
+forward = (a: Array<Int32>) { next a };
+main { a = Array<Int32>(1); a >> forward >> consume }`,
+			expected: 'cannot move shared borrow',
+		});
+		compileError({
 			src: `main { count = 1; count = 2 >> out; }`,
 			expected: 'Cannot reassign binding',
 		});

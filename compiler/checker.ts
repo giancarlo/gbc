@@ -12,7 +12,12 @@ import {
 	numericResultType,
 	unifyTypeParam,
 } from './symbol-table.js';
-import type { Symbol, SymbolMap, Type } from './symbol-table.js';
+import type {
+	OwnershipMode,
+	Symbol,
+	SymbolMap,
+	Type,
+} from './symbol-table.js';
 
 const typeSymbol = Symbol('type');
 type CheckedNode = Node & { [typeSymbol]?: Type };
@@ -1987,6 +1992,7 @@ export function checker({
 		}
 		inferPipeStageParams(kids);
 		checkMutablePipeStages(kids);
+		checkOwningPipeStages(kids);
 		for (let i = 0; i < kids.length; i++) {
 			const c = kids[i];
 			if (!c) continue;
@@ -2089,6 +2095,80 @@ export function checker({
 			const input = children[i - 1];
 			if (stage && !mutableBinding(input))
 				error('a `var` stage requires mutable access from its input', stage);
+		}
+	}
+
+	function pipeFunctionNode(stage: Node): NodeMap['fn'] | undefined {
+		if (stage.kind === 'fn') return stage;
+		const symbol = stage.kind === 'ident' ? stage.symbol : undefined;
+		const definition = symbol?.definition;
+		if (definition?.kind === 'fn') return definition;
+		if (definition?.kind === 'def' && definition.value.kind === 'fn')
+			return definition.value;
+		const fnDefinition = pipeStageFn(stage)?.definition;
+		if (fnDefinition?.kind === 'fn') return fnDefinition;
+		if (fnDefinition?.kind === 'def' && fnDefinition.value.kind === 'fn')
+			return fnDefinition.value;
+	}
+
+	function expressionOwnership(node: Node): OwnershipMode | undefined {
+		if (node.kind === 'next')
+			return node.children?.[0]
+				? expressionOwnership(node.children[0])
+				: undefined;
+		if (node.kind === 'ident' && node.symbol.kind === 'variable') {
+			if (node.symbol.ownership) return node.symbol.ownership;
+			const definition = node.symbol.definition;
+			return definition?.kind === 'def' && ownedHere(definition)
+				? 'own'
+				: 'borrow';
+		}
+		if (node.kind === 'call') {
+			const callee = resolveFunctionType(node.children[0]);
+			if (callee?.returnOwnership) return callee.returnOwnership;
+			if (node.children[0].kind === 'typeident') return 'own';
+		}
+		if (node.kind === 'string' || node.kind === 'interp' || node.kind === 'data')
+			return 'own';
+	}
+
+	function functionOutputOwnership(
+		fn: NodeMap['fn'],
+	): OwnershipMode | undefined {
+		if (fn.symbol.returnOwnership) return fn.symbol.returnOwnership;
+		const statements = fn.statements ?? [];
+		const emissions = fn.symbol.flags & Flags.Sequence
+			? statements
+			: statements.filter(
+					(statement): statement is NodeMap['next'] => statement.kind === 'next',
+			  );
+		let mode: OwnershipMode | undefined;
+		for (const emission of emissions) {
+			const current = expressionOwnership(emission);
+			if (!current) continue;
+			if (mode && mode !== current) return 'borrow';
+			mode = current;
+		}
+		return mode;
+	}
+
+	function pipeOutputOwnership(node: Node): OwnershipMode | undefined {
+		const fn = pipeFunctionNode(node);
+		if (fn) return functionOutputOwnership(fn);
+		return expressionOwnership(node);
+	}
+
+	function checkOwningPipeStages(children: Node[]): void {
+		for (let i = 1; i < children.length; i++) {
+			const stage = children[i];
+			const input = children[i - 1];
+			if (!stage || !input) continue;
+			const parameter = pipeStageFn(stage)?.parameters?.[0];
+			if (parameter?.ownership !== 'own') continue;
+			const mode = pipeOutputOwnership(input);
+			if (mode === 'var') error('cannot move mutable borrow into `own` stage', stage);
+			else if (mode === 'borrow')
+				error('cannot move shared borrow into `own` stage', stage);
 		}
 	}
 
