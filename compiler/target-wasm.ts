@@ -681,10 +681,6 @@ interface FuncBuilder {
 	 * binder adopts them — freed at block exit, or released together with
 	 * the binder if it escapes. */
 	bindingSym?: GbcSymbol;
-	accumulatorState?: {
-		local: number;
-		type: Extract<SymbolMap['type'], { family: 'data' }>;
-	};
 	relocs?: Reloc[];
 	relocTainted?: boolean;
 }
@@ -4651,41 +4647,6 @@ export function compileWasm(
 		emitFieldStore(ft, off, fn);
 	}
 
-	function compileAccumulatorData(
-		items: Node[],
-		itemTypes: Type[],
-		fn: FuncBuilder,
-	): Type | undefined {
-		const accumulator = fn.accumulatorState;
-		if (
-			!accumulator ||
-			Object.keys(accumulator.type.members).length !== items.length ||
-			itemTypes.some(t => isUnionType(t) || isInlineData(t) || typeOwnsHeap(t))
-		)
-			return;
-		const target = fieldLayout(accumulator.type.members);
-		const temps = itemTypes.map(t => allocLocal(fn, gbcToWasm(t)));
-		for (let i = 0; i < items.length; i++) {
-			const item = items[i];
-			if (!item) continue;
-			compileExpr(itemValue(item), fn);
-			fn.body.push(OP_LOCAL_SET);
-			uleb128(temps[i] ?? 0, fn.body);
-		}
-		for (let i = 0; i < items.length; i++) {
-			const key = target.keys[i] ?? '';
-			const ft = accumulator.type.members[key]?.type ?? BaseTypes.Int32;
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(accumulator.local, fn.body);
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(temps[i] ?? 0, fn.body);
-			emitFieldStore(ft, target.offs[i] ?? 0, fn);
-		}
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(accumulator.local, fn.body);
-		return accumulator.type;
-	}
-
 	function compileData(node: NodeMap['data'], fn: FuncBuilder): Type {
 		const items = dataItems(node).flatMap(flattenDataItem);
 		const nominal = isTraceComposed(node.nominal)
@@ -4704,8 +4665,6 @@ export function compileWasm(
 			return compileExpr(itemValue(first), fn);
 		}
 		const itemTypes: Type[] = items.map(it => inferType(itemValue(it), fn));
-		const accumulated = compileAccumulatorData(items, itemTypes, fn);
-		if (accumulated) return accumulated;
 		const slotSize = slotSizeOf(nominal, itemTypes);
 		const nomLayout = nominal
 			? fieldLayout(nominal.members)
@@ -5122,9 +5081,6 @@ export function compileWasm(
 			source = r.source;
 			stages = r.stages;
 		}
-		if (stages[0]?.kind === 'loop')
-			return compileAccumulatorLoop(source, stages.slice(1), fn);
-
 		if (source.kind === 'loop') {
 			compileLoopSource(stages, fn);
 			return BaseTypes.Void;
@@ -5718,61 +5674,6 @@ export function compileWasm(
 		fn.blockDepth--;
 
 		fn.fusion = savedFusion;
-	}
-
-	function compileAccumulatorLoop(
-		source: Node,
-		stages: Node[],
-		fn: FuncBuilder,
-	): Type {
-		const body = stages[0];
-		if (!body || body.kind !== 'fn')
-			throw new Error('an accumulator loop requires a function body');
-		const stateType = inferType(source, fn);
-		if (!hasRuntimeValue(stateType) || isUnionType(stateType))
-			throw new Error('an accumulator loop requires a concrete state value');
-		const state = allocLocal(fn, gbcToWasm(stateType));
-		compileExpr(source, fn);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(state, fn.body);
-
-		fn.body.push(OP_BLOCK, 0x40);
-		fn.blockDepth++;
-		const targetDepth = fn.blockDepth;
-		fn.body.push(OP_LOOP, 0x40);
-		fn.blockDepth++;
-
-		const savedFusion = fn.fusion;
-		const savedAccumulator = fn.accumulatorState;
-		if (stateType.family === 'data' && !stateType.elem)
-			fn.accumulatorState = { local: state, type: stateType };
-		fn.fusion = {
-			emit: (type: Type) => {
-				coerceIntWidth(type, stateType, fn);
-				fn.body.push(OP_LOCAL_SET);
-				uleb128(state, fn.body);
-				return undefined;
-			},
-			targetDepth,
-		};
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(state, fn.body);
-		const ownedBase = fn.owned?.length ?? 0;
-		driveFnStage(body, stateType, [], fn);
-		if (fn.owned && fn.owned.length > ownedBase) {
-			emitOwnedFrees(fn, ownedBase);
-			fn.owned.length = ownedBase;
-		}
-		fn.fusion = savedFusion;
-		fn.accumulatorState = savedAccumulator;
-		fn.body.push(OP_BR, 0, OP_END);
-		fn.blockDepth--;
-		fn.body.push(OP_END);
-		fn.blockDepth--;
-
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(state, fn.body);
-		return driveStages(stages.slice(1), stateType, fn);
 	}
 
 	function driveStagesEmpty(inputType: Type, fn: FuncBuilder): Type {
@@ -7314,11 +7215,14 @@ export function compileWasm(
 
 	// A direct call whose result types match this fn's is emitted as a
 	// WASM tail call (`return_call`), so tail recursion doesn't grow the stack.
-	// A body with owned locals to free cannot `return_call` (the callee may
-	// borrow them), so it falls back to a plain call + frees + return.
-	function tailCallOwnedOk(fn: FuncBuilder): boolean {
-		return !(
-			fn.owned?.length && !fn.owned.every(o => o.temp || o.paramOwned)
+	function tailCallOwnedOk(
+		fn: FuncBuilder,
+		target: SymbolMap['function'],
+	): boolean {
+		return (
+			!fn.owned?.length ||
+			fn.owned.every(o => o.temp || o.paramOwned) ||
+			(target.parameters ?? []).every(p => scalarOrVoidReturn(p.type))
 		);
 	}
 
@@ -7351,12 +7255,12 @@ export function compileWasm(
 	}
 
 	function tryTailCall(node: NodeMap['call'], fn: FuncBuilder): boolean {
-		if (!tailCallOwnedOk(fn)) return false;
 		const callee = node.children[0];
 		if (callee.kind !== 'ident') return false;
 		const target = tailFnTarget(callee.symbol);
 		if (!target) return false;
 		const { builderIdx, fnSym } = target;
+		if (!tailCallOwnedOk(fn, fnSym)) return false;
 		if (!sameWasmShape(fnSym.returnType ?? BaseTypes.Void, fn.returnType))
 			return false;
 		// A fresh heap arg would be orphaned by `return_call` (no frame left
@@ -7388,7 +7292,6 @@ export function compileWasm(
 	// position (`(n - 1) >> f`). Compiles the input to the last stage as a value,
 	// then `return_call`s the stage fn — so recursion through a pipe stays flat.
 	function tryTailPipe(node: NodeMap['>>'], fn: FuncBuilder): boolean {
-		if (!tailCallOwnedOk(fn)) return false;
 		const flat = flattenPipe(node.children);
 		if (flat.length !== 2) return false;
 		const source = flat[0];
@@ -7397,6 +7300,7 @@ export function compileWasm(
 		const target = tailFnTarget(last.symbol);
 		if (!target) return false;
 		const { builderIdx, fnSym } = target;
+		if (!tailCallOwnedOk(fn, fnSym)) return false;
 		const params = fnSym.parameters ?? [];
 		if (params.length !== 1) return false;
 		if (!sameWasmShape(fnSym.returnType ?? BaseTypes.Void, fn.returnType))

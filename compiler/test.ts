@@ -2056,9 +2056,10 @@ main { length(fill(1200)) >> out }`,
 
 	h('Heap — churn shapes', ({ rule }) => {
 		rule({
-			p: 'Multiple scalar accumulators update in preallocated state while dynamic strings created during iteration are reclaimed.',
-			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 200000 ? break : [i + 1, total + length('v\${i}')] } >> (i: Int32, total: Int32) { total } >> out }`,
-			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 200000) break (data (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i))))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
+			p: 'Multiple scalar tail-recursive accumulators stay flat while dynamic strings created during iteration are reclaimed.',
+			src: `spin = (i: Int32, total: Int32): Int32 { i >= 200000 ? total : spin(i + 1, total + length('v\${i}')) };
+main { spin(0, 0) >> out }`,
+			ast: `(root (def :spin ? (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) typeident (? (>= :i 200000) :total (call :spin (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i)))))))) (main (>> (call :spin (, 0 0)) :out)))`,
 			out: ['1288890'],
 			maxPages: 3,
 		});
@@ -2071,48 +2072,30 @@ main { spin(400000, 0) >> out }`,
 			out: ['8044701'],
 			maxPages: 3,
 		});
-		rule({
-			p: 'A fused loop piping fresh values into an un-annotated dispatch consumer runs flat — arm returns infer, so the source temp and each iteration\u2019s locals are freed.',
-			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 200000 ? break : [i + 1, total + length('v\${i}')] } >> (i: Int32, total: Int32) { total } >> out }`,
-			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 200000) break (data (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i))))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
-			out: ['1288890'],
-			maxPages: 3,
-		});
 	});
 
-	h('Heap — churn shapes (loops)', ({ rule }) => {
+	h('Heap — churn shapes (tail recursion)', ({ rule }) => {
 		rule({
-			p: 'A scalar accumulator can mutate an owned Buffer through each iteration without moving or reallocating it.',
-			src: `main {
+			p: 'A scalar tail-recursive accumulator can mutate an owned Buffer without moving or reallocating it.',
+			src: `fill = (b: var Buffer<Int32>, i: Int32): Int32 {
+	set(b, i, i);
+	next i == 99 ? 100 : fill(b, i + 1)
+};
+main {
 	b: Buffer<Int32> = Buffer<Int32>(100);
-	count = 0 >> loop >> (i: Int32) {
-		i >= 100 ? break;
-		set(b, i, i);
-		next i + 1
-	};
+	count = fill(b, 0);
 	reduce(b, count - count, (total: own Int32, n: Int32): own Int32 { total + n }) >> out
 }`,
-			ast: `(root (main (def :b typeident @collection (call typeident @collection 100)) (def :count ? (>> 0 loop (fn (parameter :i typeident ?) (? (>= :i 100) break) (call :set @intrinsic (, :b :i :i)) (next (+ :i 1))))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
+			ast: `(root (def :fill ? (fn (parameter :b typeident @collection ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :fill (, :b (+ :i 1))))))) (main (def :b typeident @collection (call typeident @collection 100)) (def :count ? (call :fill (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
 			out: ['4950'],
 			maxPages: 2,
 		});
 		rule({
-			p: 'Streaming a literal per loop iteration runs flat — `each` scratch and stage locals die with the iteration.',
-			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 100000 ? break : [i + 1, total + 6] } >> (i: Int32, total: Int32) { total } >> out }`,
-			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 100000) break (data (, (+ :i 1) (+ :total 6))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
+			p: 'Scalar tail recursion runs flat without allocating aggregate state.',
+			src: `spin = (i: Int32, total: Int32): Int32 { i >= 100000 ? total : spin(i + 1, total + 6) };
+main { spin(0, 0) >> out }`,
+			ast: `(root (def :spin ? (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) typeident (? (>= :i 100000) :total (call :spin (, (+ :i 1) (+ :total 6)))))) (main (>> (call :spin (, 0 0)) :out)))`,
 			out: ['600000'],
-			maxPages: 3,
-		});
-		rule({
-			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 200000 ? break : [i + 1, total + length('v\${i}')] } >> (i: Int32, total: Int32) { total } >> out }`,
-			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 200000) break (data (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i))))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
-			out: ['1288890'],
-			maxPages: 3,
-		});
-		rule({
-			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 200000 ? break : [i + 1, total + length('v\${i}')] } >> (i: Int32, total: Int32) { total } >> out }`,
-			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 200000) break (data (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i))))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
-			out: ['1288890'],
 			maxPages: 3,
 		});
 	});
@@ -2167,10 +2150,13 @@ export target = (): Int32 { 0 }`,
 export sumValues = (a: Array<Int32>): Int32 {
 	next reduce(a, 0, (total: own Int32, n: Int32): own Int32 { total + n }) + length(a)
 };
+sumSliceAt = (a: Array<Int32>, i: Int32, end: Int32, total: Int32): Int32 {
+	i >= end || i >= length(a)
+		? total + length(a)
+		: sumSliceAt(a, i + 1, end, total + get(a, i))
+};
 export sumSlice = (a: Array<Int32>, start: Int32, end: Int32): Int32 {
-	[ i = (start < 0 ? 0 : start), total = 0 ] >> loop >> (i: Int32, total: Int32) {
-		i >= end || i >= length(a) ? break : [ i + 1, total + get(a, i) ]
-	} >> (i: Int32, total: Int32) { total + length(a) }
+	sumSliceAt(a, start < 0 ? 0 : start, end, 0)
 };
 #test {
 	equal(sumValues(ints()), 15);
@@ -2190,10 +2176,13 @@ export records = (): own Array<Item> { push(push(Buffer<Item>(2), [ id = 1, name
 export nested = (): own Array<Array<Int32> > { push(Buffer<Array<Int32> >(1), push(Buffer<Int32>(1), 9)) };
 export stringLengths = (): own Array<Int32> { map(strings(), (s: String): own Int32 { length(s) }) };
 export recordIds = (): own Array<Int32> { map(records(), (item: Item): own Int32 { item.id }) };
+sliceTextAt = (a: Array<String>, i: Int32, total: Int32): Int32 {
+	i >= 2 || i >= length(a)
+		? total + length(a)
+		: sliceTextAt(a, i + 1, total + length(get(a, i)))
+};
 export slicedText = (a: Array<String>): Int32 {
-	[ i = 0, total = 0 ] >> loop >> (i: Int32, total: Int32) {
-		i >= 2 || i >= length(a) ? break : [ i + 1, total + length(get(a, i)) ]
-	} >> (i: Int32, total: Int32) { total + length(a) }
+	sliceTextAt(a, 0, 0)
 };
 #test {
 	equal(length(map(Buffer<Int32>(0), (n: Int32): own Int32 { n + 1 })), 0);
@@ -3509,22 +3498,16 @@ main { report(mk(9)) >> out }`,
 	});
 
 	h('Statements', ({ h }) => {
-		h('loop', ({ rule }) => {
+		h('loop', ({ rule, compileError }) => {
 			rule({
 				p: '`loop` is the single infinite emitter and yields `0, 1, 2, …`. `break` stops the nearest pipe chain, while `done` ends the nearest statement-body function.',
 				src: `until = (n: Int32) { loop >> { $ >= n ? break : $ } }; main { until(3) >> out }`,
 				ast: '(root (def :until ? (fn @sequence (parameter :n typeident ?) (>> loop (fn @sequence (? (>= $ :n) break $))))) (main (>> (call :until 3) :out)))',
 				out: ['0', '1', '2'],
 			});
-			rule({
-				src: `runUntil = (limit: Int32): Int32 { 0 >> loop >> (counter: Int32) { counter == limit ? break : counter + 1 } }; main { runUntil(5) >> out }`,
-				ast: '(root (def :runUntil ? (fn @sequence (parameter :limit typeident ?) typeident (>> 0 loop (fn @sequence (parameter :counter typeident ?) (? (== :counter :limit) break (+ :counter 1)))))) (main (>> (call :runUntil 5) :out)))',
-				out: ['5'],
-			});
-			rule({
-				src: `nestedBreak = (): Int32 { [i = 0, j = 0, total = 0] >> loop >> (i: Int32, j: Int32, total: Int32) { i >= 2 ? break; next j >= 2 ? [i + 1, 0, total] : [i, j + 1, total + 1] } >> (i: Int32, j: Int32, total: Int32) { total } }; main { nestedBreak() >> out }`,
-				ast: `(root (def :nestedBreak ? (fn @sequence typeident (>> (data (, (propdef :i ? 0) (propdef :j ? 0) (propdef :total ? 0))) loop (fn (parameter :i typeident ?) (parameter :j typeident ?) (parameter :total typeident ?) (? (>= :i 2) break) (next (? (>= :j 2) (data (, (+ :i 1) 0 :total)) (data (, :i (+ :j 1) (+ :total 1)))))) (fn @sequence (parameter :i typeident ?) (parameter :j typeident ?) (parameter :total typeident ?) :total)))) (main (>> (call :nestedBreak ?) :out)))`,
-				out: ['4'],
+			compileError({
+				src: `main { 0 >> loop >> (counter: Int32) { counter + 1 } }`,
+				expected: '`loop` is valid only as a pipe source; use tail recursion for loop-carried state',
 			});
 		});
 
@@ -3709,9 +3692,13 @@ main { length(build(200000, '')) >> out }`,
 			maxPages: 16,
 		});
 		rule({
-			p: 'A fused loop frees what each iteration created — bound locals, and emitted values once a stage chain fully consumed them (a scalar drive result proves no stage kept the pointer) — so streaming loops run flat.',
-			src: `main { [i = 0, total = 0] >> loop >> (i: Int32, total: Int32) { i >= 50000 ? break; m = 'x\${i}'; next [i + 1, total + length(m) - length(m) + 4] } >> (i: Int32, total: Int32) { total } >> out }`,
-			ast: `(root (main (>> (data (, (propdef :i ? 0) (propdef :total ? 0))) loop (fn (parameter :i typeident ?) (parameter :total typeident ?) (? (>= :i 50000) break) (def :m ? (interp :i)) (next (data (, (+ :i 1) (+ (- (+ :total (call :length @intrinsic :m)) (call :length @intrinsic :m)) 4))))) (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) :total) :out)))`,
+			p: 'Tail recursion frees bound values created by each iteration before transferring control, so recursive loops run flat.',
+			src: `spin = (i: Int32, total: Int32): Int32 {
+	m = 'x\${i}';
+	next i >= 50000 ? total : spin(i + 1, total + length(m) - length(m) + 4)
+};
+main { spin(0, 0) >> out }`,
+			ast: `(root (def :spin ? (fn (parameter :i typeident ?) (parameter :total typeident ?) typeident (def :m ? (interp :i)) (next (? (>= :i 50000) :total (call :spin (, (+ :i 1) (+ (- (+ :total (call :length @intrinsic :m)) (call :length @intrinsic :m)) 4))))))) (main (>> (call :spin (, 0 0)) :out)))`,
 			out: ['200000'],
 			maxPages: 3,
 		});

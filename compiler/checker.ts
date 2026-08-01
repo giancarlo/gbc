@@ -1942,7 +1942,6 @@ export function checker({
 	}
 
 	function stageEmitType(stage: Node, input: Type | undefined): Type {
-		if (stage.kind === 'loop') return input ?? BT.Unknown;
 		if (stage.kind === 'fn') {
 			const ft = resolveFnType(stage);
 			return ft.kind === 'function' && ft.returnType
@@ -1971,9 +1970,22 @@ export function checker({
 		return BT.Unknown;
 	}
 
+	function stagedLoop(children: Node[]): Node | undefined {
+		for (let i = 1; i < children.length; i++)
+			if (children[i]?.kind === 'loop') return children[i];
+	}
+
 	function checkPipe(node: NodeMap['>>']) {
-		inferPipeStageParams(node.children);
 		const kids = node.children;
+		const invalidLoop = stagedLoop(kids);
+		if (invalidLoop) {
+			error(
+				'`loop` is valid only as a pipe source; use tail recursion for loop-carried state',
+				invalidLoop,
+			);
+			return;
+		}
+		inferPipeStageParams(kids);
 		checkMutablePipeStages(kids);
 		for (let i = 0; i < kids.length; i++) {
 			const c = kids[i];
@@ -2408,13 +2420,10 @@ export function checker({
 	}
 
 	function inferPipeStageParams(children: Node[]) {
+		if (stagedLoop(children)) return;
 		for (let i = 1; i < children.length; i++) {
 			const stage = children[i];
-			if (stage?.kind === 'loop') continue;
-			const input =
-				children[i - 1]?.kind === 'loop'
-					? children[i - 2]
-					: children[i - 1];
+			const input = children[i - 1];
 			if (!stage || !input) continue;
 			if (stage.kind === '|') {
 				// Each dispatch arm infers `$` from its own declared type.
