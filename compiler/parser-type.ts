@@ -38,12 +38,20 @@ export function parseType(
 	}
 
 	function resultOwnership(): OwnershipMode {
-		if (current().kind === 'var')
-			throw api.error(
-				'`var` results require capability-preserving chains',
-				current(),
-			);
+		if (current().kind === 'var') return api.next(), 'var';
 		return current().kind === 'own' ? (api.next(), 'own') : 'borrow';
+	}
+
+	function setReturnBorrowOrigins(
+		fn: SymbolMap['function'],
+		params: NodeMap['parameter'][],
+	): void {
+		if (fn.returnOwnership !== 'var') return;
+		fn.returnBorrowOrigins = params
+			.map((parameter, index) =>
+				parameter.symbol.ownership === 'var' ? index : -1,
+			)
+			.filter(index => index >= 0);
 	}
 
 	function collectUnionMembers(n: Node, out: Type[]) {
@@ -235,6 +243,7 @@ export function parseType(
 								: undefined,
 						returnOwnership,
 					};
+					setReturnBorrowOrigins(fnSymbol, params);
 					return {
 						...tk,
 						kind: 'fn',

@@ -1700,10 +1700,27 @@ a = {
 			src: `inspect = (b: var Buffer<Int32>, n: Int32) { n >> out }; main { b = Buffer<Int32>(1); inspect(b, length(b)) }`,
 			expected: 'overlaps argument',
 		});
+		testBlock({
+			p: 'An explicit `var` result preserves mutable access derived from any mutable parameter.',
+			src: `borrow = (b: var Buffer<Int32>): var Buffer<Int32> { b };
+choose = (a: var Buffer<Int32>, b: var Buffer<Int32>, first: Bool): var Buffer<Int32> { first ? a : b };
+write = (b: var Buffer<Int32>) { set(b, 0, 7) };
+#test { equal(target(), 14) }
+export target = (): Int32 {
+	a = Buffer<Int32>(1);
+	b = Buffer<Int32>(1);
+	set(a, 0, 1);
+	set(b, 0, 2);
+	borrow(a) >> write;
+	choose(a, b, false) >> write;
+	next get(a, 0) + get(b, 0)
+}`,
+			out: [],
+		});
 		compileError({
-			p: 'Mutable capability cannot escape through a function result.',
-			src: `borrow = (b: var Buffer<Int32>): var Buffer<Int32> { b }`,
-			expected: '`var` results require capability-preserving chains',
+			p: 'A `var` result must originate from a mutable parameter.',
+			src: `borrow = (b: Buffer<Int32>): var Buffer<Int32> { b }; main { }`,
+			expected: '`var` result must originate from a `var` parameter',
 		});
 		testBlock({
 			p: 'A mutable borrow emitted through a pipeline may be reborrowed mutably or shared without transferring ownership.',
@@ -2081,9 +2098,9 @@ main { classify(Uint32(5)) >> out; classify(5) >> out }`,
 	h('Heap', ({ rule }) => {
 		rule({
 			p: 'The heap grows on demand — allocation is not bounded by the initial 64KB memory page. Freed neighbors coalesce and oversized blocks split on reuse, so even a monotonically growing buffer plateaus near its final size instead of retaining every intermediate copy.',
-			src: `fill = (n: Int32): own String { n == 0 ? '' : '\${fill(n - 1)}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' };
-main { length(fill(1200)) >> out }`,
-			ast: `(root (def :fill ? (fn @sequence (parameter :n typeident ?) typeident (? (== :n 0) '' (interp (call :fill (- :n 1)))))) (main (>> (call :length @intrinsic (call :fill 1200)) :out)))`,
+			src: `growString = (n: Int32): own String { n == 0 ? '' : '\${growString(n - 1)}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' };
+main { length(growString(1200)) >> out }`,
+			ast: `(root (def :growString ? (fn @sequence (parameter :n typeident ?) typeident (? (== :n 0) '' (interp (call :growString (- :n 1)))))) (main (>> (call :length @intrinsic (call :growString 1200)) :out)))`,
 			out: ['76800'],
 			maxPages: 8,
 		});
@@ -2112,16 +2129,16 @@ main { spin(400000, 0) >> out }`,
 	h('Heap — churn shapes (tail recursion)', ({ rule }) => {
 		rule({
 			p: 'A scalar tail-recursive accumulator can mutate an owned Buffer without moving or reallocating it.',
-			src: `fill = (b: var Buffer<Int32>, i: Int32): Int32 {
+			src: `writeAll = (b: var Buffer<Int32>, i: Int32): Int32 {
 	set(b, i, i);
-	next i == 99 ? 100 : fill(b, i + 1)
+	next i == 99 ? 100 : writeAll(b, i + 1)
 };
 main {
 	b: Buffer<Int32> = Buffer<Int32>(100);
-	count = fill(b, 0);
+	count = writeAll(b, 0);
 	reduce(b, count - count, (total: own Int32, n: Int32): own Int32 { total + n }) >> out
 }`,
-			ast: `(root (def :fill ? (fn (parameter :b typeident @collection ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :fill (, :b (+ :i 1))))))) (main (def :b typeident @collection (call typeident @collection 100)) (def :count ? (call :fill (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
+			ast: `(root (def :writeAll ? (fn (parameter :b typeident @collection ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b typeident @collection (call typeident @collection 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
 			out: ['4950'],
 			maxPages: 2,
 		});
@@ -2170,7 +2187,18 @@ main { wide(100000, 0) >> out }`,
 		});
 	});
 
-	h('Buffer & Array (push)', ({ testBlock, compileError, runtimeTrap, modules }) => {
+	h('Buffer & Array (push)', ({ rule, testBlock, compileError, runtimeTrap, modules }) => {
+		rule({
+			p: '`fill` replaces every existing element from an indexed producer and returns the same mutable borrow for chaining.',
+			src: `main {
+	a = range(0, 4);
+	fill(a, { 7 }) >> values >> out;
+	b = range(0, 4);
+	fill(b, { $ * 2 }) >> values >> out
+}`,
+			ast: `(root (main (def :a ? (call :range (, 0 4))) (>> (call :fill (, :a (fn @sequence (parameter ? ? ?) 7))) :values :out) (def :b ? (call :range (, 0 4))) (>> (call :fill (, :b (fn @sequence (parameter ? ? ?) (* $ 2)))) :values :out)))`,
+			out: ['7', '7', '7', '7', '0', '2', '4', '6'],
+		});
 		testBlock({
 			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set mutates through exclusive access.',
 			src: `export empty = (): own Array<Int32> { Array<Int32>(0) };

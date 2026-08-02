@@ -1113,6 +1113,63 @@ export function checker({
 		}
 	}
 
+	function contextualFunctionType(
+		type: SymbolMap['function'],
+		bindings: Map<string, Type>,
+	): SymbolMap['function'] {
+		return {
+			...type,
+			parameters: type.parameters?.map(parameter => ({
+				...parameter,
+				type: parameter.type
+					? reduceType(parameter.type, bindings)
+					: undefined,
+			})),
+			returnType: type.returnType
+				? reduceType(type.returnType, bindings)
+				: undefined,
+		};
+	}
+
+	function contextualizeCallBlocks(
+		fn: SymbolMap['function'],
+		args: Node[],
+	): void {
+		if (fn.overloads) return;
+		const provisional = args.map(arg =>
+			arg.kind === 'fn' ? BT.Unknown : resolver(arg),
+		);
+		const bindings = callTypeBindings(fn, provisional);
+		args.forEach((arg, index) => {
+			if (arg.kind !== 'fn' || arg.parameters?.length) return;
+			const expected = fn.parameters?.[index]?.type;
+			if (expected?.kind !== 'function') return;
+			const context = contextualFunctionType(expected, bindings);
+			if (context.parameters?.length !== 1) return;
+			const expectedParameter = context.parameters[0];
+			if (!expectedParameter?.type) return;
+			const symbol: SymbolMap['variable'] = {
+				kind: 'variable',
+				name: '',
+				flags: 0,
+				type: expectedParameter.type,
+				ownership: expectedParameter.ownership,
+			};
+			const parameter: NodeMap['parameter'] = {
+				...arg,
+				kind: 'parameter',
+				children: [undefined, undefined, undefined],
+				symbol,
+			};
+			arg.parameters = [parameter];
+			arg.children.unshift(parameter);
+			arg.symbol.parameters = [symbol];
+			arg.symbol.returnOwnership = context.returnOwnership;
+			for (const statement of arg.statements ?? [])
+				annotateDollar(statement, expectedParameter.type);
+		});
+	}
+
 	/** Default ctor: `T(x)` where `x` is T's own structural value; field-less
 	 * errors take Void (`T()`), field-less plain types have no value at all. */
 	function checkDataCtorArg(
@@ -1207,6 +1264,10 @@ export function checker({
 		}
 
 		const args = node.children[1];
+		const argNodes = args
+			? args.kind === ',' ? args.children : [args]
+			: [];
+		contextualizeCallBlocks(fn, argNodes);
 		const argTypes = args
 			? args.kind === ',' ? getListTypes(args) : [resolver(args)]
 			: [];
@@ -1723,6 +1784,110 @@ export function checker({
 		if (tail) checkOwnedReturn(tail, owned, fn);
 	}
 
+	function mutableIdentReturnOrigin(
+		node: NodeMap['ident'],
+		fn: NodeMap['fn'],
+		seen: Set<Symbol>,
+	): number[] | undefined {
+		if (node.symbol.kind !== 'variable') return undefined;
+		const index = fn.parameters?.findIndex(
+			parameter => parameter.symbol === node.symbol,
+		);
+		if (
+			index !== undefined &&
+			index >= 0 &&
+			fn.parameters?.[index]?.symbol.ownership === 'var'
+		)
+			return [index];
+		if (seen.has(node.symbol)) return undefined;
+		seen.add(node.symbol);
+		const definition = node.symbol.definition;
+		return definition?.kind === 'def'
+			? mutableReturnOrigin(definition.value, fn, seen)
+			: undefined;
+	}
+
+	function mutableCallReturnOrigin(
+		node: NodeMap['call'],
+		fn: NodeMap['fn'],
+		seen: Set<Symbol>,
+	): number[] | undefined {
+		const callee = resolveFunctionType(node.children[0]);
+		if (callee?.returnOwnership !== 'var') return undefined;
+		const origins = callee.returnBorrowOrigins;
+		if (!origins?.length) return undefined;
+		const args = node.children[1];
+		const values = args?.kind === ',' ? args.children : args ? [args] : [];
+		const mapped = origins.map(origin => {
+			const value = values[origin];
+			return value
+				? mutableReturnOrigin(value, fn, new Set(seen))
+				: undefined;
+		});
+		if (mapped.some(origin => origin === undefined)) return undefined;
+		return [...new Set(mapped.flatMap(origin => origin ?? []))];
+	}
+
+	function mutableConditionalReturnOrigin(
+		node: NodeMap['?'],
+		fn: NodeMap['fn'],
+		seen: Set<Symbol>,
+	): number[] | undefined {
+		const truthy = mutableReturnOrigin(
+			node.children[1],
+			fn,
+			new Set(seen),
+		);
+		const alternate = node.children[2];
+		const falsy = alternate
+			? mutableReturnOrigin(alternate, fn, new Set(seen))
+			: undefined;
+		return truthy && falsy
+			? [...new Set([...truthy, ...falsy])]
+			: undefined;
+	}
+
+	function mutableReturnOrigin(
+		node: Node,
+		fn: NodeMap['fn'],
+		seen = new Set<Symbol>(),
+	): number[] | undefined {
+		if (node.kind === 'next') {
+			const value = node.children?.[0];
+			return value ? mutableReturnOrigin(value, fn, seen) : undefined;
+		}
+		if (node.kind === '?')
+			return mutableConditionalReturnOrigin(node, fn, seen);
+		if (node.kind === '>>') {
+			const source = node.children[0];
+			const output = node.children[node.children.length - 1];
+			return source && output && pipeOutputOwnership(output) === 'var'
+				? mutableReturnOrigin(source, fn, seen)
+				: undefined;
+		}
+		if (node.kind === 'ident')
+			return mutableIdentReturnOrigin(node, fn, seen);
+		if (node.kind === 'call') return mutableCallReturnOrigin(node, fn, seen);
+	}
+
+	function checkMutableReturn(node: NodeMap['fn']): void {
+		if (node.symbol.returnOwnership !== 'var') return;
+		const statements = node.statements ?? [];
+		const emissions = node.symbol.flags & Flags.Sequence
+			? statements
+			: statements.filter(statement => statement.kind === 'next');
+		const origins = emissions.map(emission =>
+			mutableReturnOrigin(emission, node),
+		);
+		if (!origins.length || origins.some(origin => origin === undefined)) {
+			error('`var` result must originate from a `var` parameter', node);
+			return;
+		}
+		node.symbol.returnBorrowOrigins = [
+			...new Set(origins.flatMap(origin => origin ?? [])),
+		];
+	}
+
 	function checkOwnedReturn(
 		node: Node,
 		owned: Set<Symbol>,
@@ -1768,6 +1933,7 @@ export function checker({
 		if (node.statements) checkEach(node.statements);
 		checkMoves(node);
 		functionOutputOwnership(node);
+		checkMutableReturn(node);
 	}
 
 	function checkStageOnlyStmt(c: NodeMap['fn'], i: number) {

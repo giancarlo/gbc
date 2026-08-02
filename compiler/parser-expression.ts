@@ -214,12 +214,12 @@ export function parseExpression(
 	}
 
 	function resultType(): { mode: OwnershipMode; type: Node } {
-		if (current().kind === 'var')
-			throw error(
-				'`var` results require capability-preserving chains',
-				current(),
-			);
-		const mode = current().kind === 'own' ? (api.next(), 'own') : 'borrow';
+		const mode =
+			current().kind === 'var'
+				? (api.next(), 'var' as const)
+				: current().kind === 'own'
+					? (api.next(), 'own' as const)
+					: 'borrow';
 		return { mode, type: expectType() };
 	}
 

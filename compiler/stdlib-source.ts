@@ -59,6 +59,13 @@ export values = <T>(a: Array<T>) {
 	}
 };
 
+export fill = <T>(a: var Buffer<T>, make: (Int32): own T): var Buffer<T> {
+	loop >> (index: Int32) {
+		index >= length(a) ? break : set(a, index, make(index))
+	};
+	next a
+};
+
 export slice = <T>(a: Array<T>, start: Int32, end: Int32) {
 	loop >> (offset: Int32) {
 		(start < 0 ? 0 : start) + offset >= end ||

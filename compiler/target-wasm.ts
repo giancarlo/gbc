@@ -5423,7 +5423,7 @@ export function compileWasm(
 		if (pSym.type?.kind === 'function') {
 			// A function-valued argument binds by symbol (like the
 			// monomorphization path) rather than compiling as a value.
-			const fa = resolveFnArg(argNode);
+			const fa = resolveFnArg(argNode) ?? liftFnArg(argNode);
 			if (fa) {
 				fnArgBindings.set(pSym, fa);
 				return;
@@ -5508,9 +5508,13 @@ export function compileWasm(
 		const fnNode = getCallableFn(callNode);
 		if (!fnNode || fnNode.symbol.flags & Flags.Sequence) return false;
 		const stmts = fnNode.statements ?? [];
-		const onlyStmt = stmts.length === 1 ? stmts[0] : undefined;
+		const tail = stmts[stmts.length - 1];
 		const isDirectTier =
-			onlyStmt?.kind === 'next' && onlyStmt.children?.[0]?.kind !== ',';
+			tail?.kind === 'next' &&
+			tail.children?.[0]?.kind !== ',' &&
+			!stmts
+				.slice(0, -1)
+				.some(statement => statement.kind === 'next' || statement.kind === 'done');
 		if (isDirectTier) return false;
 		return stmts.some(s => s.kind === 'next' || s.kind === 'done');
 	}
@@ -6965,6 +6969,12 @@ export function compileWasm(
 			blockDepth: 0,
 			name: fnNode.symbol.name,
 		};
+		const implicit = paramSyms.length === 1 ? paramSyms[0] : undefined;
+		if (implicit && !implicit.label) {
+			builder.dollarLocal = paramMap.get(implicit.symbol);
+			builder.dollarTagLocal = tagMap.get(implicit.symbol);
+			builder.dollarType = implicit.symbol.type;
+		}
 		const builderIdx = funcBuilders.length;
 		funcBuilders.push(builder);
 		return { builder, builderIdx, returnType };
