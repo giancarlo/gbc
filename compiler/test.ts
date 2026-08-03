@@ -178,6 +178,12 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			ast: '(? (|| :true :false) 1 2)',
 			out: ['1'],
 		});
+		rule({
+			p: 'Nested conditional expressions associate to the right.',
+			src: 'main { a = true; b = false; a ? b : b ? true : true >> out }',
+			ast: '(root (main (def :a ? :true) (def :b ? :false) (>> (? :a :b (? :b :true :true)) :out)))',
+			out: ['false'],
+		});
 		expr({
 			src: '[1, 2].0 + 1',
 			ast: '(+ (. (data (, 1 2)) 0) 1)',
@@ -2192,6 +2198,20 @@ main { wide(100000, 0) >> out }`,
 			p: 'The unspecialized Buffer constructor requires an element type.',
 			src: `main { Buffer(1) }`,
 			expected: 'Buffer requires a type argument',
+		});
+		testBlock({
+			p: '`findIndex` returns the first element accepted by a predicate and preserves the specialized Buffer element type.',
+			src: `export strings = (): own Buffer<String> {
+	push(push(Buffer<String>(0), 'left'), 'right')
+};
+#test {
+	equal(findIndex(range(3, 7), (n: Int32): Bool { n == 5 }), 2);
+	equal(findIndex(range(3, 7), (n: Int32): Bool { n == 9 }), 0 - 1);
+	equal(findIndex(range(0, 0), (n: Int32): Bool { n == 0 }), 0 - 1);
+	equal(findIndex(strings(), (s: String): Bool { s == 'right' }), 1)
+}
+export target = (): Int32 { 0 }`,
+			out: [],
 		});
 		rule({
 			p: '`fill` replaces every existing element from an indexed producer and returns the same mutable borrow for chaining.',

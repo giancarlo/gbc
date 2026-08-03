@@ -502,6 +502,29 @@ export function parseExpression(
 		return expectNode(exprParser(prec), 'Expected expression');
 	}
 
+	function parseConditionalBranch(): Node {
+		const left = parseBranchOrExpr(2);
+		if (current().kind !== '?') return left;
+		const tk = current();
+		api.next();
+		return parseConditional(tk, left);
+	}
+
+	function parseConditional(
+		tk: ScannerToken,
+		left: Node,
+	): NodeMap['?'] {
+		const truthy = parseConditionalBranch();
+		const falsy = optional(':') ? parseConditionalBranch() : undefined;
+		return {
+			...tk,
+			kind: '?',
+			start: left.start,
+			end: (falsy ?? truthy).end,
+			children: falsy ? [left, truthy, falsy] : [left, truthy],
+		};
+	}
+
 	function parseDataItem(seenLabels: Set<string>): Node {
 		const tk = current();
 		if (tk.kind === 'ident') {
@@ -931,18 +954,7 @@ export function parseExpression(
 			'?': {
 				precedence: 2,
 				infix(tk, left) {
-					const truthy = parseBranchOrExpr(2);
-					const falsy = optional(':')
-						? parseBranchOrExpr(2)
-						: undefined;
-					const node: NodeMap['?'] = {
-						...tk,
-						kind: '?',
-						start: left.start,
-						end: (falsy ?? truthy).end,
-						children: falsy ? [left, truthy, falsy] : [left, truthy],
-					};
-					return node;
+					return parseConditional(tk, left);
 				},
 			},
 

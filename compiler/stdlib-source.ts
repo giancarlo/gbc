@@ -75,6 +75,15 @@ export slice = <T>(a: Array<T>, start: Int32, end: Int32) {
 	}
 };
 
+findIndexAt = <T>(a: Buffer<T>, predicate: (T): Bool, i: Int32): Int32 {
+	i == length(a)
+		? 0 - 1
+		: predicate(get(a, i)) ? i : findIndexAt(a, predicate, i + 1)
+};
+export findIndex = <T>(a: Buffer<T>, predicate: (T): Bool): Int32 {
+	findIndexAt(a, predicate, 0)
+};
+
 indexAt = <T>(a: Array<T>, i: Int32, x: T): Int32 {
 	i == length(a) ? 0 - 1 : (get(a, i) == x ? i : indexAt(a, i + 1, x))
 };
