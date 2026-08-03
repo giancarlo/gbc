@@ -8,7 +8,6 @@ export enum Flags {
 	Sequence = 4,
 	External = 16,
 	Intrinsic = 32,
-	Collection = 64,
 }
 
 export type OwnershipMode = 'borrow' | 'var' | 'own';
@@ -21,7 +20,7 @@ type BaseSymbol = {
 	flags: Flags;
 	typeParams?: Type[];
 	components?: Type[];
-	application?: { fn: Type; argNodes: Node[] };
+	application?: { fn: TypeSymbol; argNodes: Node[] };
 	ownership?: OwnershipMode;
 };
 export type TypeFamily =
@@ -34,26 +33,28 @@ export type TypeFamily =
 	| 'void'
 	| 'fn'
 	| 'data'
+	| 'buffer'
 	| 'literal'
 	| 'union'
 	| 'unknown';
 
-type TypeUnion =
+type TypeShape =
 	| {
 			name: string;
 			size: number;
-			family: Exclude<TypeFamily, 'data' | 'literal' | 'union'>;
+			family: Exclude<TypeFamily, 'data' | 'buffer' | 'literal' | 'union'>;
 	  }
 	| {
 			name: string;
 			size: number;
 			family: 'data';
 			members: Record<string, Symbol>;
-			/** Runtime-length collection of `elem` (`Array<T>`): laid out
-			 * `[len][cap][elem0][elem1]…` (payload at offset 8), elements
-			 * inline at the element's stride. `members` stays empty —
-			 * the length is not known at compile time. */
-			elem?: Type;
+	  }
+	| {
+			name: string;
+			size: number;
+			family: 'buffer';
+			elem: Type;
 	  }
 	| {
 			name: string;
@@ -69,10 +70,10 @@ type TypeUnion =
 	  };
 
 type SymbolProp = {
-	type: TypeUnion;
+	type: { type: Type };
 	literal: { value: unknown };
 	function: {
-		parameters?: Symbol[];
+		parameters?: SymbolMap['parameter' | 'variable'][];
 		returnType?: Type;
 		returnOwnership?: OwnershipMode;
 		returnBorrowOrigins?: number[];
@@ -86,11 +87,13 @@ export type SymbolMap = {
 	[K in keyof SymbolProp]: BaseSymbol & { kind: K } & SymbolProp[K];
 };
 export type Symbol = SymbolMap[keyof SymbolProp];
+export type TypeSymbol = SymbolMap['type'];
 export type Scope = Map<string | symbol, Symbol>;
 
 export type SymbolTable = ReturnType<typeof ProgramSymbolTable>;
 export type TypesSymbolTable = ReturnType<typeof TypesSymbolTable>;
-export type Type = SymbolMap['type' | 'function'];
+export type ResolvedType = BaseSymbol & { kind: 'type' } & TypeShape;
+export type Type = ResolvedType | SymbolMap['function'];
 
 // Shared numeric type predicates (used by both the checker and the WASM
 // backend — single source of truth so the two never disagree on what `Int`,
@@ -104,7 +107,7 @@ export function isInt64Type(t?: Type): boolean {
 export function isUintType(t?: Type): boolean {
 	return t?.kind === 'type' && t.family === 'uint';
 }
-export function numberLiteralType(value: number | bigint): SymbolMap['type'] {
+export function numberLiteralType(value: number | bigint): ResolvedType {
 	if (typeof value === 'number')
 		return value >= -0x80000000 && value <= 0x7fffffff
 			? BaseTypes.Int32
@@ -119,6 +122,13 @@ export function isFloatType(t?: Type): boolean {
 }
 export function isNumericType(t?: Type): boolean {
 	return isIntType(t) || isFloatType(t);
+}
+
+export function isHeapType(t?: Type): boolean {
+	return (
+		t?.kind === 'type' &&
+		(t.family === 'string' || t.family === 'data' || t.family === 'buffer')
+	);
 }
 
 // Numeric promotion: the result type of an arithmetic op on `lt`/`rt` —
@@ -192,11 +202,9 @@ function unifyCollectionTypeParam(
 ): boolean {
 	if (!(
 		paramType.kind === 'type' &&
-		paramType.family === 'data' &&
-		paramType.elem &&
+		paramType.family === 'buffer' &&
 		argType.kind === 'type' &&
-		argType.family === 'data' &&
-		argType.elem
+		argType.family === 'buffer'
 	))
 		return false;
 	unifyTypeParam(paramType.elem, argType.elem, names, out);
@@ -259,7 +267,7 @@ export function SymbolTable<T extends Symbol>(globals?: Record<string, T>, ignor
 	return table;
 }
 
-function literal(value: number | boolean | undefined, type: SymbolMap['type']) {
+function literal(value: number | boolean | undefined, type: ResolvedType) {
 	return { kind: 'literal', value, flags: 0, type } as const;
 }
 
@@ -274,7 +282,7 @@ function param(
 	return { kind: 'variable', name, flags: 0, type, ownership };
 }
 
-export const AnyData: SymbolMap['type'] = {
+export const AnyData: ResolvedType = {
 	name: '[]',
 	kind: 'type',
 	flags: 0,
@@ -283,43 +291,41 @@ export const AnyData: SymbolMap['type'] = {
 	members: {},
 };
 
-// `Buffer<T>` — the low-level, safe, runtime-length memory primitive that the
-// stdlib `Array<T>` (and eventually `String`) is built on. A bare `Buffer`
-// (this symbol) carries `Flags.Collection` for routing; applying it
-// (`Buffer<Int32>`) yields a `bufferTypeOf` instance — a `data` type whose
-// `elem` is the element type (see the `elem` field docs). Layout is
-// `[len][cap][elem×cap]`, payload at offset 8. One shared shape so
-// parser/checker/backend never disagree.
-export const BufferType: SymbolMap['type'] = {
-	name: 'Buffer',
+const BufferElementType: ResolvedType = {
+	name: 'T',
 	kind: 'type',
-	flags: Flags.Collection,
-	family: 'data',
+	flags: 0,
+	family: 'unknown',
 	size: 4,
-	members: {},
-	typeParams: [
-		{ name: 'T', kind: 'type', flags: 0, family: 'unknown', size: 4 },
-	],
 };
 
-export function bufferTypeOf(elem: Type): SymbolMap['type'] {
+export const BufferSymbol: TypeSymbol = {
+	name: 'Buffer',
+	kind: 'type',
+	flags: 0,
+	type: bufferTypeOf(BufferElementType),
+	typeParams: [BufferElementType],
+};
+
+export function bufferTypeOf(elem: Type): ResolvedType {
 	return {
 		kind: 'type',
-		flags: Flags.Collection,
+		flags: 0,
 		name: 'Buffer',
-		family: 'data',
+		family: 'buffer',
 		size: 4,
-		members: {},
 		elem,
 	};
 }
 
-export function isCollection(t: Type): boolean {
-	return t.kind === 'type' && t.family === 'data' && t.elem !== undefined;
+export function isCollection(
+	t: Type,
+): t is ResolvedType & { family: 'buffer' } {
+	return t.kind === 'type' && t.family === 'buffer';
 }
 
 export function ProgramSymbolTable() {
-	const typeParam = (): SymbolMap['type'] => ({
+	const typeParam = (): ResolvedType => ({
 		kind: 'type',
 		name: 'T',
 		flags: 0,
@@ -438,10 +444,14 @@ export const BaseTypes = {
 			__trace: { kind: 'variable', name: '__trace', flags: 0 },
 		},
 	},
-} as const satisfies Record<string, SymbolMap['type']>;
+} as const satisfies Record<string, ResolvedType>;
 
 export function TypesSymbolTable() {
-	return SymbolTable<Type>({ ...BaseTypes, Buffer: BufferType });
+	const symbols: Record<string, TypeSymbol> = {};
+	for (const [name, type] of Object.entries(BaseTypes))
+		symbols[name] = { kind: 'type', name, flags: 0, type };
+	symbols.Buffer = BufferSymbol;
+	return SymbolTable<TypeSymbol>(symbols);
 }
 
 /** `origin(e: Error): Frame` — the trace reader; Error/Frame types are

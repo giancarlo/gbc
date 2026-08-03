@@ -305,8 +305,8 @@ export function parseExpression(
 				// stage form carry meaning and stay.)
 				if (
 					rt.kind === 'typeident' &&
-					rt.symbol.kind === 'type' &&
-					rt.symbol.family === 'void'
+					rt.symbol.type.kind === 'type' &&
+					rt.symbol.type.family === 'void'
 				)
 					throw error(
 						'return types are inferred — a fn that produces no value needs no `: Void` annotation',
@@ -331,8 +331,7 @@ export function parseExpression(
 				name: '',
 				flags: 0,
 			};
-			if (typeNode.kind === 'typeident' && typeNode.symbol.kind === 'type')
-				anonSym.type = typeNode.symbol;
+			if (typeNode.kind === 'typeident') anonSym.type = typeNode.symbol.type;
 			const result = optional(':') ? resultType() : undefined;
 			const returnTypeNode = result?.type;
 			// `T:R` asserts a real emitted type; "emits nothing" is inferred
@@ -340,8 +339,8 @@ export function parseExpression(
 			// returns. (This was Void's last writable surface.)
 			if (
 				returnTypeNode?.kind === 'typeident' &&
-				returnTypeNode.symbol.kind === 'type' &&
-				returnTypeNode.symbol.family === 'void'
+				returnTypeNode.symbol.type.kind === 'type' &&
+				returnTypeNode.symbol.type.family === 'void'
 			)
 				throw error(
 					'return types are inferred — a stage that emits nothing needs no `:Void` annotation',
@@ -804,9 +803,9 @@ export function parseExpression(
 					if (type && current().kind === '{') {
 						if (
 							type.kind === 'typeident' &&
-							type.symbol.kind === 'type' &&
-							type.symbol.family !== 'literal' &&
-							type.symbol.family !== 'union'
+							type.symbol.type.kind === 'type' &&
+							type.symbol.type.family !== 'literal' &&
+							type.symbol.type.family !== 'union'
 						)
 							throw error(
 								`":${type.symbol.name} { ... }" is not a literal-type prefix; use \`${type.symbol.name}\` for Shape 2.`,

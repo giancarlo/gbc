@@ -3,10 +3,13 @@ import { CompilerError, Position, text } from '../sdk/index.js';
 import type { InfixNode, Node, NodeMap } from './node.js';
 import {
 	BaseTypes as BT,
+	BufferSymbol,
 	Flags,
 	bufferTypeOf,
 	isFloatType,
+	isHeapType,
 	isIntType,
+	isCollection,
 	isNumericType,
 	numberLiteralType,
 	numericResultType,
@@ -14,6 +17,7 @@ import {
 } from './symbol-table.js';
 import type {
 	OwnershipMode,
+	ResolvedType,
 	Symbol,
 	SymbolMap,
 	Type,
@@ -80,9 +84,8 @@ function bufferCtorType(node: NodeMap['call']): Type | undefined {
 	const callee = node.children[0];
 	if (callee.kind !== 'typeident') return undefined;
 	const sym = callee.symbol;
-	if (!(sym.kind === 'type' && sym.flags & Flags.Collection)) return undefined;
-	if (sym.family === 'data' && sym.elem) return sym;
-	return bufferTypeOf(BT.Unknown);
+	if (sym === BufferSymbol) return bufferTypeOf(BT.Unknown);
+	return isCollection(sym.type) ? sym.type : undefined;
 }
 
 function callReturnType(node: NodeMap['call']): Type | undefined {
@@ -136,7 +139,7 @@ function pipeArgumentTypes(
 ): Type[] {
 	const params = fnSym.parameters ?? [];
 	if (params.length <= 1) return params.length === 0 ? [] : [input];
-	if (input.kind !== 'type' || input.family !== 'data' || input.elem)
+	if (input.kind !== 'type' || input.family !== 'data')
 		return [input];
 	const keys = Object.keys(input.members);
 	return params.map((p, i) => {
@@ -365,7 +368,7 @@ function resolveType(node: CheckedNode): Type | undefined {
 			return sym.type;
 		}
 		case 'typeident':
-			return node.symbol;
+			return node.symbol.type;
 		case 'call':
 			return callReturnType(node);
 		case 'loop':
@@ -496,12 +499,8 @@ function resolvePipeType(node: NodeMap['>>']): Type {
 				return;
 			}
 			const ptype = n.parameters?.[0]?.type;
-			if (
-				ptype &&
-				ptype.kind === 'typeident' &&
-				ptype.symbol.kind === 'type'
-			)
-				annotateDollar(body, ptype.symbol);
+			if (ptype?.kind === 'typeident')
+				annotateDollar(body, ptype.symbol.type);
 			rets.push(resolver(body));
 		};
 		walk(last);
@@ -629,7 +628,7 @@ function canAssign(to: Type, a: Type): boolean {
 	if (a.family === 'union') return a.members.every(m => canAssign(to, m));
 	if (to.family === 'union') return to.members.some(m => canAssign(m, a));
 	if (canAssignCoercion(to, a)) return true;
-	if (to.family === 'data' && a.family === 'data' && to.elem && a.elem)
+	if (to.family === 'buffer' && a.family === 'buffer')
 		return canAssign(to.elem, a.elem);
 	return canAssignData(to, a);
 }
@@ -664,7 +663,7 @@ function canAssignFunction(
 }
 
 /** Literal/scalar widening coercions; false means "no coercion, keep checking". */
-function canAssignCoercion(to: SymbolMap['type'], a: SymbolMap['type']): boolean {
+function canAssignCoercion(to: ResolvedType, a: ResolvedType): boolean {
 	if (to.family === 'literal' && a.family === 'literal')
 		return to.value === a.value;
 	if (to.family === 'string')
@@ -685,7 +684,7 @@ function canAssignCoercion(to: SymbolMap['type'], a: SymbolMap['type']): boolean
 	);
 }
 
-function canAssignData(to: SymbolMap['type'], a: SymbolMap['type']): boolean {
+function canAssignData(to: ResolvedType, a: ResolvedType): boolean {
 	if (to.family !== 'data' || a.family !== 'data') return false;
 	// A named type is nominal — its identity is the type-symbol instance,
 	// not its structure. The `to === a` test in `canAssign` is that identity
@@ -728,7 +727,7 @@ function valueType(node: Node): Type | undefined {
  * are skipped because they aren't valid union arms.
  */
 function unionOf(types: Type[]): Type {
-	const seen = new Map<string, SymbolMap['type']>();
+	const seen = new Map<string, ResolvedType>();
 	for (const t of types) {
 		if (t.kind === 'type' && t.family !== 'void') seen.set(t.name, t);
 	}
@@ -831,7 +830,7 @@ export function reduceType(t: Type, bindings: Map<string, Type>, depth = 0): Typ
 	if (!bindings.size && !containsApp(t)) return t;
 	if (t.family === 'union')
 		return unionOf(t.members.map(m => reduceType(m, bindings, depth + 1)));
-	if (t.family === 'data' && t.elem) {
+	if (t.family === 'buffer') {
 		const e = reduceType(t.elem, bindings, depth + 1);
 		return e === t.elem ? t : bufferTypeOf(e);
 	}
@@ -1173,7 +1172,7 @@ export function checker({
 	/** Default ctor: `T(x)` where `x` is T's own structural value; field-less
 	 * errors take Void (`T()`), field-less plain types have no value at all. */
 	function checkDataCtorArg(
-		target: SymbolMap['type'] & { family: 'data' },
+		target: ResolvedType & { family: 'data' },
 		node: NodeMap['call'],
 	) {
 		const visible = Object.keys(target.members).filter(
@@ -1208,13 +1207,8 @@ export function checker({
 	}
 
 	function checkBufferCtorArg(
-		target: SymbolMap['type'] & { family: 'data' },
 		node: NodeMap['call'],
 	) {
-		if (!target.elem) {
-			error(`Buffer requires a type argument: Buffer<T>(capacity)`, node);
-			return;
-		}
 		const args = node.children[1];
 		if (!args || args.kind === ',') {
 			error(`Buffer<T>(capacity) takes a single Int32 capacity`, node);
@@ -1249,8 +1243,12 @@ export function checker({
 		const fn = resolveType(calleeNode);
 		if (calleeNode.kind === 'typeident') {
 			if (fn && fn.kind === 'type' && fn.family !== 'fn') {
-				if (fn.family === 'data' && fn.flags & Flags.Collection)
-					checkBufferCtorArg(fn, node);
+				if (calleeNode.symbol === BufferSymbol) {
+					error(
+						`Buffer requires a type argument: Buffer<T>(capacity)`,
+						node,
+					);
+				} else if (fn.family === 'buffer') checkBufferCtorArg(node);
 				else if (fn.family === 'data') checkDataCtorArg(fn, node);
 				else checkScalarCtorArg(fn, node);
 				return;
@@ -1548,10 +1546,7 @@ export function checker({
 			if (callee?.returnOwnership)
 				return callee.returnOwnership === 'own';
 		}
-		return (
-			t.kind === 'type' &&
-			(t.family === 'string' || t.family === 'data')
-		);
+		return isHeapType(t);
 	}
 	type Move = {
 		position: Position;
@@ -1620,11 +1615,7 @@ export function checker({
 			}
 			if (v.kind !== 'ident') continue;
 			const t = resolver(v);
-			if (
-				t.kind !== 'type' ||
-				(t.family !== 'string' && t.family !== 'data')
-			)
-				continue;
+			if (!isHeapType(t)) continue;
 			const name = v.symbol.name ?? '';
 			if (seen.has(v.symbol)) {
 				error(
@@ -1680,9 +1671,7 @@ export function checker({
 			const mode = fn.parameters?.[i]?.ownership;
 			if (!arg || arg.kind !== 'ident') continue;
 			const type = resolver(arg);
-			const heap =
-				type.kind === 'type' &&
-				(type.family === 'string' || type.family === 'data');
+			const heap = isHeapType(type);
 			if (!heap) continue;
 			if (mode === 'own') {
 				if (seenExclusive.has(arg.symbol))
@@ -1905,12 +1894,7 @@ export function checker({
 			return;
 		}
 		const type = resolver(node);
-		if (
-			type.kind === 'type' &&
-			type.family !== 'string' &&
-			type.family !== 'data'
-		)
-			return;
+		if (!isHeapType(type)) return;
 		if (node.kind === 'ident' && owned.has(node.symbol)) return;
 		if (node.kind === 'string' || node.kind === 'interp' || node.kind === 'data')
 			return;
@@ -2509,7 +2493,7 @@ export function checker({
 		if (!pNode?.type) return undefined;
 		if (pNode.type.kind !== 'typeident') return undefined;
 		const s = pNode.type.symbol;
-		return s.kind === 'type' ? s : undefined;
+		return s.type;
 	}
 
 	function checkStageReachable(stage: Node, input: Node) {
@@ -2533,7 +2517,7 @@ export function checker({
 	function inferSingleParamStage(
 		stage: Node,
 		p: Symbol,
-		inputType: SymbolMap['type'],
+		inputType: ResolvedType,
 	) {
 		// A single slot binds the whole upstream value.
 		const declared = paramDeclaredType(stage, 0) ?? p.type;
@@ -2586,7 +2570,7 @@ export function checker({
 	function inferMultiParamStage(
 		stage: Node,
 		params: Symbol[],
-		inputType: SymbolMap['type'],
+		inputType: ResolvedType,
 	) {
 		// The last slot binds rest; scalar input lifts to [scalar].
 		const members: Record<string, Symbol> =

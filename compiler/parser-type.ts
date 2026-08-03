@@ -2,9 +2,15 @@ import { ParserApi, Token, parserTable, text } from '../sdk/index.js';
 
 import type { Node, NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
-import { AnyData, Flags, bufferTypeOf } from './symbol-table.js';
+import {
+	AnyData,
+	BufferSymbol,
+	Flags,
+	bufferTypeOf,
+} from './symbol-table.js';
 import type {
 	OwnershipMode,
+	TypeSymbol,
 	Symbol,
 	SymbolMap,
 	Type,
@@ -23,6 +29,10 @@ export function parseType(
 		const node: NodeMap['typeident'] = { ...tk, kind: 'typeident', symbol };
 		(symbol.references ||= []).push(node);
 		return node;
+	}
+
+	function resolvedSymbol(type: Type): TypeSymbol {
+		return { kind: 'type', name: type.name, flags: 0, type };
 	}
 
 	function slotOwnership(): OwnershipMode {
@@ -56,7 +66,7 @@ export function parseType(
 
 	function collectUnionMembers(n: Node, out: Type[]) {
 		if (n.kind !== 'typeident') return;
-		const s = n.symbol;
+		const s = n.symbol.type;
 		if (s.kind !== 'type') return;
 		if (s.family === 'union') for (const m of s.members) out.push(m);
 		else out.push(s);
@@ -77,6 +87,8 @@ export function parseType(
 						: m;
 			return { ...t, members };
 		}
+		if (t.family === 'buffer')
+			return bufferTypeOf(substituteType(t.elem, subst));
 		if (t.family === 'union')
 			return { ...t, members: t.members.map(m => substituteType(m, subst)) };
 		return t;
@@ -84,7 +96,7 @@ export function parseType(
 
 	function applyTypeArgs(
 		node: NodeMap['typeident'],
-		sym: SymbolMap['type'],
+		sym: TypeSymbol,
 		expression: () => Node | undefined,
 	): NodeMap['typeident'] {
 		const params = sym.typeParams ?? [];
@@ -103,32 +115,56 @@ export function parseType(
 		// `Buffer<T>` builds a runtime-length collection type whose `elem` is the
 		// argument (a type param placeholder for a generic `Buffer<T>` param —
 		// substituted at monomorphization).
-		if (sym.flags & Flags.Collection) {
+		if (sym === BufferSymbol) {
 			const a = argNodes[0];
-			const elem = a?.kind === 'typeident' ? a.symbol : AnyData;
-			return { ...node, symbol: bufferTypeOf(elem) };
+			const elem = a?.kind === 'typeident' ? a.symbol.type : AnyData;
+			return {
+				...node,
+				symbol: {
+					kind: 'type',
+					name: sym.name,
+					flags: 0,
+					type: bufferTypeOf(elem),
+				},
+			};
 		}
 		// Chain-defined or forward-declared recursive type functions
 		// reduce on demand in the checker — defer as an application symbol
 		// carrying the arg nodes (composes inside unions/data). Concrete
 		// data/union aliases substitute eagerly here.
-		if (sym.family === 'unknown') {
+		if (sym.type.kind === 'type' && sym.type.family === 'unknown') {
 			const appSym: Type = {
 				kind: 'type',
 				flags: 0,
-				name: sym.name,
+				name: sym.name ?? '',
 				family: 'unknown',
 				size: 4,
 				application: { fn: sym, argNodes },
 			};
-			return { ...node, symbol: appSym };
+			return {
+				...node,
+				symbol: {
+					kind: 'type',
+					name: sym.name,
+					flags: 0,
+					type: appSym,
+				},
+			};
 		}
 		const subst = new Map<string, Type>();
 		params.forEach((p, i) => {
 			const a = argNodes[i];
-			if (p.name && a?.kind === 'typeident') subst.set(p.name, a.symbol);
+			if (p.name && a?.kind === 'typeident') subst.set(p.name, a.symbol.type);
 		});
-		return { ...node, symbol: substituteType(sym, subst) };
+		return {
+			...node,
+			symbol: {
+				kind: 'type',
+				name: sym.name,
+				flags: 0,
+				type: substituteType(sym.type, subst),
+			},
+		};
 	}
 
 	const parser = parserTable<NodeMap, ScannerToken>(
@@ -142,18 +178,22 @@ export function parseType(
 							kind: 'typeident',
 							symbol: {
 								kind: 'type',
-								flags: 0,
-								family: 'literal',
 								name,
-								size: 1,
-								value: name === 'true',
+								flags: 0,
+								type: {
+									kind: 'type',
+									flags: 0,
+									family: 'literal',
+									name,
+									size: 1,
+									value: name === 'true',
+								},
 							},
 						};
 					}
 					const node = expectSymbol(name, n);
 					// Generic type application `Name<arg, ...>`.
 					if (
-						node.symbol.kind === 'type' &&
 						node.symbol.typeParams?.length &&
 						current().kind === '<'
 					)
@@ -200,7 +240,7 @@ export function parseType(
 									ownership,
 									type:
 										pt.kind === 'typeident'
-											? pt.symbol
+											? pt.symbol.type
 											: undefined,
 								},
 								type: pt,
@@ -219,8 +259,8 @@ export function parseType(
 					// `Void` adds nothing (`T | Void` unions stay).
 					if (
 						returnType?.kind === 'typeident' &&
-						returnType.symbol.kind === 'type' &&
-						returnType.symbol.family === 'void'
+						returnType.symbol.type.kind === 'type' &&
+						returnType.symbol.type.family === 'void'
 					)
 						throw api.error(
 							'return types are inferred — omit the return instead of `: Void`',
@@ -239,7 +279,7 @@ export function parseType(
 						parameters: params.map(p => p.symbol),
 						returnType:
 							returnType?.kind === 'typeident'
-								? returnType.symbol
+								? returnType.symbol.type
 								: undefined,
 						returnOwnership,
 					};
@@ -265,14 +305,14 @@ export function parseType(
 					return {
 						...tk,
 						kind: 'typeident',
-						symbol: {
+						symbol: resolvedSymbol({
 							kind: 'type',
 							flags: 0,
 							family: 'literal',
 							name: raw,
 							size: 0,
 							value: raw.slice(1, -1),
-						},
+						}),
 					};
 				},
 			},
@@ -282,14 +322,14 @@ export function parseType(
 					return {
 						...tk,
 						kind: 'typeident',
-						symbol: {
+						symbol: resolvedSymbol({
 							kind: 'type',
 							flags: 0,
 							family: 'literal',
 							name: raw,
 							size: 4,
 							value: +raw,
-						},
+						}),
 					};
 				},
 			},
@@ -313,14 +353,14 @@ export function parseType(
 						kind: 'typeident',
 						start: left.start,
 						end: right.end,
-						symbol: {
+						symbol: resolvedSymbol({
 							kind: 'type',
 							flags: 0,
 							family: 'union',
 							name: '',
 							size: 4,
 							members,
-						},
+						}),
 					};
 				},
 			},
@@ -354,8 +394,13 @@ export function parseType(
 							kind: 'type',
 							name: bname,
 							flags: 0,
-							family: 'unknown',
-							size: 4,
+							type: {
+								kind: 'type',
+								name: bname,
+								flags: 0,
+								family: 'unknown',
+								size: 4,
+							},
 						});
 						const blabel: NodeMap['label'] = { ...bid, kind: 'label' };
 						binds.push({
@@ -427,7 +472,7 @@ export function parseType(
 						return {
 							...tk,
 							kind: 'typeident',
-							symbol: AnyData,
+							symbol: resolvedSymbol(AnyData),
 							end: close.end,
 						};
 					}
@@ -462,7 +507,10 @@ export function parseType(
 							kind: 'variable',
 							name: label ? text(label) : '',
 							flags: 0,
-							type: pt.symbol,
+							type:
+								pt.kind === 'typeident'
+									? pt.symbol.type
+									: pt.symbol,
 						};
 						const labelNode: NodeMap['label'] | undefined = label
 							? { ...label, kind: 'label' }
@@ -525,7 +573,12 @@ export function typeParameters(
 			family: 'unknown',
 			size: 4,
 		};
-		symbolTable.set(name, placeholder);
+		symbolTable.set(name, {
+			kind: 'type',
+			name,
+			flags: 0,
+			type: placeholder,
+		});
 		const constraint = api.optional(':') ? parseTypeExpr() : undefined;
 		const labelNode: NodeMap['label'] = { ...pid, kind: 'label' };
 		// symbol.type is the placeholder (same object value params bind to, so

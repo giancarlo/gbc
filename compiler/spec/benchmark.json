@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "environments": {
+    "037c6b101ce3faa3de18a7e744e80a97234df8323bbe6d38bc4637c89edd33a6": {
+      "fingerprint": {
+        "browser": "HeadlessChrome/140.0.7339.207",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "cpu": "Apple M4",
+        "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (LLVM 10.0.0) (0x0000C0DE)), SwiftShader driver-5.0.0)",
+        "profile": "--no-sandbox --disable-setuid-sandbox --disable-gpu --font-render-hinting=none --disable-font-subpixel-positioning --animation-duration-scale=0 --force-device-scale-factor=1 --window-size=1280,1024 --disable-infobars --hide-scrollbars --blink-settings=imagesEnabled=true --enable-font-antialiasing --ignore-certificate-errors --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --mute-audio --disable-extensions --single-process"
+      },
+      "benchmarks": {
+        "Tail recursion benchmarks > direct self-tail two-field accumulator": {
+          "type": "benchmark",
+          "iterations": 50003,
+          "values": [
+            0.002413855167259453,
+            0.0023838569695355024,
+            0.0024118552891594877,
+            0.002391856489087492,
+            0.002395856250055508,
+            0.0024258544477794588,
+            0.002405855650091506,
+            0.00246585204792345,
+            0.00246585204792345,
+            0.002465852050307493,
+            0.0023698578085314882,
+            0.0024258544477794588,
+            0.0024178549282274694,
+            0.0023998560086394816,
+            0.0023998560086394816,
+            0.0024018558891234897,
+            0.0024078555281914714,
+            0.002441853489267481,
+            0.0024798512089274642,
+            0.002477851328443456,
+            0.0024218546891954856,
+            0.002433853969715491,
+            0.0024358538478154567,
+            0.002403855769607498,
+            0.0024458532502354973,
+            0.0024098554086754796,
+            0.0023998560086394816,
+            0.0024258544477794588,
+            0.0024238545696794937,
+            0.0024538527674034445
+          ],
+          "median": 0.0024198548087114775,
+          "mad": 0.000018998859829991816,
+          "p75": 0.002440353578904475,
+          "p95": 0.0024724516532822725,
+          "operationsPerSecond": 413247.9338842975,
+          "options": {
+            "warmup": 250,
+            "sampleTime": 50,
+            "samples": 30
+          }
+        },
+        "Tail recursion benchmarks > mutual tail-call two-field baseline": {
+          "type": "benchmark",
+          "iterations": 50002,
+          "values": [
+            0.0036838526468478,
+            0.0036678532877758374,
+            0.0036538538467998025,
+            0.0036778528854077464,
+            0.0036998520059197634,
+            0.0037098516059357626,
+            0.0036938522468638,
+            0.003713851444511708,
+            0.0036878524878078364,
+            0.003719851205951762,
+            0.0037218511240476896,
+            0.0036878524878078364,
+            0.0036798528058877645,
+            0.0036758529649277287,
+            0.0037098516059357626,
+            0.003723851046911798,
+            0.0036618535239516933,
+            0.003737850487887833,
+            0.0037098516059357626,
+            0.0036718531263517833,
+            0.0036778528854077464,
+            0.0036838526468478,
+            0.003719851205951762,
+            0.0037098516059357626,
+            0.0037078516854557445,
+            0.003641854326303785,
+            0.0037078516854557445,
+            0.003695852164959727,
+            0.003687852485423746,
+            0.0036958521673438175
+          ],
+          "median": 0.0036948522059117635,
+          "mad": 0.000014999400023999084,
+          "p75": 0.0037098516059357626,
+          "p95": 0.0037229510816229492,
+          "operationsPerSecond": 270646.8200270636,
+          "options": {
+            "warmup": 250,
+            "sampleTime": 50,
+            "samples": 30
+          }
+        }
+      }
+    }
+  }
+}

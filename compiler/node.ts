@@ -2,10 +2,11 @@ import { MakeNodeMap } from '../sdk/index.js';
 
 import type {
 	OwnershipMode,
+	ResolvedType,
 	Symbol,
 	SymbolMap,
 	Scope,
-	Type,
+	TypeSymbol,
 } from './symbol-table.js';
 
 type Infix = { children: [Node, Node] };
@@ -20,7 +21,7 @@ export type BaseNodeMap = {
 		typeParameters?: NodeMap['parameter'][];
 		symbol: Symbol;
 	};
-	typeident: { symbol: Type };
+	typeident: { symbol: TypeSymbol };
 	done: object;
 	break: object;
 	ident: { symbol: Symbol };
@@ -99,7 +100,7 @@ export type BaseNodeMap = {
 		children: Node[];
 		/** Error-composed target this literal constructs — codegen lays out
 		 * and fills the hidden `__trace` slot. */
-		nominal?: SymbolMap['type'];
+		nominal?: ResolvedType;
 		/** Fn the construction belongs to (survives template inlining). */
 		originFn?: string;
 	};

@@ -4,10 +4,13 @@ import { reduceType } from './checker.js';
 import {
 	bufferTypeOf,
 	BaseTypes,
+	BufferSymbol,
 	Flags,
 	isFloatType,
+	isHeapType,
 	isInt64Type,
 	isIntType,
+	isCollection,
 	isNumericType,
 	isUintType,
 	numberLiteralType,
@@ -20,6 +23,7 @@ import type { Node, NodeMap } from './node.js';
 import type {
 	Symbol as GbcSymbol,
 	SymbolMap,
+	ResolvedType,
 	Type,
 	TypeFamily,
 } from './symbol-table.js';
@@ -30,7 +34,7 @@ export interface SpliceInput {
 	resolveRef: (ref: SerialRef) => GbcSymbol | undefined;
 }
 
-type ValueType = SymbolMap['type'] & {
+type ValueType = ResolvedType & {
 	family: Exclude<TypeFamily, 'void' | 'unknown'>;
 };
 
@@ -66,7 +70,7 @@ export function setTraceTypes(
 }
 function isTraceComposed(
 	t: Type | undefined,
-): t is Extract<SymbolMap['type'], { family: 'data' }> {
+): t is Extract<ResolvedType, { family: 'data' }> {
 	return (
 		!!t &&
 		!!traceType &&
@@ -152,7 +156,7 @@ const OP_I32_REM_S = 0x6f;
 const OP_I32_REM_U = 0x70;
 const OP_I32_AND = 0x71;
 
-const SCALAR_CTORS: Record<string, SymbolMap['type']> = {
+const SCALAR_CTORS: Record<string, ResolvedType> = {
 	Int8: BaseTypes.Int8,
 	Int16: BaseTypes.Int16,
 	Int32: BaseTypes.Int32,
@@ -467,6 +471,7 @@ function gbcToWasm(type: Type): number {
 		case 'string':
 		case 'fn':
 		case 'data':
+		case 'buffer':
 		case 'union':
 		case 'literal':
 			return I32;
@@ -506,7 +511,7 @@ function isUnionType(t: Type): boolean {
 }
 
 function isInlineData(t: Type): boolean {
-	return t.kind === 'type' && t.family === 'data' && !t.elem;
+	return t.kind === 'type' && t.family === 'data';
 }
 
 function fieldBytes(t: Type): number {
@@ -514,7 +519,7 @@ function fieldBytes(t: Type): number {
 	if (t.kind === 'type') {
 		if (t.family === 'float') return t.size === 4 ? 4 : 8;
 		if (t.family === 'int' || t.family === 'uint') return t.size;
-		if (t.family === 'data') return isInlineData(t) ? fieldLayout(t.members).total : 4;
+		if (t.family === 'data') return fieldLayout(t.members).total;
 	}
 	return 4;
 }
@@ -525,8 +530,8 @@ function fieldBytes(t: Type): number {
 function typeOwnsHeap(t: Type | undefined): boolean {
 	if (!t || t.kind !== 'type') return false;
 	if (t.family === 'string') return true;
+	if (t.family === 'buffer') return true;
 	if (t.family === 'data') {
-		if (t.elem) return true;
 		return Object.keys(t.members).some(
 			k => k === '__trace' || typeOwnsHeap(t.members[k]?.type),
 		);
@@ -1161,11 +1166,7 @@ export function compileWasm(
 			return false;
 		};
 		const typedHeap = (sym: GbcSymbol): boolean => {
-			const t = sym.type;
-			return (
-				t?.kind === 'type' &&
-				(t.family === 'string' || t.family === 'data')
-			);
+			return isHeapType(sym.type);
 		};
 		// A self-recursive accumulator keeps the original site rule (string |
 		// fresh | tail re-pass); a consuming param admits any movable-in arg.
@@ -1309,7 +1310,7 @@ export function compileWasm(
 	 */
 	function resolveTypeFromNode(node: Node | undefined): Type {
 		if (!node) return BaseTypes.Unknown;
-		if (node.kind === 'typeident') return node.symbol;
+		if (node.kind === 'typeident') return node.symbol.type;
 		return BaseTypes.Unknown;
 	}
 
@@ -1338,11 +1339,8 @@ export function compileWasm(
 		}
 		if (callee.kind === 'typeident') {
 			const cs = callee.symbol;
-			if (cs.kind === 'type' && cs.flags & Flags.Collection)
-				return cs.family === 'data' && cs.elem
-					? cs
-					: bufferTypeOf(BaseTypes.Unknown);
-			return cs;
+			if (cs === BufferSymbol) return bufferTypeOf(BaseTypes.Unknown);
+			return cs.type;
 		}
 		if (callee.kind !== 'ident') return BaseTypes.Unknown;
 		const sym = callee.symbol;
@@ -1389,7 +1387,7 @@ export function compileWasm(
 	): Type[] {
 		const params = fnSym.parameters ?? [];
 		if (params.length <= 1) return params.length === 0 ? [] : [input];
-		if (input.kind !== 'type' || input.family !== 'data' || input.elem)
+		if (input.kind !== 'type' || input.family !== 'data')
 			return [input];
 		const keys = Object.keys(input.members);
 		return params.map((p, i) => {
@@ -1825,9 +1823,7 @@ export function compileWasm(
 		if (
 			a0?.kind === 'type' &&
 			(a0.family === 'void' ||
-				(a0.family === 'data' &&
-					!a0.elem &&
-					Object.keys(a0.members).length === 0))
+				(a0.family === 'data' && Object.keys(a0.members).length === 0))
 		)
 			return true; // base case: nothing to emit
 		// Set each value-param's type to its concrete arg type for this level
@@ -1898,7 +1894,7 @@ export function compileWasm(
 			const callee = node.children[0];
 			if (
 				callee.kind === 'typeident' &&
-				isTraceComposed(callee.symbol) &&
+				isTraceComposed(callee.symbol.type) &&
 				originFn
 			)
 				node.originFn = originFn;
@@ -1980,9 +1976,15 @@ export function compileWasm(
 		args: Node | undefined,
 		fn?: FuncBuilder,
 	): boolean {
-		if (callee.symbol.kind === 'type' && callee.symbol.flags & Flags.Collection)
+		if (
+			callee.symbol === BufferSymbol ||
+			isCollection(callee.symbol.type)
+		)
 			return true;
-		if (callee.symbol.kind !== 'type' || callee.symbol.family !== 'string')
+		if (
+			callee.symbol.type.kind !== 'type' ||
+			callee.symbol.type.family !== 'string'
+		)
 			return false;
 		if (!args || args.kind === ',') return false;
 		return ctorAllocsFresh(inferType(args, fn));
@@ -2175,7 +2177,7 @@ export function compileWasm(
 			uleb128(2, fn.body);
 			uleb128(0, fn.body);
 			emitFixedCall(fn, freeBuilderIdx);
-		} else if (elemType.family === 'data' && elemType.elem) {
+		} else if (elemType.family === 'buffer') {
 			const eptr = allocLocal(fn, I32);
 			addr();
 			fn.body.push(OP_I32_LOAD);
@@ -2224,8 +2226,10 @@ export function compileWasm(
 			emitFixedCall(fn, freeBuilderIdx);
 			return;
 		}
-		if (mt?.kind !== 'type' || mt.family !== 'data') return;
-		if (!mt.elem) return emitDataMemberFrees(loadPtr, mt, fn, off, visiting);
+		if (mt?.kind !== 'type') return;
+		if (mt.family === 'data')
+			return emitDataMemberFrees(loadPtr, mt, fn, off, visiting);
+		if (mt.family !== 'buffer') return;
 		const eptr = allocLocal(fn, I32);
 		loadPtr();
 		fn.body.push(OP_I32_LOAD);
@@ -2249,13 +2253,12 @@ export function compileWasm(
 		base = 0,
 		visiting: Set<Type> = new Set(),
 	) {
-		if (!t || t.kind !== 'type' || t.family !== 'data') return;
-		if (t.elem) {
-			// A runtime-length collection: free its elements (the caller frees
-			// the block). Collections are pointer-referenced, never inline.
+		if (!t || t.kind !== 'type') return;
+		if (t.family === 'buffer') {
 			emitCollectionElemFrees(loadPtr, t.elem, fn);
 			return;
 		}
+		if (t.family !== 'data') return;
 		if (visiting.has(t)) return;
 		visiting.add(t);
 		const layout = fieldLayout(t.members);
@@ -2287,11 +2290,7 @@ export function compileWasm(
 					if (wide) fn.body.push(OP_I32_WRAP_I64);
 				};
 				for (const m of u.members) {
-					if (
-						m.kind !== 'type' ||
-						(m.family !== 'string' && m.family !== 'data')
-					)
-						continue;
+					if (!isHeapType(m)) continue;
 					fn.body.push(OP_LOCAL_GET);
 					uleb128(o.tagIdx, fn.body);
 					emitTagConst(memberTag(m), memberKey(m), fn);
@@ -2339,8 +2338,7 @@ export function compileWasm(
 		if (!fusion) return;
 		let tmp: number | undefined;
 		if (
-			t.kind === 'type' &&
-			(t.family === 'string' || t.family === 'data') &&
+			isHeapType(t) &&
 			ownableExpr(val, fn)
 		) {
 			tmp = allocLocal(fn, I32);
@@ -3080,7 +3078,7 @@ export function compileWasm(
 	function compileLength(args: Node | undefined, fn: FuncBuilder): Type {
 		if (!args) throw new Error('length() requires an argument');
 		const argType = inferType(args, fn);
-		if (argType.kind === 'type' && argType.family === 'data' && argType.elem)
+		if (argType.kind === 'type' && argType.family === 'buffer')
 			return emitHeaderLength(args, fn);
 		const isStringLike =
 			argType.kind === 'type' &&
@@ -3425,7 +3423,7 @@ export function compileWasm(
 	}
 
 	function compileScalarCtor(
-		target: SymbolMap['type'],
+		target: ResolvedType,
 		args: Node | undefined,
 		fn: FuncBuilder,
 	): Type {
@@ -3825,7 +3823,7 @@ export function compileWasm(
 	 * and a field-less error's structure is `[]` = Void, so `T()` constructs
 	 * it (the hidden trace is what gives the value runtime existence). */
 	function compileDataCtor(
-		target: Extract<SymbolMap['type'], { family: 'data' }>,
+		target: Extract<ResolvedType, { family: 'data' }>,
 		args: Node | undefined,
 		fn: FuncBuilder,
 		node: NodeMap['call'],
@@ -3860,11 +3858,11 @@ export function compileWasm(
 	// are bounded by `len` (which starts 0), so a slot is only ever read/freed
 	// after `set` initialized it — the Rust `Vec::with_capacity` model.
 	function compileBufferCtor(
-		target: SymbolMap['type'],
+		target: ResolvedType,
 		args: Node | undefined,
 		fn: FuncBuilder,
 	): Type {
-		const elem = target.family === 'data' ? target.elem : undefined;
+		const elem = target.family === 'buffer' ? target.elem : undefined;
 		if (!elem)
 			throw new Error('Buffer requires a type argument: Buffer<T>(capacity)');
 		if (!args)
@@ -3921,7 +3919,7 @@ export function compileWasm(
 
 	function bufElemOf(bNode: Node, fn: FuncBuilder): Type {
 		const bt = inferType(bNode, fn);
-		return bt.kind === 'type' && bt.family === 'data' && bt.elem
+		return bt.kind === 'type' && bt.family === 'buffer'
 			? bt.elem
 			: BaseTypes.Unknown;
 	}
@@ -3972,7 +3970,7 @@ export function compileWasm(
 			emitFixedCall(fn, freeBuilderIdx);
 			return;
 		}
-		if (elem.family === 'data' && elem.elem) {
+		if (elem.family === 'buffer') {
 			const eptr = allocLocal(fn, I32);
 			addr();
 			fn.body.push(OP_I32_LOAD);
@@ -4032,7 +4030,7 @@ export function compileWasm(
 			throw new Error('set(buffer, i, x) requires three arguments');
 		const bt = inferType(bNode, fn);
 		const elem =
-			bt.kind === 'type' && bt.family === 'data' && bt.elem
+			bt.kind === 'type' && bt.family === 'buffer'
 				? bt.elem
 				: BaseTypes.Unknown;
 		const stride = fieldBytes(elem);
@@ -4123,7 +4121,7 @@ export function compileWasm(
 			throw new Error('transfer requires source and destination buffers');
 		const bt = inferType(destinationNode, fn);
 		const elem =
-			bt.kind === 'type' && bt.family === 'data' && bt.elem
+			bt.kind === 'type' && bt.family === 'buffer'
 				? bt.elem
 				: BaseTypes.Unknown;
 		const stride = fieldBytes(elem);
@@ -4175,7 +4173,7 @@ export function compileWasm(
 	}
 
 	function compileErrorCtor(
-		target: Extract<SymbolMap['type'], { family: 'data' }>,
+		target: Extract<ResolvedType, { family: 'data' }>,
 		fn: FuncBuilder,
 		node: NodeMap['call'],
 	): Type {
@@ -4358,21 +4356,26 @@ export function compileWasm(
 		const callee = node.children[0];
 		const args = node.children[1];
 		if (callee.kind === 'typeident') {
+			const calleeType = callee.symbol.type;
 			const target = SCALAR_CTORS[callee.symbol.name ?? ''];
 			if (target) return compileScalarCtor(target, args, fn);
-			if (callee.symbol.kind === 'type' && callee.symbol.flags & Flags.Collection)
-				return compileBufferCtor(callee.symbol, args, fn);
-			if (callee.symbol.kind === 'type' && callee.symbol.family === 'string')
+			if (callee.symbol === BufferSymbol)
+				return compileBufferCtor(
+					bufferTypeOf(BaseTypes.Unknown),
+					args,
+					fn,
+				);
+			if (isCollection(calleeType))
+				return compileBufferCtor(calleeType, args, fn);
+			if (calleeType.kind !== 'type') return BaseTypes.Unknown;
+			if (calleeType.family === 'string')
 				return compileStringCtor(args, fn);
-			if (callee.symbol.kind === 'type' && callee.symbol.family === 'char')
+			if (calleeType.family === 'char')
 				return compileCharCtor(args, fn);
-			if (callee.symbol.kind === 'type' && isNumericType(callee.symbol))
-				return compileScalarCtor(callee.symbol, args, fn);
-			if (
-				callee.symbol.kind === 'type' &&
-				callee.symbol.family === 'data'
-			)
-				return compileDataCtor(callee.symbol, args, fn, node);
+			if (isNumericType(calleeType))
+				return compileScalarCtor(calleeType, args, fn);
+			if (calleeType.family === 'data')
+				return compileDataCtor(calleeType, args, fn, node);
 		}
 		if (callee.kind === 'call') {
 			const innerFn = returnedFnLiteral(callee);
@@ -4967,8 +4970,7 @@ export function compileWasm(
 		sym.type = rt;
 		if (
 			ownableExpr(node.value, fn) &&
-			rt.kind === 'type' &&
-			(rt.family === 'string' || rt.family === 'data')
+			isHeapType(rt)
 		)
 			(fn.owned ??= []).push({ sym, localIdx, type: rt });
 		return BaseTypes.Void;
@@ -4976,7 +4978,7 @@ export function compileWasm(
 
 	function callReturnUnion(
 		callNode: NodeMap['call'],
-	): SymbolMap['type'] | undefined {
+	): ResolvedType | undefined {
 		const callee = callNode.children[0];
 		if (callee.kind !== 'ident') return undefined;
 		const sym = callee.symbol;
@@ -5074,7 +5076,7 @@ export function compileWasm(
 			if (result) return result;
 		}
 
-		let originalUnion: SymbolMap['type'] | undefined;
+		let originalUnion: ResolvedType | undefined;
 		while (source.kind === 'call') {
 			if (!originalUnion) originalUnion = callReturnUnion(source);
 			const r = tryInlinePipeCall(source, stages, fn);
@@ -5112,7 +5114,7 @@ export function compileWasm(
 	function drivePipeValue(
 		source: Node,
 		stages: Node[],
-		originalUnion: SymbolMap['type'] | undefined,
+		originalUnion: ResolvedType | undefined,
 		fn: FuncBuilder,
 	): Type {
 		let sourceType = compileExpr(source, fn);
@@ -5139,8 +5141,7 @@ export function compileWasm(
 		// result — no stage forwarded the pointer) dies with the drive.
 		let srcTmp: number | undefined;
 		if (
-			passType.kind === 'type' &&
-			(passType.family === 'string' || passType.family === 'data') &&
+			isHeapType(passType) &&
 			ownableExpr(source, fn)
 		) {
 			srcTmp = allocLocal(fn, I32);
@@ -5465,11 +5466,7 @@ export function compileWasm(
 		ownedInFlag: boolean | undefined,
 		fn: FuncBuilder,
 	): void {
-		if (
-			argType.kind !== 'type' ||
-			(argType.family !== 'string' && argType.family !== 'data')
-		)
-			return;
+		if (!isHeapType(argType)) return;
 		if (ownedInFlag) {
 			(fn.owned ??= []).push({
 				sym: p.symbol,
@@ -5795,13 +5792,13 @@ export function compileWasm(
 		}
 		const pSym = p.symbol;
 		if (!pSym.type) {
-			if (p.type?.kind === 'typeident' && p.type.symbol.kind === 'type')
-				pSym.type = p.type.symbol;
+			if (p.type?.kind === 'typeident') pSym.type = p.type.symbol.type;
 			else pSym.type = inputType;
 		}
-		if (isUnionType(pSym.type)) {
+		const pType = pSym.type ?? inputType;
+		if (isUnionType(pType)) {
 			const tagIdx = allocLocal(fn, I32);
-			const payIdx = allocLocal(fn, unionPayloadWasm(pSym.type));
+			const payIdx = allocLocal(fn, unionPayloadWasm(pType));
 			fn.body.push(OP_LOCAL_SET);
 			uleb128(tagIdx, fn.body);
 			fn.body.push(OP_LOCAL_SET);
@@ -5811,18 +5808,18 @@ export function compileWasm(
 			if (!p.label) {
 				fn.dollarLocal = payIdx;
 				fn.dollarTagLocal = tagIdx;
-				fn.dollarType = pSym.type;
+				fn.dollarType = pType;
 			}
 			return;
 		}
-		const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
+		const localIdx = allocLocal(fn, gbcToWasm(pType));
 		fn.body.push(OP_LOCAL_SET);
 		uleb128(localIdx, fn.body);
 		fn.paramMap.set(pSym, localIdx);
 		if (!p.label) {
 			fn.dollarLocal = localIdx;
 			fn.dollarTagLocal = undefined;
-			fn.dollarType = pSym.type ?? inputType;
+			fn.dollarType = pType;
 		}
 	}
 
@@ -6062,7 +6059,6 @@ export function compileWasm(
 		const isEmpty =
 			inputType.kind === 'type' &&
 			inputType.family === 'data' &&
-			!inputType.elem &&
 			Object.keys(inputType.members).length === 0;
 		if (isVoid || isEmpty) {
 			if (!isVoid) fn.body.push(OP_DROP);
@@ -6098,7 +6094,7 @@ export function compileWasm(
 			inputType.kind === 'type' && inputType.family === 'data'
 				? inputType
 				: undefined;
-		if (!data || data.elem)
+		if (!data)
 			throw new Error('A multi-parameter pipe stage requires a data block');
 		const layout = fieldLayout(data.members);
 		const keys = layout.keys;
@@ -6336,7 +6332,7 @@ export function compileWasm(
 
 	function stageDispatchType(
 		stage: Node,
-	): SymbolMap['type'] | undefined {
+	): ResolvedType | undefined {
 		if (stage.kind !== 'fn') return undefined;
 		const params = stage.parameters ?? [];
 		const p = params[0];
@@ -6344,7 +6340,7 @@ export function compileWasm(
 		let t = p.symbol.type;
 		if ((!t || t.kind !== 'type') && p.type?.kind === 'typeident') {
 			const ts = p.type.symbol;
-			if (ts.kind === 'type') t = ts;
+			t = ts.type;
 		}
 		if (!t || t.kind !== 'type') return undefined;
 		if (
@@ -6563,7 +6559,7 @@ export function compileWasm(
 
 	// Push an i32 boolean: does the dispatched value match this arm's type?
 	function emitDispatchMatch(
-		dispatchType: SymbolMap['type'],
+		dispatchType: ResolvedType,
 		inputType: Type,
 		isUnion: boolean,
 		valueLocal: number,
@@ -6778,10 +6774,7 @@ export function compileWasm(
 			if (a.kind === 'ident') releaseOwned(fn, a);
 			return;
 		}
-		const heap =
-			at.kind === 'type' &&
-			(at.family === 'string' || at.family === 'data') &&
-			ownableExpr(a, fn);
+		const heap = isHeapType(at) && ownableExpr(a, fn);
 		if (ownArgs && heap) {
 			const tmp = allocLocal(fn, I32);
 			fn.body.push(OP_LOCAL_TEE);
@@ -6862,8 +6855,7 @@ export function compileWasm(
 		if (
 			typeArgs &&
 			returnType.kind === 'type' &&
-			returnType.family === 'data' &&
-			returnType.elem
+			returnType.family === 'buffer'
 		) {
 			const e = reduceType(returnType.elem, typeArgs);
 			if (e !== returnType.elem) returnType = bufferTypeOf(e);
@@ -7123,7 +7115,7 @@ export function compileWasm(
 	// binding drop-glue), not `Buffer<unknown>`.
 	function detachType(t: Type, depth = 0): Type {
 		if (t.kind !== 'type' || depth > 8) return t;
-		if (t.family === 'data' && t.elem)
+		if (t.family === 'buffer')
 			return bufferTypeOf(detachType(t.elem, depth + 1));
 		if (t.family === 'unknown') return t;
 		return { ...t };
@@ -7288,8 +7280,7 @@ export function compileWasm(
 			argListFromCall(node.children[1]).some(x => {
 				const xt = inferType(x, fn);
 				return (
-					xt.kind === 'type' &&
-					(xt.family === 'string' || xt.family === 'data') &&
+					isHeapType(xt) &&
 					ownableExpr(x, fn)
 				);
 			})
@@ -7398,8 +7389,7 @@ export function compileWasm(
 		const st = inferType(source, fn);
 		if (
 			funcBuilders[builderIdx] !== fn &&
-			st.kind === 'type' &&
-			(st.family === 'string' || st.family === 'data') &&
+			isHeapType(st) &&
 			ownableExpr(source, fn)
 		)
 			return false;
@@ -7598,11 +7588,7 @@ export function compileWasm(
 					// would treat a number as a pointer, so gate on the concrete
 					// element type here.
 					const pt = p.symbol.type;
-					if (
-						pt?.kind !== 'type' ||
-						(pt.family !== 'string' && pt.family !== 'data')
-					)
-						continue;
+					if (!isHeapType(pt)) continue;
 					const localIdx = builder.paramMap.get(p.symbol);
 					if (localIdx === undefined) continue;
 					(builder.owned ??= []).push({

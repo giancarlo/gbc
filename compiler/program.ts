@@ -31,7 +31,13 @@ import {
 } from './bundle.js';
 
 import type { Node, NodeMap } from './node.js';
-import type { Scope, Symbol, SymbolMap, Type } from './symbol-table.js';
+import type {
+	Scope,
+	Symbol,
+	SymbolMap,
+	Type,
+	TypeSymbol,
+} from './symbol-table.js';
 import type { ModuleLoader, ModuleRef, ParseOptions } from './parser.js';
 
 // Compiler debugging: attach the compiler's own JS stack to a CompilerError.
@@ -121,7 +127,7 @@ function normalizeErrors(errors: CompilerError[]): void {
 function loadModule(
 	source: string,
 	extraSymbols?: Record<string, Symbol>,
-	extraTypes?: Record<string, Type>,
+	extraTypes?: Record<string, TypeSymbol>,
 	parseOptions?: ParseOptions,
 	skipCheck = false,
 ): Module {
@@ -154,7 +160,7 @@ function createModuleLoader(sys: System, entryDir: string) {
 	type Loaded = {
 		symbol: SymbolMap['variable'];
 		exports: Record<string, Symbol>;
-		types: Record<string, Type>;
+		types: Record<string, TypeSymbol>;
 		hash: string;
 		root: NodeMap['root'];
 	};
@@ -171,11 +177,11 @@ function createModuleLoader(sys: System, entryDir: string) {
 		string,
 		{
 			exports: Record<string, Symbol>;
-			types: Record<string, Type>;
+			types: Record<string, TypeSymbol>;
 			all: Record<string, Symbol>;
 		}
 	>();
-	function resolveMod(hash: string, name: string): Symbol | Type {
+	function resolveModSymbol(hash: string, name: string): Symbol {
 		const r = registry.get(hash);
 		const s = r && (r.exports[name] ?? r.types[name]);
 		if (!s)
@@ -183,6 +189,14 @@ function createModuleLoader(sys: System, entryDir: string) {
 				`bundle references "${name}" from an unloaded module ${hash}`,
 			);
 		return s;
+	}
+	function resolveModType(hash: string, name: string): Type {
+		const type = registry.get(hash)?.types[name]?.type;
+		if (!type)
+			throw new Error(
+				`bundle references type "${name}" from an unloaded module ${hash}`,
+			);
+		return type;
 	}
 	const bundleObjects: SerialObject[] = [];
 	function resolveObjRef(ref: SerialRef): Symbol | undefined {
@@ -267,8 +281,10 @@ function createModuleLoader(sys: System, entryDir: string) {
 			if (bundleMod) {
 				const root = materializeModule(
 					bundleMod,
-					resolveExternal,
-					resolveMod,
+					resolveExternalSymbol,
+					resolveExternalType,
+					resolveModSymbol,
+					resolveModType,
 				);
 				if (root.kind !== 'root')
 					throw new Error(`bundle module "${path}" is not a root`);
@@ -308,7 +324,7 @@ function createModuleLoader(sys: System, entryDir: string) {
 			const exports: Record<string, Symbol> = {};
 			for (const [k, sym] of Object.entries(symbols))
 				if (sym.flags & Flags.Export) exports[k] = sym;
-			const types: Record<string, Type> = {};
+			const types: Record<string, TypeSymbol> = {};
 			for (const [k, t] of Object.entries(collectTypes(mod)))
 				if (t.flags & Flags.Export) types[k] = t;
 			const symbol: SymbolMap['variable'] = {
@@ -468,12 +484,12 @@ function collectDefs(module: Module): {
 	return { symbols, defs };
 }
 
-function collectTypes(module: Module): Record<string, Type> {
-	const types: Record<string, Type> = {};
+function collectTypes(module: Module): Record<string, TypeSymbol> {
+	const types: Record<string, TypeSymbol> = {};
 	for (const child of module.root.children) {
 		if (child.kind !== 'type') continue;
 		const sym = child.symbol;
-		if ((sym.kind === 'type' || sym.kind === 'function') && sym.name)
+		if (sym.kind === 'type' && sym.name)
 			types[sym.name] = sym;
 	}
 	return types;
@@ -481,11 +497,11 @@ function collectTypes(module: Module): Record<string, Type> {
 
 const { symbols: preludeSymbols, defs: preludeDefs } = collectDefs(stdlib);
 const preludeTypes = collectTypes(stdlib);
-setDivByZero(preludeTypes['DivByZero']);
-setDivByZeroType(preludeTypes['DivByZero']);
-setTraceTypes(BaseTypes.Trace, preludeTypes['Frame']);
-const errorType = preludeTypes['Error'];
-const frameType = preludeTypes['Frame'];
+setDivByZero(preludeTypes['DivByZero']?.type);
+setDivByZeroType(preludeTypes['DivByZero']?.type);
+setTraceTypes(BaseTypes.Trace, preludeTypes['Frame']?.type);
+const errorType = preludeTypes['Error']?.type;
+const frameType = preludeTypes['Frame']?.type;
 for (const intrinsic of [
 	OriginIntrinsic,
 	FramesIntrinsic,
@@ -505,9 +521,8 @@ if (frameType) {
 			kind: 'type',
 			flags: 0,
 			name: '__frames',
-			family: 'data',
+			family: 'buffer',
 			size: 16,
-			members: {},
 			elem: frameType,
 		};
 }
@@ -533,7 +548,7 @@ for (const m of [builtinSymbols, builtinTypes])
 	for (const k of m.keys()) if (typeof k === 'string') externalNames.add(k);
 for (const rec of [preludeSymbols, testSymbols, preludeTypes])
 	for (const k of Object.keys(rec)) externalNames.add(k);
-function resolveExternal(name: string): Symbol | Type {
+function resolveExternalSymbol(name: string): Symbol {
 	const s =
 		preludeSymbols[name] ??
 		testSymbols[name] ??
@@ -542,6 +557,12 @@ function resolveExternal(name: string): Symbol | Type {
 		builtinTypes.get(name);
 	if (!s) throw new Error(`bundle references unknown external "${name}"`);
 	return s;
+}
+
+function resolveExternalType(name: string): Type {
+	const type = preludeTypes[name]?.type ?? builtinTypes.get(name)?.type;
+	if (!type) throw new Error(`bundle references unknown external type "${name}"`);
+	return type;
 }
 
 function withPrelude(

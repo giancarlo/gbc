@@ -1,5 +1,5 @@
 import type { Node } from './node.js';
-import type { Symbol, Type } from './symbol-table.js';
+import type { ResolvedType, Symbol, Type } from './symbol-table.js';
 import type { LibraryObject } from './target-wasm.js';
 
 declare class TextEncoder {
@@ -11,7 +11,7 @@ declare class TextDecoder {
 	decode(input: Uint8Array): string;
 }
 
-const MAGIC = 0x4742_4d02;
+const MAGIC = 0x4742_4d03;
 
 const enum Tag {
 	Null = 0,
@@ -25,6 +25,8 @@ const enum Tag {
 	Ext = 8,
 	Arr = 9,
 	Mod = 10,
+	TypeExt = 11,
+	TypeMod = 12,
 }
 
 const DECLARING = new Set([
@@ -42,6 +44,10 @@ function isNode(v: object): v is Node {
 
 function isSymbolLike(v: object): v is Symbol {
 	return 'kind' in v && 'flags' in v && !('start' in v);
+}
+
+function isResolvedType(v: object): v is ResolvedType {
+	return 'kind' in v && v.kind === 'type' && 'family' in v;
 }
 
 class Writer {
@@ -160,9 +166,9 @@ class Reader {
 type Tagged =
 	| { t: Tag.Null | Tag.True | Tag.False }
 	| { t: Tag.Int; n: number }
-	| { t: Tag.Str | Tag.Big | Tag.Ext; s: string }
+	| { t: Tag.Str | Tag.Big | Tag.Ext | Tag.TypeExt; s: string }
 	| { t: Tag.Ref; r: number }
-	| { t: Tag.Mod; h: string; s: string }
+	| { t: Tag.Mod | Tag.TypeMod; h: string; s: string }
 	| { t: Tag.Arr; a: Tagged[] };
 
 interface ModuleGraph {
@@ -188,8 +194,20 @@ function ownersOf(
 				}
 				if (!isNode(v) || seen.has(v)) continue;
 				seen.add(v);
-				if (DECLARING.has(v.kind) && 'symbol' in v)
+				if (DECLARING.has(v.kind) && 'symbol' in v) {
 					owner.set(v.symbol, m.hash);
+					const symbol: unknown = v.symbol;
+					if (
+						typeof symbol === 'object' &&
+						symbol !== null &&
+						'kind' in symbol &&
+						symbol.kind === 'type' &&
+						'type' in symbol &&
+						typeof symbol.type === 'object' &&
+						symbol.type !== null
+					)
+						owner.set(symbol.type, m.hash);
+				}
 				const kids: unknown[] = Object.keys(v)
 					.filter(k => k !== 'symbol')
 					.map((k): unknown => Reflect.get(v, k));
@@ -212,15 +230,20 @@ function graphOfModule(
 		const h = owner.get(o);
 		if (h !== undefined && h !== m.hash) {
 			const name = isSymbolLike(o) ? o.name : undefined;
-			if (typeof name === 'string') return { t: Tag.Mod, h, s: name };
+			if (typeof name === 'string')
+				return { t: isResolvedType(o) ? Tag.TypeMod : Tag.Mod, h, s: name };
 		}
 		if (
 			h === undefined &&
 			isSymbolLike(o) &&
 			typeof o.name === 'string' &&
+			(!isResolvedType(o) || o.family !== 'buffer') &&
 			isExternalName(o.name)
 		)
-			return { t: Tag.Ext, s: o.name };
+			return {
+				t: isResolvedType(o) ? Tag.TypeExt : Tag.Ext,
+				s: o.name,
+			};
 		return { t: Tag.Ref, r: intern(o) };
 	};
 	const toTagged = (vals: unknown[]): Tagged[] =>
@@ -369,9 +392,11 @@ function writeVal(w: Writer, e: Tagged): void {
 		case Tag.Str:
 		case Tag.Big:
 		case Tag.Ext:
+		case Tag.TypeExt:
 			w.str(e.s);
 			return;
 		case Tag.Mod:
+		case Tag.TypeMod:
 			w.str(e.h);
 			w.str(e.s);
 			return;
@@ -391,9 +416,9 @@ type DecVal =
 	| { t: Tag.Null | Tag.True | Tag.False }
 	| { t: Tag.Int; n: number }
 	| { t: Tag.Int; big: false; f: number }
-	| { t: Tag.Str | Tag.Big | Tag.Ext; s: string }
+	| { t: Tag.Str | Tag.Big | Tag.Ext | Tag.TypeExt; s: string }
 	| { t: Tag.Ref; r: number }
-	| { t: Tag.Mod; h: string; s: string }
+	| { t: Tag.Mod | Tag.TypeMod; h: string; s: string }
 	| { t: Tag.Arr; a: DecVal[] };
 
 function readVal(r: Reader): DecVal {
@@ -410,9 +435,11 @@ function readVal(r: Reader): DecVal {
 		case Tag.Str:
 		case Tag.Big:
 		case Tag.Ext:
+		case Tag.TypeExt:
 			return { t, s: r.str() };
 		case Tag.Mod:
-			return { t: Tag.Mod, h: r.str(), s: r.str() };
+		case Tag.TypeMod:
+			return { t, h: r.str(), s: r.str() };
 		case Tag.Ref:
 			return { t: Tag.Ref, r: r.varint() };
 		case Tag.Arr: {
@@ -514,8 +541,10 @@ export function decodeBundle(bytes: Uint8Array): DecodedBundle {
 
 export function materializeModule(
 	m: DecodedModule,
-	resolveExternal: (name: string) => Symbol | Type,
-	resolveMod: (hash: string, name: string) => Symbol | Type,
+	resolveExternalSymbol: (name: string) => Symbol,
+	resolveExternalType: (name: string) => Type,
+	resolveModSymbol: (hash: string, name: string) => Symbol,
+	resolveModType: (hash: string, name: string) => Type,
 ): Node {
 	const objs: Record<string, unknown>[] = m.objs.map(() => ({}));
 	const dec = (e: DecVal): unknown => {
@@ -535,9 +564,13 @@ export function materializeModule(
 			case Tag.Ref:
 				return objs[e.r];
 			case Tag.Ext:
-				return resolveExternal(e.s);
+				return resolveExternalSymbol(e.s);
+			case Tag.TypeExt:
+				return resolveExternalType(e.s);
 			case Tag.Mod:
-				return resolveMod(e.h, e.s);
+				return resolveModSymbol(e.h, e.s);
+			case Tag.TypeMod:
+				return resolveModType(e.h, e.s);
 			case Tag.Arr:
 				return e.a.map(dec);
 		}

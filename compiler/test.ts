@@ -1676,13 +1676,13 @@ a = {
 		rule({
 			p: 'Binding identities are immutable. An owning binding can be borrowed mutably without making the binding reassignable.',
 			src: `main { buffer: Buffer<Int32> = Buffer<Int32>(1); set(buffer, 0, 10); get(buffer, 0) >> out }`,
-			ast: `(root (main (def :buffer typeident @collection (call typeident @collection 1)) (call :set @intrinsic (, :buffer 0 10)) (>> (call :get @intrinsic (, :buffer 0)) :out)))`,
+			ast: `(root (main (def :buffer typeident (call typeident 1)) (call :set @intrinsic (, :buffer 0 10)) (>> (call :get @intrinsic (, :buffer 0)) :out)))`,
 			out: ['10'],
 		});
 		rule({
 			p: '`var T` parameters borrow an owner exclusively for the call without moving it; the caller can use the owner afterward.',
 			src: `write = (b: var Buffer<Int32>, n: Int32) { set(b, 0, n) }; main { b: Buffer<Int32> = Buffer<Int32>(1); write(b, 7); get(b, 0) >> out }`,
-			ast: `(root (def :write ? (fn @sequence (parameter :b typeident @collection ?) (parameter :n typeident ?) (call :set @intrinsic (, :b 0 :n)))) (main (def :b typeident @collection (call typeident @collection 1)) (call :write (, :b 7)) (>> (call :get @intrinsic (, :b 0)) :out)))`,
+			ast: `(root (def :write ? (fn @sequence (parameter :b typeident ?) (parameter :n typeident ?) (call :set @intrinsic (, :b 0 :n)))) (main (def :b typeident (call typeident 1)) (call :write (, :b 7)) (>> (call :get @intrinsic (, :b 0)) :out)))`,
 			out: ['7'],
 		});
 		compileError({
@@ -2138,7 +2138,7 @@ main {
 	count = writeAll(b, 0);
 	reduce(b, count - count, (total: own Int32, n: Int32): own Int32 { total + n }) >> out
 }`,
-			ast: `(root (def :writeAll ? (fn (parameter :b typeident @collection ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b typeident @collection (call typeident @collection 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
+			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b typeident (call typeident 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
 			out: ['4950'],
 			maxPages: 2,
 		});
@@ -2188,6 +2188,11 @@ main { wide(100000, 0) >> out }`,
 	});
 
 	h('Buffer & Array (push)', ({ rule, testBlock, compileError, runtimeTrap, modules }) => {
+		compileError({
+			p: 'The unspecialized Buffer constructor requires an element type.',
+			src: `main { Buffer(1) }`,
+			expected: 'Buffer requires a type argument',
+		});
 		rule({
 			p: '`fill` replaces every existing element from an indexed producer and returns the same mutable borrow for chaining.',
 			src: `main {
@@ -3434,6 +3439,24 @@ main { a.ten(4) >> out; b.eleven(4) >> out }`,
 			},
 			entry: '/main.gb',
 			out: ['40', '44'],
+		});
+		modules({
+			p: 'Bundled signatures preserve specialized Buffer element types.',
+			bundles: {
+				'/vendor/buffer.gbm': {
+					entry: '/dev/buffer.gb',
+					files: {
+						'/dev/buffer.gb': `export first = (b: Buffer<Int32>): Int32 { get(b, 0) };`,
+					},
+				},
+			},
+			files: {
+				'/main.gb': `#importmap { @buffer = './vendor/buffer.gbm'; }
+(first) = @buffer;
+main { b = Buffer<Int32>(1); set(b, 0, 7); first(b) >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['7'],
 		});
 		modules({
 			p: 'A destructure pattern binds exported values and exported types by the same name rule — the program writes signatures against a library\u2019s nominal types.',

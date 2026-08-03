@@ -6,7 +6,7 @@ import { Flags, SymbolTable, TypesSymbolTable } from './symbol-table.js';
 
 import type { ScannerToken } from './scanner.js';
 import type { Node, NodeMap } from './node.js';
-import type { Symbol, SymbolMap, Type } from './symbol-table.js';
+import type { Symbol, SymbolMap, Type, TypeSymbol } from './symbol-table.js';
 
 export type RootNode = ReturnType<typeof parse>;
 
@@ -24,7 +24,7 @@ export interface ModuleLoader {
 	load(ref: ModuleRef): {
 		symbol: SymbolMap['variable'];
 		exports: Record<string, Symbol>;
-		types: Record<string, Type>;
+		types: Record<string, TypeSymbol>;
 	};
 	setMap(entries: { name: string; path: string }[]): void;
 }
@@ -133,7 +133,7 @@ export function parse(
 		out: Record<string, SymbolMap['variable']>,
 	): void {
 		if (n.kind === 'typeident') {
-			const s = n.symbol;
+			const s = n.symbol.type;
 			if (s.kind === 'type' && s.family === 'data')
 				Object.assign(out, s.members);
 			return;
@@ -161,7 +161,7 @@ export function parse(
 
 	function addComponents(n: Node, out: Type[]): void {
 		if (n.kind === 'typeident') {
-			if (n.symbol.kind === 'type') out.push(n.symbol);
+			out.push(n.symbol.type);
 			return;
 		}
 		if (n.kind === '&') {
@@ -174,8 +174,8 @@ export function parse(
 		def: Node,
 		name: string,
 	): Type | undefined {
-		if (def.kind === 'typeident' && def.symbol.kind === 'type')
-			return { ...def.symbol, name, components: [def.symbol] };
+		if (def.kind === 'typeident')
+			return { ...def.symbol.type, name, components: [def.symbol.type] };
 		if (def.kind === 'fn') return { ...def.symbol, name };
 		if (def.kind === '>>')
 			return {
@@ -219,12 +219,17 @@ export function parse(
 	function typeDefinition(node: Token<'type'>) {
 		const ident = consume('ident');
 		const name = text(ident);
-		const stub: Type = {
+		const stub: TypeSymbol = {
 			kind: 'type',
 			flags: 0,
 			name,
-			family: 'unknown',
-			size: 4,
+			type: {
+				kind: 'type',
+				flags: 0,
+				name,
+				family: 'unknown',
+				size: 4,
+			},
 		};
 		typesTable.set(name, stub);
 		const tp = typeParameters(api, typesTable, typeParser);
@@ -241,8 +246,9 @@ export function parse(
 		// have no values, so naming one is always a latent error.
 		const emptyDef =
 			(def.kind === 'typeident' &&
-				def.symbol.kind === 'type' &&
-				(def.symbol.family === 'void' || def.symbol.name === '[]')) ||
+				def.symbol.type.kind === 'type' &&
+				(def.symbol.type.family === 'void' ||
+					def.symbol.type.name === '[]')) ||
 			(def.kind === 'data' && !def.children[0]);
 		if (emptyDef)
 			throw api.error(
@@ -253,7 +259,7 @@ export function parse(
 		// captured during the body parse (e.g. `Reverse<R>`) see the completed
 		// definition. typeParams set on the stub above are preserved.
 		const { typeParams } = stub;
-		Object.assign(stub, built);
+		stub.type = built;
 		if (typeParams) stub.typeParams = typeParams;
 		const symbol = stub;
 		const label: NodeMap['label'] = { ...ident, kind: 'label' };
