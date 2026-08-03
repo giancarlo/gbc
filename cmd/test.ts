@@ -193,7 +193,7 @@ export default spec('cmd', s => {
 				hasCommandSubstitution: false,
 				hasBackticks: false,
 				hasNonliteralConstruct: false,
-			};
+			} as const;
 			a.equalValues(metadata('plain'), { ...literal, value: 'plain' });
 			a.equalValues(metadata("'$HOME'"), { ...literal, value: '$HOME' });
 			a.equalValues(metadata('"two words"'), {
