@@ -306,6 +306,7 @@ interface Module {
 	datas: ModuleData[];
 	exports: ModuleExport[];
 	memoryPages: number;
+	memoryMaxPages?: number;
 	start?: number;
 }
 
@@ -438,8 +439,9 @@ function emitModule(m: Module): Uint8Array {
 	if (m.memoryPages > 0) {
 		const payload: number[] = [];
 		uleb128(1, payload);
-		payload.push(0x00);
+		payload.push(m.memoryMaxPages === undefined ? 0x00 : 0x01);
 		uleb128(m.memoryPages, payload);
+		if (m.memoryMaxPages !== undefined) uleb128(m.memoryMaxPages, payload);
 		section(SEC_MEMORY, payload, out);
 	}
 
@@ -692,15 +694,38 @@ interface FuncBuilder {
 	relocTainted?: boolean;
 }
 
-export function compileWasm(
-	root: Node,
+export interface CompileWasmOptions {
+	root: Node;
+	testMode?: boolean;
+	debugBuild?: boolean;
+	hostExports?: NodeMap['def'][];
+	sourcePaths?: Map<string, string>;
+	objectSink?: LibraryObject[];
+	splice?: SpliceInput;
+	maxMemoryPages?: number;
+}
+
+function validateMemoryMaxPages(maxMemoryPages: number | undefined): void {
+	if (
+		maxMemoryPages !== undefined &&
+		(!Number.isInteger(maxMemoryPages) ||
+			maxMemoryPages < 1 ||
+			maxMemoryPages > 65536)
+	)
+		throw new Error('maxMemoryPages must be an integer between 1 and 65536');
+}
+
+export function compileWasm({
+	root,
 	testMode = false,
 	debugBuild = false,
-	hostExports?: NodeMap['def'][],
-	sourcePaths?: Map<string, string>,
-	objectSink?: LibraryObject[],
-	splice?: SpliceInput,
-): Uint8Array {
+	hostExports,
+	sourcePaths,
+	objectSink,
+	splice,
+	maxMemoryPages,
+}: CompileWasmOptions): Uint8Array {
+	validateMemoryMaxPages(maxMemoryPages);
 	const recordObjects = !!objectSink;
 	const datas: ModuleData[] = [];
 	const enc = new TextEncoder();
@@ -8438,6 +8463,7 @@ export function compileWasm(
 		})),
 		globals,
 		memoryPages: 1,
+		memoryMaxPages: maxMemoryPages,
 		exports: exportEntries,
 		start: startIdx,
 		datas,

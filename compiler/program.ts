@@ -87,11 +87,29 @@ type Bundle = DecodedBundle;
 
 export interface ProgramOptions {
 	sys?: System;
+	maxMemoryPages?: number;
 	/** Debug *build* of the compiled gb program: emit shadow-stack
 	 * instrumentation so `Error` values capture a call stack. Off by default
 	 * (release builds pay no per-call cost). Distinct from `setDebug`, which
 	 * debugs the compiler itself. */
 	debug?: boolean;
+}
+
+export interface ProgramDiagnostic {
+	message: string;
+	position: {
+		source: string;
+		start: number;
+		end: number;
+		line: number;
+	};
+}
+
+export interface CompileResult {
+	ast: NodeMap['root'];
+	errors: ProgramDiagnostic[];
+	bytes: Uint8Array | undefined;
+	hasMain: boolean;
 }
 
 interface Module {
@@ -608,7 +626,7 @@ export function Program(options?: ProgramOptions) {
 			sourcePaths?: Map<string, string>;
 			splice?: () => SpliceInput | undefined;
 		} = {},
-	) {
+	): CompileResult {
 		const requireMain = modeOptions.requireMain ?? true;
 		const parsed = parser(src, { loader: modeOptions.loader });
 		checker(parsed).run();
@@ -628,15 +646,15 @@ export function Program(options?: ProgramOptions) {
 		let bytes: Uint8Array | undefined;
 		if (parsed.errors.length === 0) {
 			try {
-				bytes = compileWasm(
-					withPrelude(parsed.root, testMode, modeOptions.moduleDefs),
+				bytes = compileWasm({
+					root: withPrelude(parsed.root, testMode, modeOptions.moduleDefs),
 					testMode,
-					!!options?.debug,
+					debugBuild: !!options?.debug,
 					hostExports,
-					modeOptions.sourcePaths,
-					undefined,
-					modeOptions.splice?.(),
-				);
+					sourcePaths: modeOptions.sourcePaths,
+					splice: modeOptions.splice?.(),
+					maxMemoryPages: options?.maxMemoryPages,
+				});
 			} catch (e) {
 				if (e instanceof CompilerError) parsed.errors.push(e);
 				else if (e instanceof Error) {
@@ -698,14 +716,11 @@ export function Program(options?: ProgramOptions) {
 				line: 0,
 				source: '',
 			};
-			compileWasm(
-				withPrelude(emptyRoot, false, moduleDefs),
-				false,
-				false,
-				undefined,
+			compileWasm({
+				root: withPrelude(emptyRoot, false, moduleDefs),
 				sourcePaths,
-				objects,
-			);
+				objectSink: objects,
+			});
 		} catch {
 			objects.length = 0;
 		}
@@ -747,7 +762,12 @@ export function Program(options?: ProgramOptions) {
 	}
 
 	function compileAst(root: Node, testMode = false): Uint8Array {
-		return compileWasm(withPrelude(root, testMode), testMode, !!options?.debug);
+		return compileWasm({
+			root: withPrelude(root, testMode),
+			testMode,
+			debugBuild: !!options?.debug,
+			maxMemoryPages: options?.maxMemoryPages,
+		});
 	}
 
 	return {

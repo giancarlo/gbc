@@ -84,6 +84,22 @@ export class SpecApi extends TestApiBase<SpecApi> {
 	createTest = (name: string, testFn: TestFn<SpecApi>) =>
 		new Test(name, testFn, SpecApi, this.$test);
 
+	memoryLimit = (src: string, maxPages: number): void => {
+		const { bytes, errors } = Program({ maxMemoryPages: maxPages }).compile(src);
+		if (errors.length) {
+			this.printErrors(errors);
+			throw new Error('Errors found');
+		}
+		if (!bytes) throw new Error('No WebAssembly output');
+		let exceeded = false;
+		try {
+			runHostWasm(bytes, () => {});
+		} catch {
+			exceeded = true;
+		}
+		this.assert(exceeded);
+	};
+
 	token = (src: string, _desc: string, kind: string) => {
 		this.match(src, { kind });
 	};
@@ -232,14 +248,13 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		const { ast, errors } = this.parse(src);
 		if (errors.length) throw new Error('Cannot inspect invalid WASM source');
 		const objects: LibraryObject[] = [];
-		compileWasm(
-			{ ...ast, children: ast.children.filter(c => c.kind === 'def') },
-			false,
-			false,
-			undefined,
-			undefined,
-			objects,
-		);
+		compileWasm({
+			root: {
+				...ast,
+				children: ast.children.filter(c => c.kind === 'def'),
+			},
+			objectSink: objects,
+		});
 		const object = objects.find(o => o.sym.name === expected.fn);
 		if (!object) throw new Error(`No WASM object for ${expected.fn}`);
 		this.equal(object.code[0] === 0x03, expected.loop);

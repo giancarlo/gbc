@@ -2112,6 +2112,14 @@ main { length(growString(1200)) >> out }`,
 		});
 	});
 
+	h('Heap limit', ({ memoryLimit }) => {
+		memoryLimit(
+			`growString = (n: Int32): own String { n == 0 ? '' : '\${growString(n - 1)}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' };
+main { length(growString(1200)) >> out }`,
+			2,
+		);
+	});
+
 	h('Heap — churn shapes', ({ rule }) => {
 		rule({
 			p: 'Multiple scalar tail-recursive accumulators stay flat while dynamic strings created during iteration are reclaimed.',
