@@ -10,6 +10,7 @@ import {
 } from './symbol-table.js';
 import type {
 	OwnershipMode,
+	ResolvedType,
 	TypeSymbol,
 	Symbol,
 	SymbolMap,
@@ -70,6 +71,207 @@ export function parseType(
 		if (s.kind !== 'type') return;
 		if (s.family === 'union') for (const m of s.members) out.push(m);
 		else out.push(s);
+	}
+
+	function nodeType(node: Node | undefined): Type | undefined {
+		if (!node) return;
+		if (node.kind === 'typeident') return node.symbol.type;
+		if (node.kind === 'fn') return node.symbol;
+	}
+
+	function emissionType(types: Type[]): Type | undefined {
+		const first = types[0];
+		if (!first) return;
+		if (types.every(type => type === first)) return first;
+		const members = new Map<string, ResolvedType>();
+		for (const type of types) {
+			if (type.kind !== 'type' || type.family === 'void') continue;
+			if (type.family === 'union')
+				for (const member of type.members)
+					if (member.kind === 'type')
+						members.set(member.name, member);
+			else members.set(type.name, type);
+		}
+		const values = Array.from(members.values());
+		if (values.length === 1) return values[0];
+		return {
+			kind: 'type',
+			flags: 0,
+			family: 'union',
+			name: values.map(type => type.name).join(' | '),
+			size: Math.max(...values.map(type => type.size)),
+			members: values,
+		};
+	}
+
+	function functionReturn(
+		expression: (precedence?: number) => Node | undefined,
+	): {
+		returnOwnership?: OwnershipMode;
+		returnOwnerships?: OwnershipMode[];
+		returnVariantOwnerships?: OwnershipMode[][];
+		returnType?: Node;
+		returnTypes?: Node[];
+		returnVariants?: Node[][];
+	} {
+		if (!optional(':')) return {};
+		const arms: { types: Node[]; ownerships: OwnershipMode[] }[] = [];
+		do arms.push(functionReturnArm(expression));
+		while (optional('|'));
+		const first = arms[0];
+		if (arms.length === 1) return functionReturnSingle(first);
+		const scalars = arms.map(arm => arm.types[0]);
+		if (
+			scalars.every(
+				(node): node is NodeMap['typeident'] =>
+					node?.kind === 'typeident' &&
+					!(node.symbol.type.kind === 'type' && node.symbol.type.family === 'void'),
+			)
+		)
+			return {
+				returnOwnership: first?.ownerships[0],
+				returnType: unionNode(scalars),
+			};
+		return {
+			returnOwnership: first?.ownerships[0],
+			returnVariants: arms.map(arm =>
+				arm.types.filter(node => {
+					const type = nodeType(node);
+					return !(type?.kind === 'type' && type.family === 'void');
+				})),
+			returnVariantOwnerships: arms.map(arm => arm.ownerships),
+		};
+	}
+
+	function functionReturnArm(
+		expression: (precedence?: number) => Node | undefined,
+	): { types: Node[]; ownerships: OwnershipMode[] } {
+		if (current().kind !== '{') {
+			const ownership = resultOwnership();
+			return {
+				ownerships: [ownership],
+				types: [api.expectNode(expression(5), 'Expected return type')],
+			};
+		}
+		const open = api.consume('{');
+		const types: Node[] = [];
+		const ownerships: OwnershipMode[] = [];
+		if (current().kind !== '}') {
+			do {
+				ownerships.push(resultOwnership());
+				types.push(
+					api.expectNode(expression(), 'Expected return type'),
+				);
+			} while (optional(','));
+		}
+		api.consume('}');
+		if (types.length < 2)
+			throw api.error(
+				types.length === 0
+					? 'Use `Void` for a function that emits nothing'
+					: 'Use the element type directly for one emission',
+				open,
+			);
+		return { ownerships, types };
+	}
+
+	function functionReturnSingle(
+		arm: { types: Node[]; ownerships: OwnershipMode[] } | undefined,
+	): ReturnType<typeof functionReturn> {
+		if (!arm) return {};
+		if (arm.types.length === 1)
+			return {
+				returnOwnership: arm.ownerships[0],
+				returnType: arm.types[0],
+			};
+		return {
+			returnOwnership: arm.ownerships[0],
+			returnOwnerships: arm.ownerships,
+			returnTypes: arm.types,
+		};
+	}
+
+	function unionNode(nodes: NodeMap['typeident'][]): NodeMap['typeident'] {
+		const types = nodes.map(node => node.symbol.type);
+		const type = emissionType(types);
+		const first = nodes[0];
+		if (!first || type?.kind !== 'type')
+			throw new Error('Invalid function return union');
+		const last = nodes[nodes.length - 1];
+		return {
+			...first,
+			end: last?.end ?? first.end,
+			symbol: resolvedSymbol(type),
+		};
+	}
+
+	function resolvedFunctionReturn(
+		returnType: Node | undefined,
+		returnTypes: Node[] | undefined,
+		returnVariants?: Node[][],
+	): Pick<SymbolMap['function'], 'returnType' | 'returnTypes' | 'returnVariants'> {
+		const variants = returnVariants?.map(variant =>
+			variant.map(nodeType).filter((type): type is Type => !!type),
+		);
+		if (variants)
+			return {
+				returnType: emissionType(variants.flat()),
+				returnVariants: variants,
+			};
+		const sequence = returnTypes
+			?.map(nodeType)
+			.filter((type): type is Type => !!type);
+		if (sequence)
+			return { returnType: emissionType(sequence), returnTypes: sequence };
+		const single = nodeType(returnType);
+		if (!single) return {};
+		if (single.kind === 'type' && single.family === 'void')
+			return { returnType: single, returnTypes: [] };
+		return { returnType: single, returnTypes: [single] };
+	}
+
+	function functionParameters(
+		expression: (precedence?: number) => Node | undefined,
+	): { named: boolean; params: NodeMap['parameter'][] } {
+		const params: NodeMap['parameter'][] = [];
+		let named = false;
+		if (current().kind === ')') return { named, params };
+		do {
+			let labelTok: Token<'ident'> | undefined;
+			const first = current();
+			if (first.kind === 'ident') {
+				api.next();
+				if (current().kind === ':') {
+					labelTok = first;
+					named = true;
+					api.next();
+				} else api.backtrack(first);
+			}
+			const ownership = slotOwnership();
+			const type = api.expectNode(expression(), 'Expected parameter type');
+			const label: NodeMap['label'] | undefined = labelTok
+				? { ...labelTok, kind: 'label' }
+				: undefined;
+			params.push({
+				start: type.start,
+				end: type.end,
+				line: type.line,
+				source: type.source,
+				kind: 'parameter',
+				label,
+				symbol: {
+					kind: 'variable',
+					name: labelTok ? text(labelTok) : '',
+					flags: 0,
+					ownership,
+					type: nodeType(type),
+				},
+				type,
+				value: undefined,
+				children: [label, type, undefined],
+			});
+		} while (optional(','));
+		return { named, params };
 	}
 
 	function substituteType(t: Type, subst: Map<string, Type>): Type {
@@ -203,94 +405,62 @@ export function parseType(
 			},
 			'(': {
 				prefix(tk) {
-					const params: NodeMap['parameter'][] = [];
-					let named = false;
-					if (current().kind !== ')') {
-						do {
-							let labelTok: Token<'ident'> | undefined;
-							const first = current();
-							if (first.kind === 'ident') {
-								api.next();
-								if (current().kind === ':') {
-									labelTok = first;
-									named = true;
-									api.next();
-								} else api.backtrack(first);
-							}
-							const ownership = slotOwnership();
-							const pt = expectNode(
-								expression(),
-								'Expected parameter type',
-							);
-							const labelNode: NodeMap['label'] | undefined =
-								labelTok
-									? { ...labelTok, kind: 'label' }
-									: undefined;
-							params.push({
-								start: pt.start,
-								end: pt.end,
-								line: pt.line,
-								source: pt.source,
-								kind: 'parameter',
-								label: labelNode,
-								symbol: {
-									kind: 'variable',
-									name: labelTok ? text(labelTok) : '',
-									flags: 0,
-									ownership,
-									type:
-										pt.kind === 'typeident'
-											? pt.symbol.type
-											: undefined,
-								},
-								type: pt,
-								value: undefined,
-								children: [labelNode, pt, undefined],
-							});
-						} while (optional(','));
-					}
+					const { named, params } = functionParameters(expression);
 					const close = consume(')');
-					let returnOwnership: OwnershipMode | undefined;
-					const returnType = optional(':')
-						? ((returnOwnership = resultOwnership()),
-							expectNode(expression(), 'Expected return type'))
-						: undefined;
+					const {
+						returnOwnership,
+						returnOwnerships,
+						returnVariantOwnerships,
+						returnType,
+						returnTypes,
+						returnVariants,
+					} = functionReturn(expression);
 					// A single unnamed type with no return is a parenthesized
 					// type, not a function type: `(T)` == `T`.
-					if (!returnType && !named && params.length === 1) {
+					if (
+						!returnType &&
+						!returnTypes &&
+						!returnVariants &&
+						!named &&
+						params.length === 1
+					) {
 						const only = params[0];
 						if (only?.type) return only.type;
 					}
+					const resolvedReturn = resolvedFunctionReturn(
+						returnType,
+						returnTypes,
+						returnVariants,
+					);
 					const fnSymbol: SymbolMap['function'] = {
 						kind: 'function',
 						name: '',
 						flags: 0,
 						parameters: params.map(p => p.symbol),
-						returnType:
-							returnType?.kind === 'typeident'
-								? returnType.symbol.type
-								: undefined,
-						returnTypes:
-							returnType?.kind === 'typeident'
-								? returnType.symbol.type.kind === 'type' &&
-									returnType.symbol.type.family === 'void'
-									? []
-									: [returnType.symbol.type]
-								: undefined,
+						...resolvedReturn,
 						returnOwnership,
+						returnOwnerships,
+						returnVariantOwnerships,
 					};
 					setReturnBorrowOrigins(fnSymbol, params);
 					return {
 						...tk,
 						kind: 'fn',
-						end: (returnType ?? close).end,
+						end: (returnVariants?.flat().at(-1) ?? returnTypes?.at(-1) ?? returnType ?? close).end,
 						parameters: params,
 						returnType,
+						returnTypes,
+						returnVariants,
 						returnOwnership,
+						returnOwnerships,
+						returnVariantOwnerships,
 						symbol: fnSymbol,
-						children: returnType
-							? [...params, returnType]
-							: [...params],
+						children: [
+							...params,
+							...(returnVariants?.flat() ??
+								returnTypes ??
+								(returnType ? [returnType] : [])),
+						],
 					};
 				},
 			},

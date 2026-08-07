@@ -76,7 +76,10 @@ type SymbolProp = {
 		parameters?: SymbolMap['parameter' | 'variable'][];
 		returnType?: Type;
 		returnTypes?: Type[];
+		returnVariants?: Type[][];
 		returnOwnership?: OwnershipMode;
+		returnOwnerships?: OwnershipMode[];
+		returnVariantOwnerships?: OwnershipMode[][];
 		returnBorrowOrigins?: number[];
 		overloads?: SymbolMap['function'][];
 	};
@@ -174,6 +177,15 @@ function unifyFunctionTypeParam(
 	for (let i = 0; i < pp.length; i++)
 		unifyTypeParam(pp[i]?.type, ap[i]?.type, names, out);
 	unifyTypeParam(paramType.returnType, argType.returnType, names, out);
+	const pr = paramType.returnTypes ?? [];
+	const ar = argType.returnTypes ?? [];
+	for (let i = 0; i < pr.length; i++)
+		unifyTypeParam(pr[i], ar[i], names, out);
+	const pv = paramType.returnVariants ?? [];
+	const av = argType.returnVariants ?? [];
+	for (let i = 0; i < pv.length; i++)
+		for (let j = 0; j < (pv[i]?.length ?? 0); j++)
+			unifyTypeParam(pv[i]?.[j], av[i]?.[j], names, out);
 	return true;
 }
 

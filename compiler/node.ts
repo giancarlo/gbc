@@ -87,7 +87,10 @@ export type BaseNodeMap = {
 		symbol: SymbolMap['function'];
 		returnType?: Node;
 		returnTypes?: Node[];
+		returnVariants?: Node[][];
 		returnOwnership?: OwnershipMode;
+		returnOwnerships?: OwnershipMode[];
+		returnVariantOwnerships?: OwnershipMode[][];
 	};
 	'[': { children: [Node, Node] };
 	'(': { children: [Node] };

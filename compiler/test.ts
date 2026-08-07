@@ -1997,9 +1997,15 @@ main { a = Array<Int32>(1); a >> forward >> consume }`,
 			src: `main { bad = (): Void { next 1 }; bad() >> out }`,
 			expected: 'declares no emissions but produces 1',
 		});
-		compileError({
+		rule({
 			src: `emit = (n: Int32): Int32 | Void { next n }; main { emit(7) >> out }`,
-			expected: 'union identity',
+			ast: `(root (def :emit ? (fn (parameter :n typeident ?) typeident (next :n))) (main (>> (call :emit 7) :out)))`,
+			out: ['7'],
+		});
+		rule({
+			src: `emit = (n: Int32): Int32 | { Bool, Int32 } { next n }; main { emit(7) >> out }`,
+			ast: `(root (def :emit ? (fn (parameter :n typeident ?) typeident typeident typeident (next :n))) (main (>> (call :emit 7) :out)))`,
+			out: ['7'],
 		});
 	});
 
@@ -3209,6 +3215,23 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 					ast: `(call :helper :add)`,
 					out: ['15'],
 				});
+				expr({
+					pre: `twice = (n: Int32): { Int32, Int32 } { next n; next n + 1 }; apply = (cb: (Int32): { Int32, Int32 }, n: Int32): { Int32, Int32 } { next cb(n) }`,
+					src: `apply(twice, 5)`,
+					ast: `(call :apply (, :twice 5))`,
+					out: ['5', '6'],
+				});
+				expr({
+					pre: `once = (n: Int32): Int32 { n }; apply = (cb: (Int32): Void | Int32, n: Int32): Void | Int32 { next cb(n) }`,
+					src: `apply(once, 5)`,
+					ast: `(call :apply (, :once 5))`,
+					out: ['5'],
+				});
+				compileError({
+					pre: `once = (n: Int32): Int32 { n }; apply = (cb: (Int32): { Int32, Int32 }, n: Int32): { Int32, Int32 } { next cb(n) }`,
+					src: `main { apply(once, 5) >> out }`,
+					expected: 'not assignable',
+				});
 				compileError({
 					pre: `makeAdder = (x: Int32): ((Int32): Int32) { (y: Int32): Int32 { x + y } }`,
 					src: `main { makeAdder(7)(10) >> out }`,
@@ -3233,6 +3256,14 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 					src: `add = (a: Int32, b: Int32): Int32`,
 					expected: 'Expected "{"',
 				});
+				compileError({
+					src: `external pair: (Int32): { Int32, Int32 }; main { pair(1) >> out }`,
+					expected: 'host ABI cannot emit multiple values',
+				});
+				compileError({
+					src: `external maybe: (Int32): Void | Int32; main { maybe(1) >> out }`,
+					expected: 'host ABI cannot emit multiple values',
+				});
 			},
 		);
 	});
@@ -3251,6 +3282,12 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 		});
 
 		h('Generic value functions', ({ rule, expr }) => {
+			expr({
+				pre: `dup = <T>(x: T): { T, T } { next x; next x }`,
+				src: `dup(9)`,
+				ast: `(call :dup 9)`,
+				out: ['9', '9'],
+			});
 			rule({
 				src: `identity = <T>(x: T): T { x }; main { identity(42) >> out; identity(7) >> out; }`,
 				ast: `(root (def :identity ? (fn @sequence (, (parameter :T ? ?)) (parameter :x typeident ?) typeident :x)) (main (>> (call :identity 42) :out) (>> (call :identity 7) :out)))`,
@@ -3456,6 +3493,33 @@ main { double(21) >> out; triple(7) >> out; 6 -> geo.area(7) >> out }`,
 			},
 			entry: '/main.gb',
 			out: ['42', '21', '42'],
+		});
+		modules({
+			p: 'Imported functions preserve exact finite emission signatures.',
+			files: {
+				'/pair.gb': `export pair = (n: Int32): { Int32, Bool } { next n; next true }; export id = (n: Int32): Int32 { n };`,
+				'/main.gb': `pairModule = @.pair; main { pairModule.pair(4) >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['4', 'true'],
+		});
+		modules({
+			p: 'Bundled functions preserve exact finite emission signatures.',
+			bundles: {
+				'/vendor/pair.gbm': {
+					entry: '/dev/pair/lib.gb',
+					files: {
+						'/dev/pair/lib.gb': `export pair = (n: Int32): { Int32, Int32 } { next n; next n + 1 }; export id = (n: Int32): Int32 { n };`,
+					},
+				},
+			},
+			files: {
+				'/main.gb': `#importmap { @pair = './vendor/pair.gbm'; }
+(pair, id) = @pair;
+main { pair(4) >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['4', '5'],
 		});
 		modules({
 			p: 'A library resolves through the entry\u2019s `#importmap`, uses its own local modules, and its `main`-free exports fuse into the one program wasm.',
@@ -3964,6 +4028,10 @@ main { value = 'v\${1}'; join(value, value) >> out }`,
 			p: '`next` of a value owned here moves it through an `own` result; the block no longer owns it, so later use is an error. Emitting an owned value twice would require an explicit copy operation.',
 			src: "g = () { s = '${Char(65)}'; next s; next s }; main { g() >> out }",
 			expected: 'used after move',
+		});
+		compileError({
+			src: `main { pair = (s: String): { String, own String } { next s; next s }; pair('x') >> out }`,
+			expected: 'declares an `own` result but emits a borrowed value',
 		});
 		expr({
 			p: 'A binding never transfers ownership: `b = a` borrows, so both names read one value that is freed once. Ownership transfers only when `next` crosses an `own` result, an argument crosses an `own` parameter, or a value is embedded in an owning field; none of these implicitly clones.',

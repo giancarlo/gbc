@@ -5518,7 +5518,17 @@ export function compileWasm({
 
 	function getCallableFn(callNode: NodeMap['call']): NodeMap['fn'] | undefined {
 		const callee = callNode.children[0];
+		if (callee.kind === '.') {
+			const fn = resolveStaticMemberFn(callee);
+			const definition = fn?.definition;
+			if (definition?.kind === 'fn') return definition;
+			if (definition?.kind === 'def' && definition.value.kind === 'fn')
+				return definition.value;
+			return;
+		}
 		if (callee.kind !== 'ident') return;
+		const bound = fnArgBindings.get(callee.symbol);
+		if (bound?.definition?.kind === 'fn') return bound.definition;
 		const fnDef = callee.symbol.definition;
 		if (!fnDef || fnDef.kind !== 'def') return;
 		const fnNode = fnDef.value;
@@ -5527,6 +5537,20 @@ export function compileWasm({
 	}
 
 	function callEmitsSequence(callNode: NodeMap['call']): boolean {
+		const callee = callNode.children[0];
+		const typed =
+			callee.kind === 'ident'
+				? resolveFnArg(callee)
+				: callee.kind === '.'
+					? resolveStaticMemberFn(callee)
+					: undefined;
+		if (typed?.returnVariants)
+			if (
+				typed.returnVariants.length !== 1 ||
+				typed.returnVariants.some(variant => variant.length !== 1)
+			)
+				return true;
+		if (typed?.returnTypes && typed.returnTypes.length !== 1) return true;
 		const fnNode = getCallableFn(callNode);
 		if (!fnNode || fnNode.symbol.flags & Flags.Sequence) return false;
 		const stmts = fnNode.statements ?? [];
@@ -7116,6 +7140,15 @@ export function compileWasm({
 				for (let j = 0; j < pp.length; j++)
 					unifyTypeParam(pp[j]?.type, bp[j]?.type, names, subst);
 				unifyTypeParam(pt.returnType, bound.returnType, names, subst);
+				const pr = pt.returnTypes ?? [];
+				const br = bound.returnTypes ?? [];
+				for (let j = 0; j < pr.length; j++)
+					unifyTypeParam(pr[j], br[j], names, subst);
+				const pv = pt.returnVariants ?? [];
+				const bv = bound.returnVariants ?? [];
+				for (let j = 0; j < pv.length; j++)
+					for (let k = 0; k < (pv[j]?.length ?? 0); k++)
+						unifyTypeParam(pv[j]?.[k], bv[j]?.[k], names, subst);
 				return;
 			}
 			unifyTypeParam(pt, argTypes[i], names, subst);

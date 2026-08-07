@@ -213,22 +213,26 @@ export function parseExpression(
 		return expectType();
 	}
 
-	function resultType(): { mode: OwnershipMode; type: Node } {
+	function resultType(precedence = 2): { mode: OwnershipMode; type: Node } {
 		const mode =
 			current().kind === 'var'
 				? (api.next(), 'var' as const)
 				: current().kind === 'own'
 					? (api.next(), 'own' as const)
 					: 'borrow';
-		return { mode, type: expectType() };
+		return {
+			mode,
+			type: expectNode(typeParser(precedence), 'Expected type expression'),
+		};
 	}
 
-	function resultTypes(): {
+	function resultTypes(precedence = 2): {
 		mode: OwnershipMode;
 		type?: Node;
 		types?: Node[];
+		modes?: OwnershipMode[];
 	} {
-		if (current().kind !== '{') return resultType();
+		if (current().kind !== '{') return resultType(precedence);
 		const open = consume('{');
 		const results: { mode: OwnershipMode; type: Node }[] = [];
 		if (current().kind !== '}') {
@@ -244,9 +248,80 @@ export function parseExpression(
 				open,
 			);
 		const mode = results[0]?.mode ?? 'borrow';
-		if (results.some(result => result.mode !== mode))
-			throw error('Emission ownership must currently be uniform', open);
-		return { mode, types: results.map(result => result.type) };
+		return {
+			mode,
+			types: results.map(result => result.type),
+			modes: results.map(result => result.mode),
+		};
+	}
+
+	function resultSignature(): ReturnType<typeof resultTypes> & {
+		variants?: Node[][];
+		variantModes?: OwnershipMode[][];
+	} {
+		const arms = [resultTypes(5)];
+		while (optional('|')) arms.push(resultTypes(5));
+		const first = arms[0];
+		if (arms.length === 1 && first) return first;
+		const scalarTypes = arms.map(arm => arm.type);
+		const scalarUnion = scalarTypes.every(
+			(type): type is NodeMap['typeident'] =>
+				type?.kind === 'typeident' &&
+				!(type.symbol.type.kind === 'type' && type.symbol.type.family === 'void'),
+		);
+		if (scalarUnion) {
+			const firstType = first?.type;
+			if (firstType?.kind !== 'typeident') return first ?? { mode: 'borrow' };
+			const members = scalarTypes.flatMap(type => {
+				const resolved = type.symbol.type;
+				return resolved.kind === 'type' && resolved.family === 'union'
+					? resolved.members
+					: [resolved];
+			});
+			const concrete = members.filter(
+				(member): member is Extract<Type, { kind: 'type' }> =>
+					member.kind === 'type',
+			);
+			const last = scalarTypes[scalarTypes.length - 1];
+			return {
+				mode: first?.mode ?? 'borrow',
+				type: {
+					...firstType,
+					end: last?.end ?? first?.type?.end ?? 0,
+					symbol: {
+						kind: 'type',
+						flags: 0,
+						name: '',
+						type: {
+							kind: 'type',
+							flags: 0,
+							family: 'union',
+							name: '',
+							size: Math.max(...concrete.map(type => type.size)),
+							members: concrete,
+						},
+					},
+				},
+			};
+		}
+		const variants = arms.map(arm => {
+			if (arm.types) return arm.types;
+			const type = arm.type;
+			if (
+				type?.kind === 'typeident' &&
+				type.symbol.type.kind === 'type' &&
+				type.symbol.type.family === 'void'
+			)
+				return [];
+			return type ? [type] : [];
+		});
+		return {
+			mode: first?.mode ?? 'borrow',
+			variants,
+			variantModes: arms.map(arm =>
+				arm.modes ?? (arm.type ? [arm.mode] : []),
+			),
+		};
 	}
 
 	/**
@@ -324,13 +399,21 @@ export function parseExpression(
 		return parseBlock(tk, node => {
 			blockParameters(node);
 			if (optional(':')) {
-				const result = resultTypes();
+				const result = resultSignature();
 				node.returnOwnership = result.mode;
 				node.symbol.returnOwnership = result.mode;
 				if (result.type) node.children.push((node.returnType = result.type));
 				if (result.types) {
 					node.returnTypes = result.types;
+					node.returnOwnerships = result.modes;
+					node.symbol.returnOwnerships = result.modes;
 					node.children.push(...result.types);
+				}
+				if (result.variants) {
+					node.returnVariants = result.variants;
+					node.returnVariantOwnerships = result.variantModes;
+					node.symbol.returnVariantOwnerships = result.variantModes;
+					node.children.push(...result.variants.flat());
 				}
 			}
 			consume('{');
@@ -349,7 +432,7 @@ export function parseExpression(
 				flags: 0,
 			};
 			if (typeNode.kind === 'typeident') anonSym.type = typeNode.symbol.type;
-			const result = optional(':') ? resultTypes() : undefined;
+			const result = optional(':') ? resultSignature() : undefined;
 			const returnTypeNode = result?.type;
 			if (returnTypeNode) {
 				node.returnType = returnTypeNode;
@@ -358,8 +441,15 @@ export function parseExpression(
 			}
 			if (result?.types) {
 				node.returnTypes = result.types;
+				node.returnOwnerships = result.modes;
+				node.symbol.returnOwnerships = result.modes;
 				node.returnOwnership = result.mode;
 				node.symbol.returnOwnership = result.mode;
+			}
+			if (result?.variants) {
+				node.returnVariants = result.variants;
+				node.returnVariantOwnerships = result.variantModes;
+				node.symbol.returnVariantOwnerships = result.variantModes;
 			}
 			const param: NodeMap['parameter'] = {
 				...tk,
@@ -371,6 +461,7 @@ export function parseExpression(
 			node.parameters = [param];
 			node.children.push(param);
 			if (result?.types) node.children.push(...result.types);
+			if (result?.variants) node.children.push(...result.variants.flat());
 			consume('{');
 			return parseFnBody(node);
 		});

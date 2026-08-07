@@ -103,11 +103,19 @@ function callReturnType(node: NodeMap['call']): Type | undefined {
 
 function resolveFunctionType(node: Node): SymbolMap['function'] | undefined {
 	const ft = resolver(node);
-	return ft.kind === 'function'
+	const resolved = ft.kind === 'function'
 		? ft
 		: ft.type?.kind === 'function'
 			? ft.type
 			: undefined;
+	if (resolved || node.kind !== 'ident') return resolved;
+	const definition = node.symbol.definition;
+	if (definition?.kind !== 'parameter' || !definition.type) return;
+	const declared = resolver(definition.type);
+	if (declared.kind === 'function') {
+		definition.symbol.type = declared;
+		return declared;
+	}
 }
 
 function substituteFunctionReturn(
@@ -254,6 +262,7 @@ function valueEmissions(node: Node): Type[] | undefined {
 	}
 	if (node.kind === 'call') {
 		const fn = resolveFunctionType(node.children[0]);
+		if (fn?.returnVariants) return undefined;
 		if (fn?.returnTypes) return fn.returnTypes;
 	}
 	if (node.kind === '>>') return undefined;
@@ -283,20 +292,46 @@ function inferFnReturns(node: NodeMap['fn']): Type[] | undefined {
 	}
 	return result;
 }
-function resolveFnType(node: NodeMap['fn']): Type {
+
+function resolveDeclaredFnOutputs(node: NodeMap['fn']): void {
 	const sym = node.symbol;
+	if (!sym.returnVariants && node.returnVariants)
+		sym.returnVariants = node.returnVariants.map(variant =>
+			variant.map(resolver),
+		);
 	if (!sym.returnTypes && node.returnTypes)
 		sym.returnTypes = node.returnTypes.map(resolver);
-	if (!sym.returnTypes && node.returnType) {
-		const type = resolver(node.returnType);
-		sym.returnTypes =
-			type.kind === 'type' && type.family === 'void' ? [] : [type];
+	if (sym.returnTypes || !node.returnType) return;
+	const type = resolver(node.returnType);
+	sym.returnTypes =
+		type.kind === 'type' && type.family === 'void' ? [] : [type];
+}
+
+function setFnElementReturn(node: NodeMap['fn']): void {
+	const sym = node.symbol;
+	const emittedTypes = sym.returnVariants?.flat() ?? sym.returnTypes;
+	if (emittedTypes?.length) {
+		sym.returnType =
+			emittedTypes.length === 1 ? emittedTypes[0] : unionOf(emittedTypes);
+		return;
 	}
+	const hasValueStatement = node.statements?.some(
+		statement => statement.kind !== 'break' && statement.kind !== 'done',
+	);
+	if (node.returnType || (sym.returnTypes && hasValueStatement))
+		sym.returnType = BT.Void;
+}
+
+function resolveFnType(node: NodeMap['fn']): Type {
+	const sym = node.symbol;
+	resolveDeclaredFnOutputs(node);
 	if (node.parameters?.length) node.parameters.forEach(resolver);
 	if (
 		!sym.returnTypes &&
+		!sym.returnVariants &&
 		!node.returnType &&
 		!node.returnTypes &&
+		!node.returnVariants &&
 		!inferringReturn.has(sym)
 	) {
 		inferringReturn.add(sym);
@@ -306,19 +341,7 @@ function resolveFnType(node: NodeMap['fn']): Type {
 			inferringReturn.delete(sym);
 		}
 	}
-	if (sym.returnTypes?.length)
-		sym.returnType =
-			sym.returnTypes.length === 1
-				? sym.returnTypes[0]
-				: unionOf(sym.returnTypes);
-	else if (
-		node.returnType ||
-		(sym.returnTypes &&
-			node.statements?.some(
-				statement => statement.kind !== 'break' && statement.kind !== 'done',
-			))
-	)
-		sym.returnType = BT.Void;
+	setFnElementReturn(node);
 	return sym;
 }
 
@@ -567,6 +590,7 @@ function resolveDispatchType(node: NodeMap['|']): Type {
 		flags: 0,
 		name: '__dispatch',
 		returnType: unionOf(overloads.map(o => o.returnType ?? BT.Void)),
+		returnTypes: overloads[0]?.returnTypes,
 		overloads,
 	};
 }
@@ -696,19 +720,43 @@ function canAssignFunctionReturns(
 	to: SymbolMap['function'],
 	a: SymbolMap['function'],
 ): boolean {
+	if (to.returnOwnerships && a.returnOwnerships) {
+		if (to.returnOwnerships.length !== a.returnOwnerships.length) return false;
+		for (let i = 0; i < to.returnOwnerships.length; i++)
+			if (to.returnOwnerships[i] !== a.returnOwnerships[i]) return false;
+	}
 	if (
 		to.returnType &&
 		a.returnType &&
 		!canAssign(to.returnType, a.returnType)
 	)
 		return false;
-	if (to.returnTypes && a.returnTypes) {
-		if (to.returnTypes.length !== a.returnTypes.length) return false;
-		for (let i = 0; i < to.returnTypes.length; i++) {
-			const tt = to.returnTypes[i];
-			const at = a.returnTypes[i];
-			if (tt && at && !canAssign(tt, at)) return false;
-		}
+	const targetVariants = to.returnVariants ??
+		(to.returnTypes ? [to.returnTypes] : undefined);
+	const actualVariants = a.returnVariants ??
+		(a.returnTypes ? [a.returnTypes] : undefined);
+	if (targetVariants && actualVariants) {
+		const targetOwnerships = to.returnVariantOwnerships ??
+			(to.returnOwnerships ? [to.returnOwnerships] : undefined);
+		const actualOwnerships = a.returnVariantOwnerships ??
+			(a.returnOwnerships ? [a.returnOwnerships] : undefined);
+		return actualVariants.every((actual, actualIndex) =>
+			targetVariants.some(
+				(target, targetIndex) =>
+					target.length === actual.length &&
+					target.every((type, index) => {
+						const emitted = actual[index];
+						if (!emitted || !canAssign(type, emitted)) return false;
+						const expectedOwnership = targetOwnerships?.[targetIndex]?.[index];
+						const actualOwnership = actualOwnerships?.[actualIndex]?.[index];
+						return (
+							!expectedOwnership ||
+							!actualOwnership ||
+							expectedOwnership === actualOwnership
+						);
+					}),
+			),
+		);
 	}
 	return true;
 }
@@ -1178,6 +1226,12 @@ export function checker({
 			returnType: type.returnType
 				? reduceType(type.returnType, bindings)
 				: undefined,
+			returnTypes: type.returnTypes?.map(returnType =>
+				reduceType(returnType, bindings),
+			),
+			returnVariants: type.returnVariants?.map(variant =>
+				variant.map(returnType => reduceType(returnType, bindings)),
+			),
 		};
 	}
 
@@ -1507,12 +1561,25 @@ export function checker({
 	}
 
 	function checkDeclaredEmissions(node: NodeMap['fn']) {
-		if (!node.returnType && !node.returnTypes) return;
+		if (!node.returnType && !node.returnTypes && !node.returnVariants) return;
 		if (node.typeParameters?.length) return;
 		if (node.statements?.some(statement => statement.kind === 'break')) return;
 		const declared = node.symbol.returnTypes ?? [];
 		const actual = inferFnReturns(node);
 		if (!actual) return;
+		if (node.returnVariants) {
+			const matches = node.symbol.returnVariants?.some(
+				variant =>
+					variant.length === actual.length &&
+					variant.every((type, index) => {
+						const emitted = actual[index];
+						return !!emitted && canAssign(type, emitted);
+					}),
+			);
+			if (!matches)
+				error('function output does not match any declared emission signature', node);
+			return;
+		}
 		if (declared.length !== actual.length) {
 			error(
 				declared.length === 0
@@ -1846,6 +1913,19 @@ export function checker({
 		owned: Set<Symbol>,
 	): void {
 		const fn = node.symbol;
+		if (fn?.returnOwnerships) {
+			const values = (node.statements ?? []).flatMap(statement => {
+				if (statement.kind !== 'next' || !statement.children?.[0]) return [];
+				const value = statement.children[0];
+				return value.kind === ',' ? value.children : [value];
+			});
+			fn.returnOwnerships.forEach((ownership, index) => {
+				const value = values[index];
+				if (ownership === 'own' && value)
+					checkOwnedReturn(value, owned, fn);
+			});
+			return;
+		}
 		if (fn?.returnOwnership !== 'own') return;
 		const statements = node.statements;
 		const tail = statements?.[statements.length - 1];

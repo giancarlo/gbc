@@ -323,6 +323,11 @@ export function parse(
 				'External must declare a function type',
 				ident,
 			);
+		if (
+			(type.symbol.returnTypes?.length ?? 0) > 1 ||
+			type.symbol.returnVariants
+		)
+			throw api.error('The host ABI cannot emit multiple values', type);
 		const name = text(ident);
 		const symbol: SymbolMap['function'] = symbolTable.set(name, {
 			name,
@@ -331,6 +336,9 @@ export function parse(
 			parameters: type.symbol.parameters,
 			returnType: type.symbol.returnType,
 			returnTypes: type.symbol.returnTypes,
+			returnVariants: type.symbol.returnVariants,
+			returnOwnerships: type.symbol.returnOwnerships,
+			returnVariantOwnerships: type.symbol.returnVariantOwnerships,
 		});
 		const label: NodeMap['label'] = { ...ident, kind: 'label' };
 		return {
