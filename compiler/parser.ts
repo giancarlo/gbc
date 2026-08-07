@@ -330,6 +330,7 @@ export function parse(
 			flags: Flags.External,
 			parameters: type.symbol.parameters,
 			returnType: type.symbol.returnType,
+			returnTypes: type.symbol.returnTypes,
 		});
 		const label: NodeMap['label'] = { ...ident, kind: 'label' };
 		return {

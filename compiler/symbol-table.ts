@@ -75,6 +75,7 @@ type SymbolProp = {
 	function: {
 		parameters?: SymbolMap['parameter' | 'variable'][];
 		returnType?: Type;
+		returnTypes?: Type[];
 		returnOwnership?: OwnershipMode;
 		returnBorrowOrigins?: number[];
 		overloads?: SymbolMap['function'][];

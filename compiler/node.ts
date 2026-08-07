@@ -86,6 +86,7 @@ export type BaseNodeMap = {
 		children: Node[];
 		symbol: SymbolMap['function'];
 		returnType?: Node;
+		returnTypes?: Node[];
 		returnOwnership?: OwnershipMode;
 	};
 	'[': { children: [Node, Node] };

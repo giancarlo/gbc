@@ -241,52 +241,84 @@ function resolveDefType(node: NodeMap['def']): Type | undefined {
 	return t;
 }
 
-// Return types are inferred from the body's tail — an annotation is never
-// required. `next X` / a bare tail value types the return; a consumer call,
-// assignment, def, `done`, or `break` tail is Void; a `next` before the
-// tail is a multi-emit body; recursion without a typeable base path stays
-// unresolved (annotate only then).
 const inferringReturn = new Set<Symbol>();
-function inferFnReturn(node: NodeMap['fn']): Type | undefined {
+function valueEmissions(node: Node): Type[] | undefined {
+	if (node.kind === ',') {
+		const result: Type[] = [];
+		for (const child of node.children) {
+			const emissions = valueEmissions(child);
+			if (!emissions) return undefined;
+			result.push(...emissions);
+		}
+		return result;
+	}
+	if (node.kind === 'call') {
+		const fn = resolveFunctionType(node.children[0]);
+		if (fn?.returnTypes) return fn.returnTypes;
+	}
+	if (node.kind === '>>') return undefined;
+	const type = resolveType(node);
+	if (!type || (type.kind === 'type' && type.family === 'unknown'))
+		return undefined;
+	if (type.kind === 'type' && type.family === 'void') return [];
+	return [type];
+}
+
+function inferFnReturns(node: NodeMap['fn']): Type[] | undefined {
 	const stmts = node.statements ?? [];
-	if (!stmts.length) return undefined;
-	for (let i = 0; i < stmts.length - 1; i++)
-		if (stmts[i]?.kind === 'next') return undefined;
-	const tail = stmts[stmts.length - 1];
-	if (!tail) return undefined;
-	const val =
-		tail.kind === 'next'
-			? tail.children?.[0]
-			: tail.kind === 'def' ||
-				  tail.kind === '=' ||
-				  tail.kind === 'break' ||
-				  tail.kind === 'done'
-				? undefined
-				: tail;
-	// Pipe tails emit through fusion — their checker type and the codegen
-	// value shape can disagree, so they don't drive inference.
-	if (!val || val.kind === '>>') return undefined;
-	const t = resolveType(val);
-	if (t && t.kind === 'type' && t.family !== 'unknown') return t;
-	return undefined;
+	if (!stmts.length) return [];
+	if (node.symbol.flags & Flags.Sequence) {
+		const only = stmts[0];
+		return only ? valueEmissions(only) : [];
+	}
+	const result: Type[] = [];
+	for (const statement of stmts) {
+		if (statement.kind === 'done' || statement.kind === 'break') break;
+		if (statement.kind !== 'next') continue;
+		const value = statement.children?.[0];
+		if (!value) continue;
+		const emissions = valueEmissions(value);
+		if (!emissions) return undefined;
+		result.push(...emissions);
+	}
+	return result;
 }
 function resolveFnType(node: NodeMap['fn']): Type {
 	const sym = node.symbol;
-	if (!sym.returnType && node.returnType)
-		sym.returnType = resolver(node.returnType);
+	if (!sym.returnTypes && node.returnTypes)
+		sym.returnTypes = node.returnTypes.map(resolver);
+	if (!sym.returnTypes && node.returnType) {
+		const type = resolver(node.returnType);
+		sym.returnTypes =
+			type.kind === 'type' && type.family === 'void' ? [] : [type];
+	}
 	if (node.parameters?.length) node.parameters.forEach(resolver);
 	if (
-		!sym.returnType &&
+		!sym.returnTypes &&
 		!node.returnType &&
+		!node.returnTypes &&
 		!inferringReturn.has(sym)
 	) {
 		inferringReturn.add(sym);
 		try {
-			sym.returnType = inferFnReturn(node);
+			sym.returnTypes = inferFnReturns(node);
 		} finally {
 			inferringReturn.delete(sym);
 		}
 	}
+	if (sym.returnTypes?.length)
+		sym.returnType =
+			sym.returnTypes.length === 1
+				? sym.returnTypes[0]
+				: unionOf(sym.returnTypes);
+	else if (
+		node.returnType ||
+		(sym.returnTypes &&
+			node.statements?.some(
+				statement => statement.kind !== 'break' && statement.kind !== 'done',
+			))
+	)
+		sym.returnType = BT.Void;
 	return sym;
 }
 
@@ -657,8 +689,27 @@ function canAssignFunction(
 		const at = ap[i]?.type;
 		if (tt && at && !canAssign(tt, at)) return false;
 	}
-	if (to.returnType && a.returnType)
-		return canAssign(to.returnType, a.returnType);
+	return canAssignFunctionReturns(to, a);
+}
+
+function canAssignFunctionReturns(
+	to: SymbolMap['function'],
+	a: SymbolMap['function'],
+): boolean {
+	if (
+		to.returnType &&
+		a.returnType &&
+		!canAssign(to.returnType, a.returnType)
+	)
+		return false;
+	if (to.returnTypes && a.returnTypes) {
+		if (to.returnTypes.length !== a.returnTypes.length) return false;
+		for (let i = 0; i < to.returnTypes.length; i++) {
+			const tt = to.returnTypes[i];
+			const at = a.returnTypes[i];
+			if (tt && at && !canAssign(tt, at)) return false;
+		}
+	}
 	return true;
 }
 
@@ -1455,6 +1506,34 @@ export function checker({
 			);
 	}
 
+	function checkDeclaredEmissions(node: NodeMap['fn']) {
+		if (!node.returnType && !node.returnTypes) return;
+		if (node.typeParameters?.length) return;
+		if (node.statements?.some(statement => statement.kind === 'break')) return;
+		const declared = node.symbol.returnTypes ?? [];
+		const actual = inferFnReturns(node);
+		if (!actual) return;
+		if (declared.length !== actual.length) {
+			error(
+				declared.length === 0
+					? `function declares no emissions but produces ${actual.length}`
+					: `function declares ${declared.length} emissions but produces ${actual.length}`,
+				node,
+			);
+			return;
+		}
+		if (!node.returnTypes) return;
+		for (let i = 0; i < declared.length; i++) {
+			const expected = declared[i];
+			const found = actual[i];
+			if (expected && found && !canAssign(expected, found))
+				error(
+					`emission ${i + 1} has type "${typeToStr(found)}", expected "${typeToStr(expected)}"`,
+					node,
+				);
+		}
+	}
+
 	function checkNoClosureCapture(node: NodeMap['fn']) {
 		const bindings = new Set<Symbol>();
 		node.parameters?.forEach(p => bindings.add(p.symbol));
@@ -1915,6 +1994,7 @@ export function checker({
 		checkNoClosureCapture(node);
 		checkUnusedValues(node);
 		if (node.statements) checkEach(node.statements);
+		checkDeclaredEmissions(node);
 		checkMoves(node);
 		functionOutputOwnership(node);
 		checkMutableReturn(node);

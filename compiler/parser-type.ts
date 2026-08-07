@@ -255,17 +255,6 @@ export function parseType(
 						? ((returnOwnership = resultOwnership()),
 							expectNode(expression(), 'Expected return type'))
 						: undefined;
-					// An omitted return already means "no value" — bare
-					// `Void` adds nothing (`T | Void` unions stay).
-					if (
-						returnType?.kind === 'typeident' &&
-						returnType.symbol.type.kind === 'type' &&
-						returnType.symbol.type.family === 'void'
-					)
-						throw api.error(
-							'return types are inferred — omit the return instead of `: Void`',
-							tk,
-						);
 					// A single unnamed type with no return is a parenthesized
 					// type, not a function type: `(T)` == `T`.
 					if (!returnType && !named && params.length === 1) {
@@ -280,6 +269,13 @@ export function parseType(
 						returnType:
 							returnType?.kind === 'typeident'
 								? returnType.symbol.type
+								: undefined,
+						returnTypes:
+							returnType?.kind === 'typeident'
+								? returnType.symbol.type.kind === 'type' &&
+									returnType.symbol.type.family === 'void'
+									? []
+									: [returnType.symbol.type]
 								: undefined,
 						returnOwnership,
 					};

@@ -1214,11 +1214,9 @@ a = {
 
 	h('Anonymous Blocks (Shape 3: type-prefix with return `T:R { body }`)', ({ p }) => {
 		p(
-			`A type-prefix block may assert its emitted type via \`T:R\`; the body
-			 (auto-emit or statement body) must produce values of type \`R\`. "Emits
-			 nothing" is inferred, never written: a body of consumer calls makes the
-			 stage terminal — any downstream stage is unreachable — and \`T:Void\` is
-			 rejected like every other \`Void\` annotation.`,
+			`A type-prefix block may assert its output via \`T:R\`; the body
+			 (auto-emit or statement body) must produce exactly that signature.
+			 \`T:Void\` explicitly describes a terminal stage that emits nothing.`,
 			({ expr, compileError, rule }) => {
 				expr({
 					src: `5 >> Int32:Int32 { $ * 2 }`,
@@ -1253,9 +1251,10 @@ a = {
 					src: `main { 5 >> Int32 { out($) } >> Int32 { $ + 1 } >> out }`,
 					expected: 'unreachable',
 				});
-				compileError({
+				rule({
 					src: `main { 5 >> Int32:Void { out($) } }`,
-					expected: 'return types are inferred',
+					ast: `(root (main (>> 5 (fn @sequence (parameter ? typeident typeident) (call :out $)))))`,
+					out: ['5'],
 				});
 			},
 		);
@@ -1426,10 +1425,44 @@ a = {
 					out: ['11'],
 				});
 				expr({
-					pre: `spread = (n: Int32): Int32 { half = n / 2; next half; next n - half; }`,
+					pre: `spread = (n: Int32): { Int32, Int32 } { half = n / 2; next half; next n - half; }`,
 					src: `spread(10)`,
 					ast: `(call :spread 10)`,
 					out: ['5', '5'],
+				});
+				expr({
+					pre: `pair = (n: Int32): { Int32, Bool } { next n; next true }`,
+					src: `pair(7)`,
+					ast: `(call :pair 7)`,
+					out: ['7', 'true'],
+				});
+				expr({
+					pre: `pair = (n: Int32) { next n; next true }`,
+					src: `pair(7)`,
+					ast: `(call :pair 7)`,
+					out: ['7', 'true'],
+				});
+				expr({
+					pre: `pair = (n: Int32): { Int32, Bool } { next n; next true }; triple = (n: Int32): { Int32, Bool, Int32 } { next pair(n); next n + 1 }`,
+					src: `triple(7)`,
+					ast: `(call :triple 7)`,
+					out: ['7', 'true', '8'],
+				});
+				compileError({
+					src: `main { pair = (n: Int32): { Bool, Int32 } { next n; next true }; pair(7) >> out }`,
+					expected: 'emission 1',
+				});
+				compileError({
+					src: `main { pair = (n: Int32): { Int32, Bool } { next n }; pair(7) >> out }`,
+					expected: 'declares 2 emissions but produces 1',
+				});
+				compileError({
+					src: `main { none = (): {} { done }; none() }`,
+					expected: 'Use `Void`',
+				});
+				compileError({
+					src: `main { one = (): { Int32 } { next 1 }; one() >> out }`,
+					expected: 'Use the element type directly',
 				});
 				compileError({
 					src: `main { double = (n: Int32): Int32 { 'oops' }; double(5) >> out; }`,
@@ -1575,7 +1608,7 @@ a = {
 					out: ['1'],
 				});
 				expr({
-					pre: `spread = (a: Int32, b: Int32): Int32 { next a; next b; }`,
+					pre: `spread = (a: Int32, b: Int32): { Int32, Int32 } { next a; next b; }`,
 					src: `spread(7, 11)`,
 					ast: `(call :spread (, 7 11))`,
 					out: ['7', '11'],
@@ -1954,10 +1987,15 @@ main { a = Array<Int32>(1); a >> forward >> consume }`,
 			ast: `(root (def :log ? (fn @sequence (parameter :n typeident ?) (call :out :n))) (main (>> 7 :log)))`,
 			out: ['7'],
 		});
-		compileError({
-			p: 'Return types are inferred — a bare `: Void` annotation is rejected everywhere (fn returns, fn types, stage returns): it states nothing the body does not. `Void` is not writable; it exists only as the compiler\u2019s \u201cno value\u201d.',
+		rule({
+			p: '`Void` is the explicit empty emission signature. A function annotated `Void` must emit nothing.',
 			src: `log = (n: Int32): Void { out(n) }; main { 7 >> log }`,
-			expected: 'return types are inferred',
+			ast: `(root (def :log ? (fn @sequence (parameter :n typeident ?) typeident (call :out :n))) (main (>> 7 :log)))`,
+			out: ['7'],
+		});
+		compileError({
+			src: `main { bad = (): Void { next 1 }; bad() >> out }`,
+			expected: 'declares no emissions but produces 1',
 		});
 		compileError({
 			src: `emit = (n: Int32): Int32 | Void { next n }; main { emit(7) >> out }`,

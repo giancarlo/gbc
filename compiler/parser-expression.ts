@@ -223,6 +223,32 @@ export function parseExpression(
 		return { mode, type: expectType() };
 	}
 
+	function resultTypes(): {
+		mode: OwnershipMode;
+		type?: Node;
+		types?: Node[];
+	} {
+		if (current().kind !== '{') return resultType();
+		const open = consume('{');
+		const results: { mode: OwnershipMode; type: Node }[] = [];
+		if (current().kind !== '}') {
+			do results.push(resultType());
+			while (optional(','));
+		}
+		consume('}');
+		if (results.length < 2)
+			throw error(
+				results.length === 0
+					? 'Use `Void` for a function that emits nothing'
+					: 'Use the element type directly for one emission',
+				open,
+			);
+		const mode = results[0]?.mode ?? 'borrow';
+		if (results.some(result => result.mode !== mode))
+			throw error('Emission ownership must currently be uniform', open);
+		return { mode, types: results.map(result => result.type) };
+	}
+
 	/**
 	 * Parses `ident [: var | type] [= value]` given a pre-consumed ident,
 	 * then hands the slot data to `make` to build the wrapping AST node
@@ -298,23 +324,14 @@ export function parseExpression(
 		return parseBlock(tk, node => {
 			blockParameters(node);
 			if (optional(':')) {
-				const result = resultType();
-				const rt = result.type;
-				// Bare `Void` here states nothing the body doesn't already:
-				// return types are inferred. (`T | Void` and the `T:Void`
-				// stage form carry meaning and stay.)
-				if (
-					rt.kind === 'typeident' &&
-					rt.symbol.type.kind === 'type' &&
-					rt.symbol.type.family === 'void'
-				)
-					throw error(
-						'return types are inferred — a fn that produces no value needs no `: Void` annotation',
-						rt,
-					);
+				const result = resultTypes();
 				node.returnOwnership = result.mode;
 				node.symbol.returnOwnership = result.mode;
-				node.children.push((node.returnType = rt));
+				if (result.type) node.children.push((node.returnType = result.type));
+				if (result.types) {
+					node.returnTypes = result.types;
+					node.children.push(...result.types);
+				}
 			}
 			consume('{');
 			return parseFnBody(node);
@@ -332,22 +349,15 @@ export function parseExpression(
 				flags: 0,
 			};
 			if (typeNode.kind === 'typeident') anonSym.type = typeNode.symbol.type;
-			const result = optional(':') ? resultType() : undefined;
+			const result = optional(':') ? resultTypes() : undefined;
 			const returnTypeNode = result?.type;
-			// `T:R` asserts a real emitted type; "emits nothing" is inferred
-			// from the body, so `T:Void` states nothing — same rule as fn
-			// returns. (This was Void's last writable surface.)
-			if (
-				returnTypeNode?.kind === 'typeident' &&
-				returnTypeNode.symbol.type.kind === 'type' &&
-				returnTypeNode.symbol.type.family === 'void'
-			)
-				throw error(
-					'return types are inferred — a stage that emits nothing needs no `:Void` annotation',
-					returnTypeNode,
-				);
 			if (returnTypeNode) {
 				node.returnType = returnTypeNode;
+				node.returnOwnership = result.mode;
+				node.symbol.returnOwnership = result.mode;
+			}
+			if (result?.types) {
+				node.returnTypes = result.types;
 				node.returnOwnership = result.mode;
 				node.symbol.returnOwnership = result.mode;
 			}
@@ -360,6 +370,7 @@ export function parseExpression(
 			};
 			node.parameters = [param];
 			node.children.push(param);
+			if (result?.types) node.children.push(...result.types);
 			consume('{');
 			return parseFnBody(node);
 		});
