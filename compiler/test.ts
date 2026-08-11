@@ -1,7 +1,7 @@
 import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
 import { Program } from './program.js';
-import { instantiateWasm } from './host.js';
+import { instantiateWasm, uint8BufferView } from './host.js';
 
 /*
 
@@ -22,6 +22,34 @@ Language features must avoid breaking these rules:
 */
 export default spec('Language Reference', s => {
 	const { h } = s;
+
+	s.test('should expose a borrowed Uint8 buffer to the host', (a: TestApi) => {
+		const source = `pixels: Buffer<Uint8> = Buffer<Uint8>(4);
+export init = () {
+	loop >> (i: Int32) { i >= 4 ? break : set(pixels, i, Uint8(i + 1)) }
+};
+export frame = (): Buffer<Uint8> { pixels };`;
+		const compiled = Program({
+			sys: {
+				readFile: () => source,
+				readBytes: () => new Uint8Array(),
+			},
+		}).compileFile('life.gb');
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+
+		const instance = instantiateWasm(compiled.bytes);
+		const init = instance.exports.init;
+		const frame = instance.exports.frame;
+		a.assert(typeof init === 'function');
+		a.assert(typeof frame === 'function');
+		init();
+
+		a.equalValues(
+			uint8BufferView(instance, Number(frame())),
+			Uint8Array.of(1, 2, 3, 4),
+		);
+	});
 
 	s.test('should infer arithmetic through a top-level scalar binding', (a: TestApi) => {
 		const source = `cols: Int32 = 320;
@@ -3917,6 +3945,10 @@ main { report(mk(9)) >> out }`,
 		});
 		testBlock({
 			src: "export hi = (): String { '${Char(72)}${Char(105)}' }; #test { equal(hi(), 'Hi') } export target = (): Int32 { 5 };",
+			out: [],
+		});
+		testBlock({
+			src: `#test { actual = target(); equal(actual, 5) } export target = (): Int32 { 5 }`,
 			out: [],
 		});
 	});

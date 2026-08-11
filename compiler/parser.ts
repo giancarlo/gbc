@@ -432,7 +432,9 @@ export function parse(
 			next();
 			consume('{');
 			const prev = symbolTable.ignoreReferences;
+			const prevLocalDepth = symbolTable.localReferenceDepth;
 			symbolTable.ignoreReferences = true;
+			symbolTable.localReferenceDepth = symbolTable.stack.length;
 			try {
 				return symbolTable.withScope(scope => {
 					const children = deferred(() =>
@@ -449,6 +451,7 @@ export function parse(
 				});
 			} finally {
 				symbolTable.ignoreReferences = prev;
+				symbolTable.localReferenceDepth = prevLocalDepth;
 			}
 		} else if (token.kind === 'external') return externalDecl(token);
 

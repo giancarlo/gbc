@@ -262,16 +262,32 @@ export const EmptyFunction: SymbolMap['function'] = {
 
 export function SymbolTable<T extends Symbol>(globals?: Record<string, T>, ignoreReferences = false) {
 	const st = BaseSymbolTable<T>();
+	let localReferenceDepth: number | undefined;
+	function isLocalReference(id: string, symbol: T): boolean {
+		if (localReferenceDepth === undefined) return false;
+		for (let i = localReferenceDepth; i < st.stack.length; i++)
+			if (st.stack[i]?.get(id) === symbol) return true;
+		return false;
+	}
 
 	if (globals) st.setSymbols(globals);
 
 	const table = {
 		...st,
 		ignoreReferences,
+		get localReferenceDepth() {
+			return localReferenceDepth;
+		},
+		set localReferenceDepth(value: number | undefined) {
+			localReferenceDepth = value;
+		},
 		/** Retrieves a symbol by id and logs a reference at the specified node position. */
 		getWithReference(id: string, node: Position) {
 			const symbol = st.get(id);
-			if (symbol && !table.ignoreReferences) {
+			if (
+				symbol &&
+				(!table.ignoreReferences || isLocalReference(id, symbol))
+			) {
 				(symbol.references ||= []).push(node);
 			}
 			return symbol;

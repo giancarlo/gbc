@@ -5,12 +5,20 @@ declare class TextDecoder {
 interface WasmModule {
 	readonly bytes?: never;
 }
-interface WasmMemory {
+export interface WasmMemory {
 	readonly buffer: ArrayBuffer;
 }
-export interface WasmInstance {
-	readonly exports: {
-		[name: string]: unknown;
+export type WasmValue = number | bigint;
+export type WasmExportFunction<
+	Args extends WasmValue[] = WasmValue[],
+	Result extends WasmValue | void = WasmValue | void,
+> = (...args: Args) => Result;
+export type WasmExports = Record<
+	string,
+	WasmMemory | WasmExportFunction
+>;
+export interface WasmInstance<Exports extends WasmExports = WasmExports> {
+	readonly exports: Exports & {
 		memory: WasmMemory;
 		main?: () => void;
 	};
@@ -33,6 +41,20 @@ export interface RunResult {
 	pages: number;
 	/** Code passed to `runtime.exit`; 0 when `main` ran to completion. */
 	exitCode: number;
+}
+
+export function uint8BufferView(instance: WasmInstance, pointer: number) {
+	const buffer = instance.exports.memory.buffer;
+	if (
+		!Number.isInteger(pointer) ||
+		pointer < 0 ||
+		pointer + 8 > buffer.byteLength
+	)
+		throw new RangeError('Invalid GB buffer pointer');
+	const length = new DataView(buffer, pointer, 4).getUint32(0, true);
+	if (pointer + 8 + length > buffer.byteLength)
+		throw new RangeError('Invalid GB buffer length');
+	return new Uint8Array(buffer, pointer + 8, length);
 }
 
 /** `runtime.exit(code)` unwinds wasm by throwing through the host. */
