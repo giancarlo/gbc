@@ -1,6 +1,6 @@
 import { sleb128, sleb128big, text, uleb128 } from '../sdk/index.js';
 
-import { reduceType } from './checker.js';
+import { isKnownNonZeroNumber, reduceType } from './checker.js';
 import {
 	bufferTypeOf,
 	BaseTypes,
@@ -35,11 +35,16 @@ export interface SpliceInput {
 }
 
 type ValueType = ResolvedType & {
-	family: Exclude<TypeFamily, 'void' | 'unknown'>;
+	family: Exclude<TypeFamily, 'void' | 'invalid' | 'unknown'>;
 };
 
 function hasRuntimeValue(t: Type): t is ValueType {
-	return t.kind === 'type' && t.family !== 'void' && t.family !== 'unknown';
+	return (
+		t.kind === 'type' &&
+		t.family !== 'void' &&
+		t.family !== 'invalid' &&
+		t.family !== 'unknown'
+	);
 }
 
 declare class TextEncoder {
@@ -479,6 +484,8 @@ function gbcToWasm(type: Type): number {
 			return I32;
 		case 'void':
 			throw new Error('Void has no WASM value type');
+		case 'invalid':
+			throw new Error('Cannot lower invalid type');
 		case 'unknown':
 			throw new Error('Cannot lower unknown type');
 	}
@@ -2853,7 +2860,7 @@ export function compileWasm({
 	): Type | undefined {
 		const rhs = node.children[1];
 		const dz = divByZeroType;
-		if (useFloat || !dz || (rhs.kind === 'number' && rhs.value !== 0))
+		if (useFloat || !dz || isKnownNonZeroNumber(rhs))
 			return undefined;
 		if (nominalId(dz) === undefined) return undefined;
 		const lhs = node.children[0];

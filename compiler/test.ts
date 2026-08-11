@@ -1,4 +1,7 @@
 import { spec } from './test-api.js';
+import type { SpecApi as TestApi } from './test-api.js';
+import { Program } from './program.js';
+import { instantiateWasm } from './host.js';
 
 /*
 
@@ -17,7 +20,55 @@ Language features must avoid breaking these rules:
 6. **Performant:** Adapt the language when code generation requires it.
 
 */
-export default spec('Language Reference', ({ h }) => {
+export default spec('Language Reference', s => {
+	const { h } = s;
+
+	s.test('should infer arithmetic through a top-level scalar binding', (a: TestApi) => {
+		const source = `cols: Int32 = 320;
+
+export seed = (index: Int32): Uint8 {
+	x = index % cols;
+	y = index / cols;
+	next (x * 17 + y * 31) % 23 < 5 ? Uint8(1) : Uint8(0)
+};`;
+		const compiled = Program({
+			sys: {
+				readFile: () => source,
+				readBytes: () => new Uint8Array(),
+			},
+		}).compileFile('case.gb');
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+		if (!compiled.bytes) return;
+
+		const instance = instantiateWasm(compiled.bytes);
+		const seed = instance.exports.seed;
+		a.assert(typeof seed === 'function');
+		if (typeof seed !== 'function') return;
+		a.equalValues(
+			[0, 4, 320, 321].map(index => Number(seed(index))),
+			[1, 0, 0, 1],
+		);
+	});
+
+	s.test('should report invalid arithmetic without Unknown cascades', a => {
+		const source = `export seed = (index: Int32, cols: Int32): Bool {
+	x = index % cols;
+	next x * 17 < 5
+};`;
+		const compiled = Program({
+			sys: {
+				readFile: () => source,
+				readBytes: () => new Uint8Array(),
+			},
+		}).compileFile('case.gb');
+		a.equalValues(
+			compiled.errors.map(error => error.message),
+			[
+				'Operator "*" cannot be applied to types "Int32 | DivByZero" and "Int32".',
+			],
+		);
+	});
 	h('Hello World', ({ p }) => {
 		p(
 			`

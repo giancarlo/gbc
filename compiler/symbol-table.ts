@@ -36,6 +36,7 @@ export type TypeFamily =
 	| 'buffer'
 	| 'literal'
 	| 'union'
+	| 'invalid'
 	| 'unknown';
 
 type TypeShape =

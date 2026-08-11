@@ -33,6 +33,18 @@ export function setDivByZero(t: Type | undefined): void {
 	divByZero = t;
 }
 
+const invalidType: ResolvedType = {
+	kind: 'type',
+	name: 'Invalid',
+	flags: Flags.None,
+	family: 'invalid',
+	size: 0,
+};
+
+function isInvalidType(type: Type): boolean {
+	return type === invalidType;
+}
+
 const resolving = new Set<Symbol>();
 
 const intRange: Record<string, [bigint, bigint]> = {
@@ -210,11 +222,32 @@ function resolveDataType(node: NodeMap['data']): Type {
 	};
 }
 
-function resolveNumericOp(node: InfixNode): Type | undefined {
+export function isKnownNonZeroNumber(
+	node: Node,
+	seen?: Set<Symbol>,
+): boolean {
+	if (node.kind === 'number') return node.value !== 0;
+	if (node.kind !== 'ident') return false;
+	const sym = node.symbol;
+	if (sym.flags & Flags.Variable || seen?.has(sym)) return false;
+	const definition = sym.definition;
+	if (definition?.kind !== 'def') return false;
+	const visited = seen ?? new Set<Symbol>();
+	visited.add(sym);
+	return isKnownNonZeroNumber(definition.value, visited);
+}
+
+function resolveNumericOp(node: InfixNode): Type {
 	const lType = resolver(node.children[0]);
 	const rType = resolver(node.children[1]);
 
-	if (!isNumericType(lType) || !isNumericType(rType)) return;
+	if (isInvalidType(lType) || isInvalidType(rType)) return invalidType;
+	if (
+		(lType.kind === 'type' && lType.family === 'unknown') ||
+		(rType.kind === 'type' && rType.family === 'unknown')
+	)
+		return BT.Unknown;
+	if (!isNumericType(lType) || !isNumericType(rType)) return invalidType;
 	const base = numericResultType(lType, rType) ?? BT.Int32;
 	if (isFloatType(base)) return base;
 	// Integer division by a value that isn't a known non-zero literal can
@@ -222,7 +255,7 @@ function resolveNumericOp(node: InfixNode): Type | undefined {
 	// literal case back to plain `Int`).
 	if ((node.kind === '/' || node.kind === '%') && divByZero) {
 		const rhs = node.children[1];
-		if (!(rhs.kind === 'number' && rhs.value !== 0))
+		if (!isKnownNonZeroNumber(rhs))
 			return unionOf([base, divByZero]);
 	}
 	return base;
@@ -1040,8 +1073,11 @@ export function checker({
 	function numberBinaryOperator(node: InfixNode) {
 		const left = node.children[0];
 		const right = node.children[1];
+		check(left);
+		check(right);
 		const lt = resolver(left);
 		const rt = resolver(right);
+		if (isInvalidType(lt) || isInvalidType(rt)) return;
 		if (isTypeParam(lt) || isTypeParam(rt)) return;
 		if (!(isNumericType(lt) && isNumericType(rt))) {
 			errors.push({
