@@ -51,6 +51,50 @@ export seed = (index: Int32): Uint8 {
 		);
 	});
 
+	s.test('should reject an uncalled function in a conditional branch', a => {
+		const source = `export init = () {
+	loop >> (index: Int32) {
+		index >= 1 ? break : { value = 1; value }
+	}
+};`;
+		const compiled = Program({
+			sys: {
+				readFile: () => source,
+				readBytes: () => new Uint8Array(),
+			},
+		}).compileFile('case.gb');
+		a.equalValues(
+			compiled.errors.map(error => error.message),
+			[
+				'Anonymous function value is not consumed. `{ ... }` creates a function but does not call it; move these statements into a function and call it here.',
+			],
+		);
+	});
+
+	s.test('should instantiate a loop with a Void helper branch', (a: TestApi) => {
+		const source = `pixels: Buffer<Uint8> = Buffer<Uint8>(4);
+initializeCell = (index: Int32) {
+	set(pixels, index, Uint8(index + 1))
+};
+export init = () {
+	loop >> (index: Int32) {
+		index >= 4 ? break : initializeCell(index)
+	}
+};`;
+		const compiled = Program({
+			sys: {
+				readFile: () => source,
+				readBytes: () => new Uint8Array(),
+			},
+		}).compileFile('life.gb');
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+
+		const init = instantiateWasm(compiled.bytes).exports.init;
+		a.assert(typeof init === 'function');
+		init();
+	});
+
 	s.test('should report invalid arithmetic without Unknown cascades', a => {
 		const source = `export seed = (index: Int32, cols: Int32): Bool {
 	x = index % cols;

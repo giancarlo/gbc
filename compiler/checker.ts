@@ -500,8 +500,13 @@ function resolveType(node: CheckedNode): Type | undefined {
 		case '&&':
 		case '||':
 			return BT.Bool;
-		case '?':
-			return resolver(node.children[1]);
+		case '?': {
+			const truthy = node.children[1];
+			const falsy = node.children[2];
+			const result =
+				truthy.kind === 'break' || truthy.kind === 'done' ? falsy : truthy;
+			return result ? resolver(result) : BT.Void;
+		}
 		case '>>':
 			return resolvePipeType(node);
 		case '&':
@@ -850,6 +855,19 @@ function valueType(node: Node): Type | undefined {
 		};
 	}
 	return resolveType(node);
+}
+
+function isUnusedValue(type: Type): boolean {
+	return (
+		type.kind === 'function' ||
+		(type.family !== 'void' && type.family !== 'unknown')
+	);
+}
+
+function unusedValueMessage(type: Type): string {
+	return type.kind === 'function'
+		? 'Anonymous function value is not consumed. `{ ... }` creates a function but does not call it; move these statements into a function and call it here.'
+		: 'value is not consumed: emit it with `next`, bind it, or pipe it to a consumer';
 }
 
 /**
@@ -1660,8 +1678,6 @@ export function checker({
 	}
 
 	function checkUnusedStatements(statements: Node[]) {
-		const unused =
-			'value is not consumed: emit it with `next`, bind it, or pipe it to a consumer';
 		for (const s of statements) {
 			if (
 				s.kind === 'next' ||
@@ -1674,19 +1690,12 @@ export function checker({
 			)
 				continue;
 			const t = resolver(s);
-			if (
-				t.kind === 'type' &&
-				t.family !== 'void' &&
-				t.family !== 'unknown'
-			)
-				error(unused, s);
+			if (isUnusedValue(t)) error(unusedValueMessage(t), s);
 		}
 	}
 
 	function checkUnusedValues(node: NodeMap['fn']) {
 		if (!node.statements || node.symbol.flags & Flags.Sequence) return;
-		const unused =
-			'value is not consumed: emit it with `next`, bind it, or pipe it to a consumer';
 		for (const s of node.statements) {
 			if (
 				s.kind === 'next' ||
@@ -1697,17 +1706,8 @@ export function checker({
 				s.kind === 'comment'
 			)
 				continue;
-			if (s.kind === 'fn') {
-				error(unused, s);
-				continue;
-			}
 			const t = resolver(s);
-			if (
-				t.kind === 'type' &&
-				t.family !== 'void' &&
-				t.family !== 'unknown'
-			)
-				error(unused, s);
+			if (isUnusedValue(t)) error(unusedValueMessage(t), s);
 		}
 	}
 
@@ -2164,11 +2164,7 @@ export function checker({
 		)
 			return;
 		const t = resolver(last);
-		if (t.kind === 'type' && t.family !== 'void' && t.family !== 'unknown')
-			error(
-				'value is not consumed: emit it with `next`, bind it, or pipe it to a consumer',
-				last,
-			);
+		if (isUnusedValue(t)) error(unusedValueMessage(t), last);
 	}
 
 	function checkStageReturnType(c: NodeMap['fn']) {
@@ -2425,6 +2421,9 @@ export function checker({
 			}
 			emit = stageEmitType(stage, emit);
 		}
+		const terminal = kids[kids.length - 1];
+		if (emit?.kind === 'function' && terminal)
+			error(unusedValueMessage(emit), terminal);
 	}
 
 	function pipeFunctionNode(stage: Node): NodeMap['fn'] | undefined {
