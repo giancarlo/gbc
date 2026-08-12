@@ -24,7 +24,7 @@ export default spec('Language Reference', s => {
 	const { h } = s;
 
 	s.test('should expose a borrowed Uint8 buffer to the host', (a: TestApi) => {
-		const source = `pixels: Buffer<Uint8> = Buffer<Uint8>(4);
+		const source = `pixels = Buffer<Uint8>(4);
 export init = () {
 	loop >> (i: Int32) { i >= 4 ? break : set(pixels, i, Uint8(i + 1)) }
 };
@@ -52,7 +52,7 @@ export frame = (): Buffer<Uint8> { pixels };`;
 	});
 
 	s.test('should infer arithmetic through a top-level scalar binding', (a: TestApi) => {
-		const source = `cols: Int32 = 320;
+		const source = `cols = 320;
 
 export seed = (index: Int32): Uint8 {
 	x = index % cols;
@@ -100,7 +100,7 @@ export seed = (index: Int32): Uint8 {
 	});
 
 	s.test('should instantiate a loop with a Void helper branch', (a: TestApi) => {
-		const source = `pixels: Buffer<Uint8> = Buffer<Uint8>(4);
+		const source = `pixels = Buffer<Uint8>(4);
 initializeCell = (index: Int32) {
 	set(pixels, index, Uint8(index + 1))
 };
@@ -442,7 +442,7 @@ main { sum([1, 2] >> length, 2) >> out }`,
 				out: ['2.5'],
 			});
 			expr({
-				pre: `a: Int32 = 1; b: Float64 = 1.5`,
+				pre: `a = 1; b = 1.5`,
 				src: `a + b`,
 				ast: `(+ :a :b)`,
 				out: ['2.5'],
@@ -1839,6 +1839,19 @@ a = {
 	});
 
 	h('Assignment', ({ ast, rule, compileError, testBlock }) => {
+		compileError({
+			p: 'A binding type annotation is redundant when the initializer already establishes exactly that type.',
+			src: 'cols: Int32 = 10; main { cols >> out }',
+			expected: 'Redundant type annotation `Int32`; the initializer is already `Int32`.',
+		});
+		compileError({
+			src: 'main { ratio: Float64 = 1.5; ratio >> out }',
+			expected: 'Redundant type annotation `Float64`; the initializer is already `Float64`.',
+		});
+		compileError({
+			src: 'main { bytes: Buffer<Uint8> = Buffer<Uint8>(4); length(bytes) >> out }',
+			expected: 'Redundant type annotation `Buffer<Uint8>`; the initializer is already `Buffer<Uint8>`.',
+		});
 		ast({
 			src: `host = 'localhost'`,
 			ast: `(def :host ? 'localhost')`,
@@ -1857,14 +1870,14 @@ a = {
 		});
 		rule({
 			p: 'Binding identities are immutable. An owning binding can be borrowed mutably without making the binding reassignable.',
-			src: `main { buffer: Buffer<Int32> = Buffer<Int32>(1); set(buffer, 0, 10); get(buffer, 0) >> out }`,
-			ast: `(root (main (def :buffer typeident (call typeident 1)) (call :set @intrinsic (, :buffer 0 10)) (>> (call :get @intrinsic (, :buffer 0)) :out)))`,
+			src: `main { buffer = Buffer<Int32>(1); set(buffer, 0, 10); get(buffer, 0) >> out }`,
+			ast: `(root (main (def :buffer ? (call typeident 1)) (call :set @intrinsic (, :buffer 0 10)) (>> (call :get @intrinsic (, :buffer 0)) :out)))`,
 			out: ['10'],
 		});
 		rule({
 			p: '`var T` parameters borrow an owner exclusively for the call without moving it; the caller can use the owner afterward.',
-			src: `write = (b: var Buffer<Int32>, n: Int32) { set(b, 0, n) }; main { b: Buffer<Int32> = Buffer<Int32>(1); write(b, 7); get(b, 0) >> out }`,
-			ast: `(root (def :write ? (fn @sequence (parameter :b typeident ?) (parameter :n typeident ?) (call :set @intrinsic (, :b 0 :n)))) (main (def :b typeident (call typeident 1)) (call :write (, :b 7)) (>> (call :get @intrinsic (, :b 0)) :out)))`,
+			src: `write = (b: var Buffer<Int32>, n: Int32) { set(b, 0, n) }; main { b = Buffer<Int32>(1); write(b, 7); get(b, 0) >> out }`,
+			ast: `(root (def :write ? (fn @sequence (parameter :b typeident ?) (parameter :n typeident ?) (call :set @intrinsic (, :b 0 :n)))) (main (def :b ? (call typeident 1)) (call :write (, :b 7)) (>> (call :get @intrinsic (, :b 0)) :out)))`,
 			out: ['7'],
 		});
 		compileError({
@@ -1962,13 +1975,13 @@ main { a = Array<Int32>(1); a >> forward >> consume }`,
 	h('Types', ({ expr, rule, compileError }) => {
 		rule({
 			p: 'Type names begin uppercase and storage widths are explicit: signed and unsigned integers use `Int8`…`Int64` and `Uint8`…`Uint64`; floats use `Float32` or `Float64`. Other built-ins include `String`, `Bool`, `Void`, `Error`, and `Fn`. Value names and special values are lowercase.',
-			src: `count: Int32 = 42; main { count >> out }`,
+			src: `count: Int64 = 42; main { count >> out }`,
 			ast: `(root (def :count typeident 42) (main (>> :count :out)))`,
 			out: ['42'],
 		});
 		rule({
-			src: `pi: Float64 = 3.14159; main { pi >> out }`,
-			ast: `(root (def :pi typeident 3.14159) (main (>> :pi :out)))`,
+			src: `pi = 3.14159; main { pi >> out }`,
+			ast: `(root (def :pi ? 3.14159) (main (>> :pi :out)))`,
 			out: ['3.14159'],
 		});
 		rule({
@@ -2053,8 +2066,8 @@ main { a = Array<Int32>(1); a >> forward >> consume }`,
 			out: ['true'],
 		});
 		rule({
-			src: `flag: Bool = true; main { flag >> out }`,
-			ast: `(root (def :flag typeident :true) (main (>> :flag :out)))`,
+			src: `flag = true; main { flag >> out }`,
+			ast: `(root (def :flag ? :true) (main (>> :flag :out)))`,
 			out: ['true'],
 		});
 		rule({
@@ -2335,11 +2348,11 @@ main { spin(400000, 0) >> out }`,
 	next i == 99 ? 100 : writeAll(b, i + 1)
 };
 main {
-	b: Buffer<Int32> = Buffer<Int32>(100);
+	b = Buffer<Int32>(100);
 	count = writeAll(b, 0);
 	reduce(b, count - count, (total: own Int32, n: Int32): own Int32 { total + n }) >> out
 }`,
-			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b typeident (call typeident 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
+			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b ? (call typeident 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
 			out: ['4950'],
 			maxPages: 2,
 		});
@@ -2423,7 +2436,7 @@ export target = (): Int32 { 0 }`,
 			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set mutates through exclusive access.',
 			src: `export empty = (): own Array<Int32> { Array<Int32>(0) };
 export ints = (): own Array<Int32> { push(push(empty(), 3), 5) };
-export changed = (): own Array<Int32> { a: Array<Int32> = empty() -> push(3) -> push(5); set(a, 0, 7); next a };
+export changed = (): own Array<Int32> { a = empty() -> push(3) -> push(5); set(a, 0, 7); next a };
 #test {
 	equal(length(empty()), 0);
 	equal(length(ints()), 2);
@@ -2518,7 +2531,7 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: 'Array set borrows mutably and leaves the owner usable.',
-			src: `export changed = (): own Array<Int32> { a: Array<Int32> = push(Array<Int32>(1), 7); set(a, 0, 8); next a };
+			src: `export changed = (): own Array<Int32> { a = push(Array<Int32>(1), 7); set(a, 0, 8); next a };
 #test { equal(length(changed()), 1); equal(get(changed(), 0), 8) }
 export target = (): Int32 { 0 }`,
 			out: [],
@@ -2570,7 +2583,7 @@ main {
 		});
 		runtimeTrap({
 			p: 'Array set replaces a live index or appends at length when capacity remains; it rejects gaps, while push is the automatic-growth operation.',
-			src: `main { a: Array<Int32> = push(Array<Int32>(2), 7); set(a, 2, 8) }`,
+			src: `main { a = push(Array<Int32>(2), 7); set(a, 2, 8) }`,
 		});
 		runtimeTrap({
 			p: 'Array capacity reservation rejects negative and impossible capacities consistently with construction.',
@@ -2581,7 +2594,7 @@ main {
 		});
 		testBlock({
 			p: '`Buffer<T>` is the sealed memory floor. `set(buffer: var Buffer<T>, index, value: own T)` mutates without ownership transfer and returns Void; reallocating operations retain own-in/own-out contracts.',
-			src: `export mk = (): own Buffer<Int32> { b: Buffer<Int32> = Buffer<Int32>(2); set(b, 0, 10); set(b, 1, 20); next push(b, 30) };
+			src: `export mk = (): own Buffer<Int32> { b = Buffer<Int32>(2); set(b, 0, 10); set(b, 1, 20); next push(b, 30) };
 export sum = (b: Buffer<Int32>): Int32 { reduce(b, 0, (total: own Int32, n: Int32): own Int32 { total + n }) };
 #test {
 	equal(length(mk()), 3);
@@ -2597,11 +2610,11 @@ export target = (): Int32 { 0 }`,
 			p: 'Intrinsics are ordinary function symbols: call syntax and pipe syntax use the same signature, data-block argument spreading, type checking, and backend lowering. Their names have no parser or pipe-stage grammar special case.',
 			src: `type Boom = Error & [ id: Int32 ];
 boom = (): own Boom { [ id = 1 ] };
-export one = (): own Buffer<Int32> { b: Buffer<Int32> = Buffer<Int32>(2); set(b, 0, 7); next b };
+export one = (): own Buffer<Int32> { b = Buffer<Int32>(2); set(b, 0, 7); next b };
 export pipeLength = (): Int32 { b = one(); next b >> length };
 export pipeCapacity = (): Int32 { b = one(); next b >> capacity };
 export pipeGet = (): Int32 { [ one(), 0 ] >> get };
-export pipeSet = (): Int32 { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0, 9); next length(b) };
+export pipeSet = (): Int32 { b = Buffer<Int32>(1); set(b, 0, 9); next length(b) };
 export pipeTransfer = (): Int32 { [ one(), Buffer<Int32>(1) ] >> transfer >> length };
 export pipeOrigin = (): Int32 { b = boom(); next (b >> origin).line };
 export callOrigin = (): Int32 { b = boom(); next origin(b).line };
@@ -2632,7 +2645,7 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: '`transfer` moves a buffer payload into a distinct empty destination, preserving owned elements and adopting the destination capacity.',
-			src: `export moved = (): own Buffer<String> { s: Buffer<String> = Buffer<String>(2); set(s, 0, 'a'); set(s, 1, 'b'); next transfer(s, Buffer<String>(4)) };
+			src: `export moved = (): own Buffer<String> { s = Buffer<String>(2); set(s, 0, 'a'); set(s, 1, 'b'); next transfer(s, Buffer<String>(4)) };
 #test { equal(get(moved(), 0), 'a'); equal(get(moved(), 1), 'b'); equal(length(moved()), 2); equal(capacity(moved()), 4) }
 export target = (): Int32 { 0 }`,
 			out: [],
@@ -2656,20 +2669,20 @@ export target = (): Int32 { 0 }`,
 		});
 		runtimeTrap({
 			p: '`get` requires `0 <= index < length`.',
-			src: `main { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0, 7); get(b, 1) >> out }`,
+			src: `main { b = Buffer<Int32>(1); set(b, 0, 7); get(b, 1) >> out }`,
 		});
 		runtimeTrap({
-			src: `main { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0, 7); get(b, 0 - 1) >> out }`,
+			src: `main { b = Buffer<Int32>(1); set(b, 0, 7); get(b, 0 - 1) >> out }`,
 		});
 		runtimeTrap({
 			p: '`set` overwrites a live slot or appends exactly at `length`; it rejects negative indices, gaps, and appends at capacity.',
-			src: `main { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0 - 1, 7) }`,
+			src: `main { b = Buffer<Int32>(1); set(b, 0 - 1, 7) }`,
 		});
 		runtimeTrap({
-			src: `main { b: Buffer<Int32> = Buffer<Int32>(2); set(b, 1, 7) }`,
+			src: `main { b = Buffer<Int32>(2); set(b, 1, 7) }`,
 		});
 		runtimeTrap({
-			src: `main { b: Buffer<Int32> = Buffer<Int32>(1); set(b, 0, 7); set(b, 1, 8) }`,
+			src: `main { b = Buffer<Int32>(1); set(b, 0, 7); set(b, 1, 8) }`,
 		});
 		compileError({
 			p: '`transfer` requires distinct buffers, an empty destination, and destination capacity at least the source length.',
@@ -2677,10 +2690,10 @@ export target = (): Int32 { 0 }`,
 			expected: 'conflicting ownership slots',
 		});
 		runtimeTrap({
-			src: `main { source: Buffer<Int32> = Buffer<Int32>(1); destination: Buffer<Int32> = Buffer<Int32>(1); set(source, 0, 7); set(destination, 0, 8); transfer(source, destination) >> length >> out }`,
+			src: `main { source = Buffer<Int32>(1); destination = Buffer<Int32>(1); set(source, 0, 7); set(destination, 0, 8); transfer(source, destination) >> length >> out }`,
 		});
 		runtimeTrap({
-			src: `main { source: Buffer<Int32> = Buffer<Int32>(2); set(source, 0, 7); set(source, 1, 8); transfer(source, Buffer<Int32>(1)) >> length >> out }`,
+			src: `main { source = Buffer<Int32>(2); set(source, 0, 7); set(source, 1, 8); transfer(source, Buffer<Int32>(1)) >> length >> out }`,
 		});
 		testBlock({
 			p: 'push grows a scalar Array flat: building and dropping an Array every iteration reuses the heap — internal doubling frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
@@ -2730,7 +2743,7 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: 'The prelude `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
-			src: `export ints = (): own Buffer<Int32> { b: Buffer<Int32> = Buffer<Int32>(4); set(b, 0, 3); set(b, 1, 5); set(b, 2, 7); next b };
+			src: `export ints = (): own Buffer<Int32> { b = Buffer<Int32>(4); set(b, 0, 3); set(b, 1, 5); set(b, 2, 7); next b };
 export strs = (): own Buffer<String> { s0 = Buffer<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
 #test {
 	equal(indexOf(ints(), 5), 1);
@@ -2931,11 +2944,11 @@ main {
 			out: ['5'],
 		});
 		rule({
-			src: `score: Int32 = 5;
+			src: `score = 5;
 main {
 	[ score, score ] >> (a: Int32, b: Int32) { a + b } >> out
 }`,
-			ast: `(root (def :score typeident 5) (main (>> (data (, :score :score)) (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) (+ :a :b)) :out)))`,
+			ast: `(root (def :score ? 5) (main (>> (data (, :score :score)) (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) (+ :a :b)) :out)))`,
 			out: ['10'],
 		});
 		rule({

@@ -86,6 +86,8 @@ function branchesFit(node: Node | undefined, target: Type): boolean {
 function typeToStr(type?: Type): string {
 	if (type?.kind === 'type' && type.family === 'union')
 		return type.members.map(m => m.name).join(' | ');
+	if (type?.kind === 'type' && type.family === 'buffer')
+		return `Buffer<${typeToStr(type.elem)}>`;
 	return type?.name || 'unknown';
 }
 
@@ -725,6 +727,17 @@ function canAssign(to: Type, a: Type): boolean {
 	if (to.family === 'buffer' && a.family === 'buffer')
 		return canAssign(to.elem, a.elem);
 	return canAssignData(to, a);
+}
+
+function sameType(a: Type, b: Type): boolean {
+	if (a === b) return true;
+	return (
+		a.kind === 'type' &&
+		b.kind === 'type' &&
+		a.family === 'buffer' &&
+		b.family === 'buffer' &&
+		sameType(a.elem, b.elem)
+	);
 }
 
 function canAssignFunction(
@@ -1576,6 +1589,16 @@ export function checker({
 		if (node.type) {
 			const declared = resolveType(node.type);
 			const vt = valueType(node.value);
+			if (
+				!(sym.flags & Flags.Variable) &&
+				declared &&
+				vt &&
+				sameType(declared, vt)
+			)
+				error(
+					`Redundant type annotation \`${typeToStr(declared)}\`; the initializer is already \`${typeToStr(vt)}\`.`,
+					node.type,
+				);
 			if (
 				declared &&
 				vt &&
