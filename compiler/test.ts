@@ -818,6 +818,26 @@ main { sum([1, 2] >> length, 2) >> out }`,
 	});
 
 	h('Type constructors', ({ expr, compileError }) => {
+		compileError({
+			p: 'A constructor must change or establish a type; constructing a value already typed as the target is redundant.',
+			src: 'main { Int32(123) >> out }',
+			expected: 'Redundant type constructor `Int32`; the argument is already `Int32`.',
+		});
+		compileError({
+			src: 'main { n: Int64 = 123; Int64(n) >> out }',
+			expected: 'Redundant type constructor `Int64`; the argument is already `Int64`.',
+		});
+		compileError({
+			src: "main { s: String = '${1}'; String(s) >> out }",
+			expected: 'Redundant type constructor `String`; the argument is already `String`.',
+		});
+		expr({
+			p: 'A constructor remains valid when it converts a value from a distinct type.',
+			pre: 'widen = (n: Int32): Int64 { Int64(n) }',
+			src: 'widen(123)',
+			ast: '(call :widen 123)',
+			out: ['123'],
+		});
 		expr({
 			p: 'A type used as a call is its constructor — an overload keyed by the type whose arms all return that type. `String(x)` converts a value to its textual form by dispatching on the input type (the former `toString`, now retired).',
 			src: 'String(true)',
@@ -831,7 +851,7 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			out: ['200'],
 		});
 		expr({
-			p: 'A `String` argument is the identity — already text.',
+			p: 'A string literal may establish `String`; its literal type is distinct from an existing `String` value.',
 			src: "String('already')",
 			ast: "(call typeident 'already')",
 			out: ['already'],

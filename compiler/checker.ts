@@ -1397,11 +1397,27 @@ export function checker({
 			);
 	}
 
+	function checkRedundantCtor(
+		target: ResolvedType,
+		node: NodeMap['call'],
+	): void {
+		if (target.family === 'buffer') return;
+		const args = node.children[1];
+		if (!args || args.kind === ',') return;
+		const argument = resolver(args);
+		if (argument !== target) return;
+		error(
+			`Redundant type constructor \`${target.name}\`; the argument is already \`${target.name}\`.`,
+			node,
+		);
+	}
+
 	function checkCall(node: NodeMap['call']) {
 		const calleeNode = node.children[0];
 		const fn = resolveType(calleeNode);
 		if (calleeNode.kind === 'typeident') {
 			if (fn && fn.kind === 'type' && fn.family !== 'fn') {
+				checkRedundantCtor(fn, node);
 				if (calleeNode.symbol === BufferSymbol) {
 					error(
 						`Buffer requires a type argument: Buffer<T>(capacity)`,
