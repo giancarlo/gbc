@@ -1114,6 +1114,47 @@ main { ps = [ [ x = 1, y = 2 ], [ x = 3, y = 4 ] ]; length(ps) >> out; ps >> eac
 			out: ['42'],
 		});
 
+		h('Inline pipe functions', ({ testBlock }) => {
+			testBlock({
+				p: 'An inline pipe function may pass captured Copy-valued parameters to a named function.',
+				src: `g = (a: Int32, b: Int32): Int32 { a + b };
+f = (a: Int32, b: Int32): Int32 {
+	g(a, b) >> (n: Int32): Int32 { n + g(a, b) }
+};
+#test { equal(target(), 6) }
+export target = (): Int32 { f(1, 2) }`,
+				out: [],
+			});
+			testBlock({
+				p: 'The result of an inline pipe function remains available to a local binding.',
+				src: `g = (a: Int32, b: Int32): Int32 { a + b };
+f = (a: Int32, b: Int32) {
+	value = g(a, b) >> (n: Int32): Int32 { n + g(a, b) };
+	out(a);
+	value >> out
+};
+#test { target() }
+export target = () { f(1, 2) }`,
+				out: ['1', '6'],
+			});
+			testBlock({
+				p: 'A life-like inline pipe function may call a named function with captured arguments.',
+				src: `neighbours = (index: Int32, current: Buffer<Uint8>): Int32 { 2 };
+cell = (index: Int32, current: Buffer<Uint8>): Uint8 { Uint8(1) };
+nextCell = (index: Int32, current: Buffer<Uint8>): Uint8 {
+	neighbours(index, current) >> (count: Int32): Uint8 {
+		count == 3 ||
+		(count == 2 && cell(index, current) == Uint8(1))
+			? Uint8(1)
+			: Uint8(0)
+	}
+};
+#test { equal(target(), Uint8(1)) }
+export target = (): Uint8 { nextCell(0, Buffer<Uint8>(1)) }`,
+				out: [],
+			});
+		});
+
 		h('Recursion', ({ rule }) => {
 			rule({
 				src: `factorial = (n: Int32): Int32 { (n <= 1) ? 1 : n * factorial(n - 1) }; main { factorial(0) >> out; factorial(1) >> out; factorial(2) >> out; factorial(3) >> out; factorial(4) >> out; factorial(5) >> out; }`,

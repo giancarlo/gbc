@@ -4961,9 +4961,16 @@ export function compileWasm({
 		const declared = node.type ? resolveTypeFromNode(node.type) : undefined;
 		stampErrorData(node.value, declared);
 		const savedBinding = fn.bindingSym;
+		const savedPipeValue = fn.pipeValue;
 		fn.bindingSym = sym;
-		let rt = compileExpr(node.value, fn);
-		fn.bindingSym = savedBinding;
+		fn.pipeValue = true;
+		let rt: Type;
+		try {
+			rt = compileExpr(node.value, fn);
+		} finally {
+			fn.bindingSym = savedBinding;
+			fn.pipeValue = savedPipeValue;
+		}
 		if (
 			declared?.kind === 'type' &&
 			declared !== rt &&
@@ -5034,7 +5041,8 @@ export function compileWasm({
 		stages: Node[],
 		fn: FuncBuilder,
 	): PipeInlineResult {
-		if (tryInlineSequenceCall(source, stages, fn)) return { kind: 'done' };
+		if (!fn.pipeValue && tryInlineSequenceCall(source, stages, fn))
+			return { kind: 'done' };
 		if (tryInlineEmittingCall(source, stages, fn)) return { kind: 'done' };
 		if (emitInlineDepth < MAX_EMIT_INLINE) {
 			emitInlineDepth++;
@@ -5255,7 +5263,13 @@ export function compileWasm({
 					if (hasRuntimeValue(t)) fn.body.push(OP_DROP);
 					return BaseTypes.Void;
 				}
-				return driveStages(stages, broadenForDispatch(t), fn);
+				const cur = fn.fusion;
+				fn.fusion = savedFusion;
+				try {
+					return driveStages(stages, broadenForDispatch(t), fn);
+				} finally {
+					fn.fusion = cur;
+				}
 			},
 			targetDepth: savedFusion?.targetDepth ?? fn.blockDepth,
 		};
@@ -6069,14 +6083,17 @@ export function compileWasm({
 		else bindSingleParam(params, inputType, fn);
 
 		const savedFusion = fn.fusion;
-		fn.fusion = makeFusion(rest, savedFusion, fn);
+		const valueMode = !!fn.pipeValue;
+		fn.fusion = valueMode ? undefined : makeFusion(rest, savedFusion, fn);
 		const isSequence = !!(stage.symbol.flags & Flags.Sequence);
+		let result: Type = BaseTypes.Void;
 		// Stage params may be SHARED symbols (stdlib templates like `each`
 		// are parsed once per process) — the restore must survive a thrown
 		// compile error, or every later compile sees poisoned types.
 		try {
 			for (const stmt of stage.statements ?? []) {
-				if (!isSequence) compileExpr(stmt, fn);
+				if (valueMode) result = compileExpr(stmt, fn);
+				else if (!isSequence) compileExpr(stmt, fn);
 				else if (stmt.kind === ',')
 					for (const c of stmt.children) emitOne(c, fn);
 				else emitOne(stmt, fn);
@@ -6096,6 +6113,7 @@ export function compileWasm({
 				else fn.paramMap.set(p.symbol, sl);
 			});
 		}
+		if (valueMode) return driveStages(rest, result, fn);
 		return BaseTypes.Void;
 	}
 
