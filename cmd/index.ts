@@ -1,65 +1,69 @@
-import { ParserApi, ScannerApi, text } from '../sdk/index.js';
+import {
+	MakeNodeMap,
+	ParserApi,
+	ScannerApi,
+	text,
+} from '../sdk/index.js';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
 
 export const keywords: readonly string[] = [];
 
-type BaseNode = {
-	start: number;
-	end: number;
-	line: number;
-	source: string;
+type BaseNodeMap = {
+	word: {
+		value: string | undefined;
+		literal: boolean;
+		hasExpansion: boolean;
+		hasParameterExpansion: boolean;
+		hasCommandSubstitution: boolean;
+		hasBackticks: boolean;
+		hasNonliteralConstruct: boolean;
+	};
+	redirect: {
+		operator: RedirectOperator;
+		io?: WordNode;
+		target: WordNode;
+		children: WordNode[];
+	};
+	command: {
+		parts: TermNode[];
+		redirects: RedirectNode[];
+		children: (TermNode | RedirectNode)[];
+	};
+	group: {
+		opener: '(' | '{';
+		closer: ')' | '}';
+		children: [Node];
+	};
+	'|': { children: [Node, Node] };
+	'&&': { children: [Node, Node] };
+	'||': { children: [Node, Node] };
+	list: {
+		children: Node[];
+		separators: (';' | '&' | 'newline')[];
+	};
+	root: { children: Node[] };
 };
-export type WordNode = BaseNode & {
-	kind: 'word';
-	value: string | undefined;
-	literal: boolean;
-	hasExpansion: boolean;
-	hasParameterExpansion: boolean;
-	hasCommandSubstitution: boolean;
-	hasBackticks: boolean;
-	hasNonliteralConstruct: boolean;
-};
-type RedirectOperator = '>' | '>>' | '<' | '<>' | '>|' | '<<' | '<<-' | '<&' | '>&';
-type RedirectNode = BaseNode & {
-	kind: 'redirect';
-	operator: RedirectOperator;
-	io?: WordNode;
-	target: WordNode;
-	children: WordNode[];
-};
-type CommandNode = BaseNode & {
-	kind: 'command';
-	parts: TermNode[];
-	redirects: RedirectNode[];
-	children: (TermNode | RedirectNode)[];
-};
-type GroupNode = BaseNode & {
-	kind: 'group';
-	opener: '(' | '{';
-	closer: ')' | '}';
-	children: [Node];
-};
-type BinaryNode = BaseNode & {
-	kind: '|' | '&&' | '||';
-	children: [Node, Node];
-};
-type ListNode = BaseNode & {
-	kind: 'list';
-	children: Node[];
-	separators: (';' | '&' | 'newline')[];
-};
-type RootNode = BaseNode & { kind: 'root'; children: Node[] };
+export type NodeMap = MakeNodeMap<BaseNodeMap>;
+export type WordNode = NodeMap['word'];
+type RedirectOperator =
+	| '>'
+	| '>>'
+	| '<'
+	| '<>'
+	| '>|'
+	| '<<'
+	| '<<-'
+	| '<&'
+	| '>&';
+type RedirectNode = NodeMap['redirect'];
+type CommandNode = NodeMap['command'];
+type GroupNode = NodeMap['group'];
+type ListNode = NodeMap['list'];
+type RootNode = NodeMap['root'];
 type TermNode = WordNode | GroupNode;
-export type Node =
-	| RootNode
-	| ListNode
-	| CommandNode
-	| RedirectNode
-	| GroupNode
-	| BinaryNode
-	| WordNode;
+export type Node = NodeMap[keyof NodeMap];
 
 const operators = [
 	'<<-',
@@ -88,7 +92,7 @@ const isControl = (ch: string) =>
 const isNameStart = (ch: string) => /[A-Za-z_]/.test(ch);
 const isSpecialParameter = (ch: string) => '@*#?$!-0123456789'.includes(ch);
 
-type WordState = Omit<WordNode, keyof BaseNode | 'kind'>;
+type WordState = Omit<WordNode, 'start' | 'end' | 'line' | 'source' | 'kind'>;
 
 function decodeAnsiEscape(source: string, index: number) {
 	const ch = source[index];
@@ -128,7 +132,7 @@ function decodeAnsiEscape(source: string, index: number) {
 	return { value: `\\${ch}`, end: index + 1 };
 }
 
-function inspectWord({ source, start, end }: BaseNode): WordState {
+function inspectWord({ source, start, end }: ScannerToken): WordState {
 	let value = '';
 	let index = start;
 	const state = {

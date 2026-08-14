@@ -16,7 +16,25 @@ export type Scanner<Node extends Token<string>> = (src: string) => {
 	backtrack: (pos: Position) => void;
 };
 
-export type BaseNode = Position & { children?: BaseNode[] };
+export type NodeChildren<Node = BaseNode> = readonly (Node | undefined)[];
+
+export type BaseNode = Position & { children?: NodeChildren };
+export type LeafNode<Kind extends string> = Token<Kind> & { children?: never };
+
+export interface ParentNodeBase<
+	Children extends readonly unknown[] = NodeChildren,
+> {
+	children: Children;
+}
+export interface RootNodeBase<Node = BaseNode> extends ParentNodeBase<Node[]> {}
+export interface UnaryNodeBase<Node = BaseNode>
+	extends ParentNodeBase<[Node]> {}
+export interface BinaryNodeBase<Node = BaseNode>
+	extends ParentNodeBase<[Node, Node]> {}
+export interface TernaryNodeBase<Node = BaseNode, Optional extends boolean = false>
+	extends ParentNodeBase<
+		[Node, Node, Optional extends true ? Node | undefined : Node]
+	> {}
 
 export type NodeMap = {
 	[K: string]: Token<string>;
@@ -49,22 +67,18 @@ export type ParentNode<Map extends NodeMap> = NodeWithChildren<Map>;
 
 export type UnaryNode<Map extends NodeMap> = NodeWithChildren<
 	Map,
-	[MapNode<Map>]
+	UnaryNodeBase<MapNode<Map>>['children']
 >;
 export type InfixNode<Map extends NodeMap> = NodeWithChildren<
 	Map,
-	[MapNode<Map>, MapNode<Map>]
+	BinaryNodeBase<MapNode<Map>>['children']
 >;
 export type TernaryNode<
 	Map extends NodeMap,
 	Optional extends boolean,
 > = NodeWithChildren<
 	Map,
-	[
-		MapNode<Map>,
-		MapNode<Map>,
-		Optional extends true ? MapNode<Map> | undefined : MapNode<Map>,
-	]
+	TernaryNodeBase<MapNode<Map>, Optional>['children']
 >;
 
 export type MapKind<Map extends NodeMap> = keyof Map;
@@ -703,8 +717,8 @@ export function parserTable<
 
 type NodeAtIndex<Node extends BaseNode, Seen = never> = Node extends Seen
 	? Node
-	: Node extends { children: (infer Child extends BaseNode)[] }
-		? Node | NodeAtIndex<Child, Seen | Node>
+	: Node extends { children: readonly (infer Child)[] }
+		? Node | NodeAtIndex<Extract<Child, BaseNode>, Seen | Node>
 		: Node;
 
 export function findNodeAtIndex<Node extends BaseNode>(
@@ -715,6 +729,7 @@ export function findNodeAtIndex(node: BaseNode, index: number): BaseNode | undef
 	if (index < node.start || index >= node.end) return;
 	if (node.children) {
 		for (const child of node.children) {
+			if (!child) continue;
 			const result = findNodeAtIndex(child, index);
 			if (result) return result;
 		}

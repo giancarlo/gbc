@@ -1,5 +1,22 @@
 import { spec } from '@cxl/spec';
-import { BaseNode, findNodeAtIndex, ScannerApi, stringEscape } from './index.js';
+import {
+	BaseNode,
+	BinaryNodeBase,
+	findNodeAtIndex,
+	LeafNode,
+	RootNodeBase,
+	ScannerApi,
+	stringEscape,
+	TernaryNodeBase,
+	UnaryNodeBase,
+} from './index.js';
+
+type TestLeaf = LeafNode<'leaf'>;
+type TestRoot = RootNodeBase<TestLeaf>;
+type TestUnary = UnaryNodeBase<TestLeaf>;
+type TestBinary = BinaryNodeBase<TestLeaf>;
+type TestTernary = TernaryNodeBase<TestLeaf>;
+type TestOptional = TernaryNodeBase<TestLeaf, true>;
 
 const _ident = /\w/;
 const ident = (ch: string) => ch === '_' || _ident.test(ch);
@@ -36,6 +53,41 @@ export default spec('sdk', s => {
 		it.should('return undefined outside the node span', a => {
 			a.equal(findNodeAtIndex(root, -1), undefined);
 			a.equal(findNodeAtIndex(root, 2), undefined);
+		});
+
+		it.should('skip absent tuple children', a => {
+			const leaf: TestLeaf = {
+				kind: 'leaf',
+				start: 0,
+				end: 1,
+				line: 0,
+				source,
+			};
+			const rootShape: TestRoot = { children: [leaf] };
+			const unaryShape: TestUnary = { children: [leaf] };
+			const binaryShape: TestBinary = { children: [leaf, leaf] };
+			const ternaryShape: TestTernary = { children: [leaf, leaf, leaf] };
+			const optionalShape: TestOptional = {
+				children: [leaf, leaf, undefined],
+			};
+			const optional: BaseNode = {
+				start: 0,
+				end: 2,
+				line: 0,
+				source,
+				children: [left, right, undefined],
+			};
+			a.equalValues(
+				[
+					rootShape.children.length,
+					unaryShape.children.length,
+					binaryShape.children.length,
+					ternaryShape.children.length,
+					optionalShape.children.length,
+				],
+				[1, 1, 2, 3, 3],
+			);
+			a.equal(findNodeAtIndex(optional, 1), right);
 		});
 	});
 
