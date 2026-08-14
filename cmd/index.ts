@@ -31,6 +31,12 @@ type BaseNodeMap = {
 		redirects: RedirectNode[];
 		children: (TermNode | RedirectNode)[];
 	};
+	function: {
+		name: WordNode;
+		body: GroupNode;
+		redirects: RedirectNode[];
+		children: [WordNode, GroupNode, ...RedirectNode[]];
+	};
 	group: {
 		opener: '(' | '{';
 		closer: ')' | '}';
@@ -59,6 +65,7 @@ type RedirectOperator =
 	| '>&';
 type RedirectNode = NodeMap['redirect'];
 type CommandNode = NodeMap['command'];
+type FunctionNode = NodeMap['function'];
 type GroupNode = NodeMap['group'];
 type ListNode = NodeMap['list'];
 type RootNode = NodeMap['root'];
@@ -384,7 +391,16 @@ const commandEndKinds = new Set<Kind>([
 function createParser(source: string) {
 	const api = ParserApi(scan);
 	api.start(source);
-	const { current, next, consume, error, errors, catchAndRecover, pushError } = api;
+	const {
+		current,
+		next,
+		consume,
+		error,
+		errors,
+		catchAndRecover,
+		pushError,
+		backtrack,
+	} = api;
 
 	function parseWord(): WordNode {
 		const token = current();
@@ -427,6 +443,56 @@ function createParser(source: string) {
 			children: io ? [io, target] : [target],
 			start: io?.start ?? operator.start,
 			end: target.end,
+		};
+	}
+
+	function isFunctionDefinition() {
+		const name = current();
+		if (name.kind !== 'word') return false;
+		next();
+		if (current().kind !== '(') {
+			backtrack(name);
+			return false;
+		}
+		next();
+		const result = current().kind === ')';
+		backtrack(name);
+		return result;
+	}
+
+	function parseFunction(): FunctionNode {
+		const name = parseWord();
+		if (!/^[A-Za-z_]\w*$/.test(text(name)))
+			throw error('Expected portable function name', name);
+		consume('(');
+		consume(')');
+		while (current().kind === 'newline' || current().kind === 'comment') next();
+		if (current().kind !== '(' && current().kind !== '{')
+			throw error('Expected function body', current());
+		const body = parseGroup();
+		const redirects: RedirectNode[] = [];
+		while (true) {
+			if (isRedirectKind(current().kind)) {
+				redirects.push(parseRedirect());
+				continue;
+			}
+			if (current().kind !== 'word' || !/^\d+$/.test(text(current()))) break;
+			const token = current();
+			const io = parseWord();
+			if (!isRedirectKind(current().kind) || io.end !== current().start) {
+				backtrack(token);
+				break;
+			}
+			redirects.push(parseRedirect(io));
+		}
+		return {
+			...name,
+			kind: 'function',
+			name,
+			body,
+			redirects,
+			children: [name, body, ...redirects],
+			end: redirects.at(-1)?.end ?? body.end,
 		};
 	}
 
@@ -486,12 +552,14 @@ function createParser(source: string) {
 	}
 
 	function parsePipe(): Node {
-		let left: Node = parseCommand();
+		const parsePipelineCommand = () =>
+			isFunctionDefinition() ? parseFunction() : parseCommand();
+		let left: Node = parsePipelineCommand();
 		while (current().kind === '|') {
 			const operator = current();
 			next();
 			const right = catchAndRecover(
-				() => parseCommand(),
+				() => parsePipelineCommand(),
 				() => undefined,
 			);
 			if (!right) break;
@@ -621,12 +689,20 @@ function compileNode(node: Node): string {
 				.trimEnd();
 		case 'word':
 			return text(node);
-		case 'group':
+		case 'group': {
+			const body = compileNode(node.children[0]);
 			return node.opener === '('
-				? `(${compileNode(node.children[0])})`
-				: `{ ${compileNode(node.children[0])} ; }`;
+				? `(${body})`
+				: `{ ${body}${body.endsWith(';') ? '' : ' ;'} }`;
+		}
 		case 'command':
 			return [...node.parts.map(compileNode), ...node.redirects.map(compileNode)].join(' ');
+		case 'function':
+			return `${compileNode(node.name)}() ${compileNode(node.body)}${
+				node.redirects.length
+					? ` ${node.redirects.map(compileNode).join(' ')}`
+					: ''
+			}`;
 		case 'redirect':
 			return `${node.io ? compileNode(node.io) : ''}${node.operator} ${compileNode(node.target)}`;
 		case '|':

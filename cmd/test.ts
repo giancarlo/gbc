@@ -184,6 +184,80 @@ export default spec('cmd', s => {
 			);
 		});
 
+		it.should('parse and compile POSIX function definitions', a => {
+			const compiled = program().compile(
+				'greet() { echo hi; } 2>errors\nsubshell() (echo ok)',
+			);
+			const list = compiled.ast.children[0];
+			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			const greet = list.children[0];
+			const subshell = list.children[1];
+			if (!greet || greet.kind !== 'function')
+				throw new Error('Expected function definition');
+			if (!subshell || subshell.kind !== 'function')
+				throw new Error('Expected function definition');
+
+			a.equalValues(
+				{
+					kind: greet.kind,
+					name: greet.name.value,
+					body: greet.body.opener,
+					start: greet.start,
+					end: greet.end,
+					redirects: greet.redirects.map(redirect => redirect.operator),
+				},
+				{
+					kind: 'function',
+					name: 'greet',
+					body: '{',
+					start: 0,
+					end: 29,
+					redirects: ['>'],
+				},
+			);
+			a.equalValues(greet.children, [
+				greet.name,
+				greet.body,
+				...greet.redirects,
+			]);
+			a.equalValues(subshell.body.opener, '(');
+			a.equalValues(compiled.errors, []);
+			a.equalValues(
+				compiled.output,
+				'greet() { echo hi ; } 2> errors\nsubshell() (echo ok)',
+			);
+		});
+
+		it.should('traverse function definitions through shared AST children', a => {
+			const root = program().parse('greet() { echo hi; }').root;
+			const list = root.children[0];
+			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			const fn = list.children[0];
+			if (!fn || fn.kind !== 'function')
+				throw new Error('Expected function definition');
+
+			a.equal(findNodeAtIndex(root, 0), fn.name);
+			a.equal(findNodeAtIndex(root, 7), fn);
+			a.equal(findNodeAtIndex(root, 8), fn.body);
+			a.equal(findNodeAtIndex(root, 10)?.kind, 'word');
+			a.equal(findNodeAtIndex(root, 19), fn.body);
+		});
+
+		it.should('report malformed POSIX function definitions', a => {
+			const messages = (src: string) =>
+				program()
+					.parse(src)
+					.errors.map(error => error.message);
+
+			a.equalValues(messages('greet()'), ['Expected function body']);
+			a.equalValues(messages('greet() { echo'), [
+				'Expected "}" but got "eof"',
+			]);
+			a.equalValues(messages('not-portable() { echo; }')[0],
+				'Expected portable function name',
+			);
+		});
+
 		it.should('expose literal word values in the AST', a => {
 			const literal = {
 				kind: 'word',
