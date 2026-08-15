@@ -207,6 +207,9 @@ export function scan(source: string) {
 			case '}':
 				return scanCloseBrace();
 			case '.':
+				return la === '.' && current(2) === '.'
+					? tk('...', 3)
+					: tk('.', 1);
 			case ',':
 			case '?':
 			case '*':

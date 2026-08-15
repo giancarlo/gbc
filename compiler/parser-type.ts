@@ -8,6 +8,7 @@ import {
 	Flags,
 	bufferTypeOf,
 	fixedEmissionType,
+	restEmissionType,
 } from './symbol-table.js';
 import type {
 	OwnershipMode,
@@ -113,10 +114,12 @@ export function parseType(
 		returnVariantOwnerships?: OwnershipMode[][];
 		returnType?: Node;
 		returnTypes?: Node[];
+		returnRestType?: Node;
+		returnRestOwnership?: OwnershipMode;
 		returnVariants?: Node[][];
 	} {
 		if (!optional(':')) return {};
-		const arms: { types: Node[]; ownerships: OwnershipMode[] }[] = [];
+		const arms: ReturnType<typeof functionReturnArm>[] = [];
 		do arms.push(functionReturnArm(expression));
 		while (optional('|'));
 		const first = arms[0];
@@ -143,7 +146,12 @@ export function parseType(
 
 	function functionReturnArm(
 		expression: (precedence?: number) => Node | undefined,
-	): { types: Node[]; ownerships: OwnershipMode[] } {
+	): {
+		types: Node[];
+		ownerships: OwnershipMode[];
+		restType?: Node;
+		restOwnership?: OwnershipMode;
+	} {
 		if (current().kind !== '{') {
 			const ownership = resultOwnership();
 			return {
@@ -154,29 +162,59 @@ export function parseType(
 		const open = api.consume('{');
 		const types: Node[] = [];
 		const ownerships: OwnershipMode[] = [];
+		let restType: Node | undefined;
+		let restOwnership: OwnershipMode | undefined;
 		if (current().kind !== '}') {
-			do {
-				ownerships.push(resultOwnership());
-				types.push(
-					api.expectNode(expression(), 'Expected return type'),
-				);
-			} while (optional(','));
+			for (;;) {
+				const rest = optional('...');
+				const ownership = resultOwnership();
+				const type = api.expectNode(expression(), 'Expected return type');
+				if (rest) {
+					const resolved = nodeType(type);
+					if (
+						resolved?.kind === 'type' &&
+						(resolved.family === 'void' || resolved.family === 'emission')
+					)
+						throw api.error(
+							resolved.family === 'void'
+								? 'Void cannot be a rest emission type'
+								: 'Nested emission sequences are not allowed',
+							type,
+						);
+					restType = type;
+					restOwnership = ownership;
+					if (current().kind !== '}')
+						throw api.error('Rest emission must be the final element', current());
+				} else {
+					ownerships.push(ownership);
+					types.push(type);
+				}
+				if (!optional(',')) break;
+			}
 		}
 		api.consume('}');
-		if (types.length < 2)
+		if (!restType && types.length < 2)
 			throw api.error(
 				types.length === 0
 					? 'Use `Void` for a function that emits nothing'
 					: 'Use the element type directly for one emission',
 				open,
 			);
-		return { ownerships, types };
+		return { ownerships, types, restType, restOwnership };
 	}
 
 	function functionReturnSingle(
-		arm: { types: Node[]; ownerships: OwnershipMode[] } | undefined,
+		arm: ReturnType<typeof functionReturnArm> | undefined,
 	): ReturnType<typeof functionReturn> {
 		if (!arm) return {};
+		if (arm.restType)
+			return {
+				returnOwnership: arm.ownerships[0] ?? arm.restOwnership,
+				returnOwnerships: arm.ownerships,
+				returnTypes: arm.types,
+				returnRestType: arm.restType,
+				returnRestOwnership: arm.restOwnership,
+			};
 		if (arm.types.length === 1)
 			return {
 				returnOwnership: arm.ownerships[0],
@@ -206,8 +244,10 @@ export function parseType(
 	function resolvedFunctionReturn(
 		returnType: Node | undefined,
 		returnTypes: Node[] | undefined,
+		returnRestType: Node | undefined,
 		returnOwnership?: OwnershipMode,
 		returnOwnerships?: OwnershipMode[],
+		returnRestOwnership?: OwnershipMode,
 		returnVariants?: Node[][],
 	): Pick<
 		SymbolMap['function'],
@@ -228,6 +268,19 @@ export function parseType(
 		const sequence = returnTypes
 			?.map(nodeType)
 			.filter((type): type is Type => !!type);
+		const rest = nodeType(returnRestType);
+		if (sequence && rest)
+			return {
+				emissionType: restEmissionType(
+					sequence,
+					returnOwnerships ?? [],
+					rest,
+					returnRestOwnership,
+				),
+				returnType: emissionType([...sequence, rest]),
+				returnTypes: sequence,
+				returnOwnerships,
+			};
 		if (sequence)
 			return {
 				emissionType: fixedEmissionType(sequence, returnOwnerships),
@@ -325,6 +378,7 @@ export function parseType(
 			return {
 				...t,
 				elements: t.elements.map(element => substituteType(element, subst)),
+				rest: t.rest ? substituteType(t.rest, subst) : undefined,
 			};
 		return t;
 	}
@@ -443,9 +497,11 @@ export function parseType(
 					const {
 						returnOwnership,
 						returnOwnerships,
+						returnRestOwnership,
 						returnVariantOwnerships,
 						returnType,
 						returnTypes,
+						returnRestType,
 						returnVariants,
 					} = functionReturn(expression);
 					// A single unnamed type with no return is a parenthesized
@@ -453,6 +509,7 @@ export function parseType(
 					if (
 						!returnType &&
 						!returnTypes &&
+						!returnRestType &&
 						!returnVariants &&
 						!named &&
 						params.length === 1
@@ -463,8 +520,10 @@ export function parseType(
 					const resolvedReturn = resolvedFunctionReturn(
 						returnType,
 						returnTypes,
+						returnRestType,
 						returnOwnership,
 						returnOwnerships,
+						returnRestOwnership,
 						returnVariants,
 					);
 					const fnSymbol: SymbolMap['function'] = {
@@ -482,13 +541,15 @@ export function parseType(
 					return {
 						...tk,
 						kind: 'fn',
-						end: (returnVariants?.flat().at(-1) ?? returnTypes?.at(-1) ?? returnType ?? close).end,
+						end: (returnRestType ?? returnVariants?.flat().at(-1) ?? returnTypes?.at(-1) ?? returnType ?? close).end,
 						parameters: params,
 						returnType,
 						returnTypes,
+						returnRestType,
 						returnVariants,
 						returnOwnership,
 						returnOwnerships,
+						returnRestOwnership,
 						returnVariantOwnerships,
 						symbol: fnSymbol,
 						children: [
@@ -496,6 +557,7 @@ export function parseType(
 							...(returnVariants?.flat() ??
 								returnTypes ??
 								(returnType ? [returnType] : [])),
+							...(returnRestType ? [returnRestType] : []),
 						],
 					};
 				},
@@ -504,19 +566,33 @@ export function parseType(
 				prefix(tk) {
 					const types: Type[] = [];
 					const ownerships: OwnershipMode[] = [];
+					let rest: Type | undefined;
+					let restOwnership: OwnershipMode | undefined;
 					if (current().kind !== '}') {
-						do {
-							ownerships.push(resultOwnership());
+						for (;;) {
+							const isRest = optional('...');
+							const ownership = resultOwnership();
 							const node = expectNode(expression(), 'Expected emission type');
 							const type = nodeType(node);
 							if (!type) throw api.error('Expected emission type', node);
 							if (type.kind === 'type' && type.family === 'emission')
 								throw api.error('Nested emission sequences are not allowed', node);
-							types.push(type);
-						} while (optional(','));
+							if (isRest) {
+								if (type.kind === 'type' && type.family === 'void')
+									throw api.error('Void cannot be a rest emission type', node);
+								rest = type;
+								restOwnership = ownership;
+								if (current().kind !== '}')
+									throw api.error('Rest emission must be the final element', current());
+							} else {
+								ownerships.push(ownership);
+								types.push(type);
+							}
+							if (!optional(',')) break;
+						}
 					}
 					const close = consume('}');
-					if (types.length < 2)
+					if (!rest && types.length < 2)
 						throw api.error(
 							types.length === 0
 								? 'Use `Void` for a function that emits nothing'
@@ -527,7 +603,16 @@ export function parseType(
 						...tk,
 						kind: 'typeident',
 						end: close.end,
-						symbol: resolvedSymbol(fixedEmissionType(types, ownerships)),
+						symbol: resolvedSymbol(
+							rest
+								? restEmissionType(
+										types,
+										ownerships,
+										rest,
+										restOwnership,
+								  )
+								: fixedEmissionType(types, ownerships),
+						),
 					};
 				},
 			},

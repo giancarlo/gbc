@@ -79,6 +79,8 @@ type TypeShape =
 			family: 'emission';
 			elements: Type[];
 			ownerships: OwnershipMode[];
+			rest?: Type;
+			restOwnership?: OwnershipMode;
 	  };
 
 type SymbolProp = {
@@ -128,8 +130,29 @@ export function fixedEmissionType(
 	};
 }
 
+export function restEmissionType(
+	elements: Type[],
+	ownerships: OwnershipMode[],
+	rest: Type,
+	restOwnership: OwnershipMode = 'borrow',
+	name = '',
+): ResolvedType {
+	return {
+		kind: 'type',
+		flags: 0,
+		family: 'emission',
+		name,
+		size: 0,
+		elements,
+		ownerships,
+		rest,
+		restOwnership,
+	};
+}
+
 export function emissionElements(type: Type): Type[] {
-	if (type.kind === 'type' && type.family === 'emission') return type.elements;
+	if (type.kind === 'type' && type.family === 'emission')
+		return type.rest ? [...type.elements, type.rest] : type.elements;
 	if (type.kind === 'type' && type.family === 'void') return [];
 	return [type];
 }
@@ -278,6 +301,11 @@ export function unifyTypeParam(
 	) {
 		for (let i = 0; i < paramType.elements.length; i++)
 			unifyTypeParam(paramType.elements[i], argType.elements[i], names, out);
+		if (paramType.rest) {
+			for (let i = paramType.elements.length; i < argType.elements.length; i++)
+				unifyTypeParam(paramType.rest, argType.elements[i], names, out);
+			unifyTypeParam(paramType.rest, argType.rest, names, out);
+		}
 		return;
 	}
 	if (

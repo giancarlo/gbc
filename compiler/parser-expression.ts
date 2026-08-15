@@ -231,16 +231,40 @@ export function parseExpression(
 		type?: Node;
 		types?: Node[];
 		modes?: OwnershipMode[];
+		restType?: Node;
+		restMode?: OwnershipMode;
 	} {
 		if (current().kind !== '{') return resultType(precedence);
 		const open = consume('{');
 		const results: { mode: OwnershipMode; type: Node }[] = [];
+		let restResult: { mode: OwnershipMode; type: Node } | undefined;
 		if (current().kind !== '}') {
-			do results.push(resultType());
-			while (optional(','));
+			for (;;) {
+				const rest = optional('...');
+				const result = resultType();
+				if (rest) {
+					const type = result.type;
+					if (
+						type.kind === 'typeident' &&
+						type.symbol.type.kind === 'type' &&
+						(type.symbol.type.family === 'void' ||
+							type.symbol.type.family === 'emission')
+					)
+						throw error(
+							type.symbol.type.family === 'void'
+								? 'Void cannot be a rest emission type'
+								: 'Nested emission sequences are not allowed',
+							type,
+						);
+					restResult = result;
+					if (current().kind !== '}')
+						throw error('Rest emission must be the final element', current());
+				} else results.push(result);
+				if (!optional(',')) break;
+			}
 		}
 		consume('}');
-		if (results.length < 2)
+		if (!restResult && results.length < 2)
 			throw error(
 				results.length === 0
 					? 'Use `Void` for a function that emits nothing'
@@ -252,6 +276,8 @@ export function parseExpression(
 			mode,
 			types: results.map(result => result.type),
 			modes: results.map(result => result.mode),
+			restType: restResult?.type,
+			restMode: restResult?.mode,
 		};
 	}
 
@@ -397,6 +423,11 @@ export function parseExpression(
 					node.symbol.returnOwnerships = result.modes;
 					node.children.push(...result.types);
 				}
+				if (result.restType) {
+					node.returnRestType = result.restType;
+					node.returnRestOwnership = result.restMode;
+					node.children.push(result.restType);
+				}
 				if (result.variants) {
 					node.returnVariants = result.variants;
 					node.returnVariantOwnerships = result.variantModes;
@@ -434,6 +465,10 @@ export function parseExpression(
 				node.returnOwnership = result.mode;
 				node.symbol.returnOwnership = result.mode;
 			}
+			if (result?.restType) {
+				node.returnRestType = result.restType;
+				node.returnRestOwnership = result.restMode;
+			}
 			if (result?.variants) {
 				node.returnVariants = result.variants;
 				node.returnVariantOwnerships = result.variantModes;
@@ -449,6 +484,7 @@ export function parseExpression(
 			node.parameters = [param];
 			node.children.push(param);
 			if (result?.types) node.children.push(...result.types);
+			if (result?.restType) node.children.push(result.restType);
 			if (result?.variants) node.children.push(...result.variants.flat());
 			consume('{');
 			return parseFnBody(node);

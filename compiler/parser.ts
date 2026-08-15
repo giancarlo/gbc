@@ -325,6 +325,8 @@ export function parse(
 			);
 		if (
 			(type.symbol.returnTypes?.length ?? 0) > 1 ||
+			(type.symbol.emissionType?.family === 'emission' &&
+				type.symbol.emissionType.rest !== undefined) ||
 			type.symbol.returnVariants
 		)
 			throw api.error('The host ABI cannot emit multiple values', type);

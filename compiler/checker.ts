@@ -6,7 +6,9 @@ import {
 	BufferSymbol,
 	Flags,
 	bufferTypeOf,
+	emissionElements,
 	fixedEmissionType,
+	restEmissionType,
 	isFloatType,
 	isHeapType,
 	isIntType,
@@ -85,8 +87,20 @@ function branchesFit(node: Node | undefined, target: Type): boolean {
 }
 
 function typeToStr(type?: Type): string {
-	if (type?.kind === 'type' && type.family === 'emission')
-		return type.name || `{ ${type.elements.map(typeToStr).join(', ')} }`;
+	if (type?.kind === 'type' && type.family === 'emission') {
+		if (type.name) return type.name;
+		const elements = type.elements.map((element, index) => {
+			const ownership = type.ownerships[index];
+			return `${ownership && ownership !== 'borrow' ? `${ownership} ` : ''}${typeToStr(element)}`;
+		});
+		if (type.rest) {
+			const ownership = type.restOwnership;
+			elements.push(
+				`...${ownership && ownership !== 'borrow' ? `${ownership} ` : ''}${typeToStr(type.rest)}`,
+			);
+		}
+		return `{ ${elements.join(', ')} }`;
+	}
 	if (type?.kind === 'type' && type.family === 'union')
 		return type.members.map(m => m.name).join(' | ');
 	if (type?.kind === 'type' && type.family === 'buffer')
@@ -339,10 +353,17 @@ function resolveDeclaredFnOutputs(node: NodeMap['fn']): void {
 		);
 	if (!sym.returnTypes && node.returnTypes) {
 		sym.returnTypes = node.returnTypes.map(resolver);
-		sym.emissionType = fixedEmissionType(
-			sym.returnTypes,
-			sym.returnOwnerships,
-		);
+		const rest = node.returnRestType
+			? resolver(node.returnRestType)
+			: undefined;
+		sym.emissionType = rest
+			? restEmissionType(
+					sym.returnTypes,
+					sym.returnOwnerships ?? [],
+					rest,
+					node.returnRestOwnership,
+				)
+			: fixedEmissionType(sym.returnTypes, sym.returnOwnerships);
 	}
 	if (sym.returnTypes || !node.returnType) return;
 	const type = resolver(node.returnType);
@@ -362,7 +383,9 @@ function resolveDeclaredFnOutputs(node: NodeMap['fn']): void {
 
 function setFnElementReturn(node: NodeMap['fn']): void {
 	const sym = node.symbol;
-	const emittedTypes = sym.returnVariants?.flat() ?? sym.returnTypes;
+	const emittedTypes = sym.emissionType
+		? emissionElements(sym.emissionType)
+		: sym.returnVariants?.flat() ?? sym.returnTypes;
 	if (!sym.emissionType && sym.returnTypes && !sym.returnVariants)
 		sym.emissionType = fixedEmissionType(
 			sym.returnTypes,
@@ -737,6 +760,34 @@ function paramsMatch(
 	return true;
 }
 
+function canAssignEmission(
+	to: Extract<ResolvedType, { family: 'emission' }>,
+	a: Extract<ResolvedType, { family: 'emission' }>,
+): boolean {
+	if (a.rest && !to.rest) return false;
+	if (a.elements.length < to.elements.length) return false;
+	if (!to.rest && a.elements.length !== to.elements.length) return false;
+	for (let i = 0; i < a.elements.length; i++) {
+		const actual = a.elements[i];
+		const expected = to.elements[i] ?? to.rest;
+		const actualOwnership = a.ownerships[i];
+		const expectedOwnership = to.ownerships[i] ?? to.restOwnership;
+		if (
+			!actual ||
+			!expected ||
+			actualOwnership !== expectedOwnership ||
+			!canAssign(expected, actual)
+		)
+			return false;
+	}
+	return (
+		!a.rest ||
+		(!!to.rest &&
+			a.restOwnership === to.restOwnership &&
+			canAssign(to.rest, a.rest))
+	);
+}
+
 function canAssign(to: Type, a: Type): boolean {
 	if (to === a) return true;
 	if (a.components?.some(c => canAssign(to, c))) return true;
@@ -746,15 +797,7 @@ function canAssign(to: Type, a: Type): boolean {
 	if (to.family === 'unknown') return true;
 	if (to.family === 'emission' || a.family === 'emission') {
 		if (to.family !== 'emission' || a.family !== 'emission') return false;
-		return (
-			to.elements.length === a.elements.length &&
-			to.elements.every(
-				(type, index) =>
-					to.ownerships[index] === a.ownerships[index] &&
-					!!a.elements[index] &&
-					canAssign(type, a.elements[index]),
-			)
-		);
+		return canAssignEmission(to, a);
 	}
 	if (a.family === 'union') return a.members.every(m => canAssign(to, m));
 	if (to.family === 'union') return to.members.some(m => canAssign(m, a));
@@ -989,6 +1032,11 @@ function containsApp(t: Type, seen = new Set<Type>()): boolean {
 	seen.add(t);
 	if (t.application) return true;
 	if (t.family === 'union') return t.members.some(m => containsApp(m, seen));
+	if (t.family === 'emission')
+		return (
+			t.elements.some(element => containsApp(element, seen)) ||
+			(t.rest !== undefined && containsApp(t.rest, seen))
+		);
 	if (t.family === 'data')
 		return Object.values(t.members).some(
 			m => m.type !== undefined && containsApp(m.type, seen),
@@ -1036,6 +1084,7 @@ export function reduceType(t: Type, bindings: Map<string, Type>, depth = 0): Typ
 			elements: t.elements.map(element =>
 				reduceType(element, bindings, depth + 1),
 			),
+			rest: t.rest ? reduceType(t.rest, bindings, depth + 1) : undefined,
 		};
 	if (t.family === 'buffer') {
 		const e = reduceType(t.elem, bindings, depth + 1);
@@ -1702,13 +1751,51 @@ export function checker({
 			);
 	}
 
+	function checkRestEmissions(
+		node: NodeMap['fn'],
+		actual: Type[],
+		emission: ResolvedType | undefined,
+	): boolean {
+		if (emission?.family !== 'emission') return false;
+		const rest = emission.rest;
+		if (!rest) return false;
+		if (actual.length < emission.elements.length) {
+			error(
+				`function declares at least ${emission.elements.length} emissions but produces ${actual.length}`,
+				node,
+			);
+			return true;
+		}
+		for (let i = 0; i < actual.length; i++) {
+			const expected = emission.elements[i] ?? rest;
+			const found = actual[i];
+			if (found && !canAssign(expected, found))
+				error(
+					`emission ${i + 1} has type "${typeToStr(found)}", expected "${typeToStr(expected)}"`,
+					node,
+				);
+		}
+		return true;
+	}
+
+	function hasDeclaredEmissions(node: NodeMap['fn']): boolean {
+		return !!(
+			node.returnType ||
+			node.returnTypes ||
+			node.returnRestType ||
+			node.returnVariants
+		);
+	}
+
 	function checkDeclaredEmissions(node: NodeMap['fn']) {
-		if (!node.returnType && !node.returnTypes && !node.returnVariants) return;
+		if (!hasDeclaredEmissions(node)) return;
 		if (node.typeParameters?.length) return;
 		if (node.statements?.some(statement => statement.kind === 'break')) return;
 		const declared = node.symbol.returnTypes ?? [];
 		const actual = inferFnReturns(node);
 		if (!actual) return;
+		const emission = node.symbol.emissionType;
+		if (checkRestEmissions(node, actual, emission)) return;
 		if (node.returnVariants) {
 			const matches = node.symbol.returnVariants?.some(
 				variant =>

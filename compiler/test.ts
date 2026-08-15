@@ -212,6 +212,7 @@ main {
 		token('-', 'Arithmetic Negation (Unary)', '-');
 		token('-', 'Arithmetic Substraction', '-');
 		token('.', 'Member access', '.');
+		token('...', 'Rest emission', '...');
 		token('/', 'Arithmetic division', '/');
 		token('<', 'Less than comparison', '<');
 		token('<=', 'Less than or equal comparison', '<=');
@@ -3465,6 +3466,71 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 				compileError({
 					src: `external maybe: (Int32): Void | Int32; main { maybe(1) >> out }`,
 					expected: 'one fixed emission layout',
+				});
+			},
+		);
+	});
+
+	h('Rest emission types', ({ p }) => {
+		p(
+			'`{ ...T }` accepts any number of emissions of `T`; fixed elements may precede the rest element, which must be last. A fixed emission sequence is assignable to a compatible rest sequence, but an open rest sequence is not assignable to a fixed sequence.',
+			({ ast, compileError, rule }) => {
+				ast({
+					src: `type Many<T> = { ...T }; type Stream = { Int32, ...String }; type Owned = { ...own String }`,
+					ast: `(type :Many (, (parameter :T ? ?)) typeident) (type :Stream typeident) (type :Owned typeident)`,
+					test(root) {
+						const owned = root.children[2];
+						s.equal(owned?.kind, 'type');
+						if (owned?.kind !== 'type' || owned.symbol.kind !== 'type') return;
+						const type = owned.symbol.type;
+						s.equal(type.kind === 'type' && type.family === 'emission', true);
+						if (type.kind === 'type' && type.family === 'emission')
+							s.equal(type.restOwnership, 'own');
+					},
+				});
+				ast({
+					src: `type Producer = (): { Int32, ...String }`,
+					ast: `(type :Producer (fn typeident typeident))`,
+				});
+				rule({
+					src: `fixed = (): { Int32, Int32 } { next 1; next 2 }; use = <T>(cb: (): { ...T }): { ...T } { cb() }; main { use(fixed) >> Int32 { out($) } }`,
+					ast: `(root (def :fixed ? (fn typeident typeident (next 1) (next 2))) (def :use ? (fn @sequence (, (parameter :T ? ?)) (parameter :cb (fn typeident) ?) typeident (call :cb ?))) (main (>> (call :use :fixed) (fn @sequence (parameter ? typeident ?) (call :out $)))))`,
+				});
+				compileError({
+					src: `type Bad = { ...Int32, String }; main {}`,
+					expected: 'Rest emission must be the final element',
+				});
+				compileError({
+					src: `type Bad = { ...Int32, ...Int32 }; main {}`,
+					expected: 'Rest emission must be the final element',
+				});
+				compileError({
+					src: `type Bad = { ...Void }; main {}`,
+					expected: 'Void cannot be a rest emission type',
+				});
+				compileError({
+					src: `type Bad = { ...{ Int32, Bool } }; main {}`,
+					expected: 'Nested emission sequences are not allowed',
+				});
+				compileError({
+					src: `type Bad = { ... }; main {}`,
+					expected: 'Expected emission type',
+				});
+				compileError({
+					src: `type Many<T> = { ...T }; bad = (): Many<Int32> { next 1; next true }; main { bad() >> Int32 { out($) } }`,
+					expected: 'emission 2 has type "Bool", expected "Int32"',
+				});
+				compileError({
+					src: `bad = (): { Int32, ...Bool } { true }; main { bad() >> Bool { out($) } }`,
+					expected: 'emission 1 has type "Bool", expected "Int32"',
+				});
+				compileError({
+					src: `rest = (): { ...Int32 } { next 1; next 2 }; fixedUse = (cb: (): { Int32, Int32 }): { Int32, Int32 } { cb() }; main { fixedUse(rest) >> out }`,
+					expected: 'not assignable',
+				});
+				compileError({
+					src: `external many: (): { ...Int32 }; main {}`,
+					expected: 'host ABI cannot emit multiple values',
 				});
 			},
 		);
