@@ -5,7 +5,12 @@ import {
 	text,
 } from '../sdk/index.js';
 
-export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
+export type Dialect = 'posix' | 'ide';
+export interface ProgramOptions {
+	dialect?: Dialect;
+}
+
+export type ScannerToken = ReturnType<ReturnType<typeof createScanner>['next']>;
 export type Kind = ScannerToken['kind'];
 
 export const keywords: readonly string[] = [];
@@ -31,11 +36,28 @@ type BaseNodeMap = {
 		redirects: RedirectNode[];
 		children: (TermNode | RedirectNode)[];
 	};
+	type: {
+		name: string;
+	};
+	parameter: {
+		name: WordNode;
+		type: TypeNode;
+		optional: boolean;
+		rest: boolean;
+		children: [WordNode, TypeNode];
+	};
+	typealias: {
+		name: WordNode;
+		target: TypeNode;
+		children: [WordNode, TypeNode];
+	};
 	function: {
 		name: WordNode;
+		parameters: ParameterNode[];
+		returnType?: TypeNode;
 		body: GroupNode;
 		redirects: RedirectNode[];
-		children: [WordNode, GroupNode, ...RedirectNode[]];
+		children: (WordNode | ParameterNode | TypeNode | GroupNode | RedirectNode)[];
 	};
 	group: {
 		opener: '(' | '{';
@@ -65,6 +87,9 @@ type RedirectOperator =
 	| '>&';
 type RedirectNode = NodeMap['redirect'];
 type CommandNode = NodeMap['command'];
+type TypeNode = NodeMap['type'];
+type ParameterNode = NodeMap['parameter'];
+type TypeAliasNode = NodeMap['typealias'];
 type FunctionNode = NodeMap['function'];
 type GroupNode = NodeMap['group'];
 type ListNode = NodeMap['list'];
@@ -97,6 +122,8 @@ const isSpace = (ch: string) => ch === ' ' || ch === '\t' || ch === '\r';
 const isControl = (ch: string) =>
 	ch === '' || ch === '\n' || isSpace(ch) || '|&;(){}<>'.includes(ch);
 const isNameStart = (ch: string) => /[A-Za-z_]/.test(ch);
+const portableName = /^[A-Za-z_]\w*$/;
+const ideCommandName = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*!?$/;
 const isSpecialParameter = (ch: string) => '@*#?$!-0123456789'.includes(ch);
 
 type WordState = Omit<WordNode, 'start' | 'end' | 'line' | 'source' | 'kind'>;
@@ -281,10 +308,11 @@ function inspectWord({ source, start, end }: ScannerToken): WordState {
 	};
 }
 
-export function scan(source: string) {
+function createScanner(source: string) {
 	const { current, eof, tk, matchString, matchUntil, error, skip, backtrack } = ScannerApi({
 		source,
 	});
+	let signature = false;
 
 	function scanQuoted(quote: string, consumed: number) {
 		for (;;) {
@@ -327,7 +355,10 @@ export function scan(source: string) {
 
 	function scanWord() {
 		let consumed = 0;
-		while (!isControl(current(consumed))) {
+		while (
+			!isControl(current(consumed)) &&
+			(!signature || !':,=?'.includes(current(consumed)))
+		) {
 			const ch = current(consumed);
 			if (ch === "'" || ch === '"') {
 				consumed = scanQuoted(ch, consumed + 1);
@@ -352,6 +383,14 @@ export function scan(source: string) {
 		if (eof()) return tk('eof', 0);
 		if (current() === '\n') return tk('newline', 1);
 		if (current() === '#') return tk('comment', matchUntil(ch => ch === '\n'));
+		if (signature) {
+			const rest = matchString('...');
+			if (rest) return tk('...', rest);
+			if (current() === ':') return tk(':', 1);
+			if (current() === ',') return tk(',', 1);
+			if (current() === '=') return tk('=', 1);
+			if (current() === '?') return tk('?', 1);
+		}
 		for (const operator of operators) {
 			const consumed = matchString(operator);
 			if (consumed) return tk(operator, consumed);
@@ -359,6 +398,17 @@ export function scan(source: string) {
 		return scanWord();
 	}
 
+	return {
+		next,
+		backtrack,
+		setSignature(value: boolean) {
+			signature = value;
+		},
+	};
+}
+
+export function scan(source: string) {
+	const { next, backtrack } = createScanner(source);
 	return { next, backtrack };
 }
 
@@ -388,9 +438,12 @@ const commandEndKinds = new Set<Kind>([
 	'}',
 ]);
 
-function createParser(source: string) {
-	const api = ParserApi(scan);
+function createParser(source: string, options: ProgramOptions = {}) {
+	let scanner!: ReturnType<typeof createScanner>;
+	const api = ParserApi(src => (scanner = createScanner(src)));
 	api.start(source);
+	const dialect = options.dialect ?? 'posix';
+	const aliases = new Set<string>();
 	const {
 		current,
 		next,
@@ -446,26 +499,151 @@ function createParser(source: string) {
 		};
 	}
 
+	function isPortableName(node: WordNode) {
+		return portableName.test(text(node));
+	}
+
+	function parseType(): TypeNode {
+		const token = current();
+		if (token.kind !== 'word') throw error('Expected type name', token);
+		const name = text(token);
+		if (!portableName.test(name))
+			throw error('Expected type name', token);
+		next();
+		return { ...token, kind: 'type', name };
+	}
+
 	function isFunctionDefinition() {
 		const name = current();
 		if (name.kind !== 'word') return false;
-		next();
-		if (current().kind !== '(') {
-			backtrack(name);
-			return false;
+		let start = name.end;
+		while (isSpace(source.charAt(start))) start++;
+		if (source.charAt(start) !== '(') return false;
+		const end = source.indexOf(')', start + 1);
+		if (end < 0) return false;
+		const signature = source.slice(start + 1, end).trim();
+		return signature === '' || (dialect === 'ide' && signature.includes(':'));
+	}
+
+	function isTypeAlias() {
+		return (
+			dialect === 'ide' &&
+			current().kind === 'word' &&
+			text(current()) === 'type' &&
+			/^[ \t]+\S+[ \t]*=/.test(source.slice(current().end))
+		);
+	}
+
+	function parseTypeAlias(): TypeAliasNode {
+		let keyword!: WordNode;
+		let name!: WordNode;
+		let target!: TypeNode;
+		scanner.setSignature(true);
+		try {
+			keyword = parseWord();
+			name = parseWord();
+			if (!isPortableName(name)) throw error('Expected type alias name', name);
+			consume('=');
+			target = parseType();
+		} finally {
+			scanner.setSignature(false);
 		}
-		next();
-		const result = current().kind === ')';
-		backtrack(name);
-		return result;
+		const aliasName = text(name);
+		if (aliases.has(aliasName))
+			pushError(error(`Duplicate type alias "${aliasName}"`, name));
+		else aliases.add(aliasName);
+		return {
+			...keyword,
+			kind: 'typealias',
+			name,
+			target,
+			children: [name, target],
+			end: target.end,
+		};
+	}
+
+	function parseFunctionName() {
+		const name = parseWord();
+		const functionName = text(name);
+		if (
+			!(dialect === 'ide'
+				? ideCommandName.test(functionName)
+				: portableName.test(functionName))
+		)
+			throw error(
+				dialect === 'ide'
+					? 'Expected IDE command name'
+					: 'Expected portable function name',
+				name,
+			);
+		return name;
+	}
+
+	function parseParameter(parameterNames: Set<string>, optionalSeen: boolean) {
+		const parameterStart = current();
+		const rest = current().kind === '...';
+		if (rest) next();
+		const name = parseWord();
+		if (!isPortableName(name)) throw error('Expected parameter name', name);
+		const optional = current().kind === '?';
+		if (optional) next();
+		if (rest && optional)
+			pushError(error('Rest parameter cannot be optional', name));
+		if (!optional && !rest && optionalSeen)
+			pushError(error('Required parameter cannot follow optional parameter', name));
+		consume(':');
+		const type = parseType();
+		const value = text(name);
+		if (parameterNames.has(value))
+			pushError(error(`Duplicate parameter "${value}"`, name));
+		else parameterNames.add(value);
+		return {
+			parameter: {
+				...name,
+				kind: 'parameter',
+				start: parameterStart.start,
+				name,
+				type,
+				optional,
+				rest,
+				children: [name, type],
+				end: type.end,
+			} satisfies ParameterNode,
+			optionalSeen: optionalSeen || optional,
+		};
+	}
+
+	function parseFunctionSignature() {
+		const parameters: ParameterNode[] = [];
+		let returnType: TypeNode | undefined;
+		scanner.setSignature(true);
+		try {
+			consume('(');
+			const parameterNames = new Set<string>();
+			let optionalSeen = false;
+			while (current().kind !== ')') {
+				const parsed = parseParameter(parameterNames, optionalSeen);
+				parameters.push(parsed.parameter);
+				optionalSeen = parsed.optionalSeen;
+				if (current().kind !== ',') break;
+				if (parsed.parameter.rest)
+					pushError(error('Rest parameter must be last', parsed.parameter.name));
+				next();
+			}
+			consume(')');
+			if (current().kind === ':') {
+				next();
+				returnType = parseType();
+			}
+		} finally {
+			scanner.setSignature(false);
+		}
+		return { parameters, returnType };
 	}
 
 	function parseFunction(): FunctionNode {
-		const name = parseWord();
-		if (!/^[A-Za-z_]\w*$/.test(text(name)))
-			throw error('Expected portable function name', name);
-		consume('(');
-		consume(')');
+		const name = parseFunctionName();
+		const { parameters, returnType } = parseFunctionSignature();
 		while (current().kind === 'newline' || current().kind === 'comment') next();
 		if (current().kind !== '(' && current().kind !== '{')
 			throw error('Expected function body', current());
@@ -489,9 +667,17 @@ function createParser(source: string) {
 			...name,
 			kind: 'function',
 			name,
+			parameters,
+			returnType,
 			body,
 			redirects,
-			children: [name, body, ...redirects],
+			children: [
+				name,
+				...parameters,
+				...(returnType ? [returnType] : []),
+				body,
+				...redirects,
+			],
 			end: redirects.at(-1)?.end ?? body.end,
 		};
 	}
@@ -553,7 +739,11 @@ function createParser(source: string) {
 
 	function parsePipe(): Node {
 		const parsePipelineCommand = () =>
-			isFunctionDefinition() ? parseFunction() : parseCommand();
+			isTypeAlias()
+				? parseTypeAlias()
+				: isFunctionDefinition()
+					? parseFunction()
+					: parseCommand();
 		let left: Node = parsePipelineCommand();
 		while (current().kind === '|') {
 			const operator = current();
@@ -698,6 +888,8 @@ function compileNode(node: Node): string {
 		case 'command':
 			return [...node.parts.map(compileNode), ...node.redirects.map(compileNode)].join(' ');
 		case 'function':
+			if (node.parameters.length || node.returnType)
+				throw new Error('Cannot emit typed function as POSIX shell');
 			return `${compileNode(node.name)}() ${compileNode(node.body)}${
 				node.redirects.length
 					? ` ${node.redirects.map(compileNode).join(' ')}`
@@ -705,6 +897,10 @@ function compileNode(node: Node): string {
 			}`;
 		case 'redirect':
 			return `${node.io ? compileNode(node.io) : ''}${node.operator} ${compileNode(node.target)}`;
+		case 'type':
+		case 'parameter':
+		case 'typealias':
+			throw new Error('Cannot emit IDE declaration as POSIX shell');
 		case '|':
 		case '&&':
 		case '||':
@@ -716,9 +912,9 @@ export function compiler(node: Node) {
 	return compileNode(node);
 }
 
-export function program() {
+export function program(options: ProgramOptions = {}) {
 	function parse(src: string) {
-		const parser = createParser(src);
+		const parser = createParser(src, options);
 		const root = parser.parse();
 		return { root, errors: parser.errors };
 	}

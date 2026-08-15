@@ -258,6 +258,162 @@ export default spec('cmd', s => {
 			);
 		});
 
+		it.should('preserve POSIX parsing by default', a => {
+			const root = program().parse('type File = string').root;
+			const list = root.children[0];
+			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			const command = list.children[0];
+			if (!command || command.kind !== 'command')
+				throw new Error('Expected POSIX command');
+			a.equalValues(
+				command.parts.map(part => part.kind === 'word' ? part.value : undefined),
+				['type', 'File', '=', 'string'],
+			);
+			const invocationRoot = program().parse('core.open! file').root;
+			const invocationList = invocationRoot.children[0];
+			if (!invocationList || invocationList.kind !== 'list')
+				throw new Error('Expected invocation list');
+			const invocation = invocationList.children[0];
+			if (!invocation || invocation.kind !== 'command')
+				throw new Error('Expected POSIX invocation');
+			a.equalValues(
+				invocation.parts.map(part => part.kind === 'word' ? part.value : undefined),
+				['core.open!', 'file'],
+			);
+		});
+
+		it.should('expose typed declarations in the IDE dialect', a => {
+			const source = [
+				'type File=string',
+				'type Directory = string',
+				'open(file: File, directory: Directory): string { echo ok; }',
+				'open README.md src',
+			].join('\n');
+			const parsed = program({ dialect: 'ide' }).parse(source);
+			const list = parsed.root.children[0];
+			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			const [file, directory, fn, invocation] = list.children;
+			if (!file || file.kind !== 'typealias')
+				throw new Error('Expected File alias');
+			if (!directory || directory.kind !== 'typealias')
+				throw new Error('Expected Directory alias');
+			if (!fn || fn.kind !== 'function')
+				throw new Error('Expected typed function');
+			if (!fn.returnType) throw new Error('Expected return type');
+			if (!invocation || invocation.kind !== 'command')
+				throw new Error('Expected function invocation');
+
+			a.equalValues(
+				{
+					file: [file.name.value, file.target.name],
+					directory: [directory.name.value, directory.target.name],
+					name: fn.name.value,
+					parameters: fn.parameters.map(parameter => [
+						parameter.name.value,
+						parameter.type.name,
+					]),
+					returnType: fn.returnType?.name,
+					invocation: invocation.parts.map(part =>
+						part.kind === 'word' ? part.value : undefined,
+					),
+				},
+				{
+					file: ['File', 'string'],
+					directory: ['Directory', 'string'],
+					name: 'open',
+					parameters: [
+						['file', 'File'],
+						['directory', 'Directory'],
+					],
+					returnType: 'string',
+					invocation: ['open', 'README.md', 'src'],
+				},
+			);
+			a.equalValues(file.children, [file.name, file.target]);
+			a.equalValues(fn.children, [
+				fn.name,
+				...fn.parameters,
+				fn.returnType,
+				fn.body,
+			]);
+			a.equal(findNodeAtIndex(parsed.root, source.lastIndexOf('File'))?.kind, 'type');
+			a.equalValues(parsed.errors, []);
+		});
+
+		it.should('parse IDE command names and optional or rest parameters', a => {
+			const parsed = program({ dialect: 'ide' }).parse(
+				'core.open!(file?: File, ...flags: string): string { echo ok; }',
+			);
+			const list = parsed.root.children[0];
+			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			const fn = list.children[0];
+			if (!fn || fn.kind !== 'function')
+				throw new Error('Expected typed function');
+
+			a.equalValues(
+				{
+					name: fn.name.value,
+					parameters: fn.parameters.map(parameter => ({
+						name: parameter.name.value,
+						type: parameter.type.name,
+						optional: parameter.optional,
+						rest: parameter.rest,
+					})),
+				},
+				{
+					name: 'core.open!',
+					parameters: [
+						{ name: 'file', type: 'File', optional: true, rest: false },
+						{ name: 'flags', type: 'string', optional: false, rest: true },
+					],
+				},
+			);
+			a.equalValues(parsed.errors, []);
+		});
+
+		it.should('report malformed IDE declarations', a => {
+			const messages = (source: string) =>
+				program({ dialect: 'ide' })
+					.parse(source)
+					.errors.map(error => error.message);
+
+			a.equalValues(messages('type File = string\ntype File = string'), [
+				'Duplicate type alias "File"',
+			]);
+			a.equalValues(
+				messages('open(file: File, file: File) { echo; }'),
+				['Duplicate parameter "file"'],
+			);
+			a.equalValues(messages('type Bad-Name = string')[0],
+				'Expected type alias name',
+			);
+			a.equalValues(
+				messages('open(first?: string, second: string) { echo; }'),
+				['Required parameter cannot follow optional parameter'],
+			);
+			a.equalValues(
+				messages('open(...values: string, next: string) { echo; }'),
+				['Rest parameter must be last'],
+			);
+			a.equalValues(messages('open(...values?: string) { echo; }'), [
+				'Rest parameter cannot be optional',
+			]);
+		});
+
+		it.should('reject emitting IDE declarations as POSIX shell', a => {
+			a.throws(
+				() => program({ dialect: 'ide' }).compile('type File = string'),
+				/Cannot emit IDE declaration/,
+			);
+			a.throws(
+				() =>
+					program({ dialect: 'ide' }).compile(
+						'open(file: File): string { echo; }',
+					),
+				/Cannot emit typed function/,
+			);
+		});
+
 		it.should('expose literal word values in the AST', a => {
 			const literal = {
 				kind: 'word',
