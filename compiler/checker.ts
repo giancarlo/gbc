@@ -6,6 +6,7 @@ import {
 	BufferSymbol,
 	Flags,
 	bufferTypeOf,
+	fixedEmissionType,
 	isFloatType,
 	isHeapType,
 	isIntType,
@@ -84,6 +85,8 @@ function branchesFit(node: Node | undefined, target: Type): boolean {
 }
 
 function typeToStr(type?: Type): string {
+	if (type?.kind === 'type' && type.family === 'emission')
+		return type.name || `{ ${type.elements.map(typeToStr).join(', ')} }`;
 	if (type?.kind === 'type' && type.family === 'union')
 		return type.members.map(m => m.name).join(' | ');
 	if (type?.kind === 'type' && type.family === 'buffer')
@@ -334,17 +337,37 @@ function resolveDeclaredFnOutputs(node: NodeMap['fn']): void {
 		sym.returnVariants = node.returnVariants.map(variant =>
 			variant.map(resolver),
 		);
-	if (!sym.returnTypes && node.returnTypes)
+	if (!sym.returnTypes && node.returnTypes) {
 		sym.returnTypes = node.returnTypes.map(resolver);
+		sym.emissionType = fixedEmissionType(
+			sym.returnTypes,
+			sym.returnOwnerships,
+		);
+	}
 	if (sym.returnTypes || !node.returnType) return;
 	const type = resolver(node.returnType);
-	sym.returnTypes =
-		type.kind === 'type' && type.family === 'void' ? [] : [type];
+	if (type.kind === 'type' && type.family === 'emission') {
+		sym.emissionType = type;
+		sym.returnTypes = type.elements;
+		sym.returnOwnerships = type.ownerships;
+		sym.returnOwnership = type.ownerships[0] ?? sym.returnOwnership;
+		return;
+	}
+	sym.returnTypes = type.kind === 'type' && type.family === 'void' ? [] : [type];
+	sym.emissionType = fixedEmissionType(
+		sym.returnTypes,
+		sym.returnTypes.map(() => sym.returnOwnership ?? 'borrow'),
+	);
 }
 
 function setFnElementReturn(node: NodeMap['fn']): void {
 	const sym = node.symbol;
 	const emittedTypes = sym.returnVariants?.flat() ?? sym.returnTypes;
+	if (!sym.emissionType && sym.returnTypes && !sym.returnVariants)
+		sym.emissionType = fixedEmissionType(
+			sym.returnTypes,
+			sym.returnOwnerships,
+		);
 	if (emittedTypes?.length) {
 		sym.returnType =
 			emittedTypes.length === 1 ? emittedTypes[0] : unionOf(emittedTypes);
@@ -721,6 +744,18 @@ function canAssign(to: Type, a: Type): boolean {
 		return canAssignFunction(to, a);
 	if (to.kind !== 'type' || a.kind !== 'type') return false;
 	if (to.family === 'unknown') return true;
+	if (to.family === 'emission' || a.family === 'emission') {
+		if (to.family !== 'emission' || a.family !== 'emission') return false;
+		return (
+			to.elements.length === a.elements.length &&
+			to.elements.every(
+				(type, index) =>
+					to.ownerships[index] === a.ownerships[index] &&
+					!!a.elements[index] &&
+					canAssign(type, a.elements[index]),
+			)
+		);
+	}
 	if (a.family === 'union') return a.members.every(m => canAssign(to, m));
 	if (to.family === 'union') return to.members.some(m => canAssign(m, a));
 	if (canAssignCoercion(to, a)) return true;
@@ -771,6 +806,8 @@ function canAssignFunctionReturns(
 	to: SymbolMap['function'],
 	a: SymbolMap['function'],
 ): boolean {
+	if (to.emissionType && a.emissionType)
+		return canAssign(to.emissionType, a.emissionType);
 	if (to.returnOwnerships && a.returnOwnerships) {
 		if (to.returnOwnerships.length !== a.returnOwnerships.length) return false;
 		for (let i = 0; i < to.returnOwnerships.length; i++)
@@ -993,6 +1030,13 @@ export function reduceType(t: Type, bindings: Map<string, Type>, depth = 0): Typ
 	if (!bindings.size && !containsApp(t)) return t;
 	if (t.family === 'union')
 		return unionOf(t.members.map(m => reduceType(m, bindings, depth + 1)));
+	if (t.family === 'emission')
+		return {
+			...t,
+			elements: t.elements.map(element =>
+				reduceType(element, bindings, depth + 1),
+			),
+		};
 	if (t.family === 'buffer') {
 		const e = reduceType(t.elem, bindings, depth + 1);
 		return e === t.elem ? t : bufferTypeOf(e);
@@ -1282,6 +1326,9 @@ export function checker({
 		type: SymbolMap['function'],
 		bindings: Map<string, Type>,
 	): SymbolMap['function'] {
+		const emissionType = type.emissionType
+			? reduceType(type.emissionType, bindings)
+			: undefined;
 		return {
 			...type,
 			parameters: type.parameters?.map(parameter => ({
@@ -1293,6 +1340,8 @@ export function checker({
 			returnType: type.returnType
 				? reduceType(type.returnType, bindings)
 				: undefined,
+			emissionType:
+				emissionType?.kind === 'type' ? emissionType : undefined,
 			returnTypes: type.returnTypes?.map(returnType =>
 				reduceType(returnType, bindings),
 			),

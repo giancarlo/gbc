@@ -484,6 +484,8 @@ function gbcToWasm(type: Type): number {
 			return I32;
 		case 'void':
 			throw new Error('Void has no WASM value type');
+		case 'emission':
+			throw new Error('Emission sequence has no WASM value type');
 		case 'invalid':
 			throw new Error('Cannot lower invalid type');
 		case 'unknown':

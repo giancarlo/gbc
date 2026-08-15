@@ -36,6 +36,7 @@ export type TypeFamily =
 	| 'buffer'
 	| 'literal'
 	| 'union'
+	| 'emission'
 	| 'invalid'
 	| 'unknown';
 
@@ -43,7 +44,10 @@ type TypeShape =
 	| {
 			name: string;
 			size: number;
-			family: Exclude<TypeFamily, 'data' | 'buffer' | 'literal' | 'union'>;
+			family: Exclude<
+				TypeFamily,
+				'data' | 'buffer' | 'literal' | 'union' | 'emission'
+			>;
 	  }
 	| {
 			name: string;
@@ -68,6 +72,13 @@ type TypeShape =
 			size: number;
 			family: 'union';
 			members: Type[];
+	  }
+	| {
+			name: string;
+			size: 0;
+			family: 'emission';
+			elements: Type[];
+			ownerships: OwnershipMode[];
 	  };
 
 type SymbolProp = {
@@ -75,6 +86,7 @@ type SymbolProp = {
 	literal: { value: unknown };
 	function: {
 		parameters?: SymbolMap['parameter' | 'variable'][];
+		emissionType?: ResolvedType;
 		returnType?: Type;
 		returnTypes?: Type[];
 		returnVariants?: Type[][];
@@ -99,6 +111,28 @@ export type SymbolTable = ReturnType<typeof ProgramSymbolTable>;
 export type TypesSymbolTable = ReturnType<typeof TypesSymbolTable>;
 export type ResolvedType = BaseSymbol & { kind: 'type' } & TypeShape;
 export type Type = ResolvedType | SymbolMap['function'];
+
+export function fixedEmissionType(
+	elements: Type[],
+	ownerships: OwnershipMode[] = elements.map(() => 'borrow'),
+	name = '',
+): ResolvedType {
+	return {
+		kind: 'type',
+		flags: 0,
+		family: 'emission',
+		name,
+		size: 0,
+		elements,
+		ownerships,
+	};
+}
+
+export function emissionElements(type: Type): Type[] {
+	if (type.kind === 'type' && type.family === 'emission') return type.elements;
+	if (type.kind === 'type' && type.family === 'void') return [];
+	return [type];
+}
 
 // Shared numeric type predicates (used by both the checker and the WASM
 // backend — single source of truth so the two never disagree on what `Int`,
@@ -187,6 +221,7 @@ function unifyFunctionTypeParam(
 	for (let i = 0; i < pv.length; i++)
 		for (let j = 0; j < (pv[i]?.length ?? 0); j++)
 			unifyTypeParam(pv[i]?.[j], av[i]?.[j], names, out);
+	unifyTypeParam(paramType.emissionType, argType.emissionType, names, out);
 	return true;
 }
 
@@ -235,6 +270,16 @@ export function unifyTypeParam(
 	if (unifyFunctionTypeParam(paramType, argType, names, out)) return;
 	if (bindNamedTypeParam(paramType, argType, names, out)) return;
 	if (unifyCollectionTypeParam(paramType, argType, names, out)) return;
+	if (
+		paramType.kind === 'type' &&
+		paramType.family === 'emission' &&
+		argType.kind === 'type' &&
+		argType.family === 'emission'
+	) {
+		for (let i = 0; i < paramType.elements.length; i++)
+			unifyTypeParam(paramType.elements[i], argType.elements[i], names, out);
+		return;
+	}
 	if (
 		paramType.kind === 'type' &&
 		paramType.family === 'data' &&

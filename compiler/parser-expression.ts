@@ -267,7 +267,9 @@ export function parseExpression(
 		const scalarUnion = scalarTypes.every(
 			(type): type is NodeMap['typeident'] =>
 				type?.kind === 'typeident' &&
-				!(type.symbol.type.kind === 'type' && type.symbol.type.family === 'void'),
+				type.symbol.type.kind === 'type' &&
+				type.symbol.type.family !== 'void' &&
+				type.symbol.type.family !== 'emission',
 		);
 		if (scalarUnion) {
 			const firstType = first?.type;
@@ -304,24 +306,10 @@ export function parseExpression(
 				},
 			};
 		}
-		const variants = arms.map(arm => {
-			if (arm.types) return arm.types;
-			const type = arm.type;
-			if (
-				type?.kind === 'typeident' &&
-				type.symbol.type.kind === 'type' &&
-				type.symbol.type.family === 'void'
-			)
-				return [];
-			return type ? [type] : [];
-		});
-		return {
-			mode: first?.mode ?? 'borrow',
-			variants,
-			variantModes: arms.map(arm =>
-				arm.modes ?? (arm.type ? [arm.mode] : []),
-			),
-		};
+		throw error(
+			'Function results must have one fixed emission layout; use a union within an emission position',
+			scalarTypes[0] ?? current(),
+		);
 	}
 
 	/**

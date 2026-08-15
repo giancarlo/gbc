@@ -7,6 +7,7 @@ import {
 	BufferSymbol,
 	Flags,
 	bufferTypeOf,
+	fixedEmissionType,
 } from './symbol-table.js';
 import type {
 	OwnershipMode,
@@ -125,22 +126,19 @@ export function parseType(
 			scalars.every(
 				(node): node is NodeMap['typeident'] =>
 					node?.kind === 'typeident' &&
-					!(node.symbol.type.kind === 'type' && node.symbol.type.family === 'void'),
+					node.symbol.type.kind === 'type' &&
+					node.symbol.type.family !== 'void' &&
+					node.symbol.type.family !== 'emission',
 			)
 		)
 			return {
 				returnOwnership: first?.ownerships[0],
 				returnType: unionNode(scalars),
 			};
-		return {
-			returnOwnership: first?.ownerships[0],
-			returnVariants: arms.map(arm =>
-				arm.types.filter(node => {
-					const type = nodeType(node);
-					return !(type?.kind === 'type' && type.family === 'void');
-				})),
-			returnVariantOwnerships: arms.map(arm => arm.ownerships),
-		};
+		throw api.error(
+			'Function results must have one fixed emission layout; use a union within an emission position',
+			scalars[0] ?? current(),
+		);
 	}
 
 	function functionReturnArm(
@@ -208,8 +206,17 @@ export function parseType(
 	function resolvedFunctionReturn(
 		returnType: Node | undefined,
 		returnTypes: Node[] | undefined,
+		returnOwnership?: OwnershipMode,
+		returnOwnerships?: OwnershipMode[],
 		returnVariants?: Node[][],
-	): Pick<SymbolMap['function'], 'returnType' | 'returnTypes' | 'returnVariants'> {
+	): Pick<
+		SymbolMap['function'],
+		| 'emissionType'
+		| 'returnType'
+		| 'returnTypes'
+		| 'returnVariants'
+		| 'returnOwnerships'
+	> {
 		const variants = returnVariants?.map(variant =>
 			variant.map(nodeType).filter((type): type is Type => !!type),
 		);
@@ -222,12 +229,33 @@ export function parseType(
 			?.map(nodeType)
 			.filter((type): type is Type => !!type);
 		if (sequence)
-			return { returnType: emissionType(sequence), returnTypes: sequence };
+			return {
+				emissionType: fixedEmissionType(sequence, returnOwnerships),
+				returnType: emissionType(sequence),
+				returnTypes: sequence,
+				returnOwnerships,
+			};
 		const single = nodeType(returnType);
 		if (!single) return {};
+		if (single.kind === 'type' && single.family === 'emission')
+			return {
+				emissionType: single,
+				returnType: emissionType(single.elements),
+				returnTypes: single.elements,
+				returnOwnerships: single.ownerships,
+			};
 		if (single.kind === 'type' && single.family === 'void')
-			return { returnType: single, returnTypes: [] };
-		return { returnType: single, returnTypes: [single] };
+			return {
+				emissionType: fixedEmissionType([]),
+				returnType: single,
+				returnTypes: [],
+				returnOwnerships: [],
+			};
+		return {
+			emissionType: fixedEmissionType([single], [returnOwnership ?? 'borrow']),
+			returnType: single,
+			returnTypes: [single],
+		};
 	}
 
 	function functionParameters(
@@ -293,6 +321,11 @@ export function parseType(
 			return bufferTypeOf(substituteType(t.elem, subst));
 		if (t.family === 'union')
 			return { ...t, members: t.members.map(m => substituteType(m, subst)) };
+		if (t.family === 'emission')
+			return {
+				...t,
+				elements: t.elements.map(element => substituteType(element, subst)),
+			};
 		return t;
 	}
 
@@ -430,6 +463,8 @@ export function parseType(
 					const resolvedReturn = resolvedFunctionReturn(
 						returnType,
 						returnTypes,
+						returnOwnership,
+						returnOwnerships,
 						returnVariants,
 					);
 					const fnSymbol: SymbolMap['function'] = {
@@ -439,7 +474,8 @@ export function parseType(
 						parameters: params.map(p => p.symbol),
 						...resolvedReturn,
 						returnOwnership,
-						returnOwnerships,
+						returnOwnerships:
+							returnOwnerships ?? resolvedReturn.returnOwnerships,
 						returnVariantOwnerships,
 					};
 					setReturnBorrowOrigins(fnSymbol, params);
@@ -461,6 +497,37 @@ export function parseType(
 								returnTypes ??
 								(returnType ? [returnType] : [])),
 						],
+					};
+				},
+			},
+			'{': {
+				prefix(tk) {
+					const types: Type[] = [];
+					const ownerships: OwnershipMode[] = [];
+					if (current().kind !== '}') {
+						do {
+							ownerships.push(resultOwnership());
+							const node = expectNode(expression(), 'Expected emission type');
+							const type = nodeType(node);
+							if (!type) throw api.error('Expected emission type', node);
+							if (type.kind === 'type' && type.family === 'emission')
+								throw api.error('Nested emission sequences are not allowed', node);
+							types.push(type);
+						} while (optional(','));
+					}
+					const close = consume('}');
+					if (types.length < 2)
+						throw api.error(
+							types.length === 0
+								? 'Use `Void` for a function that emits nothing'
+								: 'Use the element type directly for one emission',
+							tk,
+						);
+					return {
+						...tk,
+						kind: 'typeident',
+						end: close.end,
+						symbol: resolvedSymbol(fixedEmissionType(types, ownerships)),
 					};
 				},
 			},
@@ -509,6 +576,15 @@ export function parseType(
 					const members: Type[] = [];
 					collectUnionMembers(left, members);
 					collectUnionMembers(right, members);
+					if (
+						members.some(
+							member => member.kind === 'type' && member.family === 'emission',
+						)
+					)
+						throw api.error(
+							'Emission sequences cannot be unioned; use a union within an emission position',
+							tk,
+						);
 					if (members.some(m => m.kind === 'type' && m.family === 'void'))
 						throw api.error(
 							'Void is the union identity; remove the redundant `Void` arm',

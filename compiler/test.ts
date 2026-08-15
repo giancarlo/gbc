@@ -2194,15 +2194,13 @@ main { a = Array<Int32>(1); a >> forward >> consume }`,
 			src: `main { bad = (): Void { next 1 }; bad() >> out }`,
 			expected: 'declares no emissions but produces 1',
 		});
-		rule({
-			src: `emit = (n: Int32): Int32 | Void { next n }; main { emit(7) >> out }`,
-			ast: `(root (def :emit ? (fn (parameter :n typeident ?) typeident (next :n))) (main (>> (call :emit 7) :out)))`,
-			out: ['7'],
+		compileError({
+			src: `emit = (n: Int32): Int32 | Void { n }; main { emit(7) >> out }`,
+			expected: 'one fixed emission layout',
 		});
-		rule({
-			src: `emit = (n: Int32): Int32 | { Bool, Int32 } { next n }; main { emit(7) >> out }`,
-			ast: `(root (def :emit ? (fn (parameter :n typeident ?) typeident typeident typeident (next :n))) (main (>> (call :emit 7) :out)))`,
-			out: ['7'],
+		compileError({
+			src: `emit = (n: Int32): Int32 | { Bool, Int32 } { n }; main { emit(7) >> out }`,
+			expected: 'one fixed emission layout',
 		});
 	});
 
@@ -3406,6 +3404,10 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 					src: `type T1 = (Int32): Int32; type T2 = (a: Int32): Int32;`,
 					ast: `(type :T1 (fn (parameter ? typeident ?) typeident)) (type :T2 (fn (parameter :a typeident ?) typeident))`,
 				});
+				ast({
+					src: `type Pair = { Int32, Bool }`,
+					ast: `(type :Pair typeident)`,
+				});
 				expr({
 					pre: `add = (a: Int32, b: Int32): Int32 { a + b }; helper = (cb: (Int32, Int32): Int32): Int32 { cb(5, 10) }`,
 					src: `helper(add)`,
@@ -3413,19 +3415,22 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 					out: ['15'],
 				});
 				expr({
-					pre: `twice = (n: Int32): { Int32, Int32 } { next n; next n + 1 }; apply = (cb: (Int32): { Int32, Int32 }, n: Int32): { Int32, Int32 } { next cb(n) }`,
+					pre: `type Pair<T> = { T, T }; twice = (n: Int32): Pair<Int32> { next n; next n + 1 }; apply = (cb: (Int32): Pair<Int32>, n: Int32): Pair<Int32> { cb(n) }`,
 					src: `apply(twice, 5)`,
 					ast: `(call :apply (, :twice 5))`,
 					out: ['5', '6'],
 				});
-				expr({
-					pre: `once = (n: Int32): Int32 { n }; apply = (cb: (Int32): Void | Int32, n: Int32): Void | Int32 { next cb(n) }`,
-					src: `apply(once, 5)`,
-					ast: `(call :apply (, :once 5))`,
-					out: ['5'],
+				compileError({
+					pre: `once = (n: Int32): Int32 { n }; apply = (cb: (Int32): Void | Int32, n: Int32): Void | Int32 { cb(n) }`,
+					src: `main { apply(once, 5) >> out }`,
+					expected: 'one fixed emission layout',
 				});
 				compileError({
-					pre: `once = (n: Int32): Int32 { n }; apply = (cb: (Int32): { Int32, Int32 }, n: Int32): { Int32, Int32 } { next cb(n) }`,
+					src: `type Bad = { Int32, Bool } | Int32`,
+					expected: 'Emission sequences cannot be unioned',
+				});
+				compileError({
+					pre: `type Pair = { Int32, Int32 }; once = (n: Int32): Int32 { n }; apply = (cb: (Int32): Pair, n: Int32): Pair { cb(n) }`,
 					src: `main { apply(once, 5) >> out }`,
 					expected: 'not assignable',
 				});
@@ -3459,7 +3464,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 				});
 				compileError({
 					src: `external maybe: (Int32): Void | Int32; main { maybe(1) >> out }`,
-					expected: 'host ABI cannot emit multiple values',
+					expected: 'one fixed emission layout',
 				});
 			},
 		);
@@ -4231,7 +4236,7 @@ main { value = 'v\${1}'; join(value, value) >> out }`,
 			expected: 'used after move',
 		});
 		compileError({
-			src: `main { pair = (s: String): { String, own String } { next s; next s }; pair('x') >> out }`,
+			src: `type Pair = { String, own String }; main { pair = (s: String): Pair { next s; next s }; pair('x') >> out }`,
 			expected: 'declares an `own` result but emits a borrowed value',
 		});
 		expr({

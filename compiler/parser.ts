@@ -334,6 +334,7 @@ export function parse(
 			kind: 'function',
 			flags: Flags.External,
 			parameters: type.symbol.parameters,
+			emissionType: type.symbol.emissionType,
 			returnType: type.symbol.returnType,
 			returnTypes: type.symbol.returnTypes,
 			returnVariants: type.symbol.returnVariants,
