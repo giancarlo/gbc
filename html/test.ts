@@ -25,7 +25,7 @@ export default spec('html', (a: TestApi) => {
 			const s = scanner('<!-- comment -->');
 			const token = s.next();
 			a.equal(token.kind, 'comment');
-			a.equal(token.end, 15, 'should consume full comment');
+			a.equal(token.end, 16, 'should consume full comment');
 			a.equal(s.next().kind, 'eof', 'should find eof after comment');
 		});
 
@@ -35,7 +35,7 @@ export default spec('html', (a: TestApi) => {
 				const s = scanner('<!-- not closed');
 				const token = s.next();
 				a.equal(token.kind, 'comment');
-				a.equal(token.end, 16, 'should consume to input end');
+				a.equal(token.end, 15, 'should consume to input end');
 				a.equal(s.next().kind, 'eof', 'should find eof after comment');
 			},
 		);
@@ -62,7 +62,7 @@ export default spec('html', (a: TestApi) => {
 			const s3 = scanner('"with \\" quote"');
 			const tok3 = s3.next();
 			a.equal(tok3.kind, 'string');
-			a.equal(tok3.end, 14, 'should handle escaped quotes');
+			a.equal(tok3.end, 15, 'should handle escaped quotes');
 		});
 
 		it.test('should parse plain text between tags', a => {
@@ -97,15 +97,15 @@ export default spec('html', (a: TestApi) => {
 		);
 	});
 
-	a.test('scanner.next() negative and error-prone input cases', () => {
-		a.test('should treat unknown characters as text', a => {
+	a.test('scanner.next() negative and error-prone input cases', it => {
+		it.test('should treat unknown characters as text', a => {
 			const s = scanner('?!@');
 			const t = s.next();
 			a.equal(t.kind, 'text');
 			a.equal(t.end, 3, 'Unknown characters are lumped as text');
 		});
 
-		a.test(
+		it.test(
 			'should handle tag name starting in the middle of text as text',
 			a => {
 				const s = scanner('fooBar');
@@ -115,13 +115,13 @@ export default spec('html', (a: TestApi) => {
 			},
 		);
 
-		a.test('should treat lone > as gt', a => {
+		it.test('should treat lone > as gt', a => {
 			const s = scanner('>');
 			const t = s.next();
 			a.equal(t.kind, 'gt');
 		});
 
-		a.test('should allow backtrack to previous state', a => {
+		it.test('should allow backtrack to previous state', a => {
 			const s = scanner('<foo>');
 			s.next(); // <
 			const t2 = s.next(); // foo

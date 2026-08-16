@@ -1,88 +1,115 @@
 import { ScannerApi } from '../sdk/index.js';
 
 export function scanner(src: string) {
-	const { current, tk, skipWhitespace, matchWhile, backtrack } = ScannerApi({
-		source: src,
-	});
+	const {
+		current,
+		tk,
+		skipWhitespace,
+		matchWhile,
+		backtrack: apiBacktrack,
+	} = ScannerApi({ source: src });
+	let inTag = false;
+	let expectTagName = false;
+	const states = new Map<
+		number,
+		{ inTag: boolean; expectTagName: boolean }
+	>();
+
+	function emit<Kind extends string>(kind: Kind, consume: number) {
+		const start = tk('', 0).end;
+		states.set(start, { inTag, expectTagName });
+		return tk(kind, consume);
+	}
 
 	function next() {
 		skipWhitespace();
 		const ch = current();
 
-		if (!ch) return tk('eof', 0);
+		if (!ch) return emit('eof', 0);
 
-		// Comments: <!-- ... -->
-		if (ch === '<' && src.substr(tk('', 0).end, 3) === '!--') {
+		if (
+			ch === '<' &&
+			current(1) === '!' &&
+			current(2) === '-' &&
+			current(3) === '-'
+		) {
 			const start = tk('', 0).end;
-			const closeIdx = src.indexOf('-->', start);
-			if (closeIdx === -1)
-				return tk('comment', src.length - tk('', 0).end);
-			const len = closeIdx + 3 - tk('', 0).end;
-			return tk('comment', len);
+			const closeIdx = src.indexOf('-->', start + 4);
+			const consume =
+				closeIdx === -1 ? src.length - start : closeIdx + 3 - start;
+			const token = emit('comment', consume);
+			inTag = false;
+			expectTagName = false;
+			return token;
 		}
 
-		// Opening tag: <
 		if (ch === '<') {
-			const nc = current(1);
-			if (nc === '/') return tk('closeTag', 2);
-			return tk('openTag', 1);
+			const token = emit('openTag', 1);
+			inTag = true;
+			expectTagName = true;
+			return token;
 		}
 
-		// Closing tag: >
 		if (ch === '>') {
-			return tk('gt', 1);
+			const token = emit('gt', 1);
+			inTag = false;
+			expectTagName = false;
+			return token;
 		}
 
-		// Slash: /
-		if (ch === '/') {
-			return tk('slash', 1);
-		}
+		if (ch === '/') return emit('slash', 1);
 
-		// Equals: =
-		if (ch === '=') {
-			return tk('equals', 1);
-		}
+		if (ch === '=') return emit('equals', 1);
 
-		// String: "..." or '...'
 		if (ch === '"' || ch === "'") {
 			const quote = ch;
 			let consumed = 1;
-			while (current(consumed) && current(consumed) !== quote) {
-				// support for \" or \'
-				if (
-					current(consumed) === '\\' &&
-					current(consumed + 1) === quote
-				)
-					consumed += 2;
-				else consumed++;
+			while (current(consumed)) {
+				if (current(consumed) === quote)
+					return emit('string', consumed + 1);
+				consumed +=
+					current(consumed) === '\\' && current(consumed + 1)
+						? 2
+						: 1;
 			}
-			consumed++; // closing quote
-			return tk('string', consumed);
+			return emit('string', consumed);
 		}
 
-		// Tag/Attribute name: [a-zA-Z][a-zA-Z0-9-]*
-		if (
-			/[a-zA-Z]/.test(ch) &&
-			(current(-1) === '<' || current(-1) === '/' || current(-1) === ' ')
-		) {
+		if (expectTagName && /[a-zA-Z]/.test(ch)) {
 			const consumed = matchWhile(ch => /[a-zA-Z0-9\-_:]/.test(ch));
-			if (current(-1) === '<' || current(-2) === '<') {
-				return tk('tagName', consumed);
-			}
-			return tk('attrName', consumed);
+			const token = emit('tagName', consumed);
+			expectTagName = false;
+			return token;
 		}
 
-		// Text between tags (stop at < )
-		if (ch !== '<') {
-			let consumed = 0;
-			while (current(consumed) && current(consumed) !== '<') {
-				consumed++;
-			}
-			return tk('text', consumed);
+		if (inTag && ch === '.' && /[a-zA-Z]/.test(current(1))) {
+			return emit(
+				'attrName',
+				matchWhile(ch => /[a-zA-Z0-9\-_:]/.test(ch), 1),
+			);
 		}
 
-		// Fallback, skip 1 character
-		return tk('text', 1);
+		if (inTag && /[a-zA-Z]/.test(ch)) {
+			return emit(
+				'attrName',
+				matchWhile(ch => /[a-zA-Z0-9\-_:]/.test(ch)),
+			);
+		}
+
+		if (!inTag) {
+			return emit('text', matchWhile(ch => ch !== '<'));
+		}
+
+		return emit('text', 1);
+	}
+
+	function backtrack(pos: Parameters<typeof apiBacktrack>[0]) {
+		apiBacktrack({ ...pos, end: pos.start });
+		const state = states.get(pos.start);
+		if (state) {
+			inTag = state.inTag;
+			expectTagName = state.expectTagName;
+		}
 	}
 
 	return {
