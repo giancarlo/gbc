@@ -2,12 +2,14 @@ import { spec } from '@cxl/spec';
 import {
 	BaseNode,
 	BinaryNodeBase,
+	CompilerError,
 	findNodeAtIndex,
 	LeafNode,
 	RootNodeBase,
 	ScannerApi,
 	stringEscape,
 	TernaryNodeBase,
+	tokenize,
 	UnaryNodeBase,
 } from './index.js';
 
@@ -139,6 +141,64 @@ export default spec('sdk', s => {
 					skip(2);
 					a.equal(matchEnclosed(notQuote, stringEscape), 14);
 				},
+			);
+		});
+	});
+
+	s.test('tokenize', it => {
+		it.should('retain positioned tokens and recover scanner errors', a => {
+			const source = 'one ! two';
+			const scanner = (value: string) => {
+				const api = ScannerApi({ source: value });
+				return {
+					backtrack: api.backtrack,
+					next() {
+						api.skipWhitespace();
+						if (api.eof()) return api.tk('eof', 0);
+						if (api.current() === '!')
+							throw api.error('Unexpected input', 1);
+						return api.tk(
+							'word',
+							api.matchWhile(ch => ch !== ' ' && ch !== '!'),
+						);
+					},
+				};
+			};
+			const tokens = [...tokenize(scanner, source)];
+			a.equalValues(
+				tokens.map(({ kind, start, end }) => ({ kind, start, end })),
+				[
+					{ kind: 'word', start: 0, end: 3 },
+					{ kind: 'error', start: 4, end: 5 },
+					{ kind: 'word', start: 6, end: 9 },
+				],
+			);
+			a.ok(
+				tokens[1]?.kind === 'error' &&
+					tokens[1].error instanceof CompilerError,
+			);
+		});
+
+		it.should('stop when an error cannot advance', a => {
+			const tokens = [
+				...tokenize(
+					source => ({
+						backtrack() {},
+						next() {
+							throw new CompilerError('Incomplete input', {
+								start: 0,
+								end: 0,
+								line: 0,
+								source,
+							});
+						},
+					}),
+					'',
+				),
+			];
+			a.equalValues(
+				tokens.map(({ kind, start, end }) => ({ kind, start, end })),
+				[{ kind: 'error', start: 0, end: 0 }],
 			);
 		});
 	});

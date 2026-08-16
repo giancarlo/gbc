@@ -1,6 +1,7 @@
 import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
-import { Program } from './program.js';
+import { tokenize } from '../sdk/index.js';
+import { Program, scan } from './index.js';
 import { instantiateWasm, uint8BufferView } from './host.js';
 
 /*
@@ -22,6 +23,27 @@ Language features must avoid breaking these rules:
 */
 export default spec('Language Reference', s => {
 	const { h } = s;
+
+	s.test('tokenizes editor input through the SDK', a => {
+		const source = "export value = 1\n'line\n${value}' \" export";
+		const tokens = [...tokenize(scan, source)];
+		a.equalValues(
+			tokens.map(token => token.kind),
+			[
+				'export',
+				'ident',
+				'=',
+				'number',
+				'strhead',
+				'ident',
+				'strtail',
+				'error',
+				'export',
+			],
+		);
+		a.equal(tokens[4]?.line, 1);
+		a.equal(tokens[5]?.line, 2);
+	});
 
 	s.test('should expose a borrowed Uint8 buffer to the host', (a: TestApi) => {
 		const source = `pixels = Buffer<Uint8>(4);

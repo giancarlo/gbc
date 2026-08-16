@@ -16,6 +16,46 @@ export type Scanner<Node extends Token<string>> = (src: string) => {
 	backtrack: (pos: Position) => void;
 };
 
+export interface TokenizerError extends Token<'error'> {
+	error: CompilerError;
+}
+
+export function* tokenize<Node extends Token<string>>(
+	scanner: Scanner<Node>,
+	source: string,
+): Generator<Node | TokenizerError> {
+	const { next, backtrack } = scanner(source);
+	let offset = 0;
+
+	for (;;) {
+		try {
+			const token = next();
+			if (token.kind === 'eof') return;
+			offset = Math.max(offset, token.end);
+			yield token;
+		} catch (value) {
+			if (!(value instanceof CompilerError)) throw value;
+			const start = Math.max(offset, value.position.start);
+			const end = Math.min(
+				source.length,
+				Math.max(start + 1, value.position.end),
+			);
+			const error = {
+				kind: 'error',
+				start,
+				end,
+				line: value.position.line,
+				source,
+				error: value,
+			} as const satisfies TokenizerError;
+			yield error;
+			if (end <= offset || end >= source.length) return;
+			offset = end;
+			backtrack(error);
+		}
+	}
+}
+
 export type NodeChildren<Node = BaseNode> = readonly (Node | undefined)[];
 
 export type BaseNode = Position & { children?: NodeChildren };
@@ -26,15 +66,15 @@ export interface ParentNodeBase<
 > {
 	children: Children;
 }
-export interface RootNodeBase<Node = BaseNode> extends ParentNodeBase<Node[]> {}
-export interface UnaryNodeBase<Node = BaseNode>
-	extends ParentNodeBase<[Node]> {}
-export interface BinaryNodeBase<Node = BaseNode>
-	extends ParentNodeBase<[Node, Node]> {}
-export interface TernaryNodeBase<Node = BaseNode, Optional extends boolean = false>
-	extends ParentNodeBase<
-		[Node, Node, Optional extends true ? Node | undefined : Node]
-	> {}
+export type RootNodeBase<Node = BaseNode> = ParentNodeBase<Node[]>;
+export type UnaryNodeBase<Node = BaseNode> = ParentNodeBase<[Node]>;
+export type BinaryNodeBase<Node = BaseNode> = ParentNodeBase<[Node, Node]>;
+export type TernaryNodeBase<
+	Node = BaseNode,
+	Optional extends boolean = false,
+> = ParentNodeBase<
+	[Node, Node, Optional extends true ? Node | undefined : Node]
+>;
 
 export type NodeMap = {
 	[K: string]: Token<string>;

@@ -1,4 +1,5 @@
 export { Program } from './program.js';
+export { scan } from './scanner.js';
 export { instantiateWasm, runWasm, uint8BufferView } from './host.js';
 export type {
 	WasmExportFunction,

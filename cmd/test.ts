@@ -1,5 +1,5 @@
 import { TestApi, spec } from '@cxl/spec';
-import { each, findNodeAtIndex, Token } from '../sdk/index.js';
+import { each, findNodeAtIndex, Token, tokenize } from '../sdk/index.js';
 
 import { IrKind, IrSeparator, IrWordFlags, scan, program } from './index.js';
 //import { ast } from './debug.js';
@@ -98,6 +98,23 @@ export default spec('cmd', s => {
 				start: 0,
 				end: 23,
 			});
+		});
+
+		it.should('tokenize editor input through the SDK', a => {
+			const source = "echo 'line\ntwo' | next # comment\n'unclosed";
+			const tokens = [...tokenize(scan, source)];
+			a.equalValues(
+				tokens.map(token => token.kind),
+				[
+					'word',
+					'word',
+					'|',
+					'word',
+					'comment',
+					'newline',
+					'error',
+				],
+			);
 		});
 
 		it.should('scan unquoted shell words', a => {
