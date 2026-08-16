@@ -222,6 +222,59 @@ main { recursive(2) >> out; generic(2) >> out }`);
 			a.equal(definition.value.symbol.emissionType, undefined);
 		}
 	});
+
+	const runEmissionProgram = (a: TestApi, source: string): string[] => {
+		const compiled = Program().compile(source);
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+		const out: string[] = [];
+		const instance = instantiateWasm(compiled.bytes, value => out.push(value));
+		const main = instance.exports.main;
+		a.equal(typeof main, 'function');
+		if (typeof main === 'function') main();
+		return out;
+	};
+
+	s.test('lowers fixed emission types to direct or fused Wasm calls', (a: TestApi) => {
+		const out = runEmissionProgram(a, `scalar = () { 7 };
+pair = () { (1, true) };
+other = () { (2, false) };
+forward = () { pair() };
+choose = (flag: Bool) { flag ? pair() : other() };
+main {
+	scalar() >> out;
+	forward() >> Int32 { out($) } | Bool { out($) };
+	choose(false) >> Int32 { out($) } | Bool { out($) }
+}`);
+		a.equalValues(out, ['7', '1', 'true', '2', 'false']);
+	});
+
+	s.test('fuses rest emission types through Wasm pipelines', (a: TestApi) => {
+		const out = runEmissionProgram(a, `strings = (): { ...own String } { next 'a'; next 'bb' };
+otherStrings = (): { ...own String } { next 'ccc'; done };
+forward = () { strings() };
+stringChoice = (flag: Bool) { flag ? strings() : otherStrings() };
+ints = (): { ...Int32 } { next 1; next 2 };
+bools = (): { ...Bool } { next true; next false };
+choose = (flag: Bool) { flag ? ints() : bools() };
+until = (n: Int32) { loop >> { $ >= n ? break : $ } };
+mapped = (n: Int32) { until(n) >> { $ + 10 } };
+main {
+	forward() >> String { length($) } >> out;
+	stringChoice(false) >> String { length($) } >> out;
+	choose(false) >> Int32 { out($) } | Bool { out($) };
+	mapped(3) >> out
+}`);
+		a.equalValues(out, ['1', '2', '3', 'true', 'false', '10', '11', '12']);
+	});
+
+	s.test('specializes higher-order fixed Wasm emissions before forwarding', (a: TestApi) => {
+		const out = runEmissionProgram(a, `type Pair<T> = { T, T };
+twice = (n: Int32): Pair<Int32> { next n; next n + 1 };
+apply = (cb: (Int32): Pair<Int32>, n: Int32): Pair<Int32> { cb(n) };
+main { apply(twice, 5) >> out }`);
+		a.equalValues(out, ['5', '6']);
+	});
 	h('Hello World', ({ p }) => {
 		p(
 			`

@@ -23,6 +23,7 @@ import type { Node, NodeMap } from './node.js';
 import type {
 	Symbol as GbcSymbol,
 	SymbolMap,
+	OwnershipMode,
 	ResolvedType,
 	Type,
 	TypeFamily,
@@ -988,6 +989,66 @@ export function compileWasm({
 	const builderSym = new Map<number, GbcSymbol>();
 	const spliceByBuilder = new Map<FuncBuilder, SerialObject>();
 	const ownedInParams = new Map<GbcSymbol, boolean[]>();
+	type EmissionType = Extract<ResolvedType, { family: 'emission' }>;
+
+	function resolvedEmissionType(
+		sym: SymbolMap['function'],
+		typeArgs?: Map<string, Type>,
+	): EmissionType | undefined {
+		const emission = sym.emissionType;
+		if (emission?.kind !== 'type' || emission.family !== 'emission')
+			return undefined;
+		if (!typeArgs?.size) return emission;
+		return {
+			...emission,
+			elements: emission.elements.map(type => reduceType(type, typeArgs)),
+			rest: emission.rest
+				? reduceType(emission.rest, typeArgs)
+				: undefined,
+		};
+	}
+
+	function functionEmitsSequence(sym: SymbolMap['function']): boolean {
+		const emission = resolvedEmissionType(sym);
+		if (emission)
+			return emission.rest !== undefined || emission.elements.length > 1;
+		if (sym.returnVariants)
+			return (
+				sym.returnVariants.length !== 1 ||
+				sym.returnVariants.some(variant => variant.length !== 1)
+			);
+		return (sym.returnTypes?.length ?? 0) > 1;
+	}
+
+	function directEmissionOwnership(
+		sym: SymbolMap['function'],
+	): OwnershipMode | undefined {
+		const emission = resolvedEmissionType(sym);
+		if (!emission || emission.rest || emission.elements.length !== 1)
+			return undefined;
+		return emission.ownerships[0];
+	}
+
+	function functionNodeEmitsSequence(fnNode: NodeMap['fn']): boolean {
+		if (functionEmitsSequence(fnNode.symbol)) return true;
+		const statements = fnNode.statements ?? [];
+		return statements.some(
+			(statement, index) =>
+				statement.kind === 'done' ||
+				(statement.kind === 'next' && index < statements.length - 1),
+		);
+	}
+
+	function templateEmitsSequence(template: NodeMap['fn']): boolean {
+		if (functionNodeEmitsSequence(template)) return true;
+		const emission = resolvedEmissionType(template.symbol);
+		if (!emission) return true;
+		return emission.elements.some(
+			type =>
+				type.kind === 'type' &&
+				(type.family === 'unknown' || type.application),
+		);
+	}
 
 	/** Owned-in params: a self-recursive fn whose every call site feeds a
 	 * heap param a fresh (or static) value owns that param — the body
@@ -1846,7 +1907,7 @@ export function compileWasm({
 		const callee = callNode.children[0];
 		if (callee.kind !== 'ident') return false;
 		const template = fnTemplates.get(callee.symbol);
-		if (!template || !(template.symbol.flags & Flags.Sequence)) return false;
+		if (!template || !templateEmitsSequence(template)) return false;
 		const tStmts = template.statements ?? [];
 		const tbody = tStmts[0];
 		if (tStmts.length === 1 && tbody?.kind === 'call') return false;
@@ -2061,7 +2122,8 @@ export function compileWasm({
 		if (callee.kind !== 'ident') return false;
 		if (
 			callee.symbol.kind === 'function' &&
-			callee.symbol.returnOwnership === 'own'
+			(directEmissionOwnership(callee.symbol) === 'own' ||
+				callee.symbol.returnOwnership === 'own')
 		)
 			return true;
 		if (
@@ -2101,6 +2163,8 @@ export function compileWasm({
 	const returnsOwnedMemo = new Map<NodeMap['fn'], boolean>();
 
 	function fnReturnsOwned(fnNode: NodeMap['fn']): boolean {
+		const emissionOwnership = directEmissionOwnership(fnNode.symbol);
+		if (emissionOwnership) return emissionOwnership === 'own';
 		if (fnNode.symbol.returnOwnership)
 			return fnNode.symbol.returnOwnership === 'own';
 		const memo = returnsOwnedMemo.get(fnNode);
@@ -5205,40 +5269,6 @@ export function compileWasm({
 	}
 
 	/**
-	 * Inline a direct-tier fn (single `next val` at tail) used as a pipe
-	 * stage: bind input to the first parameter and emit the body's value
-	 * through downstream stages.
-	 */
-	function inlineDirectFnStage(
-		fnNode: NodeMap['fn'],
-		inputType: Type,
-		rest: Node[],
-		fn: FuncBuilder,
-	): Type {
-		const params = fnNode.parameters ?? [];
-		const p = params[0];
-		if (p) {
-			const pSym = p.symbol;
-			if (!pSym.type) pSym.type = inputType;
-			const localIdx = allocLocal(fn, gbcToWasm(pSym.type));
-			fn.body.push(OP_LOCAL_SET);
-			uleb128(localIdx, fn.body);
-			fn.paramMap.set(pSym, localIdx);
-		} else {
-			fn.body.push(OP_DROP);
-		}
-		const stmts = fnNode.statements ?? [];
-		if (stmts.length !== 1 || stmts[0]?.kind !== 'next')
-			throw new Error(
-				'Only direct-tier local fns supported as inline pipe stages',
-			);
-		const val = stmts[0].children?.[0];
-		if (!val) return driveStages(rest, BaseTypes.Void, fn);
-		const t = compileExpr(val, fn);
-		return driveStages(rest, t, fn);
-	}
-
-	/**
 	 * Inline an anonymous sequence fn `{ ... }` body as a pipe source.
 	 * Each top-level expression in the body emits through the stages.
 	 */
@@ -5286,6 +5316,15 @@ export function compileWasm({
 	}
 
 	function emitOne(expr: Node, fn: FuncBuilder) {
+		if (
+			expr.kind === '?' &&
+			expr.children[2] &&
+			(expressionEmitsSequence(expr.children[1]) ||
+				expressionEmitsSequence(expr.children[2]))
+		) {
+			emitConditional(expr, fn);
+			return;
+		}
 		if (expr.kind === 'next') {
 			compileExpr(expr, fn);
 			return;
@@ -5306,6 +5345,40 @@ export function compileWasm({
 		) {
 			fn.body.push(OP_DROP);
 		}
+	}
+
+	function expressionEmitsSequence(node: Node): boolean {
+		if (node.kind === 'call') return callEmitsSequence(node);
+		if (node.kind === ',') return node.children.length > 1;
+		if (node.kind === '?')
+			return (
+				expressionEmitsSequence(node.children[1]) ||
+				(!!node.children[2] && expressionEmitsSequence(node.children[2]))
+			);
+		return false;
+	}
+
+	function emitConditional(node: NodeMap['?'], fn: FuncBuilder): void {
+		const condition = node.children[0];
+		const truthy = node.children[1];
+		const falsy = node.children[2];
+		if (!falsy) {
+			compileExpr(node, fn);
+			return;
+		}
+		const known = constEvalBool(condition, fn);
+		if (known !== undefined) {
+			emitOne(known ? truthy : falsy, fn);
+			return;
+		}
+		compileExpr(condition, fn);
+		fn.body.push(OP_IF, 0x40);
+		fn.blockDepth++;
+		emitOne(truthy, fn);
+		fn.body.push(OP_ELSE);
+		emitOne(falsy, fn);
+		fn.body.push(OP_END);
+		fn.blockDepth--;
 	}
 
 	function flattenPipe(children: Node[]): Node[] {
@@ -5335,7 +5408,14 @@ export function compileWasm({
 		if (!fnDef || fnDef.kind !== 'def') return false;
 		const fnNode = fnDef.value;
 		if (fnNode.kind !== 'fn') return false;
-		if (!(fnNode.symbol.flags & Flags.Sequence)) return false;
+		if (
+			(fnNode.statements ?? []).some(
+				statement => statement.kind === 'next' || statement.kind === 'done',
+			)
+		)
+			return false;
+		if (resolvedEmissionType(fnNode.symbol) && !functionNodeEmitsSequence(fnNode))
+			return false;
 		if (inliningStages.has(fnNode.symbol)) return false;
 		const bodyStmts = fnNode.statements ?? [];
 		const only = bodyStmts.length === 1 ? bodyStmts[0] : undefined;
@@ -5552,6 +5632,11 @@ export function compileWasm({
 		if (callee.kind !== 'ident') return;
 		const bound = fnArgBindings.get(callee.symbol);
 		if (bound?.definition?.kind === 'fn') return bound.definition;
+		if (
+			bound?.definition?.kind === 'def' &&
+			bound.definition.value.kind === 'fn'
+		)
+			return bound.definition.value;
 		const fnDef = callee.symbol.definition;
 		if (!fnDef || fnDef.kind !== 'def') return;
 		const fnNode = fnDef.value;
@@ -5567,15 +5652,11 @@ export function compileWasm({
 				: callee.kind === '.'
 					? resolveStaticMemberFn(callee)
 					: undefined;
-		if (typed?.returnVariants)
-			if (
-				typed.returnVariants.length !== 1 ||
-				typed.returnVariants.some(variant => variant.length !== 1)
-			)
-				return true;
-		if (typed?.returnTypes && typed.returnTypes.length !== 1) return true;
 		const fnNode = getCallableFn(callNode);
-		if (!fnNode || fnNode.symbol.flags & Flags.Sequence) return false;
+		if (fnNode?.symbol.emissionType)
+			return functionNodeEmitsSequence(fnNode);
+		if (typed && functionEmitsSequence(typed)) return true;
+		if (!fnNode) return false;
 		const stmts = fnNode.statements ?? [];
 		const tail = stmts[stmts.length - 1];
 		const isDirectTier =
@@ -5648,7 +5729,7 @@ export function compileWasm({
 		try {
 			for (const stmt of stmts) {
 				stampErrorData(stmt, fnNode.symbol.returnType, inlineName);
-				compileExpr(stmt, fn);
+				emitOne(stmt, fn);
 			}
 		} finally {
 			fn.fusion = savedFusion;
@@ -6087,7 +6168,6 @@ export function compileWasm({
 		const savedFusion = fn.fusion;
 		const valueMode = !!fn.pipeValue;
 		fn.fusion = valueMode ? undefined : makeFusion(rest, savedFusion, fn);
-		const isSequence = !!(stage.symbol.flags & Flags.Sequence);
 		let result: Type = BaseTypes.Void;
 		// Stage params may be SHARED symbols (stdlib templates like `each`
 		// are parsed once per process) — the restore must survive a thrown
@@ -6095,7 +6175,6 @@ export function compileWasm({
 		try {
 			for (const stmt of stage.statements ?? []) {
 				if (valueMode) result = compileExpr(stmt, fn);
-				else if (!isSequence) compileExpr(stmt, fn);
 				else if (stmt.kind === ',')
 					for (const c of stmt.children) emitOne(c, fn);
 				else emitOne(stmt, fn);
@@ -6319,7 +6398,7 @@ export function compileWasm({
 		if (sym.kind === 'function' && sym.flags & Flags.Intrinsic)
 			return driveIntrinsicStage(stage, sym, inputType, rest, fn);
 		const template = fnTemplates.get(sym);
-		if (template && template.symbol.flags & Flags.Sequence)
+		if (template && templateEmitsSequence(template))
 			return driveSequenceTemplate(template, sym, inputType, rest, fn);
 		const def = sym.definition;
 		const fnValue =
@@ -6328,7 +6407,7 @@ export function compileWasm({
 				: undefined;
 		if (
 			fnValue &&
-			fnValue.symbol.flags & Flags.Sequence &&
+			functionEmitsSequence(fnValue.symbol) &&
 			!inliningStages.has(fnValue.symbol)
 		) {
 			inliningStages.add(fnValue.symbol);
@@ -6344,7 +6423,7 @@ export function compileWasm({
 		const builderIdx = fnDefBuilderIdx.get(sym);
 		if (builderIdx !== undefined)
 			return driveDirectCallStage(sym, builderIdx, inputType, rest, fn);
-		if (fnValue) return inlineDirectFnStage(fnValue, inputType, rest, fn);
+		if (fnValue) return driveFnStage(fnValue, inputType, rest, fn);
 		const dispatched = driveOverloadDispatch(sym, inputType, rest, fn);
 		if (dispatched) return dispatched;
 		if (sym.kind === 'function' && sym.flags & Flags.External)
@@ -6479,6 +6558,8 @@ export function compileWasm({
 		fn: FuncBuilder,
 	): Type {
 		if (stages.length === 0) return driveStagesEmpty(inputType, fn);
+		if (inputType.kind === 'type' && inputType.family === 'void')
+			return BaseTypes.Void;
 		const [stage, ...rest] = stages;
 		if (!stage) return BaseTypes.Void;
 
@@ -6914,6 +6995,9 @@ export function compileWasm({
 		fnNode: NodeMap['fn'],
 		typeArgs?: Map<string, Type>,
 	): Type {
+		const emission = resolvedEmissionType(fnNode.symbol, typeArgs);
+		if (emission && functionNodeEmitsSequence(fnNode))
+			return BaseTypes.Void;
 		let returnType: Type = fnNode.returnType
 			? resolveTypeFromNode(fnNode.returnType)
 			: BaseTypes.Unknown;
@@ -7268,8 +7352,7 @@ export function compileWasm({
 			returnType.kind === 'type' &&
 			returnType.family !== 'void' &&
 			returnType.family !== 'unknown';
-		const seqTemplate =
-			!!(template.symbol.flags & Flags.Sequence) && !valueCallBody;
+		const seqTemplate = templateEmitsSequence(template) && !valueCallBody;
 		if (seqTemplate) inTemplateInline++;
 		compileFnBody(builder, template);
 		if (seqTemplate) inTemplateInline--;
@@ -7333,6 +7416,7 @@ export function compileWasm({
 					? sym.type
 					: undefined;
 		if (!fnSym) return undefined;
+		if (functionEmitsSequence(fnSym)) return undefined;
 		return { builderIdx, fnSym };
 	}
 

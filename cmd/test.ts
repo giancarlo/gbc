@@ -1,7 +1,7 @@
 import { TestApi, spec } from '@cxl/spec';
 import { each, findNodeAtIndex, Token } from '../sdk/index.js';
 
-import { scan, program } from './index.js';
+import { IrKind, IrSeparator, IrWordFlags, scan, program } from './index.js';
 //import { ast } from './debug.js';
 
 export default spec('cmd', s => {
@@ -196,6 +196,8 @@ export default spec('cmd', s => {
 				throw new Error('Expected function definition');
 			if (!subshell || subshell.kind !== 'function')
 				throw new Error('Expected function definition');
+			if (!greet.body || !subshell.body)
+				throw new Error('Expected function body');
 
 			a.equalValues(
 				{
@@ -300,6 +302,7 @@ export default spec('cmd', s => {
 			if (!fn || fn.kind !== 'function')
 				throw new Error('Expected typed function');
 			if (!fn.returnType) throw new Error('Expected return type');
+			if (!fn.body) throw new Error('Expected function body');
 			if (!invocation || invocation.kind !== 'command')
 				throw new Error('Expected function invocation');
 
@@ -371,6 +374,53 @@ export default spec('cmd', s => {
 			a.equalValues(parsed.errors, []);
 		});
 
+		it.should('parse bodyless IDE built-in declarations', a => {
+			const cmd = program({ dialect: 'ide' });
+			const parsed = cmd.parse([
+				'type File = string',
+				'core.open(file: File): string',
+				'core.quit()',
+			].join('\n'));
+			const list = parsed.root.children[0];
+			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			const open = list.children[1];
+			const quit = list.children[2];
+			if (!open || open.kind !== 'function')
+				throw new Error('Expected open declaration');
+			if (!quit || quit.kind !== 'function')
+				throw new Error('Expected quit declaration');
+
+			a.equalValues(
+				{
+					openBody: open.body,
+					quitBody: quit.body,
+					separators: list.separators,
+					errors: parsed.errors,
+				},
+				{
+					openBody: undefined,
+					quitBody: undefined,
+					separators: ['newline', 'newline'],
+					errors: [],
+				},
+			);
+			a.equalValues(cmd.ir(parsed.root), [
+				1,
+				[
+					IrKind.List,
+					[IrSeparator.Newline, IrSeparator.Newline],
+					[IrKind.TypeAlias, 'File', 'string'],
+					[
+						IrKind.Function,
+						'core.open',
+						[IrKind.Parameter, 'file', 'File'],
+						[IrKind.Type, 'string'],
+					],
+					[IrKind.Function, 'core.quit'],
+				],
+			]);
+		});
+
 		it.should('report malformed IDE declarations', a => {
 			const messages = (source: string) =>
 				program({ dialect: 'ide' })
@@ -412,6 +462,78 @@ export default spec('cmd', s => {
 					),
 				/Cannot emit typed function/,
 			);
+		});
+
+		it.should('lower the full AST to compact execution IR', a => {
+			const cmd = program({ dialect: 'ide' });
+			const parsed = cmd.parse([
+				'type File = string',
+				'open(file?: File, ...flags: string): string { echo ok; }',
+				"open 'README file'",
+			].join('\n'));
+
+			a.equalValues(cmd.ir(parsed.root), [
+				1,
+				[
+					IrKind.List,
+					[IrSeparator.Newline, IrSeparator.Newline],
+					[IrKind.TypeAlias, 'File', 'string'],
+					[
+						IrKind.Function,
+						'open',
+						[IrKind.Parameter, 'file', 'File', 1],
+						[IrKind.Parameter, 'flags', 'string', 2],
+						[IrKind.Type, 'string'],
+						[
+							IrKind.Group,
+							1,
+							[
+								IrKind.List,
+								[IrSeparator.Semicolon],
+								[IrKind.Command, [IrKind.Word, 'echo'], [IrKind.Word, 'ok']],
+							],
+						],
+					],
+					[IrKind.Command, [IrKind.Word, 'open'], [IrKind.Word, 'README file']],
+				],
+			]);
+			a.equalValues(parsed.errors, []);
+		});
+
+		it.should('retain unsafe word behavior in compact IR flags', a => {
+			const cmd = program();
+			const parsed = cmd.parse('echo ${name} $(date) `date` *.ts');
+
+			a.equalValues(cmd.ir(parsed.root), [
+				1,
+				[
+					IrKind.List,
+					[],
+					[
+						IrKind.Command,
+						[IrKind.Word, 'echo'],
+						[IrKind.Word, '${name}', IrWordFlags.ParameterExpansion],
+						[IrKind.Word, '$(date)', IrWordFlags.CommandSubstitution],
+						[
+							IrKind.Word,
+							'`date`',
+							IrWordFlags.CommandSubstitution | IrWordFlags.Backticks,
+						],
+						[IrKind.Word, '*.ts', IrWordFlags.Other],
+					],
+				],
+			]);
+		});
+
+		it.should('serialize IR substantially smaller than the full AST', a => {
+			const cmd = program({ dialect: 'ide' });
+			const parsed = cmd.parse(
+				'core.open(file: File, directory?: Directory): string { echo ok; }\ncore.open README.md src',
+			);
+			const astSize = JSON.stringify(parsed.root).length;
+			const irSize = JSON.stringify(cmd.ir(parsed.root)).length;
+
+			a.equal(irSize < astSize / 4, true);
 		});
 
 		it.should('expose literal word values in the AST', a => {
