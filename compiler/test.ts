@@ -141,6 +141,87 @@ export init = () {
 			],
 		);
 	});
+
+	s.test('should infer fixed and conditional emission sequence types', (a: TestApi) => {
+		const compiled = Program().compile(`scalar = () { 1 };
+pair = () { (1, true) };
+base = () { (2, false) };
+forward = () { base() };
+conditional = (flag: Bool) { flag ? (1, true) : (2, false) };
+choice = (flag: Bool) { flag ? 1 : true };
+main { scalar() >> out; pair() >> out; forward() >> out; conditional(true) >> out; choice(true) >> out }`);
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+		const emission = (name: string) => {
+			const definition = compiled.ast.children.find(
+				node => node.kind === 'def' && node.symbol.name === name,
+			);
+			a.equal(definition?.kind, 'def');
+			if (definition?.kind !== 'def' || definition.value.kind !== 'fn')
+				throw new Error(`Missing function ${name}`);
+			const type = definition.value.symbol.emissionType;
+			a.equal(type?.family, 'emission');
+			if (!type || type.family !== 'emission')
+				throw new Error(`Missing emission type for ${name}`);
+			return type;
+		};
+		a.equalValues(emission('scalar').elements.map(type => type.name), [
+			'Int32',
+		]);
+		for (const name of ['pair', 'forward', 'conditional'])
+			a.equalValues(emission(name).elements.map(type => type.name), [
+				'Int32',
+				'Bool',
+			]);
+		const choice = emission('choice').elements[0];
+		a.equal(choice?.kind, 'type');
+		a.equal(choice?.name, 'Int32 | Bool');
+	});
+
+	s.test('should infer forwarded and dynamic rest emission types', (a: TestApi) => {
+		const compiled = Program().compile(`strings = (): { ...own String } { next 'a'; next 'b' };
+forward = () { strings() };
+ints = (): { ...Int32 } { next 1; next 2 };
+bools = (): { ...Bool } { next true; next false };
+choose = (flag: Bool) { flag ? ints() : bools() };
+until = (n: Int32) { loop >> { $ >= n ? break : $ } };
+mapped = (n: Int32) { until(n) >> { $ + 1 } };
+main { forward() >> String { out($) }; choose(true) >> Int32 { out($) } | Bool { out($) }; mapped(2) >> Int32 { out($) } }`);
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+		const emission = (name: string) => {
+			const definition = compiled.ast.children.find(
+				node => node.kind === 'def' && node.symbol.name === name,
+			);
+			if (definition?.kind !== 'def' || definition.value.kind !== 'fn')
+				throw new Error(`Missing function ${name}`);
+			const type = definition.value.symbol.emissionType;
+			if (!type || type.family !== 'emission')
+				throw new Error(`Missing emission type for ${name}`);
+			return type;
+		};
+		a.equal(emission('forward').rest?.name, 'String');
+		a.equal(emission('forward').restOwnership, 'own');
+		a.equal(emission('choose').rest?.name, 'Int32 | Bool');
+		a.equal(emission('until').rest?.name, 'Int32');
+		a.equal(emission('mapped').rest?.name, 'Int32');
+	});
+
+	s.test('should defer unresolved recursive and generic emission inference', (a: TestApi) => {
+		const compiled = Program().compile(`recursive = (n: Int32) { n == 0 ? 0 : recursive(n - 1) };
+generic = <T>(value: T) { value };
+main { recursive(2) >> out; generic(2) >> out }`);
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+		for (const name of ['recursive', 'generic']) {
+			const definition = compiled.ast.children.find(
+				node => node.kind === 'def' && node.symbol.name === name,
+			);
+			if (definition?.kind !== 'def' || definition.value.kind !== 'fn')
+				throw new Error(`Missing function ${name}`);
+			a.equal(definition.value.symbol.emissionType, undefined);
+		}
+	});
 	h('Hello World', ({ p }) => {
 		p(
 			`

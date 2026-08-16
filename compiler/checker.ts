@@ -119,13 +119,26 @@ function bufferCtorType(node: NodeMap['call']): Type | undefined {
 	return isCollection(sym.type) ? sym.type : undefined;
 }
 
+function functionElementReturn(
+	fn: SymbolMap['function'] | undefined,
+): Type | undefined {
+	if (fn?.returnType) return fn.returnType;
+	if (!fn?.emissionType) return undefined;
+	const emitted = emissionElements(fn.emissionType);
+	return emitted.length === 1
+		? emitted[0]
+		: emitted.length
+			? unionOf(emitted)
+			: undefined;
+}
+
 function callReturnType(node: NodeMap['call']): Type | undefined {
 	const buf = bufferCtorType(node);
 	if (buf) return buf;
-	const rt = resolveReturnType(node.children[0]);
-	if (!rt || rt.kind !== 'type') return rt;
 	const fnSym = resolveFunctionType(node.children[0]);
-	if (!fnSym) return rt;
+	const rt =
+		resolveReturnType(node.children[0]) ?? functionElementReturn(fnSym);
+	if (!rt || rt.kind !== 'type' || !fnSym) return rt;
 	const argsNode = node.children[1];
 	const args =
 		argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
@@ -192,7 +205,7 @@ function pipeArgumentTypes(
 
 function resolveFunctionStageReturn(stage: Node, input: Type): Type | undefined {
 	const fnSym = resolveFunctionType(stage);
-	const rt = fnSym?.returnType;
+	const rt = functionElementReturn(fnSym);
 	if (!fnSym || !rt) return undefined;
 	const args = pipeArgumentTypes(input, fnSym);
 	return substituteFunctionReturn(rt, fnSym, args);
@@ -302,47 +315,275 @@ function resolveDefType(node: NodeMap['def']): Type | undefined {
 }
 
 const inferringReturn = new Set<Symbol>();
-function valueEmissions(node: Node): Type[] | undefined {
-	if (node.kind === ',') {
-		const result: Type[] = [];
-		for (const child of node.children) {
-			const emissions = valueEmissions(child);
-			if (!emissions) return undefined;
-			result.push(...emissions);
-		}
-		return result;
-	}
-	if (node.kind === 'call') {
-		const fn = resolveFunctionType(node.children[0]);
-		if (fn?.returnVariants) return undefined;
-		if (fn?.returnTypes) return fn.returnTypes;
-	}
-	if (node.kind === '>>') return undefined;
-	const type = resolveType(node);
-	if (!type || (type.kind === 'type' && type.family === 'unknown'))
-		return undefined;
-	if (type.kind === 'type' && type.family === 'void') return [];
-	return [type];
+type EmissionShape = Extract<ResolvedType, { family: 'emission' }>;
+
+function fixedEmissionShape(
+	elements: Type[],
+	ownerships?: OwnershipMode[],
+): EmissionShape {
+	const emission = fixedEmissionType(elements, ownerships);
+	if (emission.family !== 'emission') throw new Error('Invalid emission type');
+	return emission;
 }
 
-function inferFnReturns(node: NodeMap['fn']): Type[] | undefined {
+function restEmissionShape(
+	elements: Type[],
+	ownerships: OwnershipMode[],
+	rest: Type,
+	restOwnership?: OwnershipMode,
+): EmissionShape {
+	const emission = restEmissionType(
+		elements,
+		ownerships,
+		rest,
+		restOwnership,
+	);
+	if (emission.family !== 'emission') throw new Error('Invalid emission type');
+	return emission;
+}
+
+function knownEmissionType(type: Type | undefined): type is Type {
+	return !!type && !(type.kind === 'type' && type.family === 'unknown');
+}
+
+function knownEmission(emission: EmissionShape): boolean {
+	return (
+		emission.elements.every(knownEmissionType) &&
+		(emission.rest === undefined || knownEmissionType(emission.rest))
+	);
+}
+
+function concatEmissionList(
+	emissions: EmissionShape[],
+): EmissionShape | undefined {
+	const elements: Type[] = [];
+	const ownerships: OwnershipMode[] = [];
+	let tail: EmissionShape | undefined;
+	for (let i = 0; i < emissions.length; i++) {
+		const emission = emissions[i];
+		if (!emission) continue;
+		if (tail) return undefined;
+		elements.push(...emission.elements);
+		ownerships.push(...emission.ownerships);
+		if (emission.rest) tail = emission;
+	}
+	return tail?.rest
+		? restEmissionShape(
+				elements,
+				ownerships,
+				tail.rest,
+				tail.restOwnership,
+			)
+		: fixedEmissionShape(elements, ownerships);
+}
+
+function mergeAlternativeEmissions(
+	left: EmissionShape,
+	right: EmissionShape,
+): EmissionShape | undefined {
+	if (
+		left.elements.length !== right.elements.length ||
+		!!left.rest !== !!right.rest
+	)
+		return undefined;
+	const ownerships: OwnershipMode[] = [];
+	const elements: Type[] = [];
+	for (let i = 0; i < left.elements.length; i++) {
+		const l = left.elements[i];
+		const r = right.elements[i];
+		const lo = left.ownerships[i];
+		const ro = right.ownerships[i];
+		if (!l || !r || lo !== ro) return undefined;
+		elements.push(unionOf([l, r]));
+		ownerships.push(lo ?? 'borrow');
+	}
+	if (!left.rest || !right.rest)
+		return fixedEmissionShape(elements, ownerships);
+	if (left.restOwnership !== right.restOwnership) return undefined;
+	return restEmissionShape(
+		elements,
+		ownerships,
+		unionOf([left.rest, right.rest]),
+		left.restOwnership,
+	);
+}
+
+function callEmissionType(node: NodeMap['call']): EmissionShape | undefined {
+	const fn = resolveFunctionType(node.children[0]);
+	if (!fn) return undefined;
+	let emission = fn.emissionType;
+	if (!emission && fn.returnTypes && !fn.returnVariants)
+		emission = fixedEmissionType(fn.returnTypes, fn.returnOwnerships);
+	if (emission?.family !== 'emission') {
+		if (fn.returnVariants) return undefined;
+		const scalar = callReturnType(node);
+		if (!knownEmissionType(scalar)) return undefined;
+		return scalar.kind === 'type' && scalar.family === 'void'
+			? fixedEmissionShape([])
+			: fixedEmissionShape([scalar]);
+	}
+	const argsNode = node.children[1];
+	const args =
+		argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
+	const specialized = substituteFunctionReturn(
+		emission,
+		fn,
+		args.map(resolver),
+	);
+	if (specialized.kind !== 'type' || specialized.family !== 'emission')
+		return undefined;
+	return knownEmission(specialized) ? specialized : undefined;
+}
+
+function stageEmissionType(stage: Node): EmissionShape | undefined {
+	if (stage.kind === '|') {
+		const left = stageEmissionType(stage.children[0]);
+		const right = stageEmissionType(stage.children[1]);
+		return left && right
+			? mergeAlternativeEmissions(left, right)
+			: undefined;
+	}
+	const fn = resolveFunctionType(stage);
+	if (!fn) return undefined;
+	if (fn.emissionType?.family === 'emission') return fn.emissionType;
+	if (fn.returnTypes && !fn.returnVariants)
+		return fixedEmissionShape(fn.returnTypes, fn.returnOwnerships);
+	return stage.kind === 'fn'
+		? inferFnEmission(stage, true)
+		: undefined;
+}
+
+function homogeneousEmission(
+	emission: EmissionShape,
+): { type: Type; ownership: OwnershipMode } | undefined {
+	const types = [
+		...emission.elements,
+		...(emission.rest ? [emission.rest] : []),
+	];
+	if (!types.length || types.some(type => !knownEmissionType(type))) return;
+	const ownerships = [
+		...emission.ownerships,
+		...(emission.rest ? [emission.restOwnership ?? 'borrow'] : []),
+	];
+	const type = types[0];
+	const ownership = ownerships[0] ?? 'borrow';
+	if (
+		!type ||
+		types.some(candidate =>
+			candidate !== type &&
+			!(canAssign(type, candidate) && canAssign(candidate, type)),
+		) ||
+		ownerships.some(candidate => candidate !== ownership)
+	)
+		return;
+	return { type, ownership };
+}
+
+function applyRepeatedEmission(
+	input: EmissionShape,
+	stage: EmissionShape,
+): EmissionShape | undefined {
+	const prefix = concatEmissionList(input.elements.map(() => stage));
+	if (!prefix) return undefined;
+	if (!input.rest) return prefix;
+	if (stage.rest && input.elements.length) return undefined;
+	const repeated = homogeneousEmission(stage);
+	if (!repeated) return stage.elements.length || stage.rest ? undefined : prefix;
+	if (prefix.rest) return undefined;
+	return restEmissionShape(
+		prefix.elements,
+		prefix.ownerships,
+		repeated.type,
+		repeated.ownership,
+	);
+}
+
+function pipeEmissionType(node: NodeMap['>>']): EmissionShape | undefined {
+	const source = node.children[0];
+	if (!source) return fixedEmissionShape([]);
+	let emission =
+		source.kind === 'loop'
+			? restEmissionShape([], [], BT.Int32)
+			: valueEmissionType(source);
+	if (!emission) return undefined;
+	for (let i = 1; i < node.children.length; i++) {
+		const stage = node.children[i];
+		if (!stage) continue;
+		const output = stageEmissionType(stage);
+		if (!output) return undefined;
+		const applied = applyRepeatedEmission(emission, output);
+		if (!applied) return undefined;
+		emission = applied;
+	}
+	return knownEmission(emission) ? emission : undefined;
+}
+
+function conditionalEmissionType(
+	node: NodeMap['?'],
+	contextual: boolean,
+): EmissionShape | undefined {
+	const truthy = node.children[1];
+	const falsy = node.children[2];
+	if (truthy.kind === 'break' || truthy.kind === 'done')
+		return falsy
+			? valueEmissionType(falsy, contextual)
+			: fixedEmissionShape([]);
+	if (falsy?.kind === 'break' || falsy?.kind === 'done')
+		return valueEmissionType(truthy, contextual);
+	if (!falsy) return undefined;
+	const left = valueEmissionType(truthy, contextual);
+	const right = valueEmissionType(falsy, contextual);
+	return left && right
+		? mergeAlternativeEmissions(left, right)
+		: undefined;
+}
+
+function valueEmissionType(
+	node: Node,
+	contextual = false,
+): EmissionShape | undefined {
+	if (node.kind === ',') {
+		const parts: EmissionShape[] = [];
+		for (const child of node.children) {
+			const emissions = valueEmissionType(child, contextual);
+			if (!emissions) return undefined;
+			parts.push(emissions);
+		}
+		return concatEmissionList(parts);
+	}
+	if (node.kind === '?') return conditionalEmissionType(node, contextual);
+	if (node.kind === 'call') return callEmissionType(node);
+	if (node.kind === '>>') return pipeEmissionType(node);
+	const type = contextual ? resolver(node) : resolveType(node);
+	if (!knownEmissionType(type)) return undefined;
+	if (type.kind === 'type' && type.family === 'void')
+		return fixedEmissionShape([]);
+	return fixedEmissionShape([type]);
+}
+
+function inferFnEmission(
+	node: NodeMap['fn'],
+	contextual = false,
+): EmissionShape | undefined {
 	const stmts = node.statements ?? [];
-	if (!stmts.length) return [];
+	if (!stmts.length) return fixedEmissionShape([]);
 	if (node.symbol.flags & Flags.Sequence) {
 		const only = stmts[0];
-		return only ? valueEmissions(only) : [];
+		return only
+			? valueEmissionType(only, contextual)
+			: fixedEmissionShape([]);
 	}
-	const result: Type[] = [];
+	const parts: EmissionShape[] = [];
 	for (const statement of stmts) {
 		if (statement.kind === 'done' || statement.kind === 'break') break;
 		if (statement.kind !== 'next') continue;
 		const value = statement.children?.[0];
 		if (!value) continue;
-		const emissions = valueEmissions(value);
+		const emissions = valueEmissionType(value, contextual);
 		if (!emissions) return undefined;
-		result.push(...emissions);
+		parts.push(emissions);
 	}
-	return result;
+	return concatEmissionList(parts);
 }
 
 function resolveDeclaredFnOutputs(node: NodeMap['fn']): void {
@@ -383,6 +624,13 @@ function resolveDeclaredFnOutputs(node: NodeMap['fn']): void {
 
 function setFnElementReturn(node: NodeMap['fn']): void {
 	const sym = node.symbol;
+	if (
+		sym.emissionType?.family === 'emission' &&
+		sym.emissionType.rest &&
+		!node.returnType &&
+		!node.returnRestType
+	)
+		return;
 	const emittedTypes = sym.emissionType
 		? emissionElements(sym.emissionType)
 		: sym.returnVariants?.flat() ?? sym.returnTypes;
@@ -408,6 +656,7 @@ function resolveFnType(node: NodeMap['fn']): Type {
 	resolveDeclaredFnOutputs(node);
 	if (node.parameters?.length) node.parameters.forEach(resolver);
 	if (
+		!sym.emissionType &&
 		!sym.returnTypes &&
 		!sym.returnVariants &&
 		!node.returnType &&
@@ -417,7 +666,14 @@ function resolveFnType(node: NodeMap['fn']): Type {
 	) {
 		inferringReturn.add(sym);
 		try {
-			sym.returnTypes = inferFnReturns(node);
+			const inferred = inferFnEmission(node);
+			if (inferred) {
+				sym.emissionType = inferred;
+				if (!inferred.rest) {
+					sym.returnTypes = inferred.elements;
+					sym.returnOwnerships = inferred.ownerships;
+				}
+			}
 		} finally {
 			inferringReturn.delete(sym);
 		}
@@ -1792,9 +2048,18 @@ export function checker({
 		if (node.typeParameters?.length) return;
 		if (node.statements?.some(statement => statement.kind === 'break')) return;
 		const declared = node.symbol.returnTypes ?? [];
-		const actual = inferFnReturns(node);
-		if (!actual) return;
+		const actualEmission = inferFnEmission(node);
+		if (!actualEmission) return;
 		const emission = node.symbol.emissionType;
+		if (actualEmission.rest) {
+			if (emission && !canAssign(emission, actualEmission))
+				error(
+					`function output type "${typeToStr(actualEmission)}" is not assignable to declared type "${typeToStr(emission)}"`,
+					node,
+				);
+			return;
+		}
+		const actual = actualEmission.elements;
 		if (checkRestEmissions(node, actual, emission)) return;
 		if (node.returnVariants) {
 			const matches = node.symbol.returnVariants?.some(
@@ -3084,6 +3349,12 @@ export function checker({
 				if (statements) for (const s of statements) walkPipes(s);
 			}
 		}
+		if (
+			node.kind === 'fn' &&
+			node.symbol.name &&
+			!node.symbol.emissionType
+		)
+			resolveFnType(node);
 	}
 
 	return {
