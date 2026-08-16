@@ -6,7 +6,6 @@
 	"files": [
 		"bundle.ts",
 		"checker.ts",
-		"compiler.ts",
 		"compiler-types.ts",
 		"debug.ts",
 		"error.ts",
