@@ -11,7 +11,7 @@
 	},
 	"scripts": {
 		"build": "cxl-build",
-		"test": "npm run build test"
+		"test": "npm run build -- test"
 	},
 	"dependencies": {},
 	"repository": {

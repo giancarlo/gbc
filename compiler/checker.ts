@@ -567,12 +567,6 @@ function inferFnEmission(
 ): EmissionShape | undefined {
 	const stmts = node.statements ?? [];
 	if (!stmts.length) return fixedEmissionShape([]);
-	if (node.symbol.flags & Flags.Sequence) {
-		const only = stmts[0];
-		return only
-			? valueEmissionType(only, contextual)
-			: fixedEmissionShape([]);
-	}
 	const parts: EmissionShape[] = [];
 	for (const statement of stmts) {
 		if (statement.kind === 'done' || statement.kind === 'break') break;
@@ -1501,32 +1495,11 @@ export function checker({
 	 * correct usage of operations and calls.
 	 */
 	function checkNext(node: NodeMap['next']) {
-		const fn = node.owner;
 		const val = node.children?.[0];
 		if (val) {
 			if (val.kind === ',') for (const c of val.children) check(c);
 			else check(val);
 		}
-		const types: Type[] =
-			val?.kind === ','
-				? val.children
-						.map(c => resolveType(c))
-						.filter((t): t is Type => !!t)
-				: val
-					? [resolveType(val) ?? BT.Unknown]
-					: [BT.Void];
-		const type = unionOf(types);
-
-		if (!fn.returnType) fn.returnType = type;
-		else if (!canAssign(fn.returnType, type))
-			error(
-				`Type "${typeToStr(
-					type,
-				)}" is not assignable to type "${typeToStr(
-					fn.returnType,
-				)}".`,
-				node,
-			);
 	}
 
 	function chooseOverload(
@@ -1692,6 +1665,18 @@ export function checker({
 			arg.symbol.returnOwnership = context.returnOwnership;
 			for (const statement of arg.statements ?? [])
 				annotateDollar(statement, expectedParameter.type);
+			if (
+				!arg.returnType &&
+				!arg.returnTypes &&
+				!arg.returnRestType &&
+				!arg.returnVariants
+			) {
+				arg.symbol.returnType = undefined;
+				arg.symbol.returnTypes = undefined;
+				arg.symbol.returnOwnerships = undefined;
+				arg.symbol.emissionType = undefined;
+			}
+			resolver(arg);
 		});
 	}
 
@@ -1986,10 +1971,11 @@ export function checker({
 		const ret = node.symbol.returnType;
 		if (node.typeParameters?.length || !ret || node.statements?.length !== 1)
 			return;
-		const stmt = node.statements[0];
+		const statement = node.statements[0];
+		const stmt =
+			statement?.kind === 'next' ? statement.children?.[0] : statement;
 		if (
 			!stmt ||
-			stmt.kind === 'next' ||
 			stmt.kind === 'done' ||
 			stmt.kind === 'break'
 		)
@@ -2134,8 +2120,77 @@ export function checker({
 		}
 	}
 
+	function nestedFunctionReferences(node: Node, symbol: Symbol): boolean {
+		if (node.kind === 'fn') return referencesSymbol(node, symbol);
+		if (!('children' in node) || !node.children) return false;
+		return node.children.some(
+			child => !!child && nestedFunctionReferences(child, symbol),
+		);
+	}
+
+	function isCopyType(type: Type): boolean {
+		if (type.kind !== 'type') return false;
+		if (type.family === 'union') return type.members.every(isCopyType);
+		return (
+			type.family === 'int' ||
+			type.family === 'uint' ||
+			type.family === 'float' ||
+			type.family === 'char' ||
+			type.family === 'bool' ||
+			type.family === 'void' ||
+			type.family === 'literal'
+		);
+	}
+
+	function referencesNonCopyBinding(node: Node, ignored: Symbol): boolean {
+		if (node.kind === '$') return !isCopyType(resolver(node));
+		if (
+			node.kind === 'ident' &&
+			node.symbol !== ignored &&
+			node.symbol.kind === 'variable' &&
+			(node.symbol.definition?.kind === 'def' ||
+				node.symbol.definition?.kind === 'parameter')
+		)
+			return !isCopyType(resolver(node));
+		if (!('children' in node) || !node.children) return false;
+		return node.children.some(
+			child => !!child && referencesNonCopyBinding(child, ignored),
+		);
+	}
+
+	function checkRedundantIntermediates(statements: Node[]): void {
+		for (let i = 0; i < statements.length - 1; i++) {
+			const statement = statements[i];
+			const next = statements[i + 1];
+			if (
+				statement?.kind !== 'def' ||
+				!next ||
+				statement.symbol.flags & Flags.Variable ||
+				!isCopyType(resolver(statement))
+			)
+				continue;
+			const references = statement.symbol.references ?? [];
+			if (
+				references.length === 0 ||
+				!references.every(
+					reference =>
+						reference.source === next.source &&
+						reference.start >= next.start &&
+						reference.end <= next.end,
+				) ||
+				nestedFunctionReferences(next, statement.symbol) ||
+				referencesNonCopyBinding(next, statement.symbol)
+			)
+				continue;
+			error(
+				`Redundant intermediate binding "${statement.symbol.name}"; pipe its initializer into the following statement.`,
+				statement,
+			);
+		}
+	}
+
 	function checkUnusedValues(node: NodeMap['fn']) {
-		if (!node.statements || node.symbol.flags & Flags.Sequence) return;
+		if (!node.statements) return;
 		for (const s of node.statements) {
 			if (
 				s.kind === 'next' ||
@@ -2497,9 +2552,7 @@ export function checker({
 	function checkMutableReturn(node: NodeMap['fn']): void {
 		if (node.symbol.returnOwnership !== 'var') return;
 		const statements = node.statements ?? [];
-		const emissions = node.symbol.flags & Flags.Sequence
-			? statements
-			: statements.filter(statement => statement.kind === 'next');
+		const emissions = statements.filter(statement => statement.kind === 'next');
 		const origins = emissions.map(emission =>
 			mutableReturnOrigin(emission, node),
 		);
@@ -2546,23 +2599,27 @@ export function checker({
 
 	function checkFnDef(node: NodeMap['fn']) {
 		resolver(node);
+		checkOnlyStmt(node);
 		checkReturnTypeAssignable(node);
 		checkNoClosureCapture(node);
 		checkUnusedValues(node);
-		if (node.statements) checkEach(node.statements);
+		if (node.statements) {
+			checkRedundantIntermediates(node.statements);
+			checkEach(node.statements);
+		}
 		checkDeclaredEmissions(node);
 		checkMoves(node);
 		functionOutputOwnership(node);
 		checkMutableReturn(node);
 	}
 
-	function checkStageOnlyStmt(c: NodeMap['fn'], i: number) {
+	function checkOnlyStmt(c: NodeMap['fn'], i?: number) {
 		const stmts = c.statements;
 		if (stmts?.length !== 1) return;
 		const only = stmts[0];
-		if (only?.kind === 'next')
+		if (only?.kind === 'next' && !only.implicit)
 			error(
-				'`next` is not allowed in auto-emit body. Use `{ X }` to emit X directly, or `{ next X; }` for a statement body.',
+				'`next` is not allowed in a single-statement function. Use `{ X }` to emit X directly.',
 				only,
 			);
 		else if (
@@ -2591,7 +2648,6 @@ export function checker({
 	function checkStageTail(c: NodeMap['fn']) {
 		const stmts = c.statements;
 		if (!stmts || stmts.length < 2) return;
-		if (c.symbol.flags & Flags.Sequence) return;
 		const last = stmts[stmts.length - 1];
 		if (
 			!last ||
@@ -2609,10 +2665,11 @@ export function checker({
 
 	function checkStageReturnType(c: NodeMap['fn']) {
 		if (!c.returnType || c.statements?.length !== 1) return;
-		const stmt = c.statements[0];
+		const statement = c.statements[0];
+		const stmt =
+			statement?.kind === 'next' ? statement.children?.[0] : statement;
 		if (
 			!stmt ||
-			stmt.kind === 'next' ||
 			stmt.kind === 'done' ||
 			stmt.kind === 'break'
 		)
@@ -2639,12 +2696,8 @@ export function checker({
 			);
 		if (c.parameters?.length && !hasStmts)
 			error('empty body in a typed block is invalid', c);
-		checkStageOnlyStmt(c, i);
-		if (
-			!(c.symbol.flags & Flags.Sequence) &&
-			hasStmts &&
-			!c.parameters?.length
-		) {
+		checkOnlyStmt(c, i);
+		if (hasStmts && !c.parameters?.length) {
 			const emits = stmts.some(
 				s =>
 					s.kind === 'next' ||
@@ -2658,7 +2711,6 @@ export function checker({
 				);
 		}
 		if (
-			!(c.symbol.flags & Flags.Sequence) &&
 			stmts &&
 			stmts.length > 1 &&
 			c.parameters?.length &&
@@ -2908,11 +2960,9 @@ export function checker({
 		outputOwnershipChecked.add(fn.symbol);
 		if (fn.symbol.returnOwnership) return fn.symbol.returnOwnership;
 		const statements = fn.statements ?? [];
-		const emissions = fn.symbol.flags & Flags.Sequence
-			? statements
-			: statements.filter(
-					(statement): statement is NodeMap['next'] => statement.kind === 'next',
-			  );
+		const emissions = statements.filter(
+			(statement): statement is NodeMap['next'] => statement.kind === 'next',
+		);
 		let mode: OwnershipMode | undefined;
 		for (const emission of emissions) {
 			const current = expressionOwnership(emission);
@@ -3011,10 +3061,12 @@ export function checker({
 			case 'fn':
 				return checkFnDef(node);
 			case 'main':
+				checkRedundantIntermediates(node.statements);
 				checkEach(node.statements);
 				checkUnusedStatements(node.statements);
 				return checkMoves(node);
 			case 'test':
+				checkRedundantIntermediates(node.statements);
 				return checkEach(node.statements);
 			case 'import':
 				return;

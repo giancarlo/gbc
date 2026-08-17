@@ -38,6 +38,7 @@ export type BaseNodeMap = {
 	next: {
 		children?: [Node | undefined];
 		owner: SymbolMap['function'];
+		implicit?: true;
 	};
 	comment: object;
 	parameter: {

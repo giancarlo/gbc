@@ -77,9 +77,9 @@ export frame = (): Buffer<Uint8> { pixels };`;
 		const source = `cols = 320;
 
 export seed = (index: Int32): Uint8 {
-	x = index % cols;
-	y = index / cols;
-	next (x * 17 + y * 31) % 23 < 5 ? Uint8(1) : Uint8(0)
+	((index % cols) * 17 + (index / cols) * 31) % 23 < 5
+		? Uint8(1)
+		: Uint8(0)
 };`;
 		const compiled = Program({
 			sys: {
@@ -393,19 +393,19 @@ main {
 		rule({
 			src: `inc = (n: Int32): Int32 { n + 10 };
 main { 1, 2 >> inc >> out }`,
-			ast: `(root (def :inc ? (fn @sequence (parameter :n typeident ?) typeident (+ :n 10))) (main (, 1 (>> 2 :inc :out))))`,
+			ast: `(root (def :inc ? (fn (parameter :n typeident ?) typeident (next (+ :n 10)))) (main (, 1 (>> 2 :inc :out))))`,
 			out: ['12'],
 		});
 		rule({
 			src: `inc = (n: Int32): Int32 { n + 10 };
 main { (1, 2) >> inc >> out }`,
-			ast: `(root (def :inc ? (fn @sequence (parameter :n typeident ?) typeident (+ :n 10))) (main (>> (, 1 2) :inc :out)))`,
+			ast: `(root (def :inc ? (fn (parameter :n typeident ?) typeident (next (+ :n 10)))) (main (>> (, 1 2) :inc :out)))`,
 			out: ['11', '12'],
 		});
 		rule({
 			src: `inc = (n: Int32): Int32 { n + 10 };
 main { 1 >> inc >> out, 2 >> out }`,
-			ast: `(root (def :inc ? (fn @sequence (parameter :n typeident ?) typeident (+ :n 10))) (main (, (>> 1 :inc :out) (>> 2 :out))))`,
+			ast: `(root (def :inc ? (fn (parameter :n typeident ?) typeident (next (+ :n 10)))) (main (, (>> 1 :inc :out) (>> 2 :out))))`,
 			out: ['11', '2'],
 		});
 		rule({
@@ -413,14 +413,14 @@ main { 1 >> inc >> out, 2 >> out }`,
 			src: `add = (a: Int32, b: Int32): Int32 { a + b };
 multiply = (a: Int32, b: Int32): Int32 { a * b };
 main { 2 -> add(3) -> multiply(4) >> out }`,
-			ast: `(root (def :add ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))) (def :multiply ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (* :a :b))) (main (>> (call :multiply (, (call :add (, 2 3)) 4)) :out)))`,
+			ast: `(root (def :add ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (+ :a :b)))) (def :multiply ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (* :a :b)))) (main (>> (call :multiply (, (call :add (, 2 3)) 4)) :out)))`,
 			out: ['20'],
 		});
 		rule({
 			p: 'A parenthesized comma list supplies multiple leading arguments in order; arithmetic binds before `->`, while comma remains looser.',
 			src: `sum3 = (a: Int32, b: Int32, c: Int32): Int32 { a + b + c };
 main { (1 + 1, 3) -> sum3(4) >> out }`,
-			ast: `(root (def :sum3 ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) (parameter :c typeident ?) typeident (+ (+ :a :b) :c))) (main (>> (call :sum3 (, (+ 1 1) 3 4)) :out)))`,
+			ast: `(root (def :sum3 ? (fn (parameter :a typeident ?) (parameter :b typeident ?) (parameter :c typeident ?) typeident (next (+ (+ :a :b) :c)))) (main (>> (call :sum3 (, (+ 1 1) 3 4)) :out)))`,
 			out: ['9'],
 		});
 		rule({
@@ -428,7 +428,7 @@ main { (1 + 1, 3) -> sum3(4) >> out }`,
 			src: `measure = <T>(value: T, extra: Int32): Int32 { length(value) + extra };
 choose = (n: Int32, offset: Int32): Int32 { n + offset } | (b: Bool, offset: Int32): Int32 { b ? offset : 0 };
 main { 7 -> measure(3) >> out; 5 -> choose(2) >> out; true -> choose(9) >> out }`,
-			ast: `(root (def :measure ? (fn @sequence (, (parameter :T ? ?)) (parameter :value typeident ?) (parameter :extra typeident ?) typeident (+ (call :length @intrinsic :value) :extra))) (def :choose ? (| (fn @sequence (parameter :n typeident ?) (parameter :offset typeident ?) typeident (+ :n :offset)) (fn @sequence (parameter :b typeident ?) (parameter :offset typeident ?) typeident (? :b :offset 0)))) (main (>> (call :measure (, 7 3)) :out) (>> (call :choose (, 5 2)) :out) (>> (call :choose (, :true 9)) :out)))`,
+			ast: `(root (def :measure ? (fn (, (parameter :T ? ?)) (parameter :value typeident ?) (parameter :extra typeident ?) typeident (next (+ (call :length @intrinsic :value) :extra)))) (def :choose ? (| (fn (parameter :n typeident ?) (parameter :offset typeident ?) typeident (next (+ :n :offset))) (fn (parameter :b typeident ?) (parameter :offset typeident ?) typeident (next (? :b :offset 0))))) (main (>> (call :measure (, 7 3)) :out) (>> (call :choose (, 5 2)) :out) (>> (call :choose (, :true 9)) :out)))`,
 			out: ['4', '7', '9'],
 		});
 		compileError({
@@ -439,7 +439,7 @@ main { 7 -> measure(3) >> out; 5 -> choose(2) >> out; true -> choose(9) >> out }
 		rule({
 			src: `sum = (a: Int32, b: Int32): Int32 { a + b };
 main { sum([1, 2] >> length, 2) >> out }`,
-			ast: `(root (def :sum ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))) (main (>> (call :sum (, (>> (data (, 1 2)) :length @intrinsic) 2)) :out)))`,
+			ast: `(root (def :sum ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (+ :a :b)))) (main (>> (call :sum (, (>> (data (, 1 2)) :length @intrinsic) 2)) :out)))`,
 			out: ['4'],
 		});
 		expr({
@@ -639,11 +639,11 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			});
 			expr({
 				src: `loop >> { $ >= 3 ? break : $ }`,
-				ast: `(>> loop (fn @sequence (? (>= $ 3) break $)))`,
+				ast: `(>> loop (fn (next (? (>= $ 3) break $))))`,
 				out: ['0', '1', '2'],
 			});
 			expr({
-				pre: `pick = (b: Bool): Int32 { next b ? 10 : 20 }`,
+				pre: `pick = (b: Bool): Int32 { b ? 10 : 20 }`,
 				src: `pick(true)`,
 				ast: `(call :pick :true)`,
 				out: ['10'],
@@ -654,12 +654,12 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			});
 			expr({
 				src: `[1, 2, 3] >> each >> Int32 { $ * 2 }`,
-				ast: `(>> (data (, 1 2 3)) :each (fn @sequence (parameter ? typeident ?) (* $ 2)))`,
+				ast: `(>> (data (, 1 2 3)) :each (fn (parameter ? typeident ?) (next (* $ 2))))`,
 				out: ['2', '4', '6'],
 			});
 			expr({
 				src: `[1, 2, 3] >> each >> Int32 { $ > 1 ? $ }`,
-				ast: `(>> (data (, 1 2 3)) :each (fn @sequence (parameter ? typeident ?) (? (> $ 1) $)))`,
+				ast: `(>> (data (, 1 2 3)) :each (fn (parameter ? typeident ?) (next (? (> $ 1) $))))`,
 				out: ['2', '3'],
 			});
 			compileError({
@@ -1122,13 +1122,13 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			p: 'A one-element block collapses to its element \u2014 as a value (`[x]` is `x`) and as a type (`[T]` is `T`); `[\u2026]` is a fixed product, not a variable-length collection. So a `[String]` parameter is a `String`.',
 			src: `wrap = (t: [String]): Int32 { length(t) };
 main { wrap('hello') >> out }`,
-			ast: `(root (def :wrap ? (fn @sequence (parameter :t (data (propdef ? typeident ?)) ?) typeident (call :length @intrinsic :t))) (main (>> (call :wrap 'hello') :out)))`,
+			ast: `(root (def :wrap ? (fn (parameter :t (data (propdef ? typeident ?)) ?) typeident (next (call :length @intrinsic :t)))) (main (>> (call :wrap 'hello') :out)))`,
 			out: ['5'],
 		});
 		rule({
 			src: `bump = (n: [Int32]): Int32 { n + 1 };
 main { bump(41) >> out }`,
-			ast: `(root (def :bump ? (fn @sequence (parameter :n (data (propdef ? typeident ?)) ?) typeident (+ :n 1))) (main (>> (call :bump 41) :out)))`,
+			ast: `(root (def :bump ? (fn (parameter :n (data (propdef ? typeident ?)) ?) typeident (next (+ :n 1)))) (main (>> (call :bump 41) :out)))`,
 			out: ['42'],
 		});
 		compileError({
@@ -1178,7 +1178,7 @@ main { wrap([ 'p', 'q' ]) >> out }`,
 		});
 		rule({
 			src: `main { [ [1, 2], [3, 4] ] >> each >> (p) { p.0 * p.1 } >> out }`,
-			ast: `(root (main (>> (data (, (data (, 1 2)) (data (, 3 4)))) :each (fn @sequence (parameter :p ? ?) (* (. :p 0) (. :p 1))) :out)))`,
+			ast: `(root (main (>> (data (, (data (, 1 2)) (data (, 3 4)))) :each (fn (parameter :p ? ?) (next (* (. :p 0) (. :p 1)))) :out)))`,
 			out: ['2', '12'],
 		});
 		compileError({
@@ -1189,7 +1189,7 @@ main { wrap([ 'p', 'q' ]) >> out }`,
 			p: 'A block never splices: its items are its elements, labeled or not. `each` over record elements yields each element as a unit — a borrow of the block — so collections of records stream, index, and zip as written.',
 			src: `type Point = [ x: Int32, y: Int32 ];
 main { ps = [ [ x = 1, y = 2 ], [ x = 3, y = 4 ] ]; length(ps) >> out; ps >> each >> (p: Point) { p.x + p.y } >> out }`,
-			ast: `(root (type :Point (data (, (propdef :x typeident ?) (propdef :y typeident ?)))) (main (def :ps ? (data (, (data (, (propdef :x ? 1) (propdef :y ? 2))) (data (, (propdef :x ? 3) (propdef :y ? 4)))))) (>> (call :length @intrinsic :ps) :out) (>> :ps :each (fn @sequence (parameter :p typeident ?) (+ (. :p :x) (. :p :y))) :out)))`,
+			ast: `(root (type :Point (data (, (propdef :x typeident ?) (propdef :y typeident ?)))) (main (def :ps ? (data (, (data (, (propdef :x ? 1) (propdef :y ? 2))) (data (, (propdef :x ? 3) (propdef :y ? 4)))))) (>> (call :length @intrinsic :ps) :out) (>> :ps :each (fn (parameter :p typeident ?) (next (+ (. :p :x) (. :p :y)))) :out)))`,
 			out: ['2', '3', '7'],
 		});
 	});
@@ -1198,34 +1198,34 @@ main { ps = [ [ x = 1, y = 2 ], [ x = 3, y = 4 ] ]; length(ps) >> out; ps >> eac
 		expr({
 			p: 'A call uses parentheses and passes one argument value. Multiple arguments form one data block that the parameter list destructures; juxtaposition is never a call.',
 			src: `(a) { a }`,
-			ast: `(fn @sequence (parameter :a ? ?) :a)`,
+			ast: `(fn (parameter :a ? ?) (next :a))`,
 		});
 		expr({
 			src: `(a: Int32, b: Int32) { a + b }`,
-			ast: `(fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) (+ :a :b))`,
+			ast: `(fn (parameter :a typeident ?) (parameter :b typeident ?) (next (+ :a :b)))`,
 		});
 		ast({
 			src: `helper = (f: Fn) { { f() } }`,
-			ast: `(def :helper ? (fn @sequence (parameter :f typeident ?) (fn @sequence (call :f ?))))`,
+			ast: `(def :helper ? (fn (parameter :f typeident ?) (next (fn (next (call :f ?))))))`,
 		});
 		expr({
 			src: `[value = 5] >> { 10 + $.value }`,
-			ast: `(>> (data (propdef :value ? 5)) (fn @sequence (+ 10 (. $ :value))))`,
+			ast: `(>> (data (propdef :value ? 5)) (fn (next (+ 10 (. $ :value)))))`,
 			out: ['15'],
 		});
 		expr({
 			src: `{ 1 + 2 }`,
-			ast: `(fn @sequence (+ 1 2))`,
+			ast: `(fn (next (+ 1 2)))`,
 			out: ['3'],
 		});
 		expr({
 			src: `{ 1, 2, 3 }`,
-			ast: `(fn @sequence (, 1 2 3))`,
+			ast: `(fn (next (, 1 2 3)))`,
 			out: ['1', '2', '3'],
 		});
 		expr({
 			src: `{ }`,
-			ast: `(fn @sequence)`,
+			ast: `(fn)`,
 			out: [],
 		});
 		compileError({
@@ -1234,7 +1234,7 @@ main { ps = [ [ x = 1, y = 2 ], [ x = 3, y = 4 ] ]; length(ps) >> out; ps >> eac
 		});
 		compileError({
 			src: `main { { next 1 } >> out }`,
-			expected: '`next` is not allowed in auto-emit',
+			expected: '`next` is not allowed',
 		});
 		compileError({
 			src: `main { { done } >> out }`,
@@ -1315,19 +1315,19 @@ export target = (): Uint8 { nextCell(0, Buffer<Uint8>(1)) }`,
 		h('Recursion', ({ rule }) => {
 			rule({
 				src: `factorial = (n: Int32): Int32 { (n <= 1) ? 1 : n * factorial(n - 1) }; main { factorial(0) >> out; factorial(1) >> out; factorial(2) >> out; factorial(3) >> out; factorial(4) >> out; factorial(5) >> out; }`,
-				ast: '(root (def :factorial ? (fn @sequence (parameter :n typeident ?) typeident (? (<= :n 1) 1 (* :n (call :factorial (- :n 1)))))) (main (>> (call :factorial 0) :out) (>> (call :factorial 1) :out) (>> (call :factorial 2) :out) (>> (call :factorial 3) :out) (>> (call :factorial 4) :out) (>> (call :factorial 5) :out)))',
+				ast: '(root (def :factorial ? (fn (parameter :n typeident ?) typeident (next (? (<= :n 1) 1 (* :n (call :factorial (- :n 1))))))) (main (>> (call :factorial 0) :out) (>> (call :factorial 1) :out) (>> (call :factorial 2) :out) (>> (call :factorial 3) :out) (>> (call :factorial 4) :out) (>> (call :factorial 5) :out)))',
 				out: ['1', '1', '2', '6', '24', '120'],
 			});
 
 			rule({
 				src: `fib = (n: Int32): Int32 { n <= 1 ? n : fib(n - 1) + fib(n - 2) }; main { fib(0) >> out; fib(1) >> out; fib(2) >> out; fib(3) >> out; fib(4) >> out; fib(5) >> out; fib(6) >> out; }`,
-				ast: '(root (def :fib ? (fn @sequence (parameter :n typeident ?) typeident (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2)))))) (main (>> (call :fib 0) :out) (>> (call :fib 1) :out) (>> (call :fib 2) :out) (>> (call :fib 3) :out) (>> (call :fib 4) :out) (>> (call :fib 5) :out) (>> (call :fib 6) :out)))',
+				ast: '(root (def :fib ? (fn (parameter :n typeident ?) typeident (next (? (<= :n 1) :n (+ (call :fib (- :n 1)) (call :fib (- :n 2))))))) (main (>> (call :fib 0) :out) (>> (call :fib 1) :out) (>> (call :fib 2) :out) (>> (call :fib 3) :out) (>> (call :fib 4) :out) (>> (call :fib 5) :out) (>> (call :fib 6) :out)))',
 				out: ['0', '1', '1', '2', '3', '5', '8'],
 			});
 
 			rule({
 				src: `ackermann = (m: Int32, n: Int32): Int32 { m == 0 ? n + 1 : (n == 0 ? ackermann(m - 1, 1) : (ackermann(m - 1, ackermann(m, n - 1)))) }; main { ackermann(1, 3) >> out; ackermann(2, 3) >> out; ackermann(3, 3) >> out; ackermann(1, 5) >> out; ackermann(2, 5) >> out; ackermann(3, 5) >> out; }`,
-				ast: `(root (def :ackermann ? (fn @sequence (parameter :m typeident ?) (parameter :n typeident ?) typeident (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1))))))))) (main (>> (call :ackermann (, 1 3)) :out) (>> (call :ackermann (, 2 3)) :out) (>> (call :ackermann (, 3 3)) :out) (>> (call :ackermann (, 1 5)) :out) (>> (call :ackermann (, 2 5)) :out) (>> (call :ackermann (, 3 5)) :out)))`,
+				ast: `(root (def :ackermann ? (fn (parameter :m typeident ?) (parameter :n typeident ?) typeident (next (? (== :m 0) (+ :n 1) (? (== :n 0) (call :ackermann (, (- :m 1) 1)) (call :ackermann (, (- :m 1) (call :ackermann (, :m (- :n 1)))))))))) (main (>> (call :ackermann (, 1 3)) :out) (>> (call :ackermann (, 2 3)) :out) (>> (call :ackermann (, 3 3)) :out) (>> (call :ackermann (, 1 5)) :out) (>> (call :ackermann (, 2 5)) :out) (>> (call :ackermann (, 3 5)) :out)))`,
 				out: ['5', '9', '61', '7', '13', '253'],
 			});
 
@@ -1338,7 +1338,7 @@ export target = (): Uint8 { nextCell(0, Buffer<Uint8>(1)) }`,
 			// only assert the compiler terminates and produces a module.
 			rule({
 				src: `f = (n: Int32): Int32 { (n - 1) >> f }; main { f(3) >> out }`,
-				ast: `(root (def :f ? (fn @sequence (parameter :n typeident ?) typeident (>> (- :n 1) :f))) (main (>> (call :f 3) :out)))`,
+				ast: `(root (def :f ? (fn (parameter :n typeident ?) typeident (next (>> (- :n 1) :f)))) (main (>> (call :f 3) :out)))`,
 			});
 
 			// Self-pipe recursion with a base case runs and returns a value: the
@@ -1346,7 +1346,7 @@ export target = (): Uint8 { nextCell(0, Buffer<Uint8>(1)) }`,
 			// leaves its value (it does not emit into the outer `>> out`).
 			rule({
 				src: `f = (n: Int32): Int32 { n <= 0 ? 100 : ((n - 1) >> f) }; main { f(3) >> out }`,
-				ast: `(root (def :f ? (fn @sequence (parameter :n typeident ?) typeident (? (<= :n 0) 100 (>> (- :n 1) :f)))) (main (>> (call :f 3) :out)))`,
+				ast: `(root (def :f ? (fn (parameter :n typeident ?) typeident (next (? (<= :n 0) 100 (>> (- :n 1) :f))))) (main (>> (call :f 3) :out)))`,
 				out: ['100'],
 			});
 
@@ -1354,7 +1354,7 @@ export target = (): Uint8 { nextCell(0, Buffer<Uint8>(1)) }`,
 			// so self-pipe recursion stays flat — 1M deep does not grow the stack.
 			rule({
 				src: `f = (n: Int32): Int32 { n <= 0 ? 100 : ((n - 1) >> f) }; main { f(1000000) >> out }`,
-				ast: `(root (def :f ? (fn @sequence (parameter :n typeident ?) typeident (? (<= :n 0) 100 (>> (- :n 1) :f)))) (main (>> (call :f 1000000) :out)))`,
+				ast: `(root (def :f ? (fn (parameter :n typeident ?) typeident (next (? (<= :n 0) 100 (>> (- :n 1) :f))))) (main (>> (call :f 1000000) :out)))`,
 				out: ['100'],
 				wasm: {
 					fn: 'f',
@@ -1376,19 +1376,19 @@ export target = (): Uint8 { nextCell(0, Buffer<Uint8>(1)) }`,
 			expr({
 				pre: `emit = { next(1, 2); done; }`,
 				src: `emit() >> { $ + 1 }`,
-				ast: `(>> (call :emit ?) (fn @sequence (+ $ 1)))`,
+				ast: `(>> (call :emit ?) (fn (next (+ $ 1))))`,
 				out: ['2', '3'],
 			});
 			expr({
 				pre: `emit = { done }`,
 				src: `emit() >> { $ + 1 }`,
-				ast: `(>> (call :emit ?) (fn @sequence (+ $ 1)))`,
+				ast: `(>> (call :emit ?) (fn (next (+ $ 1))))`,
 				out: [],
 			});
 			expr({
 				pre: `emit = { next(1, 2); done; }`,
 				src: `emit() >> { $, $ + 10 }`,
-				ast: `(>> (call :emit ?) (fn @sequence (, $ (+ $ 10))))`,
+				ast: `(>> (call :emit ?) (fn (next (, $ (+ $ 10)))))`,
 				out: ['1', '11', '2', '12'],
 			});
 		});
@@ -1428,7 +1428,7 @@ a = {
 				out: ['1', '2', '99'],
 			});
 			rule({
-				src: `inner = { next(1, 2); done; }; outer = { next inner() }; main { outer() >> out }`,
+				src: `inner = { next(1, 2); done; }; outer = { inner() }; main { outer() >> out }`,
 				ast: `(root (def :inner ? (fn (next (, 1 2)) done)) (def :outer ? (fn (next (call :inner ?)))) (main (>> (call :outer ?) :out)))`,
 				out: ['1', '2'],
 			});
@@ -1448,27 +1448,27 @@ a = {
 			({ expr, compileError }) => {
 				expr({
 					src: `{ }`,
-					ast: `(fn @sequence)`,
+					ast: `(fn)`,
 					out: [],
 				});
 				expr({
 					src: `{ 5 }`,
-					ast: `(fn @sequence 5)`,
+					ast: `(fn (next 5))`,
 					out: ['5'],
 				});
 				expr({
 					src: `{ 1, 2, 3 }`,
-					ast: `(fn @sequence (, 1 2 3))`,
+					ast: `(fn (next (, 1 2 3)))`,
 					out: ['1', '2', '3'],
 				});
 				expr({
 					src: `5 >> { $ + 1 }`,
-					ast: `(>> 5 (fn @sequence (+ $ 1)))`,
+					ast: `(>> 5 (fn (next (+ $ 1))))`,
 					out: ['6'],
 				});
 				expr({
 					src: `[x = 10] >> { $.x }`,
-					ast: `(>> (data (propdef :x ? 10)) (fn @sequence (. $ :x)))`,
+					ast: `(>> (data (propdef :x ? 10)) (fn (next (. $ :x))))`,
 					out: ['10'],
 				});
 				expr({
@@ -1483,6 +1483,10 @@ a = {
 				});
 				compileError({
 					src: `main { { next 5 } >> out }`,
+					expected: '`next` is not allowed',
+				});
+				compileError({
+					src: `identity = (n: Int32): Int32 { next n }; main { identity(5) >> out }`,
 					expected: '`next` is not allowed',
 				});
 				compileError({
@@ -1506,39 +1510,39 @@ a = {
 			({ expr, compileError }) => {
 				expr({
 					src: `5 >> Int32 { $ + 1 }`,
-					ast: `(>> 5 (fn @sequence (parameter ? typeident ?) (+ $ 1)))`,
+					ast: `(>> 5 (fn (parameter ? typeident ?) (next (+ $ 1))))`,
 					out: ['6'],
 				});
 				expr({
 					src: `5 >> Int32 { 1, 2, 3 }`,
-					ast: `(>> 5 (fn @sequence (parameter ? typeident ?) (, 1 2 3)))`,
+					ast: `(>> 5 (fn (parameter ? typeident ?) (next (, 1 2 3))))`,
 					out: ['1', '2', '3'],
 				});
 				expr({
-					pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { next n > 0 ? n : fail() }`,
+					pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { n > 0 ? n : fail() }`,
 					src: `risky(0) >> Int32 { $ + 1 } | Error { 99 }`,
-					ast: `(>> (call :risky 0) (| (fn @sequence (parameter ? typeident ?) (+ $ 1)) (fn @sequence (parameter ? typeident ?) 99)))`,
+					ast: `(>> (call :risky 0) (| (fn (parameter ? typeident ?) (next (+ $ 1))) (fn (parameter ? typeident ?) (next 99))))`,
 					out: ['99'],
 				});
 				expr({
 					src: `true >> Bool { $ }`,
-					ast: `(>> :true (fn @sequence (parameter ? typeident ?) $))`,
+					ast: `(>> :true (fn (parameter ? typeident ?) (next $)))`,
 					out: ['true'],
 				});
 				expr({
-					pre: `mixed = (): Int32 | String { next 42 }`,
+					pre: `mixed = (): Int32 | String { 42 }`,
 					src: `mixed() >> Int32 | String { $ }`,
-					ast: `(>> (call :mixed ?) (fn @sequence (parameter ? typeident ?) $))`,
+					ast: `(>> (call :mixed ?) (fn (parameter ? typeident ?) (next $)))`,
 					out: ['42'],
 				});
 				expr({
 					src: `[1, 'hi'] >> [Int32, String] { $.0 }`,
-					ast: `(>> (data (, 1 'hi')) (fn @sequence (parameter ? (data (, (propdef ? typeident ?) (propdef ? typeident ?))) ?) (. $ 0)))`,
+					ast: `(>> (data (, 1 'hi')) (fn (parameter ? (data (, (propdef ? typeident ?) (propdef ? typeident ?))) ?) (next (. $ 0))))`,
 					out: ['1'],
 				});
 				expr({
 					src: `[a = 10, b = 20] >> [a: Int32, b: Int32] { $.a + $.b }`,
-					ast: `(>> (data (, (propdef :a ? 10) (propdef :b ? 20))) (fn @sequence (parameter ? (data (, (propdef :a typeident ?) (propdef :b typeident ?))) ?) (+ (. $ :a) (. $ :b))))`,
+					ast: `(>> (data (, (propdef :a ? 10) (propdef :b ? 20))) (fn (parameter ? (data (, (propdef :a typeident ?) (propdef :b typeident ?))) ?) (next (+ (. $ :a) (. $ :b)))))`,
 					out: ['30'],
 				});
 				compileError({
@@ -1561,22 +1565,22 @@ a = {
 			({ expr, compileError, rule }) => {
 				expr({
 					src: `5 >> Int32:Int32 { $ * 2 }`,
-					ast: `(>> 5 (fn @sequence (parameter ? typeident typeident) (* $ 2)))`,
+					ast: `(>> 5 (fn (parameter ? typeident typeident) (next (* $ 2))))`,
 					out: ['10'],
 				});
 				expr({
 					src: `5 >> Int32:Bool { $ > 0 }`,
-					ast: `(>> 5 (fn @sequence (parameter ? typeident typeident) (> $ 0)))`,
+					ast: `(>> 5 (fn (parameter ? typeident typeident) (next (> $ 0))))`,
 					out: ['true'],
 				});
 				rule({
 					src: `main { 5 >> Int32 { out($) } }`,
-					ast: `(root (main (>> 5 (fn @sequence (parameter ? typeident ?) (call :out $)))))`,
+					ast: `(root (main (>> 5 (fn (parameter ? typeident ?) (next (call :out $))))))`,
 					out: ['5'],
 				});
 				rule({
 					src: `main { [1, 2, 3] >> each >> Int32 { out($) } }`,
-					ast: `(root (main (>> (data (, 1 2 3)) :each (fn @sequence (parameter ? typeident ?) (call :out $)))))`,
+					ast: `(root (main (>> (data (, 1 2 3)) :each (fn (parameter ? typeident ?) (next (call :out $))))))`,
 					out: ['1', '2', '3'],
 				});
 				expr({
@@ -1594,7 +1598,7 @@ a = {
 				});
 				rule({
 					src: `main { 5 >> Int32:Void { out($) } }`,
-					ast: `(root (main (>> 5 (fn @sequence (parameter ? typeident typeident) (call :out $)))))`,
+					ast: `(root (main (>> 5 (fn (parameter ? typeident typeident) (next (call :out $))))))`,
 					out: ['5'],
 				});
 			},
@@ -1611,18 +1615,18 @@ a = {
 			({ expr, compileError }) => {
 				expr({
 					src: `true >> :true { 1 }`,
-					ast: `(>> :true (fn @sequence (parameter ? typeident ?) 1))`,
+					ast: `(>> :true (fn (parameter ? typeident ?) (next 1)))`,
 					out: ['1'],
 				});
 				expr({
 					src: `false >> :false { 0 }`,
-					ast: `(>> :false (fn @sequence (parameter ? typeident ?) 0))`,
+					ast: `(>> :false (fn (parameter ? typeident ?) (next 0)))`,
 					out: ['0'],
 				});
 				expr({
-					pre: `check = (n: Int32): Bool { next n > 0 }`,
+					pre: `check = (n: Int32): Bool { n > 0 }`,
 					src: `check(5) >> :true { 'positive' } | :false { 'non-positive' }`,
-					ast: `(>> (call :check 5) (| (fn @sequence (parameter ? typeident ?) 'positive') (fn @sequence (parameter ? typeident ?) 'non-positive')))`,
+					ast: `(>> (call :check 5) (| (fn (parameter ? typeident ?) (next 'positive')) (fn (parameter ? typeident ?) (next 'non-positive'))))`,
 					out: ['positive'],
 				});
 				compileError({
@@ -1630,14 +1634,14 @@ a = {
 					expected: 'does not consume',
 				});
 				expr({
-					pre: `mode = (): 'on' | 'off' { next 'on' }`,
+					pre: `mode = (): 'on' | 'off' { 'on' }`,
 					src: `mode() >> :'on' { 'enabled' } | :'off' { 'disabled' }`,
-					ast: `(>> (call :mode ?) (| (fn @sequence (parameter ? typeident ?) 'enabled') (fn @sequence (parameter ? typeident ?) 'disabled')))`,
+					ast: `(>> (call :mode ?) (| (fn (parameter ? typeident ?) (next 'enabled')) (fn (parameter ? typeident ?) (next 'disabled'))))`,
 					out: ['enabled'],
 				});
 				expr({
 					src: `0 >> :0 | false | '' { 'falsy' }`,
-					ast: `(>> 0 (fn @sequence (parameter ? typeident ?) 'falsy'))`,
+					ast: `(>> 0 (fn (parameter ? typeident ?) (next 'falsy')))`,
 					out: ['falsy'],
 				});
 				compileError({
@@ -1649,7 +1653,7 @@ a = {
 					expected: 'Parens',
 				});
 				compileError({
-					pre: `check = (n: Int32): Bool { next n > 0 }`,
+					pre: `check = (n: Int32): Bool { n > 0 }`,
 					src: `main { check(5) >> :true { 1 } >> out }`,
 					expected: 'does not consume',
 				});
@@ -1670,19 +1674,19 @@ a = {
 			({ expr, compileError }) => {
 				expr({
 					src: `5 >> (n: Int32) { n + 1 }`,
-					ast: `(>> 5 (fn @sequence (parameter :n typeident ?) (+ :n 1)))`,
+					ast: `(>> 5 (fn (parameter :n typeident ?) (next (+ :n 1))))`,
 					out: ['6'],
 				});
 				expr({
-					pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { next n > 0 ? n : fail() }`,
+					pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { n > 0 ? n : fail() }`,
 					src: `risky(0) >> Int32 { $ } | (e: Fail) { e.code }`,
-					ast: `(>> (call :risky 0) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter :e typeident ?) (. :e :code))))`,
+					ast: `(>> (call :risky 0) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter :e typeident ?) (next (. :e :code)))))`,
 					out: ['7'],
 				});
 				expr({
 					pre: `type Point = [x: Int32, y: Int32]; p: Point = [x = 3, y = 4]`,
 					src: `p >> (q: Point) { q.x + q.y }`,
-					ast: `(>> :p (fn @sequence (parameter :q typeident ?) (+ (. :q :x) (. :q :y))))`,
+					ast: `(>> :p (fn (parameter :q typeident ?) (next (+ (. :q :x) (. :q :y)))))`,
 					out: ['7'],
 				});
 				expr({
@@ -1743,14 +1747,14 @@ a = {
 					out: ['42'],
 				});
 				expr({
-					pre: `square = (n: Int32): Int32 { half = n / 2; next half * 2; }`,
+					pre: `square = (n: Int32): Int32 { n / 2 >> Int32 { $ * 2 } }`,
 					src: `square(6)`,
 					ast: `(call :square 6)`,
 					out: ['6'],
 				});
 				rule({
 					src: `print = (n: Int32) { out(n) }; main { 5 >> print }`,
-					ast: `(root (def :print ? (fn @sequence (parameter :n typeident ?) (call :out :n))) (main (>> 5 :print)))`,
+					ast: `(root (def :print ? (fn (parameter :n typeident ?) (next (call :out :n)))) (main (>> 5 :print)))`,
 					out: ['5'],
 				});
 				expr({
@@ -1762,7 +1766,7 @@ a = {
 				expr({
 					pre: `pair = (n: Int32): [Int32, Int32] { [n, n + 1] }`,
 					src: `pair(5) >> { $.0 + $.1 }`,
-					ast: `(>> (call :pair 5) (fn @sequence (+ (. $ 0) (. $ 1))))`,
+					ast: `(>> (call :pair 5) (fn (next (+ (. $ 0) (. $ 1)))))`,
 					out: ['11'],
 				});
 				expr({
@@ -1794,7 +1798,7 @@ a = {
 					expected: 'emission 1',
 				});
 				compileError({
-					src: `main { pair = (n: Int32): { Int32, Bool } { next n }; pair(7) >> out }`,
+					src: `main { pair = (n: Int32): { Int32, Bool } { n }; pair(7) >> out }`,
 					expected: 'declares 2 emissions but produces 1',
 				});
 				compileError({
@@ -1802,7 +1806,7 @@ a = {
 					expected: 'Use `Void`',
 				});
 				compileError({
-					src: `main { one = (): { Int32 } { next 1 }; one() >> out }`,
+					src: `main { one = (): { Int32 } { 1 }; one() >> out }`,
 					expected: 'Use the element type directly',
 				});
 				compileError({
@@ -1823,12 +1827,12 @@ a = {
 			({ expr, compileError }) => {
 				expr({
 					src: `[1, 2] >> (a, b) { a + b }`,
-					ast: `(>> (data (, 1 2)) (fn @sequence (parameter :a ? ?) (parameter :b ? ?) (+ :a :b)))`,
+					ast: `(>> (data (, 1 2)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ :a :b))))`,
 					out: ['3'],
 				});
 				expr({
 					src: `[1, 2] >> (a: Int32, b: Int32) { a + b }`,
-					ast: `(>> (data (, 1 2)) (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) (+ :a :b)))`,
+					ast: `(>> (data (, 1 2)) (fn (parameter :a typeident ?) (parameter :b typeident ?) (next (+ :a :b))))`,
 					out: ['3'],
 				});
 				expr({
@@ -1839,7 +1843,7 @@ a = {
 				});
 				expr({
 					src: `[10, 20] >> (a, b) { a + b }`,
-					ast: `(>> (data (, 10 20)) (fn @sequence (parameter :a ? ?) (parameter :b ? ?) (+ :a :b)))`,
+					ast: `(>> (data (, 10 20)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ :a :b))))`,
 					out: ['30'],
 				});
 				expr({
@@ -1855,29 +1859,29 @@ a = {
 					out: ['1'],
 				});
 				expr({
-					pre: `add3 = (a: Int32, b: Int32, c: Int32) { pair = a + b; next pair + c; }`,
+					pre: `add3 = (a: Int32, b: Int32, c: Int32) { a + b >> Int32 { $ + c } }`,
 					src: `add3(1, 2, 3)`,
 					ast: `(call :add3 (, 1 2 3))`,
 					out: ['6'],
 				});
 				expr({
 					src: `[1, 2, 3] >> (a, b, c) { a + b + c }`,
-					ast: `(>> (data (, 1 2 3)) (fn @sequence (parameter :a ? ?) (parameter :b ? ?) (parameter :c ? ?) (+ (+ :a :b) :c)))`,
+					ast: `(>> (data (, 1 2 3)) (fn (parameter :a ? ?) (parameter :b ? ?) (parameter :c ? ?) (next (+ (+ :a :b) :c))))`,
 					out: ['6'],
 				});
 				expr({
 					src: `[1, 2, 3] >> (a, b) { a + b.0 + b.1 }`,
-					ast: `(>> (data (, 1 2 3)) (fn @sequence (parameter :a ? ?) (parameter :b ? ?) (+ (+ :a (. :b 0)) (. :b 1))))`,
+					ast: `(>> (data (, 1 2 3)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ (+ :a (. :b 0)) (. :b 1)))))`,
 					out: ['6'],
 				});
 				expr({
 					src: `[1, 2, 3, 4] >> (a, b, c) { a + b + c.0 + c.1 }`,
-					ast: `(>> (data (, 1 2 3 4)) (fn @sequence (parameter :a ? ?) (parameter :b ? ?) (parameter :c ? ?) (+ (+ (+ :a :b) (. :c 0)) (. :c 1))))`,
+					ast: `(>> (data (, 1 2 3 4)) (fn (parameter :a ? ?) (parameter :b ? ?) (parameter :c ? ?) (next (+ (+ (+ :a :b) (. :c 0)) (. :c 1)))))`,
 					out: ['10'],
 				});
 				expr({
 					src: `[1, 2] >> (a, b) { a + b }`,
-					ast: `(>> (data (, 1 2)) (fn @sequence (parameter :a ? ?) (parameter :b ? ?) (+ :a :b)))`,
+					ast: `(>> (data (, 1 2)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ :a :b))))`,
 					out: ['3'],
 				});
 				compileError({
@@ -1931,7 +1935,7 @@ a = {
 					out: ['5'],
 				});
 				expr({
-					pre: `mid = (a: Int32, b: Int32, c: Int32): Int32 { sum = a + b + c; next sum / 3; }`,
+					pre: `mid = (a: Int32, b: Int32, c: Int32): Int32 { a + b + c >> Int32 { $ / 3 } }`,
 					src: `mid(2, 4, 6)`,
 					ast: `(call :mid (, 2 4 6))`,
 					out: ['4'],
@@ -1945,7 +1949,7 @@ a = {
 				expr({
 					pre: `swap = (a: Int32, b: Int32): [Int32, Int32] { [b, a] }`,
 					src: `swap(1, 2) >> { $.0 - $.1 }`,
-					ast: `(>> (call :swap (, 1 2)) (fn @sequence (- (. $ 0) (. $ 1))))`,
+					ast: `(>> (call :swap (, 1 2)) (fn (next (- (. $ 0) (. $ 1)))))`,
 					out: ['1'],
 				});
 				expr({
@@ -2038,6 +2042,28 @@ a = {
 
 	h('Assignment', ({ ast, rule, compileError, testBlock }) => {
 		compileError({
+			p: 'An immutable Copy local is redundant when every reference occurs in the immediately following statement and its other inputs are Copy values; repeated references in that statement use one piped value.',
+			src: `double = (n: Int32): Int32 {
+	value = n * 2;
+	next value + value
+};
+main { double(3) >> out }`,
+			expected: 'Redundant intermediate binding "value"; pipe its initializer into the following statement.',
+		});
+		testBlock({
+			p: 'Top-level bindings, mutable-capability bindings, locals retained across an intervening statement, and calculations involving non-Copy locals are not adjacent intermediates.',
+			src: `export top = 2;
+export keepVar = (n: Int32): Int32 { value: var = n * 2; next value };
+export keepLater = (n: Int32): Int32 { value = n * 2; out(n); next value };
+export keepHeap = (): Int32 { value = 'x\${1}'; next length(value) };
+keepOwner = (a: own Buffer<Int32>): own Buffer<Int32> { size = length(a); next size > 0 ? a : a };
+export keepOwnerSize = (): Int32 { length(keepOwner(Buffer<Int32>(1))) };
+export keepDollar = (): Int32 { Buffer<Int32>(1) >> Buffer<Int32>:Int32 { size = length($); next size + length($) } };
+#test { equal(top, 2); equal(keepVar(3), 6); equal(keepLater(4), 8); equal(keepHeap(), 2); equal(keepOwnerSize(), 0); equal(keepDollar(), 0) }
+export target = (): Int32 { 0 }`,
+			out: ['4'],
+		});
+		compileError({
 			p: 'A binding type annotation is redundant when the initializer already establishes exactly that type.',
 			src: 'cols: Int32 = 10; main { cols >> out }',
 			expected: 'Redundant type annotation `Int32`; the initializer is already `Int32`.',
@@ -2075,7 +2101,7 @@ a = {
 		rule({
 			p: '`var T` parameters borrow an owner exclusively for the call without moving it; the caller can use the owner afterward.',
 			src: `write = (b: var Buffer<Int32>, n: Int32) { set(b, 0, n) }; main { b = Buffer<Int32>(1); write(b, 7); get(b, 0) >> out }`,
-			ast: `(root (def :write ? (fn @sequence (parameter :b typeident ?) (parameter :n typeident ?) (call :set @intrinsic (, :b 0 :n)))) (main (def :b ? (call typeident 1)) (call :write (, :b 7)) (>> (call :get @intrinsic (, :b 0)) :out)))`,
+			ast: `(root (def :write ? (fn (parameter :b typeident ?) (parameter :n typeident ?) (next (call :set @intrinsic (, :b 0 :n))))) (main (def :b ? (call typeident 1)) (call :write (, :b 7)) (>> (call :get @intrinsic (, :b 0)) :out)))`,
 			out: ['7'],
 		});
 		compileError({
@@ -2117,7 +2143,7 @@ export target = (): Int32 {
 		});
 		testBlock({
 			p: 'A mutable borrow emitted through a pipeline may be reborrowed mutably or shared without transferring ownership.',
-			src: `forward = (a: var Array<Int32>) { next a };
+			src: `forward = (a: var Array<Int32>) { a };
 write = (a: var Array<Int32>) { set(a, 0, 7) };
 read = (a: Array<Int32>): Int32 { get(a, 0) };
 #test { equal(target(), 7) }
@@ -2139,7 +2165,7 @@ main { a = Array<Int32>(1); set(a, 0, 7); a >> forwardThenWrite >> consume }`,
 		compileError({
 			p: 'A shared borrow emitted through a pipeline cannot move into an owning stage.',
 			src: `consume = (a: own Array<Int32>) { length(a) >> out };
-forward = (a: Array<Int32>) { next a };
+forward = (a: Array<Int32>) { a };
 main { a = Array<Int32>(1); a >> forward >> consume }`,
 			expected: 'cannot move shared borrow',
 		});
@@ -2298,57 +2324,57 @@ main { a = Array<Int32>(1); a >> forward >> consume }`,
 		});
 		rule({
 			src: `type Named = [ name: String ]; type Stamped = Named & [ id: Int32 ]; mk = (): Stamped { [ name = 'Ada', id = 7 ] }; nameOf = (n: Named): String { n.name }; main { nameOf(mk()) >> out }`,
-			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Stamped (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence typeident (data (, (propdef :name ? 'Ada') (propdef :id ? 7))))) (def :nameOf ? (fn @sequence (parameter :n typeident ?) typeident (. :n :name))) (main (>> (call :nameOf (call :mk ?)) :out)))`,
+			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Stamped (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn typeident (next (data (, (propdef :name ? 'Ada') (propdef :id ? 7)))))) (def :nameOf ? (fn (parameter :n typeident ?) typeident (next (. :n :name)))) (main (>> (call :nameOf (call :mk ?)) :out)))`,
 			out: ['Ada'],
 		});
 		rule({
-			src: `type Point = [ x: Int32 ]; type Circle = [ r: Int32 ]; mp = (): Point { [ x = 1 ] }; mc = (): Circle { [ r = 9 ] }; shape = (n: Int32): Point | Circle { next n > 0 ? mp() : mc() }; main { shape(0 - 1) >> Point { 1 } | Circle { 2 } >> out }`,
-			ast: `(root (type :Point (data (propdef :x typeident ?))) (type :Circle (data (propdef :r typeident ?))) (def :mp ? (fn @sequence typeident (data (propdef :x ? 1)))) (def :mc ? (fn @sequence typeident (data (propdef :r ? 9)))) (def :shape ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :mp ?) (call :mc ?))))) (main (>> (call :shape (- 0 1)) (| (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 2)) :out)))`,
+			src: `type Point = [ x: Int32 ]; type Circle = [ r: Int32 ]; mp = (): Point { [ x = 1 ] }; mc = (): Circle { [ r = 9 ] }; shape = (n: Int32): Point | Circle { n > 0 ? mp() : mc() }; main { shape(0 - 1) >> Point { 1 } | Circle { 2 } >> out }`,
+			ast: `(root (type :Point (data (propdef :x typeident ?))) (type :Circle (data (propdef :r typeident ?))) (def :mp ? (fn typeident (next (data (propdef :x ? 1))))) (def :mc ? (fn typeident (next (data (propdef :r ? 9))))) (def :shape ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :mp ?) (call :mc ?))))) (main (>> (call :shape (- 0 1)) (| (fn (parameter ? typeident ?) (next 1)) (fn (parameter ? typeident ?) (next 2))) :out)))`,
 			out: ['2'],
 		});
 		rule({
-			src: `pick = (n: Int32): own Int32 | String { next n > 0 ? 42 : 'hi' }; main { pick(1) >> Int32 { 0 - 1 } | String { 99 } >> out; pick(0) >> Int32 { 0 - 1 } | String { 99 } >> out; }`,
-			ast: `(root (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) 42 'hi')))) (main (>> (call :pick 1) (| (fn @sequence (parameter ? typeident ?) (- 0 1)) (fn @sequence (parameter ? typeident ?) 99)) :out) (>> (call :pick 0) (| (fn @sequence (parameter ? typeident ?) (- 0 1)) (fn @sequence (parameter ? typeident ?) 99)) :out)))`,
+			src: `pick = (n: Int32): own Int32 | String { n > 0 ? 42 : 'hi' }; main { pick(1) >> Int32 { 0 - 1 } | String { 99 } >> out; pick(0) >> Int32 { 0 - 1 } | String { 99 } >> out; }`,
+			ast: `(root (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) 42 'hi')))) (main (>> (call :pick 1) (| (fn (parameter ? typeident ?) (next (- 0 1))) (fn (parameter ? typeident ?) (next 99))) :out) (>> (call :pick 0) (| (fn (parameter ? typeident ?) (next (- 0 1))) (fn (parameter ? typeident ?) (next 99))) :out)))`,
 			out: ['-1', '99'],
 		});
 		rule({
 			src: `d = (n: Int32): own Int32 | DivByZero { 10 / n }; f = (u: Int32 | DivByZero): Int32 { u >> Int32 { $ } | DivByZero { 0 - 1 } }; main { f(d(2)) >> out; f(d(0)) >> out; }`,
-			ast: `(root (def :d ? (fn @sequence (parameter :n typeident ?) typeident (/ 10 :n))) (def :f ? (fn @sequence (parameter :u typeident ?) typeident (>> :u (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) (- 0 1)))))) (main (>> (call :f (call :d 2)) :out) (>> (call :f (call :d 0)) :out)))`,
+			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (def :f ? (fn (parameter :u typeident ?) typeident (next (>> :u (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 1)))))))) (main (>> (call :f (call :d 2)) :out) (>> (call :f (call :d 0)) :out)))`,
 			out: ['5', '-1'],
 		});
 		rule({
 			src: `d = (n: Int32): Int32 | DivByZero { 10 / n }; id = (u: Int32 | DivByZero): Int32 | DivByZero { u }; main { id(d(2)) >> Int32 { $ } | DivByZero { 0 } >> out; id(d(0)) >> Int32 { $ } | DivByZero { 0 } >> out; }`,
-			ast: `(root (def :d ? (fn @sequence (parameter :n typeident ?) typeident (/ 10 :n))) (def :id ? (fn @sequence (parameter :u typeident ?) typeident :u)) (main (>> (call :id (call :d 2)) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out) (>> (call :id (call :d 0)) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out)))`,
+			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (def :id ? (fn (parameter :u typeident ?) typeident (next :u))) (main (>> (call :id (call :d 2)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out) (>> (call :id (call :d 0)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out)))`,
 			out: ['5', '0'],
 		});
 		rule({
-			src: `pick = (n: Int32): own Int32 | String | Bool { next n > 5 ? 1 : (n > 0 ? 'mid' : true) }; main { pick(9) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; pick(3) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; pick(0) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; }`,
-			ast: `(root (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 5) 1 (? (> :n 0) 'mid' :true))))) (main (>> (call :pick 9) (| (| (fn @sequence (parameter ? typeident ?) 100) (fn @sequence (parameter ? typeident ?) 200)) (fn @sequence (parameter ? typeident ?) 300)) :out) (>> (call :pick 3) (| (| (fn @sequence (parameter ? typeident ?) 100) (fn @sequence (parameter ? typeident ?) 200)) (fn @sequence (parameter ? typeident ?) 300)) :out) (>> (call :pick 0) (| (| (fn @sequence (parameter ? typeident ?) 100) (fn @sequence (parameter ? typeident ?) 200)) (fn @sequence (parameter ? typeident ?) 300)) :out)))`,
+			src: `pick = (n: Int32): own Int32 | String | Bool { n > 5 ? 1 : (n > 0 ? 'mid' : true) }; main { pick(9) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; pick(3) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; pick(0) >> Int32 { 100 } | String { 200 } | Bool { 300 } >> out; }`,
+			ast: `(root (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 5) 1 (? (> :n 0) 'mid' :true))))) (main (>> (call :pick 9) (| (| (fn (parameter ? typeident ?) (next 100)) (fn (parameter ? typeident ?) (next 200))) (fn (parameter ? typeident ?) (next 300))) :out) (>> (call :pick 3) (| (| (fn (parameter ? typeident ?) (next 100)) (fn (parameter ? typeident ?) (next 200))) (fn (parameter ? typeident ?) (next 300))) :out) (>> (call :pick 0) (| (| (fn (parameter ? typeident ?) (next 100)) (fn (parameter ? typeident ?) (next 200))) (fn (parameter ? typeident ?) (next 300))) :out)))`,
 			out: ['100', '200', '300'],
 		});
 		rule({
-			src: `mixed = (n: Int32): own Float64 | String { next n > 0 ? 3.14 : 'hi' }; main { mixed(1) >> Float64 { $ } | String { 0.0 } >> out; mixed(0) >> Float64 { 1.5 } | String { 2.5 } >> out; }`,
-			ast: `(root (def :mixed ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) 3.14 'hi')))) (main (>> (call :mixed 1) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out) (>> (call :mixed 0) (| (fn @sequence (parameter ? typeident ?) 1.5) (fn @sequence (parameter ? typeident ?) 2.5)) :out)))`,
+			src: `mixed = (n: Int32): own Float64 | String { n > 0 ? 3.14 : 'hi' }; main { mixed(1) >> Float64 { $ } | String { 0.0 } >> out; mixed(0) >> Float64 { 1.5 } | String { 2.5 } >> out; }`,
+			ast: `(root (def :mixed ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) 3.14 'hi')))) (main (>> (call :mixed 1) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out) (>> (call :mixed 0) (| (fn (parameter ? typeident ?) (next 1.5)) (fn (parameter ? typeident ?) (next 2.5))) :out)))`,
 			out: ['3.14', '2.5'],
 		});
 		rule({
-			src: `mixed = (n: Int32): own Float64 | String { next n > 0 ? 3.14 : 'hello' }; main { mixed(1) >> out; mixed(0) >> out; }`,
+			src: `mixed = (n: Int32): own Float64 | String { n > 0 ? 3.14 : 'hello' }; main { mixed(1) >> out; mixed(0) >> out; }`,
 			ast: `(root (def :mixed ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) 3.14 'hello')))) (main (>> (call :mixed 1) :out) (>> (call :mixed 0) :out)))`,
 			out: ['3.14', 'hello'],
 		});
 		rule({
 			src: `log = (n: Int32) { out(n) }; main { 7 >> log }`,
-			ast: `(root (def :log ? (fn @sequence (parameter :n typeident ?) (call :out :n))) (main (>> 7 :log)))`,
+			ast: `(root (def :log ? (fn (parameter :n typeident ?) (next (call :out :n)))) (main (>> 7 :log)))`,
 			out: ['7'],
 		});
 		rule({
 			p: '`Void` is the explicit empty emission signature. A function annotated `Void` must emit nothing.',
 			src: `log = (n: Int32): Void { out(n) }; main { 7 >> log }`,
-			ast: `(root (def :log ? (fn @sequence (parameter :n typeident ?) typeident (call :out :n))) (main (>> 7 :log)))`,
+			ast: `(root (def :log ? (fn (parameter :n typeident ?) typeident (next (call :out :n)))) (main (>> 7 :log)))`,
 			out: ['7'],
 		});
 		compileError({
-			src: `main { bad = (): Void { next 1 }; bad() >> out }`,
+			src: `main { bad = (): Void { 1 }; bad() >> out }`,
 			expected: 'declares no emissions but produces 1',
 		});
 		compileError({
@@ -2377,7 +2403,7 @@ main {
 	b: Uint8 = 200;
 	b >> out;
 }`,
-			ast: `(root (def :n typeident 5) (def :f ? (fn @sequence (parameter :a typeident ?) typeident (? (> :n 0) (+ :a :a) 5000000000))) (main (>> (call :f 7) :out) (def :b typeident 200) (>> :b :out)))`,
+			ast: `(root (def :n typeident 5) (def :f ? (fn (parameter :a typeident ?) typeident (next (? (> :n 0) (+ :a :a) 5000000000)))) (main (>> (call :f 7) :out) (def :b typeident 200) (>> :b :out)))`,
 			out: ['14', '200'],
 		});
 		compileError({
@@ -2405,7 +2431,7 @@ main {
 main {
 	f(Int64(5), Int64(7)) >> out
 }`,
-			ast: `(root (def :f ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))) (main (>> (call :f (, (call typeident 5) (call typeident 7))) :out)))`,
+			ast: `(root (def :f ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (+ :a :b)))) (main (>> (call :f (, (call typeident 5) (call typeident 7))) :out)))`,
 			out: ['12'],
 		});
 		rule({
@@ -2421,7 +2447,7 @@ main {
 	f(Int64(20), Int64(4)) >> Int64 { $ } | DivByZero { Int64(0) } >> out;
 	f(Int64(20), Int64(0)) >> Int64 { $ } | DivByZero { Int64(0 - 1) } >> out;
 }`,
-			ast: `(root (def :f ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (/ :a :b))) (main (>> (call :f (, (call typeident 20) (call typeident 4))) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) (call typeident 0))) :out) (>> (call :f (, (call typeident 20) (call typeident 0))) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) (call typeident (- 0 1)))) :out)))`,
+			ast: `(root (def :f ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (/ :a :b)))) (main (>> (call :f (, (call typeident 20) (call typeident 4))) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (call typeident 0)))) :out) (>> (call :f (, (call typeident 20) (call typeident 0))) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (call typeident (- 0 1))))) :out)))`,
 			out: ['5', '-1'],
 		});
 		rule({
@@ -2478,7 +2504,7 @@ main {
 			p: 'Dispatch prefers an exact type match over an int-widening one, so a `Uint32` argument binds the `Uint32` arm rather than a signed `Int32` arm listed before it.',
 			src: `classify = (n: Int32): String { 'signed' } | (n: Uint32): String { 'unsigned' };
 main { classify(Uint32(5)) >> out; classify(5) >> out }`,
-			ast: `(root (def :classify ? (| (fn @sequence (parameter :n typeident ?) typeident 'signed') (fn @sequence (parameter :n typeident ?) typeident 'unsigned'))) (main (>> (call :classify (call typeident 5)) :out) (>> (call :classify 5) :out)))`,
+			ast: `(root (def :classify ? (| (fn (parameter :n typeident ?) typeident (next 'signed')) (fn (parameter :n typeident ?) typeident (next 'unsigned')))) (main (>> (call :classify (call typeident 5)) :out) (>> (call :classify 5) :out)))`,
 			out: ['unsigned', 'signed'],
 		});
 	});
@@ -2502,7 +2528,7 @@ main { classify(Uint32(5)) >> out; classify(5) >> out }`,
 			p: 'The heap grows on demand — allocation is not bounded by the initial 64KB memory page. Freed neighbors coalesce and oversized blocks split on reuse, so even a monotonically growing buffer plateaus near its final size instead of retaining every intermediate copy.',
 			src: `growString = (n: Int32): own String { n == 0 ? '' : '\${growString(n - 1)}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' };
 main { length(growString(1200)) >> out }`,
-			ast: `(root (def :growString ? (fn @sequence (parameter :n typeident ?) typeident (? (== :n 0) '' (interp (call :growString (- :n 1)))))) (main (>> (call :length @intrinsic (call :growString 1200)) :out)))`,
+			ast: `(root (def :growString ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) '' (interp (call :growString (- :n 1))))))) (main (>> (call :length @intrinsic (call :growString 1200)) :out)))`,
 			out: ['76800'],
 			maxPages: 8,
 		});
@@ -2521,7 +2547,7 @@ main { length(growString(1200)) >> out }`,
 			p: 'Multiple scalar tail-recursive accumulators stay flat while dynamic strings created during iteration are reclaimed.',
 			src: `spin = (i: Int32, total: Int32): Int32 { i >= 200000 ? total : spin(i + 1, total + length('v\${i}')) };
 main { spin(0, 0) >> out }`,
-			ast: `(root (def :spin ? (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) typeident (? (>= :i 200000) :total (call :spin (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i)))))))) (main (>> (call :spin (, 0 0)) :out)))`,
+			ast: `(root (def :spin ? (fn (parameter :i typeident ?) (parameter :total typeident ?) typeident (next (? (>= :i 200000) :total (call :spin (, (+ :i 1) (+ :total (call :length @intrinsic (interp :i))))))))) (main (>> (call :spin (, 0 0)) :out)))`,
 			out: ['1288890'],
 			maxPages: 3,
 		});
@@ -2530,7 +2556,7 @@ main { spin(0, 0) >> out }`,
 			src: `step = (n: Int32): Int32 { m = 'x\${n}\${n * 7}\${n * 13}'; next length(m) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(400000, 0) >> out }`,
-			ast: `(root (def :step ? (fn (parameter :n typeident ?) typeident (def :m ? (interp :n (* :n 7) (* :n 13))) (next (call :length @intrinsic :m)))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 400000 0)) :out)))`,
+			ast: `(root (def :step ? (fn (parameter :n typeident ?) typeident (def :m ? (interp :n (* :n 7) (* :n 13))) (next (call :length @intrinsic :m)))) (def :spin ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n)))))))) (main (>> (call :spin (, 400000 0)) :out)))`,
 			out: ['8044701'],
 			maxPages: 3,
 		});
@@ -2548,7 +2574,7 @@ main {
 	count = writeAll(b, 0);
 	reduce(b, count - count, (total: own Int32, n: Int32): own Int32 { total + n }) >> out
 }`,
-			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b ? (call typeident 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn @sequence (parameter :total typeident ?) (parameter :n typeident ?) typeident (+ :total :n)))) :out)))`,
+			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b ? (call typeident 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn (parameter :total typeident ?) (parameter :n typeident ?) typeident (next (+ :total :n))))) :out)))`,
 			out: ['4950'],
 			maxPages: 2,
 		});
@@ -2556,7 +2582,7 @@ main {
 			p: 'Scalar tail recursion runs flat without allocating aggregate state.',
 			src: `spin = (i: Int32, total: Int32): Int32 { i >= 100000 ? total : spin(i + 1, total + 6) };
 main { spin(0, 0) >> out }`,
-			ast: `(root (def :spin ? (fn @sequence (parameter :i typeident ?) (parameter :total typeident ?) typeident (? (>= :i 100000) :total (call :spin (, (+ :i 1) (+ :total 6)))))) (main (>> (call :spin (, 0 0)) :out)))`,
+			ast: `(root (def :spin ? (fn (parameter :i typeident ?) (parameter :total typeident ?) typeident (next (? (>= :i 100000) :total (call :spin (, (+ :i 1) (+ :total 6))))))) (main (>> (call :spin (, 0 0)) :out)))`,
 			out: ['600000'],
 			maxPages: 3,
 			wasm: {
@@ -2571,7 +2597,7 @@ main { spin(0, 0) >> out }`,
 			p: 'Recursive arguments are evaluated into typed temporaries before parameter locals update, preserving simultaneous swaps.',
 			src: `rotate = (n: Int32, a: Int32, b: Int32): Int32 { n == 0 ? a * 100 + b : rotate(n - 1, b, a + b) };
 main { rotate(3, 1, 2) >> out }`,
-			ast: `(root (def :rotate ? (fn @sequence (parameter :n typeident ?) (parameter :a typeident ?) (parameter :b typeident ?) typeident (? (== :n 0) (+ (* :a 100) :b) (call :rotate (, (- :n 1) :b (+ :a :b)))))) (main (>> (call :rotate (, 3 1 2)) :out)))`,
+			ast: `(root (def :rotate ? (fn (parameter :n typeident ?) (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (? (== :n 0) (+ (* :a 100) :b) (call :rotate (, (- :n 1) :b (+ :a :b))))))) (main (>> (call :rotate (, 3 1 2)) :out)))`,
 			out: ['508'],
 			wasm: {
 				fn: 'rotate',
@@ -2585,7 +2611,7 @@ main { rotate(3, 1, 2) >> out }`,
 			p: 'Loop-carried parameter locals retain their concrete WASM widths.',
 			src: `wide = (n: Int32, total: Int64): Int64 { n == 0 ? total : wide(n - 1, total + n) };
 main { wide(100000, 0) >> out }`,
-			ast: `(root (def :wide ? (fn @sequence (parameter :n typeident ?) (parameter :total typeident ?) typeident (? (== :n 0) :total (call :wide (, (- :n 1) (+ :total :n)))))) (main (>> (call :wide (, 100000 0)) :out)))`,
+			ast: `(root (def :wide ? (fn (parameter :n typeident ?) (parameter :total typeident ?) typeident (next (? (== :n 0) :total (call :wide (, (- :n 1) (+ :total :n))))))) (main (>> (call :wide (, 100000 0)) :out)))`,
 			out: ['5000050000'],
 			wasm: {
 				fn: 'wide',
@@ -2625,7 +2651,7 @@ export target = (): Int32 { 0 }`,
 	b = range(0, 4);
 	fill(b, { $ * 2 }) >> values >> out
 }`,
-			ast: `(root (main (def :a ? (call :range (, 0 4))) (>> (call :fill (, :a (fn @sequence (parameter ? ? ?) 7))) :values :out) (def :b ? (call :range (, 0 4))) (>> (call :fill (, :b (fn @sequence (parameter ? ? ?) (* $ 2)))) :values :out)))`,
+			ast: `(root (main (def :a ? (call :range (, 0 4))) (>> (call :fill (, :a (fn (parameter ? ? ?) (next 7)))) :values :out) (def :b ? (call :range (, 0 4))) (>> (call :fill (, :b (fn (parameter ? ? ?) (next (* $ 2))))) :values :out)))`,
 			out: ['7', '7', '7', '7', '0', '2', '4', '6'],
 		});
 		testBlock({
@@ -2675,7 +2701,7 @@ export target = (): Int32 { 0 }`,
 			p: '`values` and `slice` emit borrowed elements without consuming the Array. Slice is start-inclusive/end-exclusive, clamps a negative start to zero and stops at length.',
 			src: `export ints = (): own Array<Int32> { push(push(push(Buffer<Int32>(3), 2), 4), 6) };
 export sumValues = (a: Array<Int32>): Int32 {
-	next reduce(a, 0, (total: own Int32, n: Int32): own Int32 { total + n }) + length(a)
+	reduce(a, 0, (total: own Int32, n: Int32): own Int32 { total + n }) + length(a)
 };
 sumSliceAt = (a: Array<Int32>, i: Int32, end: Int32, total: Int32): Int32 {
 	i >= end || i >= length(a)
@@ -2963,7 +2989,7 @@ export target = (): Int32 { 0 }`,
 main {
 	sum(100, 0) >> out
 }`,
-			ast: `(root (def :sum ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :sum (, (- :n 1) (+ :acc :n)))))) (main (>> (call :sum (, 100 0)) :out)))`,
+			ast: `(root (def :sum ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :sum (, (- :n 1) (+ :acc :n))))))) (main (>> (call :sum (, 100 0)) :out)))`,
 			out: ['5050'],
 		});
 		rule({
@@ -2972,7 +2998,7 @@ main {
 main {
 	countdown(1000000) >> out
 }`,
-			ast: `(root (def :countdown ? (fn @sequence (parameter :n typeident ?) typeident (? (== :n 0) 0 (call :countdown (- :n 1))))) (main (>> (call :countdown 1000000) :out)))`,
+			ast: `(root (def :countdown ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) 0 (call :countdown (- :n 1)))))) (main (>> (call :countdown 1000000) :out)))`,
 			out: ['0'],
 		});
 		rule({
@@ -2981,7 +3007,7 @@ main {
 	f(1000000, 2) >> Int32 { $ } | DivByZero { 0 - 1 } >> out;
 	f(1000000, 0) >> Int32 { $ } | DivByZero { 0 - 1 } >> out;
 }`,
-			ast: `(root (def :f ? (fn @sequence (parameter :n typeident ?) (parameter :d typeident ?) typeident (? (== :n 0) (/ 10 :d) (call :f (, (- :n 1) :d))))) (main (>> (call :f (, 1000000 2)) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) (- 0 1))) :out) (>> (call :f (, 1000000 0)) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) (- 0 1))) :out)))`,
+			ast: `(root (def :f ? (fn (parameter :n typeident ?) (parameter :d typeident ?) typeident (next (? (== :n 0) (/ 10 :d) (call :f (, (- :n 1) :d)))))) (main (>> (call :f (, 1000000 2)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 1)))) :out) (>> (call :f (, 1000000 0)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 1)))) :out)))`,
 			out: ['5', '-1'],
 		});
 	});
@@ -2999,7 +3025,7 @@ main {
 	isEven(10) >> out;
 	isEven(1000001) >> out;
 }`,
-			ast: `(root (def :isEven ? (fn @sequence (parameter :n typeident ?) typeident (? (== :n 0) :true (call :isOdd (- :n 1))))) (def :isOdd ? (fn @sequence (parameter :n typeident ?) typeident (? (== :n 0) :false (call :isEven (- :n 1))))) (main (>> (call :isEven 10) :out) (>> (call :isEven 1000001) :out)))`,
+			ast: `(root (def :isEven ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) :true (call :isOdd (- :n 1)))))) (def :isOdd ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) :false (call :isEven (- :n 1)))))) (main (>> (call :isEven 10) :out) (>> (call :isEven 1000001) :out)))`,
 			out: ['true', 'false'],
 			wasm: {
 				fn: 'isEven',
@@ -3012,7 +3038,7 @@ main {
 			p: '`main` may precede the definitions it calls.',
 			src: `main { half(84) >> out }
 half = (n: Int32): Int32 { n / 2 };`,
-			ast: `(root (main (>> (call :half 84) :out)) (def :half ? (fn @sequence (parameter :n typeident ?) typeident (/ :n 2))))`,
+			ast: `(root (main (>> (call :half 84) :out)) (def :half ? (fn (parameter :n typeident ?) typeident (next (/ :n 2)))))`,
 			out: ['42'],
 		});
 		rule({
@@ -3020,7 +3046,7 @@ half = (n: Int32): Int32 { n / 2 };`,
 			src: `pick = (n: Int32): Int32 { later(n) };
 later = (n: Int32): Int32 { n + 1 } | (b: Bool): Int32 { 0 };
 main { pick(4) >> out }`,
-			ast: `(root (def :pick ? (fn @sequence (parameter :n typeident ?) typeident (call :later :n))) (def :later ? (| (fn @sequence (parameter :n typeident ?) typeident (+ :n 1)) (fn @sequence (parameter :b typeident ?) typeident 0))) (main (>> (call :pick 4) :out)))`,
+			ast: `(root (def :pick ? (fn (parameter :n typeident ?) typeident (next (call :later :n)))) (def :later ? (| (fn (parameter :n typeident ?) typeident (next (+ :n 1))) (fn (parameter :b typeident ?) typeident (next 0)))) (main (>> (call :pick 4) :out)))`,
 			out: ['5'],
 		});
 		compileError({
@@ -3055,7 +3081,7 @@ main {
 	p.x >> out;
 	p.y >> out;
 }`,
-			ast: `(root (type :Point (data (, (propdef :x typeident ?) (propdef :y typeident ?)))) (def :mk ? (fn @sequence typeident (data (, (propdef :x ? 7) (propdef :y ? 3.5))))) (main (def :p ? (call :mk ?)) (>> (. :p :x) :out) (>> (. :p :y) :out)))`,
+			ast: `(root (type :Point (data (, (propdef :x typeident ?) (propdef :y typeident ?)))) (def :mk ? (fn typeident (next (data (, (propdef :x ? 7) (propdef :y ? 3.5)))))) (main (def :p ? (call :mk ?)) (>> (. :p :x) :out) (>> (. :p :y) :out)))`,
 			out: ['7', '3.5'],
 		});
 		rule({
@@ -3074,7 +3100,7 @@ main {
 	pair.0 >> Int32 { $ } | DivByZero { 0 - 9 } >> out;
 	pair.1 >> Int32 { $ } | DivByZero { 0 - 9 } >> out;
 }`,
-			ast: `(root (def :d ? (fn @sequence (parameter :n typeident ?) typeident (/ 10 :n))) (main (def :pair ? (data (, (call :d 2) (call :d 0)))) (>> (. :pair 0) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) (- 0 9))) :out) (>> (. :pair 1) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) (- 0 9))) :out)))`,
+			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (main (def :pair ? (data (, (call :d 2) (call :d 0)))) (>> (. :pair 0) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 9)))) :out) (>> (. :pair 1) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 9)))) :out)))`,
 			out: ['5', '-9'],
 		});
 		rule({
@@ -3085,7 +3111,7 @@ nameOf = (n: Named): String { n.name };
 main {
 	nameOf(mk()) >> out
 }`,
-			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Wide (& typeident (data (propdef :score typeident ?)))) (def :mk ? (fn @sequence typeident (data (, (propdef :name ? 'Ada') (propdef :score ? 9.5))))) (def :nameOf ? (fn @sequence (parameter :n typeident ?) typeident (. :n :name))) (main (>> (call :nameOf (call :mk ?)) :out)))`,
+			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Wide (& typeident (data (propdef :score typeident ?)))) (def :mk ? (fn typeident (next (data (, (propdef :name ? 'Ada') (propdef :score ? 9.5)))))) (def :nameOf ? (fn (parameter :n typeident ?) typeident (next (. :n :name)))) (main (>> (call :nameOf (call :mk ?)) :out)))`,
 			out: ['Ada'],
 		});
 		rule({
@@ -3097,7 +3123,7 @@ nameOf = (n: Named): String { n.name };
 main {
 	nameOf(mk()) >> out
 }`,
-			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Tag (data (propdef :id typeident ?))) (type :Good (& typeident typeident)) (def :mk ? (fn @sequence typeident (data (, (propdef :name ? 'Ada') (propdef :id ? 1))))) (def :nameOf ? (fn @sequence (parameter :n typeident ?) typeident (. :n :name))) (main (>> (call :nameOf (call :mk ?)) :out)))`,
+			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Tag (data (propdef :id typeident ?))) (type :Good (& typeident typeident)) (def :mk ? (fn typeident (next (data (, (propdef :name ? 'Ada') (propdef :id ? 1)))))) (def :nameOf ? (fn (parameter :n typeident ?) typeident (next (. :n :name)))) (main (>> (call :nameOf (call :mk ?)) :out)))`,
 			out: ['Ada'],
 		});
 		rule({
@@ -3109,14 +3135,14 @@ nameOf = (n: Named): String { n.name };
 main {
 	nameOf(mk()) >> out
 }`,
-			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Tag (data (propdef :id typeident ?))) (type :Bad (& typeident typeident)) (def :mk ? (fn @sequence typeident (data (, (propdef :id ? 1) (propdef :name ? 'Ada'))))) (def :nameOf ? (fn @sequence (parameter :n typeident ?) typeident (. :n :name))) (main (>> (call :nameOf (call :mk ?)) :out)))`,
+			ast: `(root (type :Named (data (propdef :name typeident ?))) (type :Tag (data (propdef :id typeident ?))) (type :Bad (& typeident typeident)) (def :mk ? (fn typeident (next (data (, (propdef :id ? 1) (propdef :name ? 'Ada')))))) (def :nameOf ? (fn (parameter :n typeident ?) typeident (next (. :n :name)))) (main (>> (call :nameOf (call :mk ?)) :out)))`,
 			out: ['Ada'],
 		});
 		rule({
 			src: `main {
 	[ 1, 3.14 ] >> (a: Int32, b: Float64) { b } >> out
 }`,
-			ast: `(root (main (>> (data (, 1 3.14)) (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) :b) :out)))`,
+			ast: `(root (main (>> (data (, 1 3.14)) (fn (parameter :a typeident ?) (parameter :b typeident ?) (next :b)) :out)))`,
 			out: ['3.14'],
 		});
 		rule({
@@ -3128,7 +3154,7 @@ main {
 	p.val >> out;
 	p.n >> out;
 }`,
-			ast: `(root (type :T (data (, (propdef :flag typeident ?) (propdef :val typeident ?) (propdef :n typeident ?)))) (def :mk ? (fn @sequence typeident (data (, (propdef :flag ? :true) (propdef :val ? 2.5) (propdef :n ? 9))))) (main (def :p ? (call :mk ?)) (>> (. :p :flag) :out) (>> (. :p :val) :out) (>> (. :p :n) :out)))`,
+			ast: `(root (type :T (data (, (propdef :flag typeident ?) (propdef :val typeident ?) (propdef :n typeident ?)))) (def :mk ? (fn typeident (next (data (, (propdef :flag ? :true) (propdef :val ? 2.5) (propdef :n ? 9)))))) (main (def :p ? (call :mk ?)) (>> (. :p :flag) :out) (>> (. :p :val) :out) (>> (. :p :n) :out)))`,
 			out: ['true', '2.5', '9'],
 		});
 		rule({
@@ -3136,7 +3162,7 @@ main {
 main {
 	[ d(2), d(0) ] >> (a: Int32 | DivByZero, b: Int32 | DivByZero) { a } >> Int32 { $ } | DivByZero { 0 - 9 } >> out
 }`,
-			ast: `(root (def :d ? (fn @sequence (parameter :n typeident ?) typeident (/ 10 :n))) (main (>> (data (, (call :d 2) (call :d 0))) (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) :a) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) (- 0 9))) :out)))`,
+			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (main (>> (data (, (call :d 2) (call :d 0))) (fn (parameter :a typeident ?) (parameter :b typeident ?) (next :a)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 9)))) :out)))`,
 			out: ['5'],
 		});
 		rule({
@@ -3144,7 +3170,7 @@ main {
 main {
 	[ score, score ] >> (a: Int32, b: Int32) { a + b } >> out
 }`,
-			ast: `(root (def :score ? 5) (main (>> (data (, :score :score)) (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) (+ :a :b)) :out)))`,
+			ast: `(root (def :score ? 5) (main (>> (data (, :score :score)) (fn (parameter :a typeident ?) (parameter :b typeident ?) (next (+ :a :b))) :out)))`,
 			out: ['10'],
 		});
 		rule({
@@ -3156,7 +3182,7 @@ main {
 	p.from.y >> out;
 	p.to.x >> out;
 }`,
-			ast: `(root (type :Point (data (, (propdef :x typeident ?) (propdef :y typeident ?)))) (type :Line (data (, (propdef :from typeident ?) (propdef :to typeident ?)))) (def :mk ? (fn @sequence typeident (data (, (propdef :from ? (data (, (propdef :x ? 0) (propdef :y ? 0)))) (propdef :to ? (data (, (propdef :x ? 3) (propdef :y ? 4)))))))) (main (def :p ? (call :mk ?)) (>> (. (. :p :from) :y) :out) (>> (. (. :p :to) :x) :out)))`,
+			ast: `(root (type :Point (data (, (propdef :x typeident ?) (propdef :y typeident ?)))) (type :Line (data (, (propdef :from typeident ?) (propdef :to typeident ?)))) (def :mk ? (fn typeident (next (data (, (propdef :from ? (data (, (propdef :x ? 0) (propdef :y ? 0)))) (propdef :to ? (data (, (propdef :x ? 3) (propdef :y ? 4))))))))) (main (def :p ? (call :mk ?)) (>> (. (. :p :from) :y) :out) (>> (. (. :p :to) :x) :out)))`,
 			out: ['0', '3'],
 		});
 		rule({
@@ -3181,28 +3207,28 @@ main {
 		rule({
 			p: 'Every error carries a lazy origin trace: `Error = Trace`, one hidden word filled at construction with a static frame pointer — nothing is walked or copied until read. `String(e)`/`out` render it.',
 			src: `type NotFound = Error & [ resource: String ];
-nf = (r: String): own NotFound { [ resource = r ] };
+nf = (r: own String): own NotFound { [ resource = r ] };
 main { nf('/etc') >> out }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence (parameter :r typeident ?) typeident (data (propdef :resource ? :r)))) (main (>> (call :nf '/etc') :out)))`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn (parameter :r typeident ?) typeident (next (data (propdef :resource ? :r))))) (main (>> (call :nf '/etc') :out)))`,
 			out: ['NotFound at nf:2'],
 		});
 		rule({
 			p: 'A field-less error’s structure is `[]` — Void — so its default constructor is `Boom()`: the compiler fills the trace, the slot that gives the value existence. An error with fields constructs from its labeled block (`NotFound([ resource = r ])`) or by declared-return coercion.',
 			src: `type Boom = Error;
-guard = (n: Int32): own Int32 | Boom { next n > 0 ? n : Boom() };
+guard = (n: Int32): own Int32 | Boom { n > 0 ? n : Boom() };
 main { guard(0) >> Int32 { 'ok' } | Boom { String($) } >> out }`,
-			ast: `(root (type :Boom typeident) (def :guard ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call typeident ?))))) (main (>> (call :guard 0) (| (fn @sequence (parameter ? typeident ?) 'ok') (fn @sequence (parameter ? typeident ?) (call typeident $))) :out)))`,
+			ast: `(root (type :Boom typeident) (def :guard ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call typeident ?))))) (main (>> (call :guard 0) (| (fn (parameter ? typeident ?) (next 'ok')) (fn (parameter ? typeident ?) (next (call typeident $)))) :out)))`,
 			out: ['Boom at guard:2'],
 		});
 		rule({
 			p: 'Debug builds maintain a shadow call stack; construction snapshots it, and the trace renders the physical chain innermost-first. Release builds carry only the origin (same handle, `frames(e)` = 1).',
 			debug: true,
 			src: `type NotFound = Error & [ resource: String ];
-nf = (r: String): own NotFound { [ resource = r ] };
-inner = (r: String): own NotFound { b = nf(r); next b };
-outer = (r: String): own NotFound { b = inner(r); next b };
+nf = (r: own String): own NotFound { [ resource = r ] };
+inner = (r: own String): own NotFound { b = nf(r); next b };
+outer = (r: own String): own NotFound { b = inner(r); next b };
 main { String(outer('/x')) >> out }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence (parameter :r typeident ?) typeident (data (propdef :resource ? :r)))) (def :inner ? (fn (parameter :r typeident ?) typeident (def :b ? (call :nf :r)) (next :b))) (def :outer ? (fn (parameter :r typeident ?) typeident (def :b ? (call :inner :r)) (next :b))) (main (>> (call typeident (call :outer '/x')) :out)))`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn (parameter :r typeident ?) typeident (next (data (propdef :resource ? :r))))) (def :inner ? (fn (parameter :r typeident ?) typeident (def :b ? (call :nf :r)) (next :b))) (def :outer ? (fn (parameter :r typeident ?) typeident (def :b ? (call :inner :r)) (next :b))) (main (>> (call typeident (call :outer '/x')) :out)))`,
 			out: ['NotFound at nf:2 <- nf:2 <- inner:3 <- outer:4'],
 		});
 		rule({
@@ -3210,42 +3236,42 @@ main { String(outer('/x')) >> out }`,
 			debug: true,
 			src: `type Boom = Error & [ at: Int32 ];
 mk = (n: Int32): own Boom { [ at = n ] };
-spin = (n: Int32): own Int32 | Boom { next n == 0 ? mk(n) : spin(n - 1) };
+spin = (n: Int32): own Int32 | Boom { n == 0 ? mk(n) : spin(n - 1) };
 main { spin(200000) >> Int32 { 'ok' } | Error { String($) } >> out }`,
-			ast: `(root (type :Boom (& typeident (data (propdef :at typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :at ? :n)))) (def :spin ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) (call :mk :n) (call :spin (- :n 1)))))) (main (>> (call :spin 200000) (| (fn @sequence (parameter ? typeident ?) 'ok') (fn @sequence (parameter ? typeident ?) (call typeident $))) :out)))`,
+			ast: `(root (type :Boom (& typeident (data (propdef :at typeident ?)))) (def :mk ? (fn (parameter :n typeident ?) typeident (next (data (propdef :at ? :n))))) (def :spin ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) (call :mk :n) (call :spin (- :n 1)))))) (main (>> (call :spin 200000) (| (fn (parameter ? typeident ?) (next 'ok')) (fn (parameter ? typeident ?) (next (call typeident $)))) :out)))`,
 			out: ['Boom at mk:2 <- mk:2 <- spin:3'],
 		});
 		rule({
 			p: '`origin(e)` reads the trace as a `Frame [name, fn, line]`; payload fields are untouched by the hidden slot, and the origin survives upcast to `Error`.',
 			src: `type NotFound = Error & [ resource: String ];
-nf = (r: String): own NotFound { [ resource = r ] };
-check = (n: Int32): own Int32 | NotFound { next n > 0 ? n : nf('/y') };
+nf = (r: own String): own NotFound { [ resource = r ] };
+check = (n: Int32): own Int32 | NotFound { n > 0 ? n : nf('/y') };
 main {
 	e = nf('/x');
 	'\${origin(e).fn}:\${origin(e).line} \${e.resource}' >> out;
 	check(0) >> Int32 { 'ok' } | Error { String($) } >> out;
 }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence (parameter :r typeident ?) typeident (data (propdef :resource ? :r)))) (def :check ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf '/y'))))) (main (def :e ? (call :nf '/x')) (>> (interp (. (call :origin @intrinsic :e) :fn) (. (call :origin @intrinsic :e) :line) (. :e :resource)) :out) (>> (call :check 0) (| (fn @sequence (parameter ? typeident ?) 'ok') (fn @sequence (parameter ? typeident ?) (call typeident $))) :out)))`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn (parameter :r typeident ?) typeident (next (data (propdef :resource ? :r))))) (def :check ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf '/y'))))) (main (def :e ? (call :nf '/x')) (>> (interp (. (call :origin @intrinsic :e) :fn) (. (call :origin @intrinsic :e) :line) (. :e :resource)) :out) (>> (call :check 0) (| (fn (parameter ? typeident ?) (next 'ok')) (fn (parameter ? typeident ?) (next (call typeident $)))) :out)))`,
 			out: ['nf:2 /x', 'NotFound at nf:2'],
 		});
 		rule({
-			src: `type NotFound = Error & [ resource: String ]; notFound = (r: String): own NotFound { [ resource = r ] }; main { notFound('/x') >> Error { 1 } >> out }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :notFound ? (fn @sequence (parameter :r typeident ?) typeident (data (propdef :resource ? :r)))) (main (>> (call :notFound '/x') (fn @sequence (parameter ? typeident ?) 1) :out)))`,
+			src: `type NotFound = Error & [ resource: String ]; notFound = (r: own String): own NotFound { [ resource = r ] }; main { notFound('/x') >> Error { 1 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :notFound ? (fn (parameter :r typeident ?) typeident (next (data (propdef :resource ? :r))))) (main (>> (call :notFound '/x') (fn (parameter ? typeident ?) (next 1)) :out)))`,
 			out: ['1'],
 		});
 		rule({
-			src: `type NotFound = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; lookup = (n: Int32): own Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } | NotFound { 0 } >> out }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 5) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out)))`,
+			src: `type NotFound = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; lookup = (n: Int32): own Int32 | NotFound { n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } | NotFound { 0 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn typeident (next (data (propdef :resource ? 'x'))))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 5) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out)))`,
 			out: ['5'],
 		});
 		rule({
-			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; fb = (): own Forbidden { [ resource = 'y' ] }; pick = (n: Int32): own Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(0 - 1) >> Int32 { 1 } | NotFound { 2 } | Forbidden { 3 } >> out }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (type :Forbidden (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :fb ? (fn @sequence typeident (data (propdef :resource ? 'y')))) (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :nf ?) (call :fb ?))))) (main (>> (call :pick (- 0 1)) (| (| (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 2)) (fn @sequence (parameter ? typeident ?) 3)) :out)))`,
+			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; fb = (): own Forbidden { [ resource = 'y' ] }; pick = (n: Int32): own Int32 | NotFound | Forbidden { n > 0 ? nf() : fb() }; main { pick(0 - 1) >> Int32 { 1 } | NotFound { 2 } | Forbidden { 3 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (type :Forbidden (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn typeident (next (data (propdef :resource ? 'x'))))) (def :fb ? (fn typeident (next (data (propdef :resource ? 'y'))))) (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :nf ?) (call :fb ?))))) (main (>> (call :pick (- 0 1)) (| (| (fn (parameter ? typeident ?) (next 1)) (fn (parameter ? typeident ?) (next 2))) (fn (parameter ? typeident ?) (next 3))) :out)))`,
 			out: ['3'],
 		});
 		rule({
-			src: `type NotFound = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; lookup = (n: Int32): own Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(0) >> Int32 { 1 } | Error { 9 } >> out }`,
-			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn @sequence typeident (data (propdef :resource ? 'x')))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 0) (| (fn @sequence (parameter ? typeident ?) 1) (fn @sequence (parameter ? typeident ?) 9)) :out)))`,
+			src: `type NotFound = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; lookup = (n: Int32): own Int32 | NotFound { n > 0 ? n : nf() }; main { lookup(0) >> Int32 { 1 } | Error { 9 } >> out }`,
+			ast: `(root (type :NotFound (& typeident (data (propdef :resource typeident ?)))) (def :nf ? (fn typeident (next (data (propdef :resource ? 'x'))))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (call :nf ?))))) (main (>> (call :lookup 0) (| (fn (parameter ? typeident ?) (next 1)) (fn (parameter ? typeident ?) (next 9))) :out)))`,
 			out: ['9'],
 		});
 		compileError({
@@ -3253,11 +3279,11 @@ main {
 			expected: 'not assignable',
 		});
 		compileError({
-			src: `type NotFound = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; lookup = (n: Int32): own Int32 | NotFound { next n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } >> out }`,
+			src: `type NotFound = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; lookup = (n: Int32): own Int32 | NotFound { n > 0 ? n : nf() }; main { lookup(5) >> Int32 { $ } >> out }`,
 			expected: 'does not consume',
 		});
 		compileError({
-			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; fb = (): own Forbidden { [ resource = 'y' ] }; pick = (n: Int32): own Int32 | NotFound | Forbidden { next n > 0 ? nf() : fb() }; main { pick(1) >> Int32 { 1 } | NotFound { 2 } >> out }`,
+			src: `type NotFound = Error & [ resource: String ]; type Forbidden = Error & [ resource: String ]; nf = (): own NotFound { [ resource = 'x' ] }; fb = (): own Forbidden { [ resource = 'y' ] }; pick = (n: Int32): own Int32 | NotFound | Forbidden { n > 0 ? nf() : fb() }; main { pick(1) >> Int32 { 1 } | NotFound { 2 } >> out }`,
 			expected: 'does not consume "Forbidden"',
 		});
 		rule({
@@ -3266,7 +3292,7 @@ main {
 mk = (n: Int32): own Boom { [ id = n ] };
 renderFrame = (text: own String, f: Frame): own String { '\${text}\${f.fn}:\${f.line};' };
 main { b = mk(5); length(runtime.stack(b)) >> out; reduce(runtime.stack(b), '', renderFrame) >> out }`,
-			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :renderFrame ? (fn @sequence (parameter :text typeident ?) (parameter :f typeident ?) typeident (interp :text (. :f :fn) (. :f :line)))) (main (def :b ? (call :mk 5)) (>> (call :length @intrinsic (call (. :runtime :stack) :b)) :out) (>> (call :reduce (, (call (. :runtime :stack) :b) '' :renderFrame)) :out)))`,
+			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn (parameter :n typeident ?) typeident (next (data (propdef :id ? :n))))) (def :renderFrame ? (fn (parameter :text typeident ?) (parameter :f typeident ?) typeident (next (interp :text (. :f :fn) (. :f :line))))) (main (def :b ? (call :mk 5)) (>> (call :length @intrinsic (call (. :runtime :stack) :b)) :out) (>> (call :reduce (, (call (. :runtime :stack) :b) '' :renderFrame)) :out)))`,
 			out: ['1', 'mk:2;'],
 		});
 		rule({
@@ -3277,7 +3303,7 @@ mk = (n: Int32): own Boom { [ id = n ] };
 step = (n: Int32): Int32 { b = mk(n); next reduce(runtime.stack(b), 0, (k: own Int32, f: Frame): own Int32 { k + f.line }) + length(runtime.stack(b)) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
-			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (next (+ (call :reduce (, (call (. :runtime :stack) :b) 0 (fn @sequence (parameter :k typeident ?) (parameter :f typeident ?) typeident (+ :k (. :f :line))))) (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
+			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn (parameter :n typeident ?) typeident (next (data (propdef :id ? :n))))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (next (+ (call :reduce (, (call (. :runtime :stack) :b) 0 (fn (parameter :k typeident ?) (parameter :f typeident ?) typeident (next (+ :k (. :f :line)))))) (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n)))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
 			out: ['1499995'],
 			maxPages: 3,
 		});
@@ -3287,7 +3313,7 @@ mk = (n: Int32): own Boom { [ id = n ] };
 step = (n: Int32): Int32 { b = mk(n); next reduce(runtime.stack(b), 0, (k: own Int32, f: Frame): own Int32 { k + f.line }) + length(runtime.stack(b)) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
-			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (next (+ (call :reduce (, (call (. :runtime :stack) :b) 0 (fn @sequence (parameter :k typeident ?) (parameter :f typeident ?) typeident (+ :k (. :f :line))))) (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
+			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn (parameter :n typeident ?) typeident (next (data (propdef :id ? :n))))) (def :step ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mk :n)) (next (+ (call :reduce (, (call (. :runtime :stack) :b) 0 (fn (parameter :k typeident ?) (parameter :f typeident ?) typeident (next (+ :k (. :f :line)))))) (call :length @intrinsic (call (. :runtime :stack) :b)))))) (def :spin ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n)))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
 			out: ['300000'],
 			maxPages: 3,
 		});
@@ -3297,7 +3323,7 @@ main { spin(100000, 0) >> out }`,
 mk = (n: Int32): own Boom { [ id = n ] };
 appendName = (text: own String, f: Frame): own String { '\${text}\${f.fn},' };
 main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendName) >> out }`,
-			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn @sequence (parameter :n typeident ?) typeident (data (propdef :id ? :n)))) (def :appendName ? (fn @sequence (parameter :text typeident ?) (parameter :f typeident ?) typeident (interp :text (. :f :fn)))) (main (def :b ? (call :mk 9)) (def :s ? (call (. :runtime :stack) :b)) (>> (call :length @intrinsic :s) :out) (>> (call :reduce (, :s '' :appendName)) :out)))`,
+			ast: `(root (type :Boom (& typeident (data (propdef :id typeident ?)))) (def :mk ? (fn (parameter :n typeident ?) typeident (next (data (propdef :id ? :n))))) (def :appendName ? (fn (parameter :text typeident ?) (parameter :f typeident ?) typeident (next (interp :text (. :f :fn))))) (main (def :b ? (call :mk 9)) (def :s ? (call (. :runtime :stack) :b)) (>> (call :length @intrinsic :s) :out) (>> (call :reduce (, :s '' :appendName)) :out)))`,
 			out: ['2', 'mk,mk,'],
 		});
 	});
@@ -3305,7 +3331,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 	h('Nominal vs structural', ({ rule, compileError }) => {
 		rule({
 			p: 'Every named type has declaration identity; unnamed literals and parameter lists are structural. A structural value may acquire a named type at a typed boundary, but one named type is not assignable to a different same-shaped named type. Composition with `&` supplies the language’s subtype relationship.',
-			src: `type A = [ v: Int32 ]; f = (x: A): Int32 { next x.v }; main { f([ v = 5 ]) >> out }`,
+			src: `type A = [ v: Int32 ]; f = (x: A): Int32 { x.v }; main { f([ v = 5 ]) >> out }`,
 			ast: `(root (type :A (data (propdef :v typeident ?))) (def :f ? (fn (parameter :x typeident ?) typeident (next (. :x :v)))) (main (>> (call :f (data (propdef :v ? 5))) :out)))`,
 			out: ['5'],
 		});
@@ -3315,8 +3341,8 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 			out: ['7'],
 		});
 		rule({
-			src: `type A = [ v: Int32 ]; type B = [ v: Int32 ]; af = (): A { [ v = 1 ] }; bf = (): B { [ v = 2 ] }; pick = (n: Int32): A | B { next n > 0 ? af() : bf() }; main { pick(0 - 1) >> A { 10 } | B { 20 } >> out }`,
-			ast: `(root (type :A (data (propdef :v typeident ?))) (type :B (data (propdef :v typeident ?))) (def :af ? (fn @sequence typeident (data (propdef :v ? 1)))) (def :bf ? (fn @sequence typeident (data (propdef :v ? 2)))) (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :af ?) (call :bf ?))))) (main (>> (call :pick (- 0 1)) (| (fn @sequence (parameter ? typeident ?) 10) (fn @sequence (parameter ? typeident ?) 20)) :out)))`,
+			src: `type A = [ v: Int32 ]; type B = [ v: Int32 ]; af = (): A { [ v = 1 ] }; bf = (): B { [ v = 2 ] }; pick = (n: Int32): A | B { n > 0 ? af() : bf() }; main { pick(0 - 1) >> A { 10 } | B { 20 } >> out }`,
+			ast: `(root (type :A (data (propdef :v typeident ?))) (type :B (data (propdef :v typeident ?))) (def :af ? (fn typeident (next (data (propdef :v ? 1))))) (def :bf ? (fn typeident (next (data (propdef :v ? 2))))) (def :pick ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) (call :af ?) (call :bf ?))))) (main (>> (call :pick (- 0 1)) (| (fn (parameter ? typeident ?) (next 10)) (fn (parameter ? typeident ?) (next 20))) :out)))`,
 			out: ['20'],
 		});
 		compileError({
@@ -3364,7 +3390,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 
 	h('Operator & condition typing', ({ rule, compileError }) => {
 		compileError({
-			src: `f = (n: Int32): Int32 { next n ? 1 : 2 }; main { f(5) >> out }`,
+			src: `f = (n: Int32): Int32 { n ? 1 : 2 }; main { f(5) >> out }`,
 			expected: 'condition must be',
 		});
 		compileError({
@@ -3435,41 +3461,41 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 	h('Argument binding (positional / named / spread)', ({ rule, compileError }) => {
 		rule({
 			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(1, 2) >> out }`,
-			ast: `(root (def :sub ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (- :a :b))) (main (>> (call :sub (, 1 2)) :out)))`,
+			ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :sub (, 1 2)) :out)))`,
 			out: ['-1'],
 		});
 		rule({
 			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(b = 1, a = 2) >> out }`,
-			ast: `(root (def :sub ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (- :a :b))) (main (>> (call :sub (, (propdef :b ? 1) (propdef :a ? 2))) :out)))`,
+			ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :sub (, (propdef :b ? 1) (propdef :a ? 2))) :out)))`,
 			out: ['1'],
 		});
 		rule({
 			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { [1, 2] >> sub >> out }`,
-			ast: `(root (def :sub ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (- :a :b))) (main (>> (data (, 1 2)) :sub :out)))`,
+			ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, 1 2)) :sub :out)))`,
 			out: ['-1'],
 		});
 		rule({
 			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { [ b = 2, a = 1 ] >> sub >> out }`,
-			ast: `(root (def :sub ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (- :a :b))) (main (>> (data (, (propdef :b ? 2) (propdef :a ? 1))) :sub :out)))`,
+			ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, (propdef :b ? 2) (propdef :a ? 1))) :sub :out)))`,
 			out: ['-1'],
 		});
 		rule({
-			src: `subG = (a: Int32, b: Int32): Int32 { next a - b }; main { subG(1, 2) >> out }`,
+			src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { subG(1, 2) >> out }`,
 			ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :subG (, 1 2)) :out)))`,
 			out: ['-1'],
 		});
 		rule({
-			src: `subG = (a: Int32, b: Int32): Int32 { next a - b }; main { subG(b = 1, a = 2) >> out }`,
+			src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { subG(b = 1, a = 2) >> out }`,
 			ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :subG (, (propdef :b ? 1) (propdef :a ? 2))) :out)))`,
 			out: ['1'],
 		});
 		rule({
-			src: `subG = (a: Int32, b: Int32): Int32 { next a - b }; main { [1, 2] >> subG >> out }`,
+			src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { [1, 2] >> subG >> out }`,
 			ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, 1 2)) :subG :out)))`,
 			out: ['-1'],
 		});
 		rule({
-			src: `subG = (a: Int32, b: Int32): Int32 { next a - b }; main { [ b = 2, a = 1 ] >> subG >> out }`,
+			src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { [ b = 2, a = 1 ] >> subG >> out }`,
 			ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, (propdef :b ? 2) (propdef :a ? 1))) :subG :out)))`,
 			out: ['-1'],
 		});
@@ -3500,17 +3526,17 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 		});
 		rule({
 			src: `d = (n: Int32): Int32 | DivByZero { 10 / n }; main { d(2) >> Int32 { $ } | DivByZero { 0 } >> out; d(0) >> Int32 { $ } | DivByZero { 0 } >> out; }`,
-			ast: `(root (def :d ? (fn @sequence (parameter :n typeident ?) typeident (/ 10 :n))) (main (>> (call :d 2) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out) (>> (call :d 0) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out)))`,
+			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (main (>> (call :d 2) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out) (>> (call :d 0) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out)))`,
 			out: ['5', '0'],
 		});
 		rule({
 			src: `d = (n: Int32): Int32 | DivByZero { 10 / n }; main { x = d(2); y = d(0); x >> Int32 { $ } | DivByZero { 0 } >> out; y >> Int32 { $ } | DivByZero { 0 } >> out; }`,
-			ast: `(root (def :d ? (fn @sequence (parameter :n typeident ?) typeident (/ 10 :n))) (main (def :x ? (call :d 2)) (def :y ? (call :d 0)) (>> :x (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out) (>> :y (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out)))`,
+			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (main (def :x ? (call :d 2)) (def :y ? (call :d 0)) (>> :x (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out) (>> :y (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out)))`,
 			out: ['5', '0'],
 		});
 		rule({
 			src: `recip = (n: Int32): Int32 { 10 / n >> Int32 { $ } | DivByZero { 0 } }; main { recip(5) >> out; recip(0) >> out; }`,
-			ast: `(root (def :recip ? (fn @sequence (parameter :n typeident ?) typeident (>> (/ 10 :n) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0))))) (main (>> (call :recip 5) :out) (>> (call :recip 0) :out)))`,
+			ast: `(root (def :recip ? (fn (parameter :n typeident ?) typeident (next (>> (/ 10 :n) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))))))) (main (>> (call :recip 5) :out) (>> (call :recip 0) :out)))`,
 			out: ['2', '0'],
 		});
 		expr({
@@ -3539,12 +3565,12 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 		});
 		rule({
 			src: `m = (n: Int32): Int32 | DivByZero { 10 % n }; main { m(3) >> Int32 { $ } | DivByZero { 99 } >> out; m(0) >> Int32 { $ } | DivByZero { 99 } >> out; }`,
-			ast: `(root (def :m ? (fn @sequence (parameter :n typeident ?) typeident (% 10 :n))) (main (>> (call :m 3) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 99)) :out) (>> (call :m 0) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 99)) :out)))`,
+			ast: `(root (def :m ? (fn (parameter :n typeident ?) typeident (next (% 10 :n)))) (main (>> (call :m 3) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 99))) :out) (>> (call :m 0) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 99))) :out)))`,
 			out: ['1', '99'],
 		});
 		rule({
 			src: `nm = (a: Int32, b: Int32): Int32 | DivByZero { a % b }; main { nm(0 - 7, 3) >> Int32 { $ } | DivByZero { 0 } >> out; nm(7, 0 - 3) >> Int32 { $ } | DivByZero { 0 } >> out; }`,
-			ast: `(root (def :nm ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (% :a :b))) (main (>> (call :nm (, (- 0 7) 3)) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out) (>> (call :nm (, 7 (- 0 3))) (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)) :out)))`,
+			ast: `(root (def :nm ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (% :a :b)))) (main (>> (call :nm (, (- 0 7) 3)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out) (>> (call :nm (, 7 (- 0 3))) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out)))`,
 			out: ['-1', '1'],
 		});
 	});
@@ -3650,7 +3676,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 				});
 				rule({
 					src: `fixed = (): { Int32, Int32 } { next 1; next 2 }; use = <T>(cb: (): { ...T }): { ...T } { cb() }; main { use(fixed) >> Int32 { out($) } }`,
-					ast: `(root (def :fixed ? (fn typeident typeident (next 1) (next 2))) (def :use ? (fn @sequence (, (parameter :T ? ?)) (parameter :cb (fn typeident) ?) typeident (call :cb ?))) (main (>> (call :use :fixed) (fn @sequence (parameter ? typeident ?) (call :out $)))))`,
+					ast: `(root (def :fixed ? (fn typeident typeident (next 1) (next 2))) (def :use ? (fn (, (parameter :T ? ?)) (parameter :cb (fn typeident) ?) typeident (next (call :cb ?)))) (main (>> (call :use :fixed) (fn (parameter ? typeident ?) (next (call :out $))))))`,
 				});
 				compileError({
 					src: `type Bad = { ...Int32, String }; main {}`,
@@ -3714,17 +3740,17 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 			});
 			rule({
 				src: `identity = <T>(x: T): T { x }; main { identity(42) >> out; identity(7) >> out; }`,
-				ast: `(root (def :identity ? (fn @sequence (, (parameter :T ? ?)) (parameter :x typeident ?) typeident :x)) (main (>> (call :identity 42) :out) (>> (call :identity 7) :out)))`,
+				ast: `(root (def :identity ? (fn (, (parameter :T ? ?)) (parameter :x typeident ?) typeident (next :x))) (main (>> (call :identity 42) :out) (>> (call :identity 7) :out)))`,
 				out: ['42', '7'],
 			});
 			rule({
 				src: `pick = <T, U>(a: T, b: U): T { a }; main { pick(5, 9) >> out }`,
-				ast: `(root (def :pick ? (fn @sequence (, (parameter :T ? ?) (parameter :U ? ?)) (parameter :a typeident ?) (parameter :b typeident ?) typeident :a)) (main (>> (call :pick (, 5 9)) :out)))`,
+				ast: `(root (def :pick ? (fn (, (parameter :T ? ?) (parameter :U ? ?)) (parameter :a typeident ?) (parameter :b typeident ?) typeident (next :a))) (main (>> (call :pick (, 5 9)) :out)))`,
 				out: ['5'],
 			});
 			rule({
 				src: `first = <T>(a: T, b: T): T { a }; main { first(10, 20) >> out }`,
-				ast: `(root (def :first ? (fn @sequence (, (parameter :T ? ?)) (parameter :a typeident ?) (parameter :b typeident ?) typeident :a)) (main (>> (call :first (, 10 20)) :out)))`,
+				ast: `(root (def :first ? (fn (, (parameter :T ? ?)) (parameter :a typeident ?) (parameter :b typeident ?) typeident (next :a))) (main (>> (call :first (, 10 20)) :out)))`,
 				out: ['10'],
 			});
 			expr({
@@ -3738,7 +3764,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 			expr({
 				pre: `dfold = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : dfold(r, f(acc, h), f) } }`,
 				src: `dfold([1, 2, 3], 0, (a: Int32, b: Int32): Int32 { a + b })`,
-				ast: `(call :dfold (, (data (, 1 2 3)) 0 (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))))`,
+				ast: `(call :dfold (, (data (, 1 2 3)) 0 (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (+ :a :b)))))`,
 				out: ['6'],
 			});
 			// A recursive generic monomorphized over a non-Int32 element (Float64):
@@ -3754,19 +3780,19 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 				p: 'A generic may recurse on a value with a fixed type — it monomorphizes once and self-calls, terminating at runtime like any recursion (termination is not proven, mirroring non-generic recursion). Type-reducing recursion (`dfold` above) still unrolls per level.',
 				src: `rep = <T>(x: T, n: Int32): String { n <= 0 ? '' : '\${x}\${rep(x, n - 1)}' };
 main { rep('ab', 3) >> out }`,
-				ast: `(root (def :rep ? (fn @sequence (, (parameter :T ? ?)) (parameter :x typeident ?) (parameter :n typeident ?) typeident (? (<= :n 0) '' (interp :x (call :rep (, :x (- :n 1))))))) (main (>> (call :rep (, 'ab' 3)) :out)))`,
+				ast: `(root (def :rep ? (fn (, (parameter :T ? ?)) (parameter :x typeident ?) (parameter :n typeident ?) typeident (next (? (<= :n 0) '' (interp :x (call :rep (, :x (- :n 1)))))))) (main (>> (call :rep (, 'ab' 3)) :out)))`,
 				out: ['ababab'],
 			});
 			rule({
 				src: `rep = <T>(x: T, n: Int32): String { n <= 0 ? '' : '\${x}\${rep(x, n - 1)}' };
 main { rep(7, 4) >> out }`,
-				ast: `(root (def :rep ? (fn @sequence (, (parameter :T ? ?)) (parameter :x typeident ?) (parameter :n typeident ?) typeident (? (<= :n 0) '' (interp :x (call :rep (, :x (- :n 1))))))) (main (>> (call :rep (, 7 4)) :out)))`,
+				ast: `(root (def :rep ? (fn (, (parameter :T ? ?)) (parameter :x typeident ?) (parameter :n typeident ?) typeident (next (? (<= :n 0) '' (interp :x (call :rep (, :x (- :n 1)))))))) (main (>> (call :rep (, 7 4)) :out)))`,
 				out: ['7777'],
 			});
 			rule({
 				src: `countDown = <T>(x: T, n: Int32): Int32 { n <= 0 ? 0 : 1 + countDown(x, n - 1) };
 main { countDown('z', 5) >> out }`,
-				ast: `(root (def :countDown ? (fn @sequence (, (parameter :T ? ?)) (parameter :x typeident ?) (parameter :n typeident ?) typeident (? (<= :n 0) 0 (+ 1 (call :countDown (, :x (- :n 1))))))) (main (>> (call :countDown (, 'z' 5)) :out)))`,
+				ast: `(root (def :countDown ? (fn (, (parameter :T ? ?)) (parameter :x typeident ?) (parameter :n typeident ?) typeident (next (? (<= :n 0) 0 (+ 1 (call :countDown (, :x (- :n 1)))))))) (main (>> (call :countDown (, 'z' 5)) :out)))`,
 				out: ['5'],
 			});
 			rule({
@@ -3774,20 +3800,20 @@ main { countDown('z', 5) >> out }`,
 				src: `cat = (a: String, b: String): String { '\${a}\${b}' };
 join = <T>(t: T): String { fold(t, '', cat) };
 main { join([ 'a', 'b', 'c' ]) >> out }`,
-				ast: `(root (def :cat ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (interp :a :b))) (def :join ? (fn @sequence (, (parameter :T ? ?)) (parameter :t typeident ?) typeident (call :fold (, :t '' :cat)))) (main (>> (call :join (data (, 'a' 'b' 'c'))) :out)))`,
+				ast: `(root (def :cat ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (interp :a :b)))) (def :join ? (fn (, (parameter :T ? ?)) (parameter :t typeident ?) typeident (next (call :fold (, :t '' :cat))))) (main (>> (call :join (data (, 'a' 'b' 'c'))) :out)))`,
 				out: ['abc'],
 			});
 			rule({
 				src: `add = (a: Int32, b: Int32): Int32 { a + b };
 sum = <T>(t: T): Int32 { fold(t, 0, add) };
 main { sum([ 1, 2, 3, 4 ]) >> out }`,
-				ast: `(root (def :add ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))) (def :sum ? (fn @sequence (, (parameter :T ? ?)) (parameter :t typeident ?) typeident (call :fold (, :t 0 :add)))) (main (>> (call :sum (data (, 1 2 3 4))) :out)))`,
+				ast: `(root (def :add ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (+ :a :b)))) (def :sum ? (fn (, (parameter :T ? ?)) (parameter :t typeident ?) typeident (next (call :fold (, :t 0 :add))))) (main (>> (call :sum (data (, 1 2 3 4))) :out)))`,
 				out: ['10'],
 			});
 			rule({
 				src: `join = <T>(t: T): String { fold(t, '', (a: String, b: String): String { '\${a}\${b}' }) };
 main { join([ 'x', 'y', 'z' ]) >> out }`,
-				ast: `(root (def :join ? (fn @sequence (, (parameter :T ? ?)) (parameter :t typeident ?) typeident (call :fold (, :t '' (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) typeident (interp :a :b)))))) (main (>> (call :join (data (, 'x' 'y' 'z'))) :out)))`,
+				ast: `(root (def :join ? (fn (, (parameter :T ? ?)) (parameter :t typeident ?) typeident (next (call :fold (, :t '' (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (interp :a :b)))))))) (main (>> (call :join (data (, 'x' 'y' 'z'))) :out)))`,
 				out: ['xyz'],
 			});
 			rule({
@@ -3795,7 +3821,7 @@ main { join([ 'x', 'y', 'z' ]) >> out }`,
 				src: `double = <T>(f: T) { f, f };
 triple = <T>(f: T) { double(f), f };
 main { triple(3) >> out }`,
-				ast: `(root (def :double ? (fn @sequence (, (parameter :T ? ?)) (parameter :f typeident ?) (, :f :f))) (def :triple ? (fn @sequence (, (parameter :T ? ?)) (parameter :f typeident ?) (, (call :double :f) :f))) (main (>> (call :triple 3) :out)))`,
+				ast: `(root (def :double ? (fn (, (parameter :T ? ?)) (parameter :f typeident ?) (next (, :f :f)))) (def :triple ? (fn (, (parameter :T ? ?)) (parameter :f typeident ?) (next (, (call :double :f) :f)))) (main (>> (call :triple 3) :out)))`,
 				out: ['3', '3', '3'],
 			});
 		});
@@ -3803,24 +3829,24 @@ main { triple(3) >> out }`,
 		h('Type-level chain in RHS', ({ ast }) => {
 			ast({
 				src: `type First<T> = T >> [H, R] { H }`,
-				ast: `(type :First (, (parameter :T ? ?)) (>> typeident (fn @sequence (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) typeident)))`,
+				ast: `(type :First (, (parameter :T ? ?)) (>> typeident (fn (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) (next typeident))))`,
 			});
 		});
 
 		h('Type-level chain reduction', ({ rule }) => {
 			rule({
 				src: `type First<T> = T >> [H, R] { H }; v: First<[Int32, String]> = 42; main { v >> out }`,
-				ast: `(root (type :First (, (parameter :T ? ?)) (>> typeident (fn @sequence (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) typeident))) (def :v typeident 42) (main (>> :v :out)))`,
+				ast: `(root (type :First (, (parameter :T ? ?)) (>> typeident (fn (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) (next typeident)))) (def :v typeident 42) (main (>> :v :out)))`,
 				out: ['42'],
 			});
 			rule({
 				src: `type Each<T> = T >> [H, R] { H | Each<R> }; w: Each<[Int32, Bool]> = 7; main { w >> out }`,
-				ast: `(root (type :Each (, (parameter :T ? ?)) (>> typeident (fn @sequence (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) typeident))) (def :w typeident 7) (main (>> :w :out)))`,
+				ast: `(root (type :Each (, (parameter :T ? ?)) (>> typeident (fn (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) (next typeident)))) (def :w typeident 7) (main (>> :w :out)))`,
 				out: ['7'],
 			});
 			rule({
 				src: `type First<T> = T >> [H, R] { H }; firstOf = <T>(t: T): First<T> { t.0 }; main { firstOf([42, 99]) >> out }`,
-				ast: `(root (type :First (, (parameter :T ? ?)) (>> typeident (fn @sequence (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) typeident))) (def :firstOf ? (fn @sequence (, (parameter :T ? ?)) (parameter :t typeident ?) typeident (. :t 0))) (main (>> (call :firstOf (data (, 42 99))) :out)))`,
+				ast: `(root (type :First (, (parameter :T ? ?)) (>> typeident (fn (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) (next typeident)))) (def :firstOf ? (fn (, (parameter :T ? ?)) (parameter :t typeident ?) typeident (next (. :t 0)))) (main (>> (call :firstOf (data (, 42 99))) :out)))`,
 				out: ['42'],
 			});
 		});
@@ -3828,14 +3854,14 @@ main { triple(3) >> out }`,
 		h('Recursive type definitions with implicit Void termination', ({ ast }) => {
 			ast({
 				src: `type Reverse<T> = T >> [H, R] { [Reverse<R>, H] }`,
-				ast: `(type :Reverse (, (parameter :T ? ?)) (>> typeident (fn @sequence (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) (data (, (propdef ? typeident ?) (propdef ? typeident ?))))))`,
+				ast: `(type :Reverse (, (parameter :T ? ?)) (>> typeident (fn (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) (next (data (, (propdef ? typeident ?) (propdef ? typeident ?)))))))`,
 			});
 		});
 
 		h('Constraints via unions', ({ rule, compileError }) => {
 			rule({
 				src: `add = <T: Int32 | Int64>(a: T, b: T): T { a + b }; main { add(3, 4) >> out }`,
-				ast: `(root (def :add ? (fn @sequence (, (parameter :T typeident ?)) (parameter :a typeident ?) (parameter :b typeident ?) typeident (+ :a :b))) (main (>> (call :add (, 3 4)) :out)))`,
+				ast: `(root (def :add ? (fn (, (parameter :T typeident ?)) (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (+ :a :b)))) (main (>> (call :add (, 3 4)) :out)))`,
 				out: ['7'],
 			});
 			compileError({
@@ -3901,7 +3927,7 @@ main { triple(3) >> out }`,
 			({ ast }) => {
 				ast({
 					src: `export helper = (x: Int32) { x * 2 }`,
-					ast: `(def @export :helper ? (fn @sequence (parameter :x typeident ?) (* :x 2)))`,
+					ast: `(def @export :helper ? (fn (parameter :x typeident ?) (next (* :x 2))))`,
 				});
 			},
 		);
@@ -4031,7 +4057,7 @@ main { report(mk(7)) >> out }`,
 					entry: '/dev/a/lib.gb',
 					files: {
 						'/dev/a/lib.gb': `(Item, mk) = @.shared;
-export produce = (n: Int32): Item { next mk(n) };
+export produce = (n: Int32): Item { mk(n) };
 export producex = (n: Int32): Int32 { n };`,
 						'/dev/a/shared.gb': `export type Item = Error & [ id: Int32 ];
 export mk = (n: Int32): Item { [ id = n ] };
@@ -4063,7 +4089,7 @@ main { consume(produce(7)) >> out }`,
 			p: 'An error constructed in a module carries its file in the origin frame; single-file programs omit it.',
 			files: {
 				'/items.gb': `export type Missing = Error & [ what: String ];
-export find = (n: Int32): Int32 | Missing { next n > 0 ? n : [ what = 'thing' ] };`,
+export find = (n: Int32): Int32 | Missing { n > 0 ? n : [ what = 'thing' ] };`,
 				'/main.gb': `(Missing, find) = @.items;
 main { find(0) >> Int32 { 'ok' } | Error { String($) } >> out }`,
 			},
@@ -4156,7 +4182,7 @@ main { report(mk(9)) >> out }`,
 		});
 		rule({
 			src: `helper = (x: Int32) { x + 1 }; main { helper(1) >> out }`,
-			ast: '(root (def :helper ? (fn @sequence (parameter :x typeident ?) (+ :x 1))) (main (>> (call :helper 1) :out)))',
+			ast: '(root (def :helper ? (fn (parameter :x typeident ?) (next (+ :x 1)))) (main (>> (call :helper 1) :out)))',
 			out: ['2'],
 		});
 		compileError({
@@ -4184,7 +4210,7 @@ main { report(mk(9)) >> out }`,
 			rule({
 				p: '`loop` is the single infinite emitter and yields `0, 1, 2, …`. `break` stops the nearest pipe chain, while `done` ends the nearest statement-body function.',
 				src: `until = (n: Int32) { loop >> { $ >= n ? break : $ } }; main { until(3) >> out }`,
-				ast: '(root (def :until ? (fn @sequence (parameter :n typeident ?) (>> loop (fn @sequence (? (>= $ :n) break $))))) (main (>> (call :until 3) :out)))',
+				ast: '(root (def :until ? (fn (parameter :n typeident ?) (next (>> loop (fn (next (? (>= $ :n) break $))))))) (main (>> (call :until 3) :out)))',
 				out: ['0', '1', '2'],
 			});
 			compileError({
@@ -4208,11 +4234,11 @@ main { report(mk(9)) >> out }`,
 	h('Test blocks', ({ ast, compileError, rule, testBlock }) => {
 		ast({
 			src: `#test { 5 == 5 } target = (): Int32 { 5 }`,
-			ast: `(test (== 5 5)) (def :target ? (fn @sequence typeident 5))`,
+			ast: `(test (== 5 5)) (def :target ? (fn typeident (next 5)))`,
 		});
 		rule({
 			src: `#test { ok(true) } export dbl = (n: Int32): Int32 { n * 2 }; main { dbl(5) >> out }`,
-			ast: `(root (test (call :ok :true)) (def @export :dbl ? (fn @sequence (parameter :n typeident ?) typeident (* :n 2))) (main (>> (call :dbl 5) :out)))`,
+			ast: `(root (test (call :ok :true)) (def @export :dbl ? (fn (parameter :n typeident ?) typeident (next (* :n 2)))) (main (>> (call :dbl 5) :out)))`,
 			out: ['10'],
 		});
 		compileError({
@@ -4273,7 +4299,7 @@ main { report(mk(9)) >> out }`,
 				rule({
 					src: `id = (s: String): String { s };
 main { t = 'q\${1}'; length(id(t)) + length(t) >> out }`,
-					ast: `(root (def :id ? (fn @sequence (parameter :s typeident ?) typeident :s)) (main (def :t ? (interp 1)) (>> (+ (call :length @intrinsic (call :id :t)) (call :length @intrinsic :t)) :out)))`,
+					ast: `(root (def :id ? (fn (parameter :s typeident ?) typeident (next :s))) (main (def :t ? (interp 1)) (>> (+ (call :length @intrinsic (call :id :t)) (call :length @intrinsic :t)) :out)))`,
 					out: ['4'],
 				});
 			},
@@ -4283,7 +4309,7 @@ main { t = 'q\${1}'; length(id(t)) + length(t) >> out }`,
 			src: `step = (t: String): Int32 { s = 'xxxxxxxx\${t}yyyyyyyy'; next length(s) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step('zzzz')) };
 main { spin(50000, 0) >> out }`,
-			ast: `(root (def :step ? (fn (parameter :t typeident ?) typeident (def :s ? (interp :t)) (next (call :length @intrinsic :s)))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step 'zzzz'))))))) (main (>> (call :spin (, 50000 0)) :out)))`,
+			ast: `(root (def :step ? (fn (parameter :t typeident ?) typeident (def :s ? (interp :t)) (next (call :length @intrinsic :s)))) (def :spin ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step 'zzzz')))))))) (main (>> (call :spin (, 50000 0)) :out)))`,
 			out: ['1000000'],
 			maxPages: 3,
 		});
@@ -4291,7 +4317,7 @@ main { spin(50000, 0) >> out }`,
 			p: 'Expression temporaries — unbound results whose freshness is structural (an interp, a conversion, a call whose every return path is fresh-or-static) — are freed at their consumption point, so formatting in a loop runs in constant memory.',
 			src: `spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + length('v\${n}')) };
 main { spin(50000, 0) >> out }`,
-			ast: `(root (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :length @intrinsic (interp :n)))))))) (main (>> (call :spin (, 50000 0)) :out)))`,
+			ast: `(root (def :spin ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :length @intrinsic (interp :n))))))))) (main (>> (call :spin (, 50000 0)) :out)))`,
 			out: ['288894'],
 			maxPages: 3,
 		});
@@ -4301,7 +4327,7 @@ main { spin(50000, 0) >> out }`,
 probe = (n: Int32): Int32 { b = mkpad(n); next length(b) };
 churn = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : churn(n - 1, acc + probe(n)) };
 main { churn(50000, 0) >> out }`,
-			ast: `(root (def :mkpad ? (fn (parameter :n typeident ?) typeident (def :s ? (interp :n)) (next :s))) (def :probe ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mkpad :n)) (next (call :length @intrinsic :b)))) (def :churn ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :churn (, (- :n 1) (+ :acc (call :probe :n))))))) (main (>> (call :churn (, 50000 0)) :out)))`,
+			ast: `(root (def :mkpad ? (fn (parameter :n typeident ?) typeident (def :s ? (interp :n)) (next :s))) (def :probe ? (fn (parameter :n typeident ?) typeident (def :b ? (call :mkpad :n)) (next (call :length @intrinsic :b)))) (def :churn ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :churn (, (- :n 1) (+ :acc (call :probe :n)))))))) (main (>> (call :churn (, 50000 0)) :out)))`,
 			out: ['1888894'],
 			maxPages: 3,
 		});
@@ -4309,11 +4335,11 @@ main { churn(50000, 0) >> out }`,
 			p: 'Error values, union payloads (branched on the live member\u2019s tag), and record literals are dropped like every owned value — error frees include the trace chain, so debug builds also run flat.',
 			debug: true,
 			src: `type Miss = Error & [ id: Int32 ];
-lookup = (n: Int32): own Int32 | Miss { next n > 0 ? n : [ id = n ] };
+lookup = (n: Int32): own Int32 | Miss { n > 0 ? n : [ id = n ] };
 step = (n: Int32): Int32 { r = lookup(n - 50000); next r >> Int32 { $ } | Miss { 0 } };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
-			ast: `(root (type :Miss (& typeident (data (propdef :id typeident ?)))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (data (propdef :id ? :n)))))) (def :step ? (fn (parameter :n typeident ?) typeident (def :r ? (call :lookup (- :n 50000))) (next (>> :r (| (fn @sequence (parameter ? typeident ?) $) (fn @sequence (parameter ? typeident ?) 0)))))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
+			ast: `(root (type :Miss (& typeident (data (propdef :id typeident ?)))) (def :lookup ? (fn (parameter :n typeident ?) typeident (next (? (> :n 0) :n (data (propdef :id ? :n)))))) (def :step ? (fn (parameter :n typeident ?) typeident (def :r ? (call :lookup (- :n 50000))) (next (>> :r (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))))))) (def :spin ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n)))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
 			out: ['1250025000'],
 			maxPages: 3,
 		});
@@ -4327,7 +4353,7 @@ main { spin(100000, 0) >> out }`,
 			src: `step = (n: Int32): Int32 { m = 'x\${n}'; r = [ msg = m, id = n ]; next length(m) + r.id - n };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
-			ast: `(root (def :step ? (fn (parameter :n typeident ?) typeident (def :m ? (interp :n)) (def :r ? (data (, (propdef :msg ? :m) (propdef :id ? :n)))) (next (- (+ (call :length @intrinsic :m) (. :r :id)) :n)))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
+			ast: `(root (def :step ? (fn (parameter :n typeident ?) typeident (def :m ? (interp :n)) (def :r ? (data (, (propdef :msg ? :m) (propdef :id ? :n)))) (next (- (+ (call :length @intrinsic :m) (. :r :id)) :n)))) (def :spin ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n)))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
 			out: ['588895'],
 			maxPages: 3,
 		});
@@ -4350,7 +4376,7 @@ main { gen(3) >> each >> out }`,
 step = (n: Int32): Int32 { use('x\${n}') };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
-			ast: `(root (def :use ? (fn @sequence (parameter :s typeident ?) typeident (call :length @intrinsic :s))) (def :step ? (fn @sequence (parameter :n typeident ?) typeident (call :use (interp :n)))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
+			ast: `(root (def :use ? (fn (parameter :s typeident ?) typeident (next (call :length @intrinsic :s)))) (def :step ? (fn (parameter :n typeident ?) typeident (next (call :use (interp :n))))) (def :spin ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n)))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
 			out: ['588895'],
 			maxPages: 3,
 		});
@@ -4360,7 +4386,7 @@ main { spin(100000, 0) >> out }`,
 step = (n: Int32): Int32 { r = pick('x\${n}', 'y', n); next length(r) };
 spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) };
 main { spin(100000, 0) >> out }`,
-			ast: `(root (def :pick ? (fn @sequence (parameter :a typeident ?) (parameter :b typeident ?) (parameter :k typeident ?) typeident (? (> :k 0) :a :b))) (def :step ? (fn (parameter :n typeident ?) typeident (def :r ? (call :pick (, (interp :n) 'y' :n))) (next (call :length @intrinsic :r)))) (def :spin ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
+			ast: `(root (def :pick ? (fn (parameter :a typeident ?) (parameter :b typeident ?) (parameter :k typeident ?) typeident (next (? (> :k 0) :a :b)))) (def :step ? (fn (parameter :n typeident ?) typeident (def :r ? (call :pick (, (interp :n) 'y' :n))) (next (call :length @intrinsic :r)))) (def :spin ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :spin (, (- :n 1) (+ :acc (call :step :n)))))))) (main (>> (call :spin (, 100000 0)) :out)))`,
 			out: ['588895'],
 			maxPages: 3,
 		});
@@ -4373,7 +4399,7 @@ main { f() >> out }`,
 			p: 'An `own` recursive accumulator is an explicit ownership thread: each iteration frees or moves the previous accumulator, and a tail re-pass moves it into the next loop iteration.',
 			src: `build = (n: Int32, acc: own String): own String { n == 0 ? acc : build(n - 1, '\${acc}x') };
 main { length(build(200000, '')) >> out }`,
-			ast: `(root (def :build ? (fn @sequence (parameter :n typeident ?) (parameter :acc typeident ?) typeident (? (== :n 0) :acc (call :build (, (- :n 1) (interp :acc)))))) (main (>> (call :length @intrinsic (call :build (, 200000 ''))) :out)))`,
+			ast: `(root (def :build ? (fn (parameter :n typeident ?) (parameter :acc typeident ?) typeident (next (? (== :n 0) :acc (call :build (, (- :n 1) (interp :acc))))))) (main (>> (call :length @intrinsic (call :build (, 200000 ''))) :out)))`,
 			out: ['200000'],
 			maxPages: 16,
 		});
@@ -4399,7 +4425,7 @@ main { a = mk(1); b = mk(2); a >> out; b >> out; }`,
 			p: 'A callee never frees what it borrows — the owner’s value stays valid after the call.',
 			src: `peek = (s: String): Int32 { length(s) };
 main { t = 'q\${1}'; peek(t) >> out; peek(t) >> out; t >> out; }`,
-			ast: `(root (def :peek ? (fn @sequence (parameter :s typeident ?) typeident (call :length @intrinsic :s))) (main (def :t ? (interp 1)) (>> (call :peek :t) :out) (>> (call :peek :t) :out) (>> :t :out)))`,
+			ast: `(root (def :peek ? (fn (parameter :s typeident ?) typeident (next (call :length @intrinsic :s)))) (main (def :t ? (interp 1)) (>> (call :peek :t) :out) (>> (call :peek :t) :out) (>> :t :out)))`,
 			out: ['2', '2', 'q1'],
 		});
 		rule({
@@ -4407,7 +4433,7 @@ main { t = 'q\${1}'; peek(t) >> out; peek(t) >> out; t >> out; }`,
 			src: `consume = <T>(value: own T): Int32 { length(value) };
 make = (n: Int32): own String { 'v\${n}' };
 main { consume(make(1)) >> out }`,
-			ast: `(root (def :consume ? (fn @sequence (, (parameter :T ? ?)) (parameter :value typeident ?) typeident (call :length @intrinsic :value))) (def :make ? (fn @sequence (parameter :n typeident ?) typeident (interp :n))) (main (>> (call :consume (call :make 1)) :out)))`,
+			ast: `(root (def :consume ? (fn (, (parameter :T ? ?)) (parameter :value typeident ?) typeident (next (call :length @intrinsic :value)))) (def :make ? (fn (parameter :n typeident ?) typeident (next (interp :n)))) (main (>> (call :consume (call :make 1)) :out)))`,
 			out: ['2'],
 		});
 		compileError({

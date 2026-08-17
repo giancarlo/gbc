@@ -770,17 +770,25 @@ export function parseType(
 					const body = expectNode(expression(), 'Expected stage body');
 					const end = consume('}').end;
 					symbolTable.pop(scope);
+					const stageSymbol: SymbolMap['function'] = {
+						kind: 'function',
+						name: '',
+						flags: Flags.None,
+					};
+					const emission: NodeMap['next'] = {
+						...body,
+						kind: 'next',
+						owner: stageSymbol,
+						implicit: true,
+						children: [body],
+					};
 					const stage: NodeMap['fn'] = {
 						...tk,
 						kind: 'fn',
 						parameters: [slot],
-						statements: [body],
-						symbol: {
-							kind: 'function',
-							name: '',
-							flags: Flags.Sequence,
-						},
-						children: [slot, body],
+						statements: [emission],
+						symbol: stageSymbol,
+						children: [slot, emission],
 						end,
 					};
 					return {

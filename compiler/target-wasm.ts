@@ -1958,7 +1958,6 @@ export function compileWasm({
 		if (emitInlineDepth >= MAX_EMIT_INLINE) return false;
 		emitInlineDepth++;
 		const ok =
-			tryInlineSequenceCall(val, [], fn) ||
 			tryInlineEmittingCall(val, [], fn) ||
 			tryInlineEmitTemplate(val, [], fn);
 		emitInlineDepth--;
@@ -2416,12 +2415,7 @@ export function compileWasm({
 		releaseOwned(fn, val);
 		if (fn.fusion) {
 			if (!val) return BaseTypes.Void;
-			if (tryInlineEmitCall(val, fn)) return BaseTypes.Void;
-			const t = compileExpr(val, fn);
-			if (
-				hasRuntimeValue(t)
-			)
-				emitToFusion(val, t, fn);
+			emitOne(val, fn);
 			return BaseTypes.Void;
 		}
 		if (val) return compileExpr(val, fn);
@@ -5107,8 +5101,6 @@ export function compileWasm({
 		stages: Node[],
 		fn: FuncBuilder,
 	): PipeInlineResult {
-		if (!fn.pipeValue && tryInlineSequenceCall(source, stages, fn))
-			return { kind: 'done' };
 		if (tryInlineEmittingCall(source, stages, fn)) return { kind: 'done' };
 		if (emitInlineDepth < MAX_EMIT_INLINE) {
 			emitInlineDepth++;
@@ -5316,6 +5308,10 @@ export function compileWasm({
 	}
 
 	function emitOne(expr: Node, fn: FuncBuilder) {
+		if (expr.kind === ',') {
+			for (const child of expr.children) emitOne(child, fn);
+			return;
+		}
 		if (
 			expr.kind === '?' &&
 			expr.children[2] &&
@@ -5388,116 +5384,6 @@ export function compileWasm({
 			else out.push(c);
 		}
 		return out;
-	}
-
-	/**
-	 * Inline a call to a sequence fn (`x = { ... }`) used as a pipe source.
-	 * Binds the call's data-block argument to `$` and emits each top-level
-	 * expression of the body through downstream stages.
-	 */
-	function tryInlineSequenceCall(
-		callNode: NodeMap['call'],
-		stages: Node[],
-		fn: FuncBuilder,
-	): boolean {
-		const callee = callNode.children[0];
-		if (callee.kind !== 'ident') return false;
-		const sym = callee.symbol;
-		if (fnTemplates.has(sym)) return false;
-		const fnDef = sym.definition;
-		if (!fnDef || fnDef.kind !== 'def') return false;
-		const fnNode = fnDef.value;
-		if (fnNode.kind !== 'fn') return false;
-		if (
-			(fnNode.statements ?? []).some(
-				statement => statement.kind === 'next' || statement.kind === 'done',
-			)
-		)
-			return false;
-		if (resolvedEmissionType(fnNode.symbol) && !functionNodeEmitsSequence(fnNode))
-			return false;
-		if (inliningStages.has(fnNode.symbol)) return false;
-		const bodyStmts = fnNode.statements ?? [];
-		const only = bodyStmts.length === 1 ? bodyStmts[0] : undefined;
-		if (only && only.kind === 'call') {
-			const rt = inferType(only, fn);
-			if (
-				rt.kind === 'type' &&
-				rt.family !== 'void' &&
-				rt.family !== 'unknown'
-			)
-				return false;
-		}
-
-		const args = callNode.children[1];
-		const params = fnNode.parameters ?? [];
-
-		inliningStages.add(fnNode.symbol);
-		try {
-			if (params.length > 0) {
-				const argList = argListFromCall(args);
-				if (
-					!bindInlineParams(
-						params,
-						argList,
-						fn,
-						fnNodeCannotRetain(fnNode),
-						ownedInParams.get(fnNode.symbol),
-					)
-				)
-					return false;
-				compileFnSource(fnNode, stages, fn, sym.name);
-				return true;
-			}
-
-			const dataType = buildCallDataBlock(args, fn);
-			const dollarLocal = allocLocal(fn, I32);
-			fn.body.push(OP_LOCAL_SET);
-			uleb128(dollarLocal, fn.body);
-
-			const savedDollarLocal = fn.dollarLocal;
-			const savedDollarTagLocal = fn.dollarTagLocal;
-			const savedDollarType = fn.dollarType;
-			fn.dollarLocal = dollarLocal;
-			fn.dollarTagLocal = undefined;
-			fn.dollarType = dataType;
-			compileFnSource(fnNode, stages, fn, sym.name);
-			fn.dollarLocal = savedDollarLocal;
-			fn.dollarTagLocal = savedDollarTagLocal;
-			fn.dollarType = savedDollarType;
-			return true;
-		} finally {
-			inliningStages.delete(fnNode.symbol);
-		}
-	}
-
-	/**
-	 * Materialize a call's argument list as a data block in linear memory,
-	 * pushing its pointer onto the stack and returning the resulting data
-	 * type (so `$` member access can resolve labels to positions).
-	 */
-	function buildCallDataBlock(
-		args: Node | undefined,
-		fn: FuncBuilder,
-	): Type {
-		if (!args) {
-			fn.body.push(OP_I32_CONST);
-			sleb128(0, fn.body);
-			return BaseTypes.Unknown;
-		}
-		const argList = args.kind === ',' ? args.children : [args];
-		const first = argList[0];
-		if (!first) {
-			fn.body.push(OP_I32_CONST);
-			sleb128(0, fn.body);
-			return BaseTypes.Unknown;
-		}
-		const dataNode: NodeMap['data'] = {
-			...first,
-			kind: 'data',
-			children: [args],
-		};
-		return compileData(dataNode, fn);
 	}
 
 	/**
@@ -5669,6 +5555,25 @@ export function compileWasm({
 		return stmts.some(s => s.kind === 'next' || s.kind === 'done');
 	}
 
+	function forwardsTemplateCall(fnNode: NodeMap['fn']): boolean {
+		const only = fnNode.statements?.length === 1
+			? fnNode.statements[0]
+			: undefined;
+		const value = only?.kind === 'next' ? only.children?.[0] : only;
+		if (value?.kind !== 'call' || value.children[0].kind !== 'ident')
+			return false;
+		const template = fnTemplates.get(value.children[0].symbol);
+		if (!template) return false;
+		const templateOnly = template.statements?.length === 1
+			? template.statements[0]
+			: undefined;
+		const templateValue =
+			templateOnly?.kind === 'next'
+				? templateOnly.children?.[0]
+				: templateOnly;
+		return templateValue?.kind === '>>';
+	}
+
 	function argListFromCall(args: Node | undefined): Node[] {
 		if (!args) return [];
 		return args.kind === ',' ? args.children : [args];
@@ -5701,18 +5606,38 @@ export function compileWasm({
 		stages: Node[],
 		fn: FuncBuilder,
 	): boolean {
-		if (!callEmitsSequence(callNode)) return false;
 		const fnNode = getCallableFn(callNode);
 		if (!fnNode) return false;
+		const params = fnNode.parameters ?? [];
+		if (
+			!callEmitsSequence(callNode) &&
+			(params.length > 0 && !forwardsTemplateCall(fnNode) ||
+				!callNode.children[1])
+		)
+			return false;
+		if (inliningStages.has(fnNode.symbol)) return false;
 		const stmts = fnNode.statements ?? [];
 
-		const params = fnNode.parameters ?? [];
 		const argList = argListFromCall(callNode.children[1]);
 		const savedParamTypes: (Type | undefined)[] = params.map(
 			p => p.symbol.type,
 		);
-		if (!bindInlineParams(params, argList, fn)) return false;
+		if (params.length > 0 && !bindInlineParams(params, argList, fn)) return false;
 
+		const savedDollarLocal = fn.dollarLocal;
+		const savedDollarTagLocal = fn.dollarTagLocal;
+		const savedDollarType = fn.dollarType;
+		if (params.length === 0) {
+			const dataType = buildCallDataBlock(callNode.children[1], fn);
+			const dollarLocal = allocLocal(fn, I32);
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(dollarLocal, fn.body);
+			fn.dollarLocal = dollarLocal;
+			fn.dollarTagLocal = undefined;
+			fn.dollarType = dataType;
+		}
+
+		inliningStages.add(fnNode.symbol);
 		fn.body.push(OP_BLOCK);
 		fn.body.push(0x40);
 		fn.blockDepth++;
@@ -5732,8 +5657,12 @@ export function compileWasm({
 				emitOne(stmt, fn);
 			}
 		} finally {
+			inliningStages.delete(fnNode.symbol);
 			fn.fusion = savedFusion;
 			fn.doneDepth = savedDoneDepth;
+			fn.dollarLocal = savedDollarLocal;
+			fn.dollarTagLocal = savedDollarTagLocal;
+			fn.dollarType = savedDollarType;
 			for (let i = 0; i < params.length; i++) {
 				const p = params[i];
 				const saved = savedParamTypes[i];
@@ -5743,6 +5672,29 @@ export function compileWasm({
 		fn.body.push(OP_END);
 		fn.blockDepth--;
 		return true;
+	}
+
+	function buildCallDataBlock(
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): Type {
+		if (!args) {
+			fn.body.push(OP_I32_CONST);
+			sleb128(0, fn.body);
+			return BaseTypes.Unknown;
+		}
+		const first = args.kind === ',' ? args.children[0] : args;
+		if (!first) {
+			fn.body.push(OP_I32_CONST);
+			sleb128(0, fn.body);
+			return BaseTypes.Unknown;
+		}
+		const dataNode: NodeMap['data'] = {
+			...first,
+			kind: 'data',
+			children: [args],
+		};
+		return compileData(dataNode, fn);
 	}
 
 	function tryInlineStreamCall(
@@ -6878,11 +6830,6 @@ export function compileWasm({
 		return node ? fnReturnsOwned(node) : false;
 	}
 
-	function fnNodeCannotRetain(fnNode: NodeMap['fn']): boolean {
-		if (noValueReturn(fnNode.symbol.returnType)) return true;
-		return fnReturnsOwned(fnNode);
-	}
-
 	function compileCallArgs(
 		args: Node | undefined,
 		calleeSym: SymbolMap['function'],
@@ -6978,7 +6925,11 @@ export function compileWasm({
 			if (!p) continue;
 			const sym = p.symbol;
 			if (fnArgBindings.has(sym)) continue;
-			if (!sym.type) sym.type = BaseTypes.Int32;
+			if (
+				!sym.type ||
+				(sym.type.kind === 'type' && sym.type.family === 'unknown')
+			)
+				sym.type = BaseTypes.Int32;
 			const wts = wasmTypesOf(sym.type);
 			paramMap.set(sym, local);
 			if (isUnionType(sym.type) && wts.length === 2)

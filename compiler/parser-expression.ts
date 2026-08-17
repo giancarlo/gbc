@@ -495,14 +495,22 @@ export function parseExpression(
 		const stmts = parseStatementBlock(statement, '}');
 		node.end = consume('}').end;
 		const only = stmts.length === 1 ? stmts[0] : undefined;
-		const isAutoEmit =
-			stmts.length === 0 ||
-			(only !== undefined &&
-				only.kind !== 'def' &&
-				only.kind !== 'next' &&
-				only.kind !== 'done' &&
-				only.kind !== 'break');
-		if (isAutoEmit) node.symbol.flags |= Flags.Sequence;
+		if (
+			only &&
+			only.kind !== 'def' &&
+			only.kind !== 'next' &&
+			only.kind !== 'done' &&
+			only.kind !== 'break'
+		)
+			return [
+				{
+					...only,
+					kind: 'next',
+					owner: node.symbol,
+					implicit: true,
+					children: [only],
+				},
+			];
 		return stmts;
 	}
 

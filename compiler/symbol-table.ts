@@ -5,7 +5,6 @@ export enum Flags {
 	None = 0,
 	Variable = 1,
 	Export = 2,
-	Sequence = 4,
 	External = 16,
 	Intrinsic = 32,
 }

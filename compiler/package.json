@@ -9,7 +9,7 @@
 	"description": "A concise and type-safe functional language designed to prioritize immutability and modularity. It uses blocks as its core execution units to form computation pipelines.",
 	"scripts": {
 		"build": "cxl-build",
-		"test": "npm run build test"
+		"test": "npm run build -- test"
 	},
 	"repository": {
 		"type": "git",
