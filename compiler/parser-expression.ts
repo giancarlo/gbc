@@ -16,7 +16,7 @@ import {
 	Type,
 	Flags,
 } from './symbol-table.js';
-import { Node, NodeMap } from './node.js';
+import { Node, NodeMap, syntheticNext } from './node.js';
 import { typeParameters } from './parser-type.js';
 import type { ScannerToken } from './scanner.js';
 import type { ModuleLoader, ModuleRef } from './parser.js';
@@ -502,15 +502,7 @@ export function parseExpression(
 			only.kind !== 'done' &&
 			only.kind !== 'break'
 		)
-			return [
-				{
-					...only,
-					kind: 'next',
-					owner: node.symbol,
-					implicit: true,
-					children: [only],
-				},
-			];
+			return [syntheticNext(only, node.symbol)];
 		return stmts;
 	}
 

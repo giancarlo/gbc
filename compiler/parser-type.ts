@@ -1,6 +1,6 @@
 import { ParserApi, Token, parserTable, text } from '../sdk/index.js';
 
-import type { Node, NodeMap } from './node.js';
+import { syntheticNext, type Node, type NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';
 import {
 	AnyData,
@@ -775,13 +775,7 @@ export function parseType(
 						name: '',
 						flags: Flags.None,
 					};
-					const emission: NodeMap['next'] = {
-						...body,
-						kind: 'next',
-						owner: stageSymbol,
-						implicit: true,
-						children: [body],
-					};
+					const emission = syntheticNext(body, stageSymbol);
 					const stage: NodeMap['fn'] = {
 						...tk,
 						kind: 'fn',

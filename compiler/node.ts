@@ -138,3 +138,16 @@ export type NodeMap = MakeNodeMap<BaseNodeMap>;
 export type Node = NodeMap[keyof NodeMap];
 export type NodeKind = keyof NodeMap;
 export type InfixNode = Extract<Node, Infix>;
+
+export function syntheticNext(
+	value: Node,
+	owner: SymbolMap['function'],
+): NodeMap['next'] {
+	return {
+		...value,
+		kind: 'next',
+		owner,
+		implicit: true,
+		children: [value],
+	};
+}
