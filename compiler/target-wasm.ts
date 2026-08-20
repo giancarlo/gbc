@@ -186,6 +186,9 @@ const OP_F64_MUL = 0xa2;
 const OP_F64_DIV = 0xa3;
 const OP_F64_NEG = 0x9a;
 
+const OP_F32_CONVERT_I32_S = 0xb2;
+const OP_F32_CONVERT_I64_S = 0xb4;
+const OP_F32_DEMOTE_F64 = 0xb6;
 const OP_F64_CONVERT_I32_S = 0xb7;
 
 const OP_I32_WRAP_I64 = 0xa7;
@@ -1692,10 +1695,21 @@ export function compileWasm({
 		return item;
 	}
 
-	/** Convert top of stack from int to float if needed. */
-	function coerceToFloat(have: Type, fn: FuncBuilder) {
+	/** Convert top of stack to the requested float width if needed. */
+	function coerceToFloat(
+		have: Type,
+		fn: FuncBuilder,
+		want: Type = BaseTypes.Float64,
+	) {
+		if (gbcToWasm(want) === F32) {
+			if (isInt64Type(have)) fn.body.push(OP_F32_CONVERT_I64_S);
+			else if (isIntType(have)) fn.body.push(OP_F32_CONVERT_I32_S);
+			else if (gbcToWasm(have) === F64) fn.body.push(OP_F32_DEMOTE_F64);
+			return;
+		}
 		if (isInt64Type(have)) fn.body.push(OP_F64_CONVERT_I64_S);
 		else if (isIntType(have)) fn.body.push(OP_F64_CONVERT_I32_S);
+		else if (gbcToWasm(have) === F32) fn.body.push(OP_F64_PROMOTE_F32);
 	}
 
 	function coerceToInt64(have: Type, fn: FuncBuilder) {
@@ -3522,7 +3536,8 @@ export function compileWasm({
 		if (!args) throw new Error(`${target.name}() requires an argument`);
 		const t = compileExpr(args, fn);
 		if (target.family === 'float') {
-			if (!isFloatType(t)) coerceToFloat(t, fn);
+			if (!isFloatType(t) || gbcToWasm(t) !== gbcToWasm(target))
+				coerceToFloat(t, fn, target);
 			return target;
 		}
 		if (target.size === 8) {
@@ -4740,7 +4755,8 @@ export function compileWasm({
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(bufLocal, fn.body);
 		const t = compileExpr(itemNode, fn);
-		if (isFloatType(ft) && !isFloatType(t)) coerceToFloat(t, fn);
+		if (isFloatType(ft) && gbcToWasm(ft) !== gbcToWasm(t))
+			coerceToFloat(t, fn, ft);
 		emitFieldStore(ft, off, fn);
 	}
 

@@ -73,6 +73,65 @@ export frame = (): Buffer<Uint8> { pixels };`;
 		);
 	});
 
+	s.test('stores explicit float conversions at their declared width', (a: TestApi) => {
+		const source = `records = Buffer<Float32>(25);
+wide = Buffer<Float64>(2);
+write = (index: Int32) {
+	set(records, index, Float32(index + 1))
+};
+export writeFloat32 = (index: Int32, value: Float32) {
+	set(records, index, value)
+};
+export init = () {
+	loop >> (index: Int32) {
+		index >= 25 ? break : write(index)
+	};
+	set(wide, 0, Float64(7));
+	set(wide, 1, Float64(9))
+};
+export floats = (): Buffer<Float32> { records };
+export doubles = (): Buffer<Float64> { wide };`;
+		const compiled = Program({
+			sys: {
+				readFile: () => source,
+				readBytes: () => new Uint8Array(),
+			},
+		}).compileFile('float-buffer.gb');
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+
+		const instance = instantiateWasm(compiled.bytes);
+		const init = instance.exports.init;
+		const writeFloat32 = instance.exports.writeFloat32;
+		const floats = instance.exports.floats;
+		const doubles = instance.exports.doubles;
+		a.assert(typeof init === 'function');
+		a.assert(typeof writeFloat32 === 'function');
+		a.assert(typeof floats === 'function');
+		a.assert(typeof doubles === 'function');
+		init();
+		writeFloat32(1, 6.25);
+
+		const memory = instance.exports.memory.buffer;
+		const floatPointer = Number(floats());
+		const floatLength = new DataView(memory, floatPointer, 4).getUint32(0, true);
+		a.equal(floatLength, 25);
+		a.equalValues(
+			Array.from(new Float32Array(memory, floatPointer + 8, floatLength)),
+			[1, 6.25, ...Array.from({ length: 23 }, (_, index) => index + 3)],
+		);
+
+		const doublePointer = Number(doubles());
+		const doubleLength = new DataView(memory, doublePointer, 4).getUint32(0, true);
+		a.equal(doubleLength, 2);
+		a.equalValues(
+			Array.from({ length: doubleLength }, (_, index) =>
+				new DataView(memory).getFloat64(doublePointer + 8 + index * 8, true),
+			),
+			[7, 9],
+		);
+	});
+
 	s.test('should infer arithmetic through a top-level scalar binding', (a: TestApi) => {
 		const source = `cols = 320;
 
