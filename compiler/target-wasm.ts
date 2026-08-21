@@ -8186,7 +8186,8 @@ export function compileWasm({
 	const mainFuncIdx = baseFuncIdx + mainBuilderIdx;
 
 		const shadowBase = (heap + 7) & ~7;
-		const heapStart = debugBuild ? shadowBase + SHADOW_BYTES : shadowBase;
+		const heapStart =
+			(debugBuild ? shadowBase + SHADOW_BYTES : shadowBase) + 4;
 		if (debugBuild) {
 			const patch = (idx: number, v: number) => {
 				const g = globals[idx];
@@ -8206,10 +8207,12 @@ export function compileWasm({
 		const freeHeadIdx = globals.length;
 		globals.push({ type: I32, mutable: true, init: [OP_I32_CONST, 0] });
 		// __alloc(n): each block carries a hidden capacity word at ptr-4,
-		// written once — it survives reuse cycles. The ask is aligned to 4
-		// with a minimum of 8 up front (a freed block stores its free-list
+		// written once — it survives reuse cycles. The returned pointer is
+		// aligned to 8; capacities are 4 mod 8 with a minimum of 12, so the
+		// next block remains aligned after its 4-byte hidden header. A freed
+		// block stores its free-list
 		// link at ptr+4). First-fit walk of the free list; a hit whose
-		// capacity leaves room for a standalone remainder (header + 8) is
+		// capacity leaves room for a standalone remainder (header + 12) is
 		// SPLIT — the tail re-enters the list in place, so coalesced runs
 		// serve many asks instead of vanishing into the first. On a miss,
 		// bump (+4 for the capacity word), growing memory on demand; OOM
@@ -8219,12 +8222,13 @@ export function compileWasm({
 		const A = allocBuilder.body;
 		A.push(OP_LOCAL_GET, 0);
 		A.push(OP_I32_CONST, 3, OP_I32_ADD);
-		A.push(OP_I32_CONST, 0x7c, OP_I32_AND);
+		A.push(OP_I32_CONST, 0x78, OP_I32_AND);
+		A.push(OP_I32_CONST, 4, OP_I32_ADD);
 		A.push(OP_LOCAL_SET, 0);
-		A.push(OP_I32_CONST, 8);
+		A.push(OP_I32_CONST, 12);
 		A.push(OP_LOCAL_GET, 0);
 		A.push(OP_LOCAL_GET, 0);
-		A.push(OP_I32_CONST, 8);
+		A.push(OP_I32_CONST, 12);
 		A.push(0x48); // i32.lt_s
 		A.push(0x1b); // select
 		A.push(OP_LOCAL_SET, 0);

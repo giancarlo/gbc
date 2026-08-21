@@ -9,7 +9,7 @@ interface WasmModule {
 	readonly bytes?: never;
 }
 export interface WasmMemory {
-	readonly buffer: ArrayBuffer;
+	readonly buffer: ArrayBufferLike;
 }
 export type WasmValue = number | bigint;
 export type WasmExportFunction<
@@ -25,6 +25,15 @@ export interface WasmInstance<Exports extends WasmExports = WasmExports> {
 		memory: WasmMemory;
 		main?: () => void;
 	};
+}
+
+export interface TypedBufferViewConstructor<View extends ArrayBufferView> {
+	readonly BYTES_PER_ELEMENT: number;
+	new (
+		buffer: ArrayBufferLike,
+		byteOffset: number,
+		length: number,
+	): View;
 }
 declare const WebAssembly: {
 	Module: new (bytes: Uint8Array) => WasmModule;
@@ -46,7 +55,11 @@ export interface RunResult {
 	exitCode: number;
 }
 
-export function uint8BufferView(instance: WasmInstance, pointer: number) {
+export function bufferView<View extends ArrayBufferView>(
+	instance: WasmInstance,
+	pointer: number,
+	View: TypedBufferViewConstructor<View>,
+): View {
 	const buffer = instance.exports.memory.buffer;
 	if (
 		!Number.isInteger(pointer) ||
@@ -55,11 +68,14 @@ export function uint8BufferView(instance: WasmInstance, pointer: number) {
 	)
 		throw new RangeError('Invalid GB buffer pointer');
 	const length = new DataView(buffer, pointer, 4).getUint32(0, true);
-	if (pointer + 8 + length > buffer.byteLength)
+	const byteOffset = pointer + 8;
+	const elementSize = View.BYTES_PER_ELEMENT;
+	if (byteOffset % elementSize !== 0)
+		throw new RangeError('Invalid GB buffer alignment');
+	if (byteOffset + length * elementSize > buffer.byteLength)
 		throw new RangeError('Invalid GB buffer length');
-	return new Uint8Array(buffer, pointer + 8, length);
+	return new View(buffer, byteOffset, length);
 }
-
 /** `runtime.exit(code)` unwinds wasm by throwing through the host. */
 class ExitSignal {
 	constructor(readonly code: number) {}

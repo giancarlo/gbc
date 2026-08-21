@@ -2,7 +2,7 @@ import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
 import { tokenize } from '../sdk/index.js';
 import { Program, scan } from './index.js';
-import { instantiateWasm, uint8BufferView } from './host.js';
+import { bufferView, instantiateWasm } from './host.js';
 
 declare const WebAssembly: {
 	Module: new (bytes: Uint8Array) => unknown;
@@ -72,7 +72,7 @@ export frame = (): Buffer<Uint8> { pixels };`;
 		init();
 
 		a.equalValues(
-			uint8BufferView(instance, Number(frame())),
+			bufferView(instance, Number(frame()), Uint8Array),
 			Uint8Array.of(0, 0, 0, 4),
 		);
 	});
@@ -80,9 +80,11 @@ export frame = (): Buffer<Uint8> { pixels };`;
 	s.test('stores explicit float conversions at their declared width', (a: TestApi) => {
 		const source = `records = Buffer<Float32>(25);
 wide = Buffer<Float64>(2);
+integers = Buffer<Int64>(2);
 write = (index: Int32) {
 	set(records, index, Float32(index + 1))
 };
+dropSmall = (): Int32 { b = Buffer<Uint8>(5); next length(b) };
 export writeFloat32 = (index: Int32, value: Float32) {
 	set(records, index, value)
 };
@@ -91,10 +93,19 @@ export init = () {
 		index >= 25 ? break : write(index)
 	};
 	set(wide, 0, Float64(7));
-	set(wide, 1, Float64(9))
+	set(wide, 1, Float64(9));
+	set(integers, 0, Int64(11));
+	set(integers, 1, Int64(13))
+};
+export growMemory = (): own Buffer<Uint8> { Buffer<Uint8>(65536) };
+export recycled = (): own Buffer<Float64> {
+	b = Buffer<Float64>(dropSmall() - 4);
+	set(b, 0, Float64(3.5));
+	next b
 };
 export floats = (): Buffer<Float32> { records };
-export doubles = (): Buffer<Float64> { wide };`;
+export doubles = (): Buffer<Float64> { wide };
+export int64s = (): Buffer<Int64> { integers };`;
 		const compiled = Program({
 			sys: {
 				readFile: () => source,
@@ -107,33 +118,72 @@ export doubles = (): Buffer<Float64> { wide };`;
 		const instance = instantiateWasm(compiled.bytes);
 		const init = instance.exports.init;
 		const writeFloat32 = instance.exports.writeFloat32;
+		const growMemory = instance.exports.growMemory;
+		const recycled = instance.exports.recycled;
 		const floats = instance.exports.floats;
 		const doubles = instance.exports.doubles;
+		const int64s = instance.exports.int64s;
 		a.assert(typeof init === 'function');
 		a.assert(typeof writeFloat32 === 'function');
+		a.assert(typeof growMemory === 'function');
+		a.assert(typeof recycled === 'function');
 		a.assert(typeof floats === 'function');
 		a.assert(typeof doubles === 'function');
+		a.assert(typeof int64s === 'function');
 		init();
 		writeFloat32(1, 6.25);
 
-		const memory = instance.exports.memory.buffer;
 		const floatPointer = Number(floats());
-		const floatLength = new DataView(memory, floatPointer, 4).getUint32(0, true);
-		a.equal(floatLength, 25);
+		const floatsBeforeGrowth = bufferView(
+			instance,
+			floatPointer,
+			Float32Array,
+		);
 		a.equalValues(
-			Array.from(new Float32Array(memory, floatPointer + 8, floatLength)),
+			Array.from(floatsBeforeGrowth),
 			[1, 6.25, ...Array.from({ length: 23 }, (_, index) => index + 3)],
 		);
+		growMemory();
+		const floatsAfterGrowth = bufferView(
+			instance,
+			floatPointer,
+			Float32Array,
+		);
+		a.assert(floatsAfterGrowth.buffer !== floatsBeforeGrowth.buffer);
+		a.equalValues(Array.from(floatsAfterGrowth), [
+			1,
+			6.25,
+			...Array.from({ length: 23 }, (_, index) => index + 3),
+		]);
 
 		const doublePointer = Number(doubles());
-		const doubleLength = new DataView(memory, doublePointer, 4).getUint32(0, true);
-		a.equal(doubleLength, 2);
 		a.equalValues(
-			Array.from({ length: doubleLength }, (_, index) =>
-				new DataView(memory).getFloat64(doublePointer + 8 + index * 8, true),
-			),
+			Array.from(bufferView(instance, doublePointer, Float64Array)),
 			[7, 9],
 		);
+		a.equalValues(
+			Array.from(bufferView(instance, Number(int64s()), BigInt64Array)),
+			[11n, 13n],
+		);
+		a.equalValues(
+			Array.from(bufferView(instance, Number(recycled()), Float64Array)),
+			[3.5],
+		);
+
+		a.throws(() => bufferView(instance, -1, Float32Array), {
+			message: 'Invalid GB buffer pointer',
+		});
+		a.throws(() => bufferView(instance, floatPointer + 2, Float32Array), {
+			message: 'Invalid GB buffer alignment',
+		});
+		new DataView(instance.exports.memory.buffer).setUint32(
+			floatPointer,
+			0xffffffff,
+			true,
+		);
+		a.throws(() => bufferView(instance, floatPointer, Float32Array), {
+			message: 'Invalid GB buffer length',
+		});
 	});
 
 	s.test('emits stack-valid numeric conversions and stores', (a: TestApi) => {

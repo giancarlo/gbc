@@ -36,8 +36,13 @@ export { createCompiler };
 export type { Compiler } from './program.js';
 export const { Program } = await loadCompiler();
 export { scan } from './scanner.js';
-export { instantiateWasm, runWasm, uint8BufferView } from './host.js';
+export {
+	bufferView,
+	instantiateWasm,
+	runWasm,
+} from './host.js';
 export type {
+	TypedBufferViewConstructor,
 	WasmExportFunction,
 	WasmExports,
 	WasmInstance,
