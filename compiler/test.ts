@@ -4,6 +4,10 @@ import { tokenize } from '../sdk/index.js';
 import { Program, scan } from './index.js';
 import { instantiateWasm, uint8BufferView } from './host.js';
 
+declare const WebAssembly: {
+	Module: new (bytes: Uint8Array) => unknown;
+};
+
 /*
 
 The GB programming language is a concise, type-safe, and functional programming language that
@@ -130,6 +134,47 @@ export doubles = (): Buffer<Float64> { wide };`;
 			),
 			[7, 9],
 		);
+	});
+
+	s.test('emits stack-valid numeric conversions and stores', (a: TestApi) => {
+		const numericTypes = [
+			'Int8',
+			'Int16',
+			'Int32',
+			'Int64',
+			'Uint8',
+			'Uint16',
+			'Uint32',
+			'Uint64',
+			'Float32',
+			'Float64',
+		] as const;
+
+		for (const sourceType of numericTypes) {
+			for (const targetType of numericTypes) {
+				const pair = `${sourceType} -> ${targetType}`;
+				const source = `buffer = Buffer<${targetType}>(1);
+export write = (value: ${sourceType}) {
+	set(buffer, 0, ${targetType}(value))
+};`;
+				const compiled = Program({
+					sys: {
+						readFile: () => source,
+						readBytes: () => new Uint8Array(),
+					},
+				}).compileFile('numeric-stack.gb');
+				a.assert(
+					compiled.errors.length === 0,
+					`${pair}: ${compiled.errors.map(error => error.message).join('; ')}`,
+				);
+				a.assert(compiled.bytes, `${pair}: no WebAssembly output`);
+				try {
+					new WebAssembly.Module(compiled.bytes);
+				} catch (error) {
+					a.assert(false, `${pair}: ${String(error)}`);
+				}
+			}
+		}
 	});
 
 	s.test('should infer arithmetic through a top-level scalar binding', (a: TestApi) => {

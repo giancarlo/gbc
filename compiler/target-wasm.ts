@@ -192,8 +192,14 @@ const OP_F32_DEMOTE_F64 = 0xb6;
 const OP_F64_CONVERT_I32_S = 0xb7;
 
 const OP_I32_WRAP_I64 = 0xa7;
+const OP_I32_TRUNC_F32_S = 0xa8;
+const OP_I32_TRUNC_F32_U = 0xa9;
+const OP_I32_TRUNC_F64_S = 0xaa;
+const OP_I32_TRUNC_F64_U = 0xab;
 const OP_I64_EXTEND_I32_S = 0xac;
 const OP_I64_EXTEND_I32_U = 0xad;
+const OP_I64_TRUNC_F32_S = 0xae;
+const OP_I64_TRUNC_F32_U = 0xaf;
 const OP_I32_REINTERPRET_F32 = 0xbc;
 const OP_I64_REINTERPRET_F64 = 0xbd;
 const OP_F32_REINTERPRET_I32 = 0xbe;
@@ -1717,6 +1723,28 @@ export function compileWasm({
 			fn.body.push(
 				isUintType(have) ? OP_I64_EXTEND_I32_U : OP_I64_EXTEND_I32_S,
 			);
+	}
+
+	function truncateFloatToInt(have: Type, want: Type, fn: FuncBuilder) {
+		const sourceIsF32 = gbcToWasm(have) === F32;
+		const targetIsI64 = isInt64Type(want);
+		const targetIsUint = isUintType(want);
+		const op = sourceIsF32
+			? targetIsI64
+				? targetIsUint
+					? OP_I64_TRUNC_F32_U
+					: OP_I64_TRUNC_F32_S
+				: targetIsUint
+					? OP_I32_TRUNC_F32_U
+					: OP_I32_TRUNC_F32_S
+			: targetIsI64
+				? targetIsUint
+					? OP_I64_TRUNC_F64_U
+					: OP_I64_TRUNC_F64_S
+				: targetIsUint
+					? OP_I32_TRUNC_F64_U
+					: OP_I32_TRUNC_F64_S;
+		fn.body.push(op);
 	}
 
 	/** Widen a 32-bit-or-narrower int on the stack when an Int64 is wanted. */
@@ -3541,12 +3569,7 @@ export function compileWasm({
 			return target;
 		}
 		if (target.size === 8) {
-			if (isFloatType(t))
-				fn.body.push(
-					target.family === 'uint'
-						? OP_I64_TRUNC_F64_U
-						: OP_I64_TRUNC_F64_S,
-				);
+			if (isFloatType(t)) truncateFloatToInt(t, target, fn);
 			else if (gbcToWasm(t) === I32)
 				fn.body.push(
 					target.family === 'uint'
@@ -3555,7 +3578,7 @@ export function compileWasm({
 				);
 			return target;
 		}
-		if (isFloatType(t)) fn.body.push(0xaa);
+		if (isFloatType(t)) truncateFloatToInt(t, target, fn);
 		else if (gbcToWasm(t) === I64) fn.body.push(OP_I32_WRAP_I64);
 		if (target.family === 'uint') {
 			if (target.size === 1 || target.size === 2) {
