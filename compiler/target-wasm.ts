@@ -1017,7 +1017,7 @@ export function compileWasm({
 		};
 	}
 
-	function functionEmitsSequence(sym: SymbolMap['function']): boolean {
+	function hasNonScalarEmission(sym: SymbolMap['function']): boolean {
 		const emission = resolvedEmissionType(sym);
 		if (emission)
 			return emission.rest !== undefined || emission.elements.length > 1;
@@ -1038,18 +1038,8 @@ export function compileWasm({
 		return emission.ownerships[0];
 	}
 
-	function functionNodeEmitsSequence(fnNode: NodeMap['fn']): boolean {
-		if (functionEmitsSequence(fnNode.symbol)) return true;
-		const statements = fnNode.statements ?? [];
-		return statements.some(
-			(statement, index) =>
-				statement.kind === 'done' ||
-				(statement.kind === 'next' && index < statements.length - 1),
-		);
-	}
-
-	function templateEmitsSequence(template: NodeMap['fn']): boolean {
-		if (functionNodeEmitsSequence(template)) return true;
+	function templateHasNonScalarEmission(template: NodeMap['fn']): boolean {
+		if (hasNonScalarEmission(template.symbol)) return true;
 		const emission = resolvedEmissionType(template.symbol);
 		if (!emission) return true;
 		return emission.elements.some(
@@ -1949,7 +1939,7 @@ export function compileWasm({
 		const callee = callNode.children[0];
 		if (callee.kind !== 'ident') return false;
 		const template = fnTemplates.get(callee.symbol);
-		if (!template || !templateEmitsSequence(template)) return false;
+		if (!template || !templateHasNonScalarEmission(template)) return false;
 		const tStmts = template.statements ?? [];
 		const tbody = tStmts[0];
 		if (tStmts.length === 1 && tbody?.kind === 'call') return false;
@@ -3983,10 +3973,8 @@ export function compileWasm({
 		return target;
 	}
 
-	// `Buffer<T>(cap)` → a fresh runtime-length collection `[len=0][cap][elem×cap]`
-	// (payload at offset 8). Payload is left uninitialized: `get` and drop-glue
-	// are bounded by `len` (which starts 0), so a slot is only ever read/freed
-	// after `set` initialized it — the Rust `Vec::with_capacity` model.
+	// `Buffer<T>(size)` constructs fixed-length zeroed storage. A GB-defined
+	// buffer alias constructs empty storage with reserved capacity.
 	function compileBufferCtor(
 		target: ResolvedType,
 		args: Node | undefined,
@@ -3998,6 +3986,7 @@ export function compileWasm({
 		if (!args)
 			throw new Error('Buffer<T>(capacity) requires a capacity');
 		const stride = fieldBytes(elem);
+		const fixed = !target.components?.length;
 		const cap = allocLocal(fn, I32);
 		const buf = allocLocal(fn, I32);
 		compileExpr(args, fn);
@@ -4024,9 +4013,53 @@ export function compileWasm({
 		emitFixedCall(fn, allocBuilderIdx);
 		fn.body.push(OP_LOCAL_SET);
 		uleb128(buf, fn.body);
+		if (fixed) {
+			const ptr = allocLocal(fn, I32);
+			const remaining = allocLocal(fn, I32);
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(buf, fn.body);
+			fn.body.push(OP_I32_CONST, 8, OP_I32_ADD, OP_LOCAL_SET);
+			uleb128(ptr, fn.body);
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(cap, fn.body);
+			fn.body.push(OP_I32_CONST);
+			sleb128(stride, fn.body);
+			fn.body.push(
+				OP_I32_MUL,
+				OP_I32_CONST,
+				3,
+				OP_I32_ADD,
+				OP_I32_CONST,
+				2,
+				0x76,
+				OP_LOCAL_SET,
+			);
+			uleb128(remaining, fn.body);
+			fn.body.push(OP_BLOCK, 0x40, OP_LOOP, 0x40);
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(remaining, fn.body);
+			fn.body.push(OP_I32_EQZ, OP_BR_IF, 1);
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(ptr, fn.body);
+			fn.body.push(OP_I32_CONST, 0, OP_I32_STORE);
+			uleb128(2, fn.body);
+			uleb128(0, fn.body);
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(ptr, fn.body);
+			fn.body.push(OP_I32_CONST, 4, OP_I32_ADD, OP_LOCAL_SET);
+			uleb128(ptr, fn.body);
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(remaining, fn.body);
+			fn.body.push(OP_I32_CONST, 1, OP_I32_SUB, OP_LOCAL_SET);
+			uleb128(remaining, fn.body);
+			fn.body.push(OP_BR, 0, OP_END, OP_END);
+		}
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(buf, fn.body);
-		fn.body.push(OP_I32_CONST, 0);
+		if (fixed) {
+			fn.body.push(OP_LOCAL_GET);
+			uleb128(cap, fn.body);
+		} else fn.body.push(OP_I32_CONST, 0);
 		fn.body.push(OP_I32_STORE);
 		uleb128(2, fn.body);
 		uleb128(0, fn.body);
@@ -4039,7 +4072,7 @@ export function compileWasm({
 		uleb128(4, fn.body);
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(buf, fn.body);
-		return bufferTypeOf(elem);
+		return target;
 	}
 
 	function bufArgList(args: Node | undefined): Node[] {
@@ -5383,7 +5416,7 @@ export function compileWasm({
 	}
 
 	function expressionEmitsSequence(node: Node): boolean {
-		if (node.kind === 'call') return callEmitsSequence(node);
+		if (node.kind === 'call') return callHasNonScalarEmission(node);
 		if (node.kind === ',') return node.children.length > 1;
 		if (node.kind === '?')
 			return (
@@ -5569,7 +5602,7 @@ export function compileWasm({
 		return fnNode;
 	}
 
-	function callEmitsSequence(callNode: NodeMap['call']): boolean {
+	function callHasNonScalarEmission(callNode: NodeMap['call']): boolean {
 		const callee = callNode.children[0];
 		const typed =
 			callee.kind === 'ident'
@@ -5578,39 +5611,10 @@ export function compileWasm({
 					? resolveStaticMemberFn(callee)
 					: undefined;
 		const fnNode = getCallableFn(callNode);
-		if (fnNode?.symbol.emissionType)
-			return functionNodeEmitsSequence(fnNode);
-		if (typed && functionEmitsSequence(typed)) return true;
-		if (!fnNode) return false;
-		const stmts = fnNode.statements ?? [];
-		const tail = stmts[stmts.length - 1];
-		const isDirectTier =
-			tail?.kind === 'next' &&
-			tail.children?.[0]?.kind !== ',' &&
-			!stmts
-				.slice(0, -1)
-				.some(statement => statement.kind === 'next' || statement.kind === 'done');
-		if (isDirectTier) return false;
-		return stmts.some(s => s.kind === 'next' || s.kind === 'done');
-	}
-
-	function forwardsTemplateCall(fnNode: NodeMap['fn']): boolean {
-		const only = fnNode.statements?.length === 1
-			? fnNode.statements[0]
-			: undefined;
-		const value = only?.kind === 'next' ? only.children?.[0] : only;
-		if (value?.kind !== 'call' || value.children[0].kind !== 'ident')
-			return false;
-		const template = fnTemplates.get(value.children[0].symbol);
-		if (!template) return false;
-		const templateOnly = template.statements?.length === 1
-			? template.statements[0]
-			: undefined;
-		const templateValue =
-			templateOnly?.kind === 'next'
-				? templateOnly.children?.[0]
-				: templateOnly;
-		return templateValue?.kind === '>>';
+		return (
+			(!!typed && hasNonScalarEmission(typed)) ||
+			(!!fnNode && hasNonScalarEmission(fnNode.symbol))
+		);
 	}
 
 	function argListFromCall(args: Node | undefined): Node[] {
@@ -5649,8 +5653,8 @@ export function compileWasm({
 		if (!fnNode) return false;
 		const params = fnNode.parameters ?? [];
 		if (
-			!callEmitsSequence(callNode) &&
-			(params.length > 0 && !forwardsTemplateCall(fnNode) ||
+			!callHasNonScalarEmission(callNode) &&
+			(params.length > 0 && !fnNode.symbol.forwardsPipe ||
 				!callNode.children[1])
 		)
 			return false;
@@ -6389,7 +6393,7 @@ export function compileWasm({
 		if (sym.kind === 'function' && sym.flags & Flags.Intrinsic)
 			return driveIntrinsicStage(stage, sym, inputType, rest, fn);
 		const template = fnTemplates.get(sym);
-		if (template && templateEmitsSequence(template))
+		if (template && templateHasNonScalarEmission(template))
 			return driveSequenceTemplate(template, sym, inputType, rest, fn);
 		const def = sym.definition;
 		const fnValue =
@@ -6398,7 +6402,7 @@ export function compileWasm({
 				: undefined;
 		if (
 			fnValue &&
-			functionEmitsSequence(fnValue.symbol) &&
+			hasNonScalarEmission(fnValue.symbol) &&
 			!inliningStages.has(fnValue.symbol)
 		) {
 			inliningStages.add(fnValue.symbol);
@@ -6986,17 +6990,16 @@ export function compileWasm({
 		typeArgs?: Map<string, Type>,
 	): Type {
 		const emission = resolvedEmissionType(fnNode.symbol, typeArgs);
-		if (emission && functionNodeEmitsSequence(fnNode))
-			return BaseTypes.Void;
-		let returnType: Type = fnNode.returnType
-			? resolveTypeFromNode(fnNode.returnType)
-			: BaseTypes.Unknown;
-		if (
-			fnNode.returnType &&
-			fnNode.symbol.returnType?.kind === 'type' &&
-			fnNode.symbol.returnType.family !== 'unknown'
-		)
-			returnType = fnNode.symbol.returnType;
+		if (emission && hasNonScalarEmission(fnNode.symbol)) return BaseTypes.Void;
+		const emitted = emission?.elements[0];
+		let returnType: Type =
+			emission?.elements.length === 1 && emitted?.kind === 'type'
+				? emitted
+				: emission
+					? BaseTypes.Void
+					: fnNode.symbol.returnType?.kind === 'type'
+						? fnNode.symbol.returnType
+						: BaseTypes.Unknown;
 		returnType = substituteTypeArg(returnType, typeArgs);
 		// A parameterized collection return (`Buffer<U>`) resolves its element by
 		// NAME — needed when `U` binds only through a higher-order arg, whose
@@ -7008,10 +7011,10 @@ export function compileWasm({
 			returnType.family === 'buffer'
 		) {
 			const e = reduceType(returnType.elem, typeArgs);
-			if (e !== returnType.elem) returnType = bufferTypeOf(e);
+			if (e !== returnType.elem) returnType = { ...returnType, elem: e };
 		}
 		returnType = reduceAppliedReturn(returnType);
-		return inferReturnFromBody(returnType, fnNode);
+		return returnType;
 	}
 
 	function substituteTypeArg(returnType: Type, typeArgs?: Map<string, Type>): Type {
@@ -7038,50 +7041,6 @@ export function compileWasm({
 			if (reduced.kind === 'type' && reduced.family !== 'unknown')
 				return reduced;
 		}
-		return returnType;
-	}
-
-	// Last resort for a still-unknown return: a single-statement body's value type.
-	// Return types are inferred — an annotation is never required. The tail
-	// statement decides: `next X` or a bare value types the return; a
-	// consumer call, assignment, def, `done`, or `break` tail is Void. A
-	// `next` before the tail marks a multi-emit body (left as-is).
-	function tailReturnValue(tail: Node): Node | undefined {
-		if (tail.kind === 'next') return tail.children?.[0];
-		if (
-			tail.kind === 'def' ||
-			tail.kind === '=' ||
-			tail.kind === 'break' ||
-			tail.kind === 'done'
-		)
-			return undefined;
-		return tail;
-	}
-
-	function inferReturnFromBody(returnType: Type, fnNode: NodeMap['fn']): Type {
-		const stmts = fnNode.statements ?? [];
-		if (
-			stmts.length === 0 ||
-			returnType.kind !== 'type' ||
-			returnType.family !== 'unknown'
-		)
-			return returnType;
-		for (let i = 0; i < stmts.length - 1; i++)
-			if (stmts[i]?.kind === 'next') return returnType;
-		const tail = stmts[stmts.length - 1];
-		if (!tail) return returnType;
-		if (tail.kind === 'next') {
-			const v = tail.children?.[0];
-			if (!v) return BaseTypes.Void;
-			if (v.kind === 'call' && callEmitsSequence(v)) return BaseTypes.Void;
-		}
-		const fromChecker = fnNode.symbol.returnType;
-		if (fromChecker && hasRuntimeValue(fromChecker)) return fromChecker;
-		const val = tailReturnValue(tail);
-		if (!val || val.kind === '>>') return returnType;
-		const inferred = inferType(val);
-		if (inferred.kind === 'type' && inferred.family !== 'unknown')
-			return inferred;
 		return returnType;
 	}
 
@@ -7275,7 +7234,7 @@ export function compileWasm({
 	function detachType(t: Type, depth = 0): Type {
 		if (t.kind !== 'type' || depth > 8) return t;
 		if (t.family === 'buffer')
-			return bufferTypeOf(detachType(t.elem, depth + 1));
+			return { ...t, elem: detachType(t.elem, depth + 1) };
 		if (t.family === 'unknown') return t;
 		return { ...t };
 	}
@@ -7342,7 +7301,7 @@ export function compileWasm({
 			returnType.kind === 'type' &&
 			returnType.family !== 'void' &&
 			returnType.family !== 'unknown';
-		const seqTemplate = templateEmitsSequence(template) && !valueCallBody;
+		const seqTemplate = templateHasNonScalarEmission(template) && !valueCallBody;
 		if (seqTemplate) inTemplateInline++;
 		compileFnBody(builder, template);
 		if (seqTemplate) inTemplateInline--;
@@ -7406,7 +7365,7 @@ export function compileWasm({
 					? sym.type
 					: undefined;
 		if (!fnSym) return undefined;
-		if (functionEmitsSequence(fnSym)) return undefined;
+		if (hasNonScalarEmission(fnSym)) return undefined;
 		return { builderIdx, fnSym };
 	}
 
@@ -7690,6 +7649,12 @@ export function compileWasm({
 		for (let i = 0; i < stmts.length; i++) {
 			const stmt = stmts[i];
 			if (!stmt) continue;
+			if (stmt.kind === 'next' && hasRuntimeValue(builder.returnType)) {
+				compileTail(stmt, builder);
+				emitOwnedFrees(builder);
+				builder.body.push(OP_RETURN);
+				continue;
+			}
 			if (i === stmts.length - 1) {
 				compileTail(stmt, builder);
 				continue;

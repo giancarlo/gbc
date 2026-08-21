@@ -52,7 +52,7 @@ export default spec('Language Reference', s => {
 	s.test('should expose a borrowed Uint8 buffer to the host', (a: TestApi) => {
 		const source = `pixels = Buffer<Uint8>(4);
 export init = () {
-	loop >> (i: Int32) { i >= 4 ? break : set(pixels, i, Uint8(i + 1)) }
+	set(pixels, 3, Uint8(4))
 };
 export frame = (): Buffer<Uint8> { pixels };`;
 		const compiled = Program({
@@ -73,7 +73,7 @@ export frame = (): Buffer<Uint8> { pixels };`;
 
 		a.equalValues(
 			uint8BufferView(instance, Number(frame())),
-			Uint8Array.of(1, 2, 3, 4),
+			Uint8Array.of(0, 0, 0, 4),
 		);
 	});
 
@@ -346,6 +346,7 @@ main { recursive(2) >> out; generic(2) >> out }`);
 			if (definition?.kind !== 'def' || definition.value.kind !== 'fn')
 				throw new Error(`Missing function ${name}`);
 			a.equal(definition.value.symbol.emissionType, undefined);
+			a.equal(definition.value.symbol.returnType?.kind, 'type');
 		}
 	});
 
@@ -2163,7 +2164,7 @@ export keepHeap = (): Int32 { value = 'x\${1}'; next length(value) };
 keepOwner = (a: own Buffer<Int32>): own Buffer<Int32> { size = length(a); next size > 0 ? a : a };
 export keepOwnerSize = (): Int32 { length(keepOwner(Buffer<Int32>(1))) };
 export keepDollar = (): Int32 { Buffer<Int32>(1) >> Buffer<Int32>:Int32 { size = length($); next size + length($) } };
-#test { equal(top, 2); equal(keepVar(3), 6); equal(keepLater(4), 8); equal(keepHeap(), 2); equal(keepOwnerSize(), 0); equal(keepDollar(), 0) }
+#test { equal(top, 2); equal(keepVar(3), 6); equal(keepLater(4), 8); equal(keepHeap(), 2); equal(keepOwnerSize(), 1); equal(keepDollar(), 2) }
 export target = (): Int32 { 0 }`,
 			out: ['4'],
 		});
@@ -2727,6 +2728,24 @@ main { wide(100000, 0) >> out }`,
 		});
 	});
 
+	h('Time', ({ testBlock, compileError }) => {
+		testBlock({
+			p: '`monotonicMilliseconds` reads a clock that does not move backward.',
+			src: `#test {
+	start = time.monotonicMilliseconds();
+	end = time.monotonicMilliseconds();
+	ok(end >= start)
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		compileError({
+			p: 'Standard modules expose names through their top-level namespace only.',
+			src: `main { monotonicMilliseconds() }`,
+			expected: 'not defined',
+		});
+	});
+
 	h('Buffer & Array (push)', ({ rule, testBlock, compileError, runtimeTrap, modules }) => {
 		compileError({
 			p: 'The unspecialized Buffer constructor requires an element type.',
@@ -2734,9 +2753,39 @@ main { wide(100000, 0) >> out }`,
 			expected: 'Buffer requires a type argument',
 		});
 		testBlock({
+			p: '`Buffer<T>(size)` constructs zero-initialized fixed-length storage, so every index through the final index is writable before returning it through the ABI.',
+			src: `export ints = (): own Buffer<Int32> {
+	b = Buffer<Int32>(4);
+	set(b, 3, 9);
+	next b
+};
+export strings = (): own Buffer<String> {
+	b = Buffer<String>(2);
+	set(b, 1, 'right');
+	set(b, 0, 'left');
+	next b
+};
+#test {
+	equal(length(ints()), 4);
+	equal(capacity(ints()), 4);
+	equal(get(ints(), 0), 0);
+	equal(get(ints(), 3), 9);
+	equal(length(strings()), 2);
+	equal(get(strings(), 0), 'left');
+	equal(get(strings(), 1), 'right')
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		compileError({
+			p: '`push` accepts growable Arrays, not fixed-length Buffers.',
+			src: `main { push(Buffer<Int32>(1), 7) }`,
+			expected: 'not assignable',
+		});
+		testBlock({
 			p: '`findIndex` returns the first element accepted by a predicate and preserves the specialized Buffer element type.',
 			src: `export strings = (): own Buffer<String> {
-	push(push(Buffer<String>(0), 'left'), 'right')
+	push(push(Array<String>(0), 'left'), 'right')
 };
 #test {
 	equal(findIndex(range(3, 7), (n: Int32): Bool { n == 5 }), 2);
@@ -2759,7 +2808,7 @@ export target = (): Int32 { 0 }`,
 			out: ['7', '7', '7', '7', '0', '2', '4', '6'],
 		});
 		testBlock({
-			p: '`Array<T>` is the public source-level collection over fixed-capacity `Buffer<T>`. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set mutates through exclusive access.',
+			p: '`Array<T>` is a GB-defined growable collection backed by Buffer storage. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set mutates through exclusive access.',
 			src: `export empty = (): own Array<Int32> { Array<Int32>(0) };
 export ints = (): own Array<Int32> { push(push(empty(), 3), 5) };
 export changed = (): own Array<Int32> { a = empty() -> push(3) -> push(5); set(a, 0, 7); next a };
@@ -2803,7 +2852,7 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: '`values` and `slice` emit borrowed elements without consuming the Array. Slice is start-inclusive/end-exclusive, clamps a negative start to zero and stops at length.',
-			src: `export ints = (): own Array<Int32> { push(push(push(Buffer<Int32>(3), 2), 4), 6) };
+			src: `export ints = (): own Array<Int32> { push(push(push(Array<Int32>(3), 2), 4), 6) };
 export sumValues = (a: Array<Int32>): Int32 {
 	reduce(a, 0, (total: own Int32, n: Int32): own Int32 { total + n }) + length(a)
 };
@@ -2828,9 +2877,9 @@ export target = (): Int32 { 0 }`,
 		testBlock({
 			p: 'Array algorithms support heap-owning strings, inline records, nested Arrays, empty inputs, mapping, reduction, search, and borrowed slices.',
 			src: `type Item = [ id: Int32, name: String ];
-export strings = (): own Array<String> { push(push(Buffer<String>(2), 'a'), 'bb') };
-export records = (): own Array<Item> { push(push(Buffer<Item>(2), [ id = 1, name = 'one' ]), [ id = 2, name = 'two' ]) };
-export nested = (): own Array<Array<Int32> > { push(Buffer<Array<Int32> >(1), push(Buffer<Int32>(1), 9)) };
+export strings = (): own Array<String> { push(push(Array<String>(2), 'a'), 'bb') };
+export records = (): own Array<Item> { push(push(Array<Item>(2), [ id = 1, name = 'one' ]), [ id = 2, name = 'two' ]) };
+export nested = (): own Array<Array<Int32> > { push(Array<Array<Int32> >(1), push(Array<Int32>(1), 9)) };
 export stringLengths = (): own Array<Int32> { map(strings(), (s: String): own Int32 { length(s) }) };
 export recordIds = (): own Array<Int32> { map(records(), (item: Item): own Int32 { item.id }) };
 sliceTextAt = (a: Array<String>, i: Int32, total: Int32): Int32 {
@@ -2842,7 +2891,7 @@ export slicedText = (a: Array<String>): Int32 {
 	sliceTextAt(a, 0, 0)
 };
 #test {
-	equal(length(map(Buffer<Int32>(0), (n: Int32): own Int32 { n + 1 })), 0);
+	equal(length(map(Array<Int32>(0), (n: Int32): own Int32 { n + 1 })), 0);
 	equal(reduce(strings(), 0, (n: own Int32, s: String): own Int32 { n + length(s) }), 3);
 	equal(get(stringLengths(), 1), 2);
 	equal(get(recordIds(), 1), 2);
@@ -2871,7 +2920,7 @@ export target = (): Int32 { 0 }`,
 			p: 'Exported Array contracts preserve borrowing and ownership transfer across module boundaries.',
 			files: {
 				'/arrays.gb': `export make = (n: Int32): own Array<String> {
-	push(push(Buffer<String>(2), 'left\${n}'), 'right\${n}')
+	push(push(Array<String>(2), 'left\${n}'), 'right\${n}')
 };
 export size = (a: Array<String>): Int32 { length(a) };
 export replace = (a: own Array<String>, value: own String): own Array<String> {
@@ -2919,15 +2968,13 @@ main {
 			src: `main { Array<Int64>(0) -> reserveCapacity(536870911) >> length >> out }`,
 		});
 		testBlock({
-			p: '`Buffer<T>` is the sealed memory floor. `set(buffer: var Buffer<T>, index, value: own T)` mutates without ownership transfer and returns Void; reallocating operations retain own-in/own-out contracts.',
-			src: `export mk = (): own Buffer<Int32> { b = Buffer<Int32>(2); set(b, 0, 10); set(b, 1, 20); next push(b, 30) };
-export sum = (b: Buffer<Int32>): Int32 { reduce(b, 0, (total: own Int32, n: Int32): own Int32 { total + n }) };
+			p: '`Buffer<T>` is fixed-length storage. `set(buffer: var Buffer<T>, index, value: own T)` mutates any existing index without ownership transfer and returns Void.',
+			src: `export mk = (): own Buffer<Int32> { b = Buffer<Int32>(2); set(b, 0, 10); set(b, 1, 20); next b };
 #test {
-	equal(length(mk()), 3);
-	equal(capacity(mk()), 4);
+	equal(length(mk()), 2);
+	equal(capacity(mk()), 2);
 	equal(get(mk(), 0), 10);
-	equal(get(mk(), 2), 30);
-	equal(sum(mk()), 60)
+	equal(get(mk(), 1), 20)
 }
 export target = (): Int32 { 0 }`,
 			out: [],
@@ -2936,12 +2983,12 @@ export target = (): Int32 { 0 }`,
 			p: 'Intrinsics are ordinary function symbols: call syntax and pipe syntax use the same signature, data-block argument spreading, type checking, and backend lowering. Their names have no parser or pipe-stage grammar special case.',
 			src: `type Boom = Error & [ id: Int32 ];
 boom = (): own Boom { [ id = 1 ] };
-export one = (): own Buffer<Int32> { b = Buffer<Int32>(2); set(b, 0, 7); next b };
+export one = (): own Buffer<Int32> { b = Buffer<Int32>(1); set(b, 0, 7); next b };
 export pipeLength = (): Int32 { b = one(); next b >> length };
 export pipeCapacity = (): Int32 { b = one(); next b >> capacity };
 export pipeGet = (): Int32 { [ one(), 0 ] >> get };
 export pipeSet = (): Int32 { b = Buffer<Int32>(1); set(b, 0, 9); next length(b) };
-export pipeTransfer = (): Int32 { [ one(), Buffer<Int32>(1) ] >> transfer >> length };
+export pipeTransfer = (): Int32 { [ one(), Array<Int32>(2) ] >> transfer >> length };
 export pipeOrigin = (): Int32 { b = boom(); next (b >> origin).line };
 export callOrigin = (): Int32 { b = boom(); next origin(b).line };
 export pipeFrameAt = (): Int32 { b = boom(); next ([ b, 0 ] >> frameAt).line };
@@ -2971,19 +3018,19 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: '`transfer` moves a buffer payload into a distinct empty destination, preserving owned elements and adopting the destination capacity.',
-			src: `export moved = (): own Buffer<String> { s = Buffer<String>(2); set(s, 0, 'a'); set(s, 1, 'b'); next transfer(s, Buffer<String>(4)) };
+			src: `export moved = (): own Buffer<String> { s = Buffer<String>(2); set(s, 0, 'a'); set(s, 1, 'b'); next transfer(s, Array<String>(4)) };
 #test { equal(get(moved(), 0), 'a'); equal(get(moved(), 1), 'b'); equal(length(moved()), 2); equal(capacity(moved()), 4) }
 export target = (): Int32 { 0 }`,
 			out: [],
 		});
 		compileError({
 			p: '`transfer` requires source and destination buffers with the same element type.',
-			src: `main { source = Buffer<Int32>(1); destination = Buffer<String>(1); transfer(source, destination) >> length >> out }`,
+			src: `main { source = Buffer<Int32>(1); destination = Array<String>(1); transfer(source, destination) >> length >> out }`,
 			expected: 'not assignable',
 		});
 		compileError({
 			p: '`transfer` consumes both buffers, so neither input can be used afterward.',
-			src: `main { source = Buffer<Int32>(1); destination = Buffer<Int32>(1); moved = transfer(source, destination); length(source) >> out; length(moved) >> out }`,
+			src: `main { source = Buffer<Int32>(1); destination = Array<Int32>(1); moved = transfer(source, destination); length(source) >> out; length(moved) >> out }`,
 			expected: 'used after move',
 		});
 		runtimeTrap({
@@ -3005,7 +3052,7 @@ export target = (): Int32 { 0 }`,
 			src: `main { b = Buffer<Int32>(1); set(b, 0 - 1, 7) }`,
 		});
 		runtimeTrap({
-			src: `main { b = Buffer<Int32>(2); set(b, 1, 7) }`,
+			src: `main { b = Array<Int32>(2); set(b, 1, 7) }`,
 		});
 		runtimeTrap({
 			src: `main { b = Buffer<Int32>(1); set(b, 0, 7); set(b, 1, 8) }`,
@@ -3016,10 +3063,10 @@ export target = (): Int32 { 0 }`,
 			expected: 'conflicting ownership slots',
 		});
 		runtimeTrap({
-			src: `main { source = Buffer<Int32>(1); destination = Buffer<Int32>(1); set(source, 0, 7); set(destination, 0, 8); transfer(source, destination) >> length >> out }`,
+			src: `main { source = Buffer<Int32>(1); destination = Array<Int32>(1); set(source, 0, 7); set(destination, 0, 8); transfer(source, destination) >> length >> out }`,
 		});
 		runtimeTrap({
-			src: `main { source = Buffer<Int32>(2); set(source, 0, 7); set(source, 1, 8); transfer(source, Buffer<Int32>(1)) >> length >> out }`,
+			src: `main { source = Buffer<Int32>(2); set(source, 0, 7); set(source, 1, 8); transfer(source, Array<Int32>(1)) >> length >> out }`,
 		});
 		testBlock({
 			p: 'push grows a scalar Array flat: building and dropping an Array every iteration reuses the heap — internal doubling frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
@@ -3053,7 +3100,7 @@ export spinReserved = (n: Int32, acc: Int32): Int32 {
 			maxPages: 3,
 		});
 		testBlock({
-			p: '`range(start, end)` is GB source that produces an ascending, start-inclusive and end-exclusive `Buffer<Int32>`. Its recursive chain threads the owner returned by the intrinsic `set` stage; equal or descending endpoints produce an empty Buffer.',
+			p: '`range(start, end)` is GB source that produces an ascending, start-inclusive and end-exclusive `Array<Int32>`. Its recursive chain threads the owner returned by the intrinsic `set` stage; equal or descending endpoints produce an empty Array.',
 			src: `#test {
 	equal(length(range(3, 7)), 4);
 	equal(get(range(3, 7), 0), 3);
@@ -3069,8 +3116,8 @@ export target = (): Int32 { 0 }`,
 		});
 		testBlock({
 			p: 'The prelude `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
-			src: `export ints = (): own Buffer<Int32> { b = Buffer<Int32>(4); set(b, 0, 3); set(b, 1, 5); set(b, 2, 7); next b };
-export strs = (): own Buffer<String> { s0 = Buffer<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
+			src: `export ints = (): own Buffer<Int32> { b = Buffer<Int32>(3); set(b, 0, 3); set(b, 1, 5); set(b, 2, 7); next b };
+export strs = (): own Buffer<String> { s0 = Array<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
 #test {
 	equal(indexOf(ints(), 5), 1);
 	equal(indexOf(ints(), 9), 0 - 1);
@@ -3485,10 +3532,14 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 		});
 	});
 
-	h('External declarations', ({ rule }) => {
+	h('External declarations', ({ rule, ast }) => {
 		rule({
 			src: `external host_log: (n: Int32); main { host_log(5) }`,
 			ast: `(root (external @external :host_log (fn (parameter :n typeident ?))) (main (call :host_log @external 5)))`,
+		});
+		ast({
+			src: `export external host_time: (): Float64`,
+			ast: `(external @export @external :host_time (fn typeident))`,
 		});
 	});
 
@@ -3696,12 +3747,14 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 					ast: `(type :Pair typeident)`,
 				});
 				expr({
+					p: 'A function-typed parameter may call its argument and return the callback result.',
 					pre: `add = (a: Int32, b: Int32): Int32 { a + b }; helper = (cb: (Int32, Int32): Int32): Int32 { cb(5, 10) }`,
 					src: `helper(add)`,
 					ast: `(call :helper :add)`,
 					out: ['15'],
 				});
 				expr({
+					p: 'A function-typed parameter preserves the callback’s complete emission signature.',
 					pre: `type Pair<T> = { T, T }; twice = (n: Int32): Pair<Int32> { next n; next n + 1 }; apply = (cb: (Int32): Pair<Int32>, n: Int32): Pair<Int32> { cb(n) }`,
 					src: `apply(twice, 5)`,
 					ast: `(call :apply (, :twice 5))`,
@@ -3727,6 +3780,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 					expected: 'capture',
 				});
 				expr({
+					p: 'A function value returned from another function remains callable.',
 					pre: `constFn = (): ((Int32): Int32) { (y: Int32): Int32 { y + 1 } }`,
 					src: `constFn()(10)`,
 					ast: `(call (call :constFn ?) 10)`,
@@ -3848,16 +3902,19 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 				out: ['42', '7'],
 			});
 			rule({
+				p: 'A generic function may return a value whose type is selected from one type parameter while accepting unrelated parameter types.',
 				src: `pick = <T, U>(a: T, b: U): T { a }; main { pick(5, 9) >> out }`,
 				ast: `(root (def :pick ? (fn (, (parameter :T ? ?) (parameter :U ? ?)) (parameter :a typeident ?) (parameter :b typeident ?) typeident (next :a))) (main (>> (call :pick (, 5 9)) :out)))`,
 				out: ['5'],
 			});
 			rule({
+				p: 'Repeated uses of one type parameter resolve to one concrete type at a call site.',
 				src: `first = <T>(a: T, b: T): T { a }; main { first(10, 20) >> out }`,
 				ast: `(root (def :first ? (fn (, (parameter :T ? ?)) (parameter :a typeident ?) (parameter :b typeident ?) typeident (next :a))) (main (>> (call :first (, 10 20)) :out)))`,
 				out: ['10'],
 			});
 			expr({
+				p: 'A recursive generic may accept a named function argument and preserve the accumulator type through every call.',
 				pre: `dfold = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : dfold(r, f(acc, h), f) } }; add = (a: Int32, b: Int32): Int32 { a + b }`,
 				src: `dfold([1, 2, 3], 0, add)`,
 				ast: `(call :dfold (, (data (, 1 2 3)) 0 :add))`,
@@ -3866,6 +3923,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 			// A higher-order arg may also be an inline function literal, not just a
 			// named fn: it is lifted to a real function and bound to the param.
 			expr({
+				p: 'A recursive generic may accept an inline function argument with the same structural function type.',
 				pre: `dfold = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : dfold(r, f(acc, h), f) } }`,
 				src: `dfold([1, 2, 3], 0, (a: Int32, b: Int32): Int32 { a + b })`,
 				ast: `(call :dfold (, (data (, 1 2 3)) 0 (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (+ :a :b)))))`,
@@ -3875,6 +3933,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 			// each spec's param must take its concrete arg's wasm type (f64), not
 			// the Int32 default left by the in-place type-param placeholder.
 			expr({
+				p: 'Generic recursion preserves a concrete non-Int32 accumulator and callback signature.',
 				pre: `dfold = <T, A>(t: T, acc: A, f: (A, A): A): A { t >> (h, r) { length(r) == 0 ? f(acc, h) : dfold(r, f(acc, h), f) } }; addF = (a: Float64, b: Float64): Float64 { a + b }`,
 				src: `dfold([1.5, 2.5, 3.5], 0.5, addF)`,
 				ast: `(call :dfold (, (data (, 1.5 2.5 3.5)) 0.5 :addF))`,
@@ -3888,12 +3947,14 @@ main { rep('ab', 3) >> out }`,
 				out: ['ababab'],
 			});
 			rule({
+				p: 'A recursive generic may interpolate a concrete non-string argument while retaining its declared string result.',
 				src: `rep = <T>(x: T, n: Int32): String { n <= 0 ? '' : '\${x}\${rep(x, n - 1)}' };
 main { rep(7, 4) >> out }`,
 				ast: `(root (def :rep ? (fn (, (parameter :T ? ?)) (parameter :x typeident ?) (parameter :n typeident ?) typeident (next (? (<= :n 0) '' (interp :x (call :rep (, :x (- :n 1)))))))) (main (>> (call :rep (, 7 4)) :out)))`,
 				out: ['7777'],
 			});
 			rule({
+				p: 'A recursive generic may carry an otherwise unused type parameter while returning a fixed scalar type.',
 				src: `countDown = <T>(x: T, n: Int32): Int32 { n <= 0 ? 0 : 1 + countDown(x, n - 1) };
 main { countDown('z', 5) >> out }`,
 				ast: `(root (def :countDown ? (fn (, (parameter :T ? ?)) (parameter :x typeident ?) (parameter :n typeident ?) typeident (next (? (<= :n 0) 0 (+ 1 (call :countDown (, :x (- :n 1)))))))) (main (>> (call :countDown (, 'z' 5)) :out)))`,
@@ -3908,6 +3969,7 @@ main { join([ 'a', 'b', 'c' ]) >> out }`,
 				out: ['abc'],
 			});
 			rule({
+				p: 'A generic wrapper may return the fixed scalar result of another generic function.',
 				src: `add = (a: Int32, b: Int32): Int32 { a + b };
 sum = <T>(t: T): Int32 { fold(t, 0, add) };
 main { sum([ 1, 2, 3, 4 ]) >> out }`,
@@ -3915,6 +3977,7 @@ main { sum([ 1, 2, 3, 4 ]) >> out }`,
 				out: ['10'],
 			});
 			rule({
+				p: 'A generic wrapper may pass an inline callback to another generic function and return its result.',
 				src: `join = <T>(t: T): String { fold(t, '', (a: String, b: String): String { '\${a}\${b}' }) };
 main { join([ 'x', 'y', 'z' ]) >> out }`,
 				ast: `(root (def :join ? (fn (, (parameter :T ? ?)) (parameter :t typeident ?) typeident (next (call :fold (, :t '' (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (interp :a :b)))))))) (main (>> (call :join (data (, 'x' 'y' 'z'))) :out)))`,
@@ -4047,6 +4110,17 @@ main { double(21) >> out; triple(7) >> out; 6 -> geo.area(7) >> out }`,
 			},
 			entry: '/main.gb',
 			out: ['42', '21', '42'],
+		});
+		modules({
+			p: 'Modules may export host functions without emitting a Wasm definition.',
+			files: {
+				'/clock.gb': `export external hostClock: (): Float64;
+export value = (): Int32 { 7 };`,
+				'/main.gb': `(hostClock, value) = @.clock;
+main { value() >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['7'],
 		});
 		modules({
 			p: 'Imported functions preserve exact finite emission signatures.',

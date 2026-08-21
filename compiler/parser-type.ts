@@ -371,7 +371,13 @@ export function parseType(
 			return { ...t, members };
 		}
 		if (t.family === 'buffer')
-			return bufferTypeOf(substituteType(t.elem, subst));
+			return {
+				...t,
+				elem: substituteType(t.elem, subst),
+				components: t.components?.map(component =>
+					substituteType(component, subst),
+				),
+			};
 		if (t.family === 'union')
 			return { ...t, members: t.members.map(m => substituteType(m, subst)) };
 		if (t.family === 'emission')

@@ -1,0 +1,4 @@
+export ok = (cond: Bool) { cond >> Bool { !$ ? 'assertion failed' } >> out };
+export equal = <T>(actual: T, expected: T) {
+	(actual == expected ? '' : '${actual} != ${expected}') >> String { length($) > 0 ? $ } >> out
+};

@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFile } from 'fs/promises';
 import { basename, extname, join, resolve } from 'path';
 
 import { parseParameters, program } from '@cxl/program';
-import { Program } from '../compiler/program.js';
+import { loadCompiler } from '../compiler/program.js';
 import { runWasm } from '../compiler/host.js';
 import { ast } from '../compiler/debug.js';
 import { formatError } from '../sdk/index.js';
+
+const { Program } = await loadCompiler(async () =>
+	new Uint8Array(await readFile(new URL('./stdlib.gbm', import.meta.url))),
+);
 
 export interface Project {
 	files: string[];

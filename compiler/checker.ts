@@ -104,7 +104,7 @@ function typeToStr(type?: Type): string {
 	if (type?.kind === 'type' && type.family === 'union')
 		return type.members.map(m => m.name).join(' | ');
 	if (type?.kind === 'type' && type.family === 'buffer')
-		return `Buffer<${typeToStr(type.elem)}>`;
+		return `${type.name}<${typeToStr(type.elem)}>`;
 	return type?.name || 'unknown';
 }
 
@@ -645,6 +645,50 @@ function setFnElementReturn(node: NodeMap['fn']): void {
 		sym.returnType = BT.Void;
 }
 
+function inferFnElementReturn(node: NodeMap['fn']): void {
+	if (node.symbol.returnType) return;
+	const statements = node.statements ?? [];
+	for (let i = 0; i < statements.length - 1; i++)
+		if (statements[i]?.kind === 'next') return;
+	const tail = statements[statements.length - 1];
+	if (!tail) return;
+	const value = tail.kind === 'next' ? tail.children?.[0] : tail;
+	if (
+		!value ||
+		value.kind === 'def' ||
+		value.kind === '=' ||
+		value.kind === 'break' ||
+		value.kind === 'done' ||
+		value.kind === '>>'
+	)
+		return;
+	const emission = valueEmissionType(value, true);
+	if (emission?.rest || (emission?.elements.length ?? 0) > 1) {
+		node.symbol.returnType = BT.Void;
+		return;
+	}
+	const type = resolver(value);
+	if (type.kind === 'type') node.symbol.returnType = type;
+}
+
+function setFnForwarding(node: NodeMap['fn']): void {
+	const only = node.statements?.length === 1 ? node.statements[0] : undefined;
+	const value = only?.kind === 'next' ? only.children?.[0] : only;
+	if (value?.kind !== 'call' || value.children[0].kind !== 'ident') return;
+	const definition = value.children[0].symbol.definition;
+	const target =
+		definition?.kind === 'fn'
+			? definition
+			: definition?.kind === 'def' && definition.value.kind === 'fn'
+				? definition.value
+				: undefined;
+	const targetOnly =
+		target?.statements?.length === 1 ? target.statements[0] : undefined;
+	const targetValue =
+		targetOnly?.kind === 'next' ? targetOnly.children?.[0] : targetOnly;
+	if (targetValue?.kind === '>>') node.symbol.forwardsPipe = true;
+}
+
 function resolveFnType(node: NodeMap['fn']): Type {
 	const sym = node.symbol;
 	resolveDeclaredFnOutputs(node);
@@ -1053,7 +1097,10 @@ function canAssign(to: Type, a: Type): boolean {
 	if (to.family === 'union') return to.members.some(m => canAssign(m, a));
 	if (canAssignCoercion(to, a)) return true;
 	if (to.family === 'buffer' && a.family === 'buffer')
-		return canAssign(to.elem, a.elem);
+		return (
+			(!to.components || to.name === a.name) &&
+			canAssign(to.elem, a.elem)
+		);
 	return canAssignData(to, a);
 }
 
@@ -1064,6 +1111,7 @@ function sameType(a: Type, b: Type): boolean {
 		b.kind === 'type' &&
 		a.family === 'buffer' &&
 		b.family === 'buffer' &&
+		a.name === b.name &&
 		sameType(a.elem, b.elem)
 	);
 }
@@ -1338,7 +1386,7 @@ export function reduceType(t: Type, bindings: Map<string, Type>, depth = 0): Typ
 		};
 	if (t.family === 'buffer') {
 		const e = reduceType(t.elem, bindings, depth + 1);
-		return e === t.elem ? t : bufferTypeOf(e);
+		return e === t.elem ? t : { ...t, elem: e };
 	}
 	if (t.family === 'data') return reduceDataMembers(t.members, bindings, depth);
 	return t;
@@ -3409,10 +3457,28 @@ export function checker({
 			resolveFnType(node);
 	}
 
+	function finalizeFnSemantics(node: Node, seen = new Set<Node>()): void {
+		if (seen.has(node)) return;
+		seen.add(node);
+		if ('children' in node)
+			for (const child of node.children ?? [])
+				if (child) finalizeFnSemantics(child, seen);
+		if (node.kind === 'fn' && node.statements) {
+			for (const statement of node.statements)
+				finalizeFnSemantics(statement, seen);
+			inferFnElementReturn(node);
+			setFnForwarding(node);
+		}
+		if (node.kind === 'main' || node.kind === 'test')
+			for (const statement of node.statements)
+				finalizeFnSemantics(statement, seen);
+	}
+
 	return {
 		run: () => {
 			walkPipes(root);
 			check(root);
+			finalizeFnSemantics(root);
 		},
 		resolver,
 	};

@@ -6,11 +6,12 @@
 	"description": "GB Language CLI",
 	"license": "GPL-3.0",
 	"type": "module",
+	"files": ["*.js", "*.d.ts", "*.css", "LICENSE.md", "*.md", "*.gbm"],
 	"bin": {
-		"gbc": "index.bundle.js"
+		"gbc": "index.js"
 	},
 	"scripts": {
-		"build": "cxl-build",
+		"build": "node build.js",
 		"test": "npm run build -- test"
 	},
 	"dependencies": {},

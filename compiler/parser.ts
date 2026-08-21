@@ -124,7 +124,9 @@ export function parse(
 		options.loader,
 	);
 
-	function markExported(node: NodeMap['def'] | NodeMap['type']) {
+	function markExported(
+		node: NodeMap['def'] | NodeMap['type'] | NodeMap['external'],
+	) {
 		node.symbol.flags |= Flags.Export;
 	}
 
@@ -274,6 +276,12 @@ export function parse(
 
 	function definition() {
 		const isExport = optional('export');
+		const external = current();
+		if (isExport && external.kind === 'external') {
+			const expr = externalDecl(external);
+			markExported(expr);
+			return expr;
+		}
 		const isType = optional('type');
 
 		let expr: Node | undefined;

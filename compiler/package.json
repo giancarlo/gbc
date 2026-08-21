@@ -5,10 +5,11 @@
 	"license": "GPL-3.0",
 	"type": "module",
 	"browser": "./index.bundle.js",
+	"files": ["*.js", "*.d.ts", "*.css", "LICENSE.md", "*.md", "*.gbm"],
 	"homepage": "https://github.com/giancarlo/@cxl/gbc.compiler",
 	"description": "A concise and type-safe functional language designed to prioritize immutability and modularity. It uses blocks as its core execution units to form computation pipelines.",
 	"scripts": {
-		"build": "cxl-build",
+		"build": "node build.js",
 		"test": "npm run build -- test"
 	},
 	"repository": {

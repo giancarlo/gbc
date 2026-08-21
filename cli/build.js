@@ -1,6 +1,15 @@
-const { buildCxl, tsBundle } = require('@cxl/build');
+import { buildLibrary, file } from '@cxl/build';
 
-buildCxl({
-	outputDir: '../dist/cli',
-	tasks: [tsBundle('tsconfig.json', 'gbc.js', true)],
-});
+const stdlibFile = () => file('../dist/compiler/stdlib.gbm', 'stdlib.gbm');
+
+await buildLibrary(
+	{
+		outputDir: '../dist/cli',
+		tasks: [stdlibFile()],
+	},
+	{
+		target: 'package',
+		outputDir: '../dist/cli/package',
+		tasks: [stdlibFile()],
+	},
+);

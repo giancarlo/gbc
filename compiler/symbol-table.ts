@@ -95,6 +95,7 @@ type SymbolProp = {
 		returnOwnerships?: OwnershipMode[];
 		returnVariantOwnerships?: OwnershipMode[][];
 		returnBorrowOrigins?: number[];
+		forwardsPipe?: boolean;
 		overloads?: SymbolMap['function'][];
 	};
 	parameter: unknown;

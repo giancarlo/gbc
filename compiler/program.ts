@@ -20,7 +20,6 @@ import {
 	type SpliceInput,
 } from './target-wasm.js';
 import { checker, setDivByZero } from './checker.js';
-import { STDLIB_SOURCE, TEST_SOURCE } from './stdlib-source.js';
 import {
 	encodeBundle,
 	decodeBundle,
@@ -164,6 +163,83 @@ function loadModule(
 	typesTable.pop(typeScope);
 	symbolTable.pop(scope);
 	return { root, scope, errors: api.errors };
+}
+
+export interface StdlibSources {
+	prelude: string;
+	time: string;
+	test: string;
+}
+
+function withoutPreludeTypes<T>(fn: () => T): T {
+	const intrinsicStates = [
+		OriginIntrinsic,
+		FramesIntrinsic,
+		FrameAtIntrinsic,
+		StackIntrinsic,
+	].map(intrinsic => ({
+		intrinsic,
+		parameterType: intrinsic.parameters?.[0]?.type,
+		returnType: intrinsic.returnType,
+	}));
+	for (const { intrinsic } of intrinsicStates) {
+		const parameter = intrinsic.parameters?.[0];
+		if (parameter) parameter.type = undefined;
+		intrinsic.returnType = undefined;
+	}
+	FramesIntrinsic.returnType = BaseTypes.Int32;
+	setDivByZero(undefined);
+	try {
+		return fn();
+	} finally {
+		for (const { intrinsic, parameterType, returnType } of intrinsicStates) {
+			const parameter = intrinsic.parameters?.[0];
+			if (parameter) parameter.type = parameterType;
+			intrinsic.returnType = returnType;
+		}
+		setDivByZero(preludeTypes['DivByZero']?.type);
+	}
+}
+
+export function buildStdlibBundle(sources: StdlibSources): Uint8Array {
+	const builtinNames = new Set<string>();
+	for (const table of [
+		ProgramSymbolTable().globalScope,
+		TypesSymbolTable().globalScope,
+	])
+		for (const name of table.keys())
+			if (typeof name === 'string') builtinNames.add(name);
+
+	const build = (
+		path: keyof StdlibSources,
+		extraSymbols?: Record<string, Symbol>,
+		extraTypes?: Record<string, TypeSymbol>,
+	): Module => {
+		const source = sources[path];
+		const module = loadModule(source, extraSymbols, extraTypes);
+		if (module.errors.length)
+			throw new Error(
+				`${path} stdlib failed: ${module.errors
+					.map(e => `line ${e.position.line + 1}: ${e.message}`)
+					.join(', ')}`,
+			);
+		return module;
+	};
+
+	const prelude = withoutPreludeTypes(() => build('prelude'));
+	const { symbols } = collectDefs(prelude);
+	const types = collectTypes(prelude);
+	const time = build('time', symbols, types);
+	const test = build('test', symbols, types);
+	return encodeBundle(
+		'prelude.gb',
+		[
+			{ path: 'prelude.gb', hash: fnv1a(sources.prelude), root: prelude.root },
+			{ path: 'time.gb', hash: fnv1a(sources.time), root: time.root },
+			{ path: 'test.gb', hash: fnv1a(sources.test), root: test.root },
+		],
+		name => builtinNames.has(name),
+	);
 }
 
 /**
@@ -465,14 +541,6 @@ function createModuleLoader(sys: System, entryDir: string) {
 	};
 }
 
-const stdlib = loadModule(STDLIB_SOURCE);
-if (stdlib.errors.length)
-	throw new Error(
-		`stdlib failed: ${stdlib.errors
-			.map(e => `line ${e.position.line + 1}: ${e.message}`)
-			.join(', ')}`,
-	);
-
 // Prelude = the stdlib's gb definitions. It is GLOBAL: its symbols are
 // injected into every program's scope (like `error`/`length`) and its def
 // nodes — plus `extend Type …` ctor arms — are prepended to the codegen root
@@ -485,6 +553,11 @@ function collectDefs(module: Module): {
 	const symbols: Record<string, Symbol> = {};
 	const defs: (NodeMap['def'] | NodeMap['extend'])[] = [];
 	for (const child of module.root.children) {
+		if (child.kind === 'external') {
+			if (child.symbol.flags & Flags.Export && child.symbol.name)
+				symbols[child.symbol.name] = child.symbol;
+			continue;
+		}
 		if (child.kind === 'extend') {
 			defs.push(child);
 			continue;
@@ -513,62 +586,191 @@ function collectTypes(module: Module): Record<string, TypeSymbol> {
 	return types;
 }
 
-const { symbols: preludeSymbols, defs: preludeDefs } = collectDefs(stdlib);
-const preludeTypes = collectTypes(stdlib);
-setDivByZero(preludeTypes['DivByZero']?.type);
-setDivByZeroType(preludeTypes['DivByZero']?.type);
-setTraceTypes(BaseTypes.Trace, preludeTypes['Frame']?.type);
-const errorType = preludeTypes['Error']?.type;
-const frameType = preludeTypes['Frame']?.type;
-for (const intrinsic of [
-	OriginIntrinsic,
-	FramesIntrinsic,
-	FrameAtIntrinsic,
-	StackIntrinsic,
-]) {
-	const eParam = intrinsic.parameters?.[0];
-	if (errorType && eParam) eParam.type = errorType;
+function materializeModules(
+	bytes: Uint8Array,
+	extraSymbols: Record<string, Symbol> = {},
+	extraTypes: Record<string, TypeSymbol> = {},
+): Map<string, Module> {
+	const bundle = decodeBundle(bytes);
+	const builtinSymbols = ProgramSymbolTable().globalScope;
+	const builtinTypes = TypesSymbolTable().globalScope;
+	const registry = new Map<
+		string,
+		{
+			symbols: Record<string, Symbol>;
+			types: Record<string, TypeSymbol>;
+		}
+	>();
+	const modules = new Map<string, Module>();
+	for (const [path, encoded] of bundle.modules) {
+		const root = materializeModule(
+			encoded,
+			name => {
+				const symbol =
+					extraSymbols[name] ??
+					extraTypes[name] ??
+					builtinSymbols.get(name) ??
+					builtinTypes.get(name);
+				if (!symbol)
+					throw new Error(`stdlib bundle references unknown symbol "${name}"`);
+				return symbol;
+			},
+			name => {
+				const type = extraTypes[name]?.type ?? builtinTypes.get(name)?.type;
+				if (!type)
+					throw new Error(`stdlib bundle references unknown type "${name}"`);
+				return type;
+			},
+			(hash, name) => {
+				const module = registry.get(hash);
+				const symbol = module?.symbols[name] ?? module?.types[name];
+				if (!symbol)
+					throw new Error(`stdlib bundle references unknown module symbol "${name}"`);
+				return symbol;
+			},
+			(hash, name) => {
+				const type = registry.get(hash)?.types[name]?.type;
+				if (!type)
+					throw new Error(`stdlib bundle references unknown module type "${name}"`);
+				return type;
+			},
+		);
+		if (root.kind !== 'root') throw new Error('stdlib bundle root is not a root');
+		const module = { root, scope: new Map(), errors: [] };
+		registry.set(encoded.hash, {
+			symbols: collectDefs(module).symbols,
+			types: collectTypes(module),
+		});
+		modules.set(path, module);
+	}
+	if (!modules.has(bundle.entry)) throw new Error('stdlib bundle has no entry module');
+	return modules;
 }
-const iParam = FrameAtIntrinsic.parameters?.[1];
-if (iParam) iParam.type = BaseTypes.Int32;
-if (frameType) {
-	OriginIntrinsic.returnType = frameType;
-	FrameAtIntrinsic.returnType = frameType;
-	if (frameType.kind === 'type' && frameType.family === 'data')
-		StackIntrinsic.returnType = {
+
+function namespaceSymbol(
+	name: string,
+	members: Record<string, Symbol>,
+): SymbolMap['variable'] {
+	const namespaceMembers = Object.fromEntries(
+		Object.entries(members).map(([memberName, symbol]) => [
+			memberName,
+			symbol.kind === 'function'
+				? {
+						kind: 'variable' as const,
+						name: memberName,
+						flags: 0,
+						type: symbol,
+					}
+				: symbol,
+		]),
+	);
+	return {
+		kind: 'variable',
+		name,
+		flags: 0,
+		type: {
 			kind: 'type',
 			flags: 0,
-			name: '__frames',
-			family: 'buffer',
-			size: 16,
-			elem: frameType,
-		};
+			name,
+			family: 'data',
+			size: 4,
+			members: namespaceMembers,
+		},
+	};
 }
-FramesIntrinsic.returnType = BaseTypes.Int32;
-
-// The test module (assert helpers for `#test` blocks). Loaded with the stdlib
-// prelude in scope (it calls `out`). Its symbols are always
-// resolvable (so `#test` bodies parse), but its def nodes are prepended to the
-// codegen root ONLY in test mode — normal builds never carry them.
-const testModule = loadModule(TEST_SOURCE, preludeSymbols, preludeTypes);
-if (testModule.errors.length)
-	throw new Error(
-		`test module failed: ${testModule.errors
-			.map(e => `line ${e.position.line + 1}: ${e.message}`)
-			.join(', ')}`,
-	);
-const { symbols: testSymbols, defs: testDefs } = collectDefs(testModule);
 
 const builtinSymbols = ProgramSymbolTable().globalScope;
 const builtinTypes = TypesSymbolTable().globalScope;
-const externalNames = new Set<string>();
-for (const m of [builtinSymbols, builtinTypes])
-	for (const k of m.keys()) if (typeof k === 'string') externalNames.add(k);
-for (const rec of [preludeSymbols, testSymbols, preludeTypes])
-	for (const k of Object.keys(rec)) externalNames.add(k);
+let preludeSymbols: Record<string, Symbol> = {};
+let preludeTypes: Record<string, TypeSymbol> = {};
+let timeSymbols: Record<string, Symbol> = {};
+let testSymbols: Record<string, Symbol> = {};
+let stdlibDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
+let testDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
+let externalNames = new Set<string>();
+let initialized = false;
+
+function initializeStdlib(bytes: Uint8Array): void {
+	const modules = materializeModules(bytes);
+	const prelude = modules.get('prelude.gb');
+	const time = modules.get('time.gb');
+	const test = modules.get('test.gb');
+	if (!prelude || !time || !test)
+		throw new Error('stdlib bundle is missing a required module');
+	const preludeCollected = collectDefs(prelude);
+	preludeSymbols = preludeCollected.symbols;
+	preludeTypes = collectTypes(prelude);
+	const timeCollected = collectDefs(time);
+	timeSymbols = timeCollected.symbols;
+	const timeExports = Object.fromEntries(
+		Object.entries(timeSymbols).filter(
+			([, symbol]) => symbol.flags & Flags.Export,
+		),
+	);
+	preludeSymbols.time = namespaceSymbol('time', timeExports);
+	stdlibDefs = [...preludeCollected.defs, ...timeCollected.defs];
+	const testCollected = collectDefs(test);
+	testSymbols = testCollected.symbols;
+	testDefs = testCollected.defs;
+
+	setDivByZero(preludeTypes['DivByZero']?.type);
+	setDivByZeroType(preludeTypes['DivByZero']?.type);
+	setTraceTypes(BaseTypes.Trace, preludeTypes['Frame']?.type);
+	const errorType = preludeTypes['Error']?.type;
+	const frameType = preludeTypes['Frame']?.type;
+	for (const intrinsic of [
+		OriginIntrinsic,
+		FramesIntrinsic,
+		FrameAtIntrinsic,
+		StackIntrinsic,
+	]) {
+		const parameter = intrinsic.parameters?.[0];
+		if (parameter) parameter.type = errorType;
+	}
+	const indexParameter = FrameAtIntrinsic.parameters?.[1];
+	if (indexParameter) indexParameter.type = BaseTypes.Int32;
+	OriginIntrinsic.returnType = frameType;
+	FrameAtIntrinsic.returnType = frameType;
+	StackIntrinsic.returnType =
+		frameType?.kind === 'type' && frameType.family === 'data'
+			? {
+					kind: 'type',
+					flags: 0,
+					name: '__frames',
+					family: 'buffer',
+					size: 16,
+					elem: frameType,
+				}
+			: undefined;
+	FramesIntrinsic.returnType = BaseTypes.Int32;
+
+	externalNames = new Set<string>();
+	for (const table of [builtinSymbols, builtinTypes])
+		for (const name of table.keys())
+			if (typeof name === 'string') externalNames.add(name);
+	for (const record of [preludeSymbols, testSymbols, preludeTypes, timeSymbols])
+		for (const name of Object.keys(record)) externalNames.add(name);
+	initialized = true;
+}
+
+export interface Compiler {
+	Program: typeof Program;
+}
+
+export function createCompiler(stdlib: Uint8Array): Compiler {
+	initializeStdlib(stdlib);
+	return { Program };
+}
+
+export async function loadCompiler(
+	loadStdlib: () => Promise<Uint8Array>,
+): Promise<Compiler> {
+	return createCompiler(await loadStdlib());
+}
 function resolveExternalSymbol(name: string): Symbol {
 	const s =
 		preludeSymbols[name] ??
+		timeSymbols[name] ??
 		testSymbols[name] ??
 		builtinSymbols.get(name) ??
 		preludeTypes[name] ??
@@ -590,7 +792,7 @@ function withPrelude(
 ): Node {
 	if (root.kind !== 'root') return root;
 	const head = [
-		...preludeDefs,
+		...stdlibDefs,
 		...moduleDefs,
 		...(testMode ? testDefs : []),
 	];
@@ -599,6 +801,8 @@ function withPrelude(
 }
 
 export function Program(options?: ProgramOptions) {
+	if (!initialized)
+		throw new Error('compiler is not initialized; call loadCompiler first');
 	const symbolTable = ProgramSymbolTable();
 	const typesTable = TypesSymbolTable();
 	const api = ParserApi(scan);

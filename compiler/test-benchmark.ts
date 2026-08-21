@@ -1,7 +1,7 @@
 import { spec } from '@cxl/spec';
 
 import { instantiateWasm } from './host.js';
-import { Program } from './program.js';
+import { Program } from './index.js';
 
 const TAIL_SOURCE = `export run = (): Int32 { spin(0, 0) };
 spin = (i: Int32, total: Int32): Int32 {

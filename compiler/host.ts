@@ -2,6 +2,9 @@ declare class TextDecoder {
 	constructor(label?: string);
 	decode(input: Uint8Array): string;
 }
+declare const performance: {
+	now(): number;
+};
 interface WasmModule {
 	readonly bytes?: never;
 }
@@ -69,6 +72,9 @@ export function instantiateWasm(
 	const bound: { memory?: WasmMemory } = {};
 	const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), {
 		env: {
+			monotonicMilliseconds() {
+				return performance.now();
+			},
 			out_buffer(ptr: number, len: number) {
 				if (!bound.memory) throw new Error('memory not bound');
 				const buf = new Uint8Array(bound.memory.buffer);
