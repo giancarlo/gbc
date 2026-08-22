@@ -7,6 +7,7 @@ import {
 	materializeModule,
 } from './bundle.js';
 import { Program, scan } from './index.js';
+import { buildStdlibBundle } from './program.js';
 import { bufferView, instantiateWasm } from './host.js';
 import type { NodeMap } from './node.js';
 import type { Symbol, Type } from './symbol-table.js';
@@ -17,25 +18,31 @@ declare const WebAssembly: {
 };
 
 /*
-
-The GB programming language is a concise, type-safe, and functional programming language that
-emphasizes immutability, modularity, and streamlined syntax.
-
-## Constitution
-
-Language features must avoid breaking these rules:
-
-1. **One Way:** Restrict multiple ways to accomplish the same task.
-2. **Built-in Best Practices:** Enforce optimal patterns via syntax and types. Enforcement is binary — code is valid or it is a compile error; never a warning.
-3. **Transparency:** No hidden or implicit behavior.
-4. **No Bloat:** Only essential features.
-5. **Readable:** Prioritize clarity.
-6. **Performant:** Adapt the language when code generation requires it.
-7. **Scope:** Canonical scalar and core-data operations are top-level; specialize under namespaces.
-
+Language design proposals must satisfy docs/feature-laws.md.
 */
 export default spec('Language Reference', s => {
 	const { h } = s;
+
+	s.test('builds the stdlib from an ordinary index module closure', a => {
+		const files: Record<string, string> = {
+			'/stdlib/index.gb': `export utility = @.support;`,
+			'/stdlib/support.gb': `export value = (): Int32 { 42 };`,
+			'/stdlib/unreferenced.gb': `export unused = (): Int32 { 0 };`,
+		};
+		const bundle = buildStdlibBundle('/stdlib/index.gb', {
+			readFile(path) {
+				const source = files[path];
+				if (source === undefined) throw new Error(`ENOENT: ${path}`);
+				return source;
+			},
+			readBytes(path) {
+				throw new Error(`ENOENT: ${path}`);
+			},
+		});
+		const decoded = decodeBundle(bundle);
+		a.equal(decoded.entry, 'index.gb');
+		a.equal([...decoded.modules.keys()].join(','), 'support.gb,index.gb');
+	});
 
 	s.test('omits module source text from gbm bundles', a => {
 		const source = `export identity = (value: Int32): Int32 {
@@ -1364,6 +1371,22 @@ main {
 			ast: "(call :size 'abc')",
 			out: ['3'],
 		});
+		expr({
+			p: 'A built-in function may gain a user-defined arm while retaining its intrinsic behavior for existing inputs.',
+			pre: `extend get (s: String, i: Int32): Int32 { length(s) + i };
+b = Buffer<Int32>(1)`,
+			src: "set(b, 0, 7); get('abc', 2) + get(b, 0)",
+			ast: "(call :set @intrinsic (, :b 0 7)) (+ (call :get (, 'abc' 2)) (call :get (, :b 0)))",
+			out: ['12'],
+		});
+		expr({
+			p: 'An extended mutating built-in dispatches to the user arm without replacing its intrinsic arm.',
+			pre: `extend set (s: String, i: Int32, value: Int32): Void { value >> out };
+b = Buffer<Int32>(1)`,
+			src: "set(b, 0, 3); set('abc', 0, 9); get(b, 0)",
+			ast: "(call :set (, :b 0 3)) (call :set (, 'abc' 0 9)) (call :get @intrinsic (, :b 0))",
+			out: ['9', '3'],
+		});
 		compileError({
 			p: '`extend` may only add to a name that is already an overload. Extending an undefined name is an error, so a misspelling cannot silently create a new one-arm function.',
 			src: 'extend nope (n: Int32): Int32 { n }; main { }',
@@ -1375,8 +1398,18 @@ main {
 			expected: 'must return the same type',
 		});
 		compileError({
+			p: 'A built-in extension must preserve the built-in dispatch return contract.',
+			src: "extend set (s: String, i: Int32, value: Int32): Int32 { value }; main { }",
+			expected: 'must return the same type',
+		});
+		compileError({
 			p: 'An `extend` arm may not accept an input type an existing arm already handles; overlapping arms are rejected as ambiguous, exactly as within a single definition.',
 			src: 'size = (n: Int32): Int32 { n }; extend size (m: Int32): Int32 { m }; main { size(5) >> out }',
+			expected: 'ambiguous overload',
+		});
+		compileError({
+			p: 'A built-in extension may not overlap the intrinsic arm.',
+			src: 'extend get (b: Buffer<Int32>, i: Int32): Int32 { 0 }; main { }',
 			expected: 'ambiguous overload',
 		});
 	});
@@ -3173,6 +3206,23 @@ main {
 		});
 		runtimeTrap({
 			src: `main { buffer = Buffer<Float32>(4); simd.sum(Vector<Float32>(buffer, 0 - 1)) >> out }`,
+		});
+	});
+
+	h('Matrix', ({ rule }) => {
+		rule({
+			p: '`get(Matrix, row, column)` reads row-major Float32 storage while the existing Buffer arm remains available.',
+			src: `main {
+	values = Buffer<Float32>(6);
+	set(values, 5, Float32(9));
+	matrix: Matrix = [ rows = 2, columns = 3, values = values ];
+	get(matrix, 1, 2) >> out;
+	buffer = Buffer<Int32>(1);
+	set(buffer, 0, 7);
+	get(buffer, 0) >> out
+}`,
+			ast: `(root (main (def :values ? (call typeident 6)) (call :set (, :values 5 (call typeident 9))) (def :matrix typeident (data (, (propdef :rows ? 2) (propdef :columns ? 3) (propdef :values ? :values)))) (>> (call :get (, :matrix 1 2)) :out) (def :buffer ? (call typeident 1)) (call :set (, :buffer 0 7)) (>> (call :get (, :buffer 0)) :out)))`,
+			out: ['9', '7'],
 		});
 	});
 
