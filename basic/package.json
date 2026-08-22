@@ -1,0 +1,20 @@
+{
+	"name": "@cxl/gbc.basic",
+	"version": "0.0.1",
+	"bugs": "https://github.com/giancarlo/gbc/issues",
+	"homepage": "https://github.com/giancarlo/@cxl/gbc.basic",
+	"description": "BASIC compiler frontend",
+	"type": "module",
+	"browser": "./index.bundle.js",
+	"license": "GPL-3.0",
+	"scripts": {
+		"build": "cxl-build",
+		"test": "npm run build -- test"
+	},
+	"dependencies": {},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/giancarlo/gbc",
+		"directory": "basic"
+	}
+}
