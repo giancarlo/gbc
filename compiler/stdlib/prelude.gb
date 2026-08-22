@@ -4,7 +4,6 @@ type Frame = [ name: String, fn: String, file: String, line: Int32 ];
 type Error = Trace;
 type DivByZero = Error;
 export type Array<T> = Buffer<T>;
-
 type Each<T> = T >> [H, R] { H | Each<R> };
 each = <T>(t: T): Each<T> { t >> (h, r) { h, each(r) } };
 

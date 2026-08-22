@@ -136,13 +136,18 @@ function callReturnType(node: NodeMap['call']): Type | undefined {
 	const buf = bufferCtorType(node);
 	if (buf) return buf;
 	const fnSym = resolveFunctionType(node.children[0]);
-	const rt =
-		resolveReturnType(node.children[0]) ?? functionElementReturn(fnSym);
-	if (!rt || rt.kind !== 'type' || !fnSym) return rt;
 	const argsNode = node.children[1];
 	const args =
 		argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
-	return substituteFunctionReturn(rt, fnSym, args.map(resolver));
+	const argTypes = args.map(resolver);
+	const declared = resolveReturnType(node.children[0]);
+	const overload = fnSym?.overloads?.find(fn =>
+		paramsMatch(fn.parameters, argTypes),
+	);
+	const effective = overload ?? fnSym;
+	const rt = functionElementReturn(overload) ?? declared ?? functionElementReturn(fnSym);
+	if (!rt || rt.kind !== 'type' || !effective) return rt;
+	return substituteFunctionReturn(rt, effective, argTypes);
 }
 
 function resolveFunctionType(node: Node): SymbolMap['function'] | undefined {
@@ -1947,10 +1952,20 @@ export function checker({
 		const ovs = dt.overloads;
 		const rts = ovs.map(o => o.returnType ?? BT.Void);
 		const first = rts[0];
-		if (
+		const uniform =
 			first &&
-			rts.some(r => !(canAssign(first, r) && canAssign(r, first)))
-		) {
+			rts.every(r => canAssign(first, r) && canAssign(r, first));
+		const widthPreserving = ovs.every(arm => {
+			const input = arm.parameters?.[0]?.type;
+			const output = arm.returnType;
+			return (
+				input &&
+				output &&
+				canAssign(input, output) &&
+				canAssign(output, input)
+			);
+		});
+		if (!uniform && !widthPreserving) {
 			error('overload arms must return the same type', node);
 			return;
 		}

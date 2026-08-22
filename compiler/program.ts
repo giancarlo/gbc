@@ -167,6 +167,7 @@ function loadModule(
 
 export interface StdlibSources {
 	prelude: string;
+	math: string;
 	time: string;
 	test: string;
 }
@@ -229,14 +230,18 @@ export function buildStdlibBundle(sources: StdlibSources): Uint8Array {
 	const prelude = withoutPreludeTypes(() => build('prelude'));
 	const { symbols, defs: preludeDefs } = collectDefs(prelude);
 	const types = collectTypes(prelude);
+	const math = build('math', symbols, types);
 	const time = build('time', symbols, types);
 	const test = build('test', symbols, types);
+	const mathCollected = collectDefs(math);
+	markConstantNamespaces(mathCollected.symbols);
 	const objects: LibraryObject[] = [];
 	compileWasm({
 		root: {
 			kind: 'root',
 			children: [
 				...preludeDefs,
+				...mathCollected.defs,
 				...collectDefs(time).defs,
 				...collectDefs(test).defs,
 			],
@@ -251,6 +256,7 @@ export function buildStdlibBundle(sources: StdlibSources): Uint8Array {
 		'prelude.gb',
 		[
 			{ path: 'prelude.gb', hash: fnv1a(sources.prelude), root: prelude.root },
+			{ path: 'math.gb', hash: fnv1a(sources.math), root: math.root },
 			{ path: 'time.gb', hash: fnv1a(sources.time), root: time.root },
 			{ path: 'test.gb', hash: fnv1a(sources.test), root: test.root },
 		],
@@ -722,10 +728,24 @@ function namespaceSymbol(
 	};
 }
 
+function markConstantNamespaces(symbols: Record<string, Symbol>): void {
+	for (const symbol of Object.values(symbols)) {
+		const definition = symbol.definition;
+		if (
+			symbol.kind === 'variable' &&
+			definition?.kind === 'def' &&
+			definition.value.kind === 'data'
+		)
+			symbol.flags |= Flags.Intrinsic;
+	}
+}
+
 const builtinSymbols = ProgramSymbolTable().globalScope;
 const builtinTypes = TypesSymbolTable().globalScope;
 let preludeSymbols: Record<string, Symbol> = {};
 let preludeTypes: Record<string, TypeSymbol> = {};
+let mathSymbols: Record<string, Symbol> = {};
+let mathDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
 let timeSymbols: Record<string, Symbol> = {};
 let testSymbols: Record<string, Symbol> = {};
 let stdlibDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
@@ -734,18 +754,35 @@ let stdlibSplice: SpliceInput | undefined;
 let externalNames = new Set<string>();
 let initialized = false;
 
+function requiredStdlibModule(
+	modules: Map<string, Module>,
+	name: string,
+): Module {
+	const module = modules.get(name);
+	if (!module) throw new Error(`stdlib bundle is missing ${name}`);
+	return module;
+}
+
 function initializeStdlib(bytes: Uint8Array): void {
 	const materialized = materializeModules(bytes);
 	const { modules } = materialized;
 	stdlibSplice = materialized.splice;
-	const prelude = modules.get('prelude.gb');
-	const time = modules.get('time.gb');
-	const test = modules.get('test.gb');
-	if (!prelude || !time || !test)
-		throw new Error('stdlib bundle is missing a required module');
+	const prelude = requiredStdlibModule(modules, 'prelude.gb');
+	const math = requiredStdlibModule(modules, 'math.gb');
+	const time = requiredStdlibModule(modules, 'time.gb');
+	const test = requiredStdlibModule(modules, 'test.gb');
 	const preludeCollected = collectDefs(prelude);
 	preludeSymbols = preludeCollected.symbols;
 	preludeTypes = collectTypes(prelude);
+	const mathCollected = collectDefs(math);
+	mathSymbols = Object.fromEntries(
+		Object.entries(mathCollected.symbols).filter(
+			([, symbol]) => symbol.flags & Flags.Export,
+		),
+	);
+	markConstantNamespaces(mathSymbols);
+	Object.assign(preludeSymbols, mathSymbols);
+	mathDefs = mathCollected.defs;
 	const timeCollected = collectDefs(time);
 	timeSymbols = timeCollected.symbols;
 	const timeExports = Object.fromEntries(
@@ -794,7 +831,13 @@ function initializeStdlib(bytes: Uint8Array): void {
 	for (const table of [builtinSymbols, builtinTypes])
 		for (const name of table.keys())
 			if (typeof name === 'string') externalNames.add(name);
-	for (const record of [preludeSymbols, testSymbols, preludeTypes, timeSymbols])
+	for (const record of [
+		preludeSymbols,
+		mathSymbols,
+		testSymbols,
+		preludeTypes,
+		timeSymbols,
+	])
 		for (const name of Object.keys(record)) externalNames.add(name);
 	initialized = true;
 }
@@ -839,6 +882,7 @@ function withPrelude(
 	if (root.kind !== 'root') return root;
 	const head = [
 		...stdlibDefs,
+		...mathDefs,
 		...moduleDefs,
 		...(testMode ? testDefs : []),
 	];

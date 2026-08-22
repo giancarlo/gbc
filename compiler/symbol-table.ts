@@ -428,6 +428,38 @@ export function isCollection(
 }
 
 export function ProgramSymbolTable() {
+	const floatTypes = [BaseTypes.Float32, BaseTypes.Float64];
+	const integerTypes = [
+		BaseTypes.Int8,
+		BaseTypes.Int16,
+		BaseTypes.Int32,
+		BaseTypes.Int64,
+		BaseTypes.Uint8,
+		BaseTypes.Uint16,
+		BaseTypes.Uint32,
+		BaseTypes.Uint64,
+	];
+	const directScalar = (
+		name: string,
+		arity: 1 | 2,
+		types: ResolvedType[],
+	): SymbolMap['function'] => {
+		const arm = (type: ResolvedType): SymbolMap['function'] => ({
+			kind: 'function',
+			name: `${name}${type.name}`,
+			flags: Flags.Intrinsic,
+			parameters: Array.from({ length: arity }, (_, index) =>
+				param(index === 0 ? 'x' : 'y', type),
+			),
+			returnType: type,
+		});
+		return {
+			kind: 'function',
+			name,
+			flags: Flags.None,
+			overloads: types.map(arm),
+		};
+	};
 	const typeParam = (): ResolvedType => ({
 		kind: 'type',
 		name: 'T',
@@ -445,6 +477,36 @@ export function ProgramSymbolTable() {
 		nan: literal(NaN, BaseTypes.Float64),
 		infinity: literal(Infinity, BaseTypes.Float64),
 		void: literal(undefined, BaseTypes.Void),
+		sqrt: directScalar('sqrt', 1, floatTypes),
+		abs: directScalar('abs', 1, floatTypes),
+		floor: directScalar('floor', 1, floatTypes),
+		ceil: directScalar('ceil', 1, floatTypes),
+		trunc: directScalar('trunc', 1, floatTypes),
+		nearest: directScalar('nearest', 1, floatTypes),
+		copysign: directScalar('copysign', 2, floatTypes),
+		bits: {
+			kind: 'function',
+			name: 'bits',
+			flags: Flags.None,
+			overloads: [
+				{
+					kind: 'function',
+					name: 'bitsFloat32',
+					flags: Flags.Intrinsic,
+					parameters: [param('x', BaseTypes.Float32)],
+					returnType: BaseTypes.Uint32,
+				},
+				{
+					kind: 'function',
+					name: 'bitsFloat64',
+					flags: Flags.Intrinsic,
+					parameters: [param('x', BaseTypes.Float64)],
+					returnType: BaseTypes.Uint64,
+				},
+			],
+		},
+		min: directScalar('min', 2, [...integerTypes, ...floatTypes]),
+		max: directScalar('max', 2, [...integerTypes, ...floatTypes]),
 		length: {
 			kind: 'function',
 			name: 'length',

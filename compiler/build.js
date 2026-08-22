@@ -5,12 +5,12 @@ let stdlibPromise;
 function buildStdlib() {
 	return (stdlibPromise ??= (async () => {
 		const { buildStdlibBundle } = await import('../dist/compiler/program.js');
-		const [prelude, time, test] = await Promise.all(
-			['prelude', 'time', 'test'].map(name =>
+		const [prelude, math, time, test] = await Promise.all(
+			['prelude', 'math', 'time', 'test'].map(name =>
 				readFile(new URL(`./stdlib/${name}.gb`, import.meta.url), 'utf8'),
 			),
 		);
-		return Buffer.from(buildStdlibBundle({ prelude, time, test }));
+		return Buffer.from(buildStdlibBundle({ prelude, math, time, test }));
 	})());
 }
 

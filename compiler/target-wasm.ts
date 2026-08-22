@@ -157,6 +157,22 @@ const OP_F64_GT = 0x64;
 const OP_F64_LE = 0x65;
 const OP_F64_GE = 0x66;
 
+const OP_F32_ABS = 0x8b;
+const OP_F32_CEIL = 0x8d;
+const OP_F32_FLOOR = 0x8e;
+const OP_F32_TRUNC = 0x8f;
+const OP_F32_NEAREST = 0x90;
+const OP_F32_SQRT = 0x91;
+const OP_F32_MIN = 0x96;
+const OP_F32_MAX = 0x97;
+const OP_F32_COPYSIGN = 0x98;
+const OP_F64_ABS = 0x99;
+const OP_F64_CEIL = 0x9b;
+const OP_F64_FLOOR = 0x9c;
+const OP_F64_TRUNC = 0x9d;
+const OP_F64_NEAREST = 0x9e;
+const OP_F64_SQRT = 0x9f;
+
 const OP_I32_ADD = 0x6a;
 const OP_I32_SUB = 0x6b;
 const OP_I32_MUL = 0x6c;
@@ -188,10 +204,14 @@ const OP_F64_ADD = 0xa0;
 const OP_F64_SUB = 0xa1;
 const OP_F64_MUL = 0xa2;
 const OP_F64_DIV = 0xa3;
+const OP_F64_MIN = 0xa4;
+const OP_F64_MAX = 0xa5;
+const OP_F64_COPYSIGN = 0xa6;
 const OP_F64_NEG = 0x9a;
 
 const OP_F32_CONVERT_I32_S = 0xb2;
 const OP_F32_CONVERT_I64_S = 0xb4;
+const OP_F32_CONVERT_I64_U = 0xb5;
 const OP_F32_DEMOTE_F64 = 0xb6;
 const OP_F64_CONVERT_I32_S = 0xb7;
 
@@ -211,6 +231,7 @@ const OP_F64_REINTERPRET_I64 = 0xbf;
 const OP_I64_TRUNC_F64_S = 0xb0;
 const OP_I64_TRUNC_F64_U = 0xb1;
 const OP_F64_CONVERT_I64_S = 0xb9;
+const OP_F64_CONVERT_I64_U = 0xba;
 const OP_F64_PROMOTE_F32 = 0xbb;
 
 const OP_I64_CONST = 0x42;
@@ -1466,14 +1487,15 @@ export function compileWasm({
 		args: Type[],
 		templateTypeParams?: Type[],
 	): Type {
-		const rt = fnSym.returnType ?? BaseTypes.Void;
-		const typeParams = fnSym.typeParams ?? templateTypeParams ?? [];
+		const effective = findDispatchArm(fnSym.overloads ?? [], args) ?? fnSym;
+		const rt = effective.returnType ?? BaseTypes.Void;
+		const typeParams = effective.typeParams ?? templateTypeParams ?? [];
 		if (typeParams.length === 0) return rt;
 		const names = new Set(
 			typeParams.map(t => t.name).filter((n): n is string => !!n),
 		);
 		const bindings = new Map<string, Type>();
-		(fnSym.parameters ?? []).forEach((p, i) =>
+		(effective.parameters ?? []).forEach((p, i) =>
 			unifyTypeParam(p.type, args[i], names, bindings),
 		);
 		return reduceType(rt, bindings);
@@ -1702,12 +1724,18 @@ export function compileWasm({
 		want: Type = BaseTypes.Float64,
 	) {
 		if (gbcToWasm(want) === F32) {
-			if (isInt64Type(have)) fn.body.push(OP_F32_CONVERT_I64_S);
+			if (isInt64Type(have))
+				fn.body.push(
+					isUintType(have) ? OP_F32_CONVERT_I64_U : OP_F32_CONVERT_I64_S,
+				);
 			else if (isIntType(have)) fn.body.push(OP_F32_CONVERT_I32_S);
 			else if (gbcToWasm(have) === F64) fn.body.push(OP_F32_DEMOTE_F64);
 			return;
 		}
-		if (isInt64Type(have)) fn.body.push(OP_F64_CONVERT_I64_S);
+		if (isInt64Type(have))
+			fn.body.push(
+				isUintType(have) ? OP_F64_CONVERT_I64_U : OP_F64_CONVERT_I64_S,
+			);
 		else if (isIntType(have)) fn.body.push(OP_F64_CONVERT_I32_S);
 		else if (gbcToWasm(have) === F32) fn.body.push(OP_F64_PROMOTE_F32);
 	}
@@ -3554,6 +3582,154 @@ export function compileWasm({
 		args: Node | undefined,
 		fn: FuncBuilder,
 	): Type {
+		const foundation = compileFloatFoundation(name, args, fn);
+		if (foundation) return foundation;
+		switch (name) {
+			case 'sqrtFloat32':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float32,
+					OP_F32_SQRT,
+					1,
+				);
+			case 'sqrtFloat64':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float64,
+					OP_F64_SQRT,
+					1,
+				);
+			case 'absFloat32':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float32,
+					OP_F32_ABS,
+					1,
+				);
+			case 'absFloat64':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float64,
+					OP_F64_ABS,
+					1,
+				);
+			case 'floorFloat32':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float32,
+					OP_F32_FLOOR,
+					1,
+				);
+			case 'floorFloat64':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float64,
+					OP_F64_FLOOR,
+					1,
+				);
+			case 'ceilFloat32':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float32,
+					OP_F32_CEIL,
+					1,
+				);
+			case 'ceilFloat64':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float64,
+					OP_F64_CEIL,
+					1,
+				);
+			case 'truncFloat32':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float32,
+					OP_F32_TRUNC,
+					1,
+				);
+			case 'truncFloat64':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float64,
+					OP_F64_TRUNC,
+					1,
+				);
+			case 'minFloat32':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float32,
+					OP_F32_MIN,
+					2,
+				);
+			case 'minFloat64':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float64,
+					OP_F64_MIN,
+					2,
+				);
+			case 'maxFloat32':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float32,
+					OP_F32_MAX,
+					2,
+				);
+			case 'maxFloat64':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float64,
+					OP_F64_MAX,
+					2,
+				);
+			case 'minInt8':
+				return compileIntMinMax(args, fn, BaseTypes.Int8, 'min');
+			case 'minInt16':
+				return compileIntMinMax(args, fn, BaseTypes.Int16, 'min');
+			case 'minInt32':
+				return compileIntMinMax(args, fn, BaseTypes.Int32, 'min');
+			case 'minInt64':
+				return compileIntMinMax(args, fn, BaseTypes.Int64, 'min');
+			case 'minUint8':
+				return compileIntMinMax(args, fn, BaseTypes.Uint8, 'min');
+			case 'minUint16':
+				return compileIntMinMax(args, fn, BaseTypes.Uint16, 'min');
+			case 'minUint32':
+				return compileIntMinMax(args, fn, BaseTypes.Uint32, 'min');
+			case 'minUint64':
+				return compileIntMinMax(args, fn, BaseTypes.Uint64, 'min');
+			case 'maxInt8':
+				return compileIntMinMax(args, fn, BaseTypes.Int8, 'max');
+			case 'maxInt16':
+				return compileIntMinMax(args, fn, BaseTypes.Int16, 'max');
+			case 'maxInt32':
+				return compileIntMinMax(args, fn, BaseTypes.Int32, 'max');
+			case 'maxInt64':
+				return compileIntMinMax(args, fn, BaseTypes.Int64, 'max');
+			case 'maxUint8':
+				return compileIntMinMax(args, fn, BaseTypes.Uint8, 'max');
+			case 'maxUint16':
+				return compileIntMinMax(args, fn, BaseTypes.Uint16, 'max');
+			case 'maxUint32':
+				return compileIntMinMax(args, fn, BaseTypes.Uint32, 'max');
+			case 'maxUint64':
+				return compileIntMinMax(args, fn, BaseTypes.Uint64, 'max');
+		}
 		if (name === 'length') return compileLength(args, fn);
 		if (name === 'get') return compileBufferGet(args, fn);
 		if (name === 'set') return compileBufferSet(args, fn);
@@ -3584,6 +3760,117 @@ export function compileWasm({
 			return BaseTypes.Void;
 		}
 		throw new Error(`Unknown intrinsic: "${name}"`);
+	}
+
+	function compileFloatFoundation(
+		name: string,
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): ResolvedType | undefined {
+		switch (name) {
+			case 'nearestFloat32':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float32,
+					OP_F32_NEAREST,
+					1,
+				);
+			case 'nearestFloat64':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float64,
+					OP_F64_NEAREST,
+					1,
+				);
+			case 'copysignFloat32':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float32,
+					OP_F32_COPYSIGN,
+					2,
+				);
+			case 'copysignFloat64':
+				return compileFloatIntrinsic(
+					args,
+					fn,
+					BaseTypes.Float64,
+					OP_F64_COPYSIGN,
+					2,
+				);
+			case 'bitsFloat32': {
+				const values = bufArgList(args);
+				const value = values[0];
+				if (!value || values.length !== 1)
+					throw new Error('bits requires 1 argument');
+				compileExpr(value, fn);
+				fn.body.push(OP_I32_REINTERPRET_F32);
+				return BaseTypes.Uint32;
+			}
+			case 'bitsFloat64': {
+				const values = bufArgList(args);
+				const value = values[0];
+				if (!value || values.length !== 1)
+					throw new Error('bits requires 1 argument');
+				compileExpr(value, fn);
+				fn.body.push(OP_I64_REINTERPRET_F64);
+				return BaseTypes.Uint64;
+			}
+		}
+	}
+
+	function compileFloatIntrinsic(
+		args: Node | undefined,
+		fn: FuncBuilder,
+		type: ResolvedType,
+		opcode: number,
+		arity: 1 | 2,
+	): ResolvedType {
+		const values = bufArgList(args);
+		if (values.length !== arity)
+			throw new Error(`Float intrinsic requires ${arity} argument(s)`);
+		for (const value of values) {
+			const actual = compileExpr(value, fn);
+			if (actual !== type) coerceToFloat(actual, fn, type);
+		}
+		fn.body.push(opcode);
+		return type;
+	}
+
+	function compileIntMinMax(
+		args: Node | undefined,
+		fn: FuncBuilder,
+		type: ResolvedType,
+		operation: 'min' | 'max',
+	): ResolvedType {
+		const values = bufArgList(args);
+		const left = values[0];
+		const right = values[1];
+		if (!left || !right || values.length !== 2)
+			throw new Error(`Integer ${operation} requires 2 arguments`);
+		const wasmType = gbcToWasm(type);
+		const leftLocal = allocLocal(fn, wasmType);
+		coerceIntWidth(compileExpr(left, fn), type, fn);
+		emitStoreLocal(leftLocal, fn);
+		const rightLocal = allocLocal(fn, wasmType);
+		coerceIntWidth(compileExpr(right, fn), type, fn);
+		emitStoreLocal(rightLocal, fn);
+		emitLoadLocal(leftLocal, fn);
+		emitLoadLocal(rightLocal, fn);
+		emitLoadLocal(leftLocal, fn);
+		emitLoadLocal(rightLocal, fn);
+		fn.body.push(
+			compareOpcode(
+				operation === 'min' ? '<' : '>',
+				false,
+				wasmType === I64,
+				isUintType(type),
+			),
+			OP_SELECT,
+		);
+		return type;
 	}
 
 	function compileScalarCtor(
@@ -4611,6 +4898,10 @@ export function compileWasm({
 		}
 		if (sfn && sfn.flags & Flags.Intrinsic)
 			return compileIntrinsic(sfn.name ?? '', args, fn);
+		if (sfn) {
+			const disp = tryCompileDispatch(sfn, args, fn);
+			if (disp) return disp;
+		}
 		if (sfn) return compileDirectCall(sfn, args, fn);
 		throw new Error('Indirect call not yet supported');
 	}
@@ -4742,6 +5033,8 @@ export function compileWasm({
 			);
 		const tmpl = fnTemplates.get(arm);
 		if (tmpl) return compileTemplateCall(tmpl, args, fn);
+		if (arm.flags & Flags.Intrinsic)
+			return compileIntrinsic(arm.name ?? '', args, fn);
 		compileCallArgs(args, arm, fn);
 		emitArmCall(arm, calleeSym.name, fn);
 		return arm.returnType ?? BaseTypes.Void;
@@ -5082,6 +5375,8 @@ export function compileWasm({
 		const recv = node.children[0];
 		const field = node.children[1];
 		if (recv.kind === 'data') return compileMemberData(recv, field, fn);
+		const staticValue = staticNamespaceMember(recv, field);
+		if (staticValue) return compileExpr(staticValue, fn);
 		if (recv.kind === '$') return compileMemberDollar(field, fn);
 		const recvType = inferType(recv, fn);
 		if (recvType.kind === 'type' && recvType.family === 'data')
@@ -5089,6 +5384,50 @@ export function compileWasm({
 		fn.body.push(OP_I32_CONST);
 		sleb128(0, fn.body);
 		return BaseTypes.Int32;
+	}
+
+	function staticNamespaceMember(recv: Node, field: Node): Node | undefined {
+		if (
+			recv.kind !== 'ident' ||
+			!(recv.symbol.flags & Flags.Intrinsic) ||
+			recv.symbol.flags & Flags.Variable
+		)
+			return undefined;
+		const definition = recv.symbol.definition;
+		if (definition?.kind !== 'def' || definition.value.kind !== 'data')
+			return undefined;
+		const items = dataItems(definition.value).flatMap(flattenDataItem);
+		let target: Node | undefined;
+		if (field.kind === 'number') target = items[Number(field.value)];
+		else if (field.kind === 'ident')
+			target = items.find(
+				item =>
+					item.kind === 'propdef' &&
+					item.symbol.name === field.symbol.name,
+			);
+		if (!target) return undefined;
+		const value = itemValue(target);
+		return value.kind === 'number' ||
+			(value.kind === 'ident' && value.symbol.kind === 'literal')
+			? value
+			: undefined;
+	}
+
+	function isStaticNamespace(value: NodeMap['data']): boolean {
+		const items = dataItems(value).flatMap(flattenDataItem);
+		return (
+			items.length > 0 &&
+			items.every(item => {
+				const value = itemValue(item);
+				return (
+					value.kind === 'number' ||
+					(value.kind === 'ident' &&
+						(value.symbol.kind === 'literal' ||
+							value.symbol.kind === 'function' ||
+							value.symbol.type?.kind === 'function'))
+				);
+			})
+		);
 	}
 
 	function compileMemberLoad(
@@ -7862,6 +8201,12 @@ export function compileWasm({
 		const sym = node.symbol;
 		const value = node.value;
 		if (value.kind === 'fn') return;
+		if (
+			value.kind === 'data' &&
+			sym.flags & Flags.Intrinsic &&
+			isStaticNamespace(value)
+		)
+			return;
 		// A static namespace (fn-member record, incl. module binds) has no
 		// runtime value — member calls compile direct.
 		if (value.kind === 'data' || value.kind === 'ident') {
