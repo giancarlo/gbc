@@ -2,6 +2,7 @@ import {
 	ParserApi,
 	UnaryNode,
 	Token,
+	line,
 	text,
 	parserTable,
 } from '../sdk/index.js';
@@ -696,6 +697,17 @@ export function parseExpression(
 		);
 	}
 
+	function leadingIndent(node: Node): number {
+		const { start } = line(node);
+		let end = start + 1;
+		while (
+			node.source.charAt(end) === ' ' ||
+			node.source.charAt(end) === '\t'
+		)
+			end++;
+		return end - start - 1;
+	}
+
 	const commaPrecedence = 1;
 	const pipePrecedence = 1.5;
 	const parser = parserTable<NodeMap, ScannerToken>(
@@ -710,6 +722,17 @@ export function parseExpression(
 			'>>': {
 				precedence: pipePrecedence,
 				infix(tk, left) {
+					const falsy = left.kind === '?' ? left.children[2] : undefined;
+					if (
+						falsy &&
+						tk.line === falsy.line &&
+						falsy.line > left.line &&
+						leadingIndent(falsy) > leadingIndent(left)
+					)
+						throw error(
+							'Parenthesize the pipe in the ternary branch',
+							tk,
+						);
 					const right = expectExpression(pipePrecedence);
 					const node: NodeMap['>>'] = {
 						...tk,

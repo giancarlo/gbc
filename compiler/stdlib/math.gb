@@ -1,0 +1,490 @@
+trigTwoOverPi = (i: Int32): Uint64 {
+	i < 24
+		? i < 12
+			? i < 6
+				? i < 3
+					? i < 1
+						? i == 0 ? Uint64(0x8d5d08) : Uint64(0)
+						: i < 2
+							? i == 1 ? Uint64(0x5fb11f) : Uint64(0)
+							: i == 2 ? Uint64(0xea6bfb) : Uint64(0)
+					: i < 4
+						? i == 3 ? Uint64(0x8a5292) : Uint64(0)
+						: i < 5
+							? i == 4 ? Uint64(0x739f7) : Uint64(0)
+							: i == 5 ? Uint64(0xf17b3d) : Uint64(0)
+				: i < 9
+					? i < 7
+						? i == 6 ? Uint64(0xc7ebe5) : Uint64(0)
+						: i < 8
+							? i == 7 ? Uint64(0x7527ba) : Uint64(0)
+							: i == 8 ? Uint64(0x5fea2d) : Uint64(0)
+					: i < 10
+						? i == 9 ? Uint64(0x3f669e) : Uint64(0)
+						: i < 11
+							? i == 10 ? Uint64(0xb74f46) : Uint64(0)
+							: i == 11 ? Uint64(0x27cb09) : Uint64(0)
+			: i < 18
+				? i < 15
+					? i < 13
+						? i == 12 ? Uint64(0x367ecf) : Uint64(0)
+						: i < 14
+							? i == 13 ? Uint64(0x6d1f6d) : Uint64(0)
+							: i == 14 ? Uint64(0x8b5a0a) : Uint64(0)
+					: i < 16
+						? i == 15 ? Uint64(0xef2f11) : Uint64(0)
+						: i < 17
+							? i == 16 ? Uint64(0x5980f) : Uint64(0)
+							: i == 17 ? Uint64(0x97ffde) : Uint64(0)
+				: i < 21
+					? i < 19
+						? i == 18 ? Uint64(0x3b1ff8) : Uint64(0)
+						: i < 20
+							? i == 19 ? Uint64(0xbdf928) : Uint64(0)
+							: i == 20 ? Uint64(0x845f8b) : Uint64(0)
+					: i < 22
+						? i == 21 ? Uint64(0x39f49c) : Uint64(0)
+						: i < 23
+							? i == 22 ? Uint64(0x398353) : Uint64(0)
+							: i == 23 ? Uint64(0x3991d6) : Uint64(0)
+		: i < 36
+			? i < 30
+				? i < 27
+					? i < 25
+						? i == 24 ? Uint64(0x5f7e41) : Uint64(0)
+						: i < 26
+							? i == 25 ? Uint64(0x7026b4) : Uint64(0)
+							: i == 26 ? Uint64(0x84e99c) : Uint64(0)
+					: i < 28
+						? i == 27 ? Uint64(0x2ebb44) : Uint64(0)
+						: i < 29
+							? i == 28 ? Uint64(0x8235f5) : Uint64(0)
+							: i == 29 ? Uint64(0xa73ee8) : Uint64(0)
+				: i < 33
+					? i < 31
+						? i == 30 ? Uint64(0x1cb129) : Uint64(0)
+						: i < 32
+							? i == 31 ? Uint64(0xfe1deb) : Uint64(0)
+							: i == 32 ? Uint64(0xd1921c) : Uint64(0)
+					: i < 34
+						? i == 33 ? Uint64(0x2eea09) : Uint64(0)
+						: i < 35
+							? i == 34 ? Uint64(0xe00649) : Uint64(0)
+							: i == 35 ? Uint64(0x424dd2) : Uint64(0)
+			: i < 42
+				? i < 39
+					? i < 37
+						? i == 36 ? Uint64(0x246e3a) : Uint64(0)
+						: i < 38
+							? i == 37 ? Uint64(0xc561b7) : Uint64(0)
+							: i == 38 ? Uint64(0xabdebb) : Uint64(0)
+					: i < 40
+						? i == 39 ? Uint64(0xfe5163) : Uint64(0)
+						: i < 41
+							? i == 40 ? Uint64(0x439041) : Uint64(0)
+							: i == 41 ? Uint64(0x95993c) : Uint64(0)
+				: i < 45
+					? i < 43
+						? i == 42 ? Uint64(0xc0db62) : Uint64(0)
+						: i < 44
+							? i == 43 ? Uint64(0xf534dd) : Uint64(0)
+							: i == 44 ? Uint64(0x2757d1) : Uint64(0)
+					: i < 46
+						? i == 45 ? Uint64(0x1529fc) : Uint64(0)
+						: i < 47
+							? i == 46 ? Uint64(0x6e4e44) : Uint64(0)
+							: i == 47 ? Uint64(0xa2f983) : Uint64(0)
+};
+
+trigSinKernel = (r: Float64): Float64 {
+	r * r >> (z: Float64) { r + r * z * (((((((
+		2.8114572543455206e-15 * z - 7.647163731819816e-13
+	) * z + 1.6059043836821613e-10
+	) * z - 2.505210838544172e-8
+	) * z + 2.7557319223985893e-6
+	) * z - 0.0001984126984126984
+	) * z + 0.008333333333333333
+	) * z - 0.16666666666666666) }
+};
+
+trigCosKernel = (r: Float64): Float64 {
+	r * r >> (z: Float64) { 1.0 + z * (((((((
+		4.779477332387385e-14 * z - 1.1470745597729725e-11
+	) * z + 2.08767569878681e-9
+	) * z - 2.755731922398589e-7
+	) * z + 0.0000248015873015873
+	) * z - 0.001388888888888889
+	) * z + 0.041666666666666664
+	) * z - 0.5) }
+};
+
+trigTanKernel = (r: Float64): Float64 {
+	r * 0.25 >> (u: Float64) {
+		u * u >> (z: Float64) {
+			u + u * z * ((((((((
+				0.00023912911424355248 * z + 0.000590027440945586
+			) * z + 0.0014558343870513183
+			) * z + 0.003592128036572481
+			) * z + 0.008863235529902197
+			) * z + 0.021869488536155203
+			) * z + 0.05396825396825397
+			) * z + 0.13333333333333333
+			) * z + 0.3333333333333333) >> (t0: Float64) {
+				(2.0 * t0) / (1.0 - t0 * t0) >> (t1: Float64) {
+					(2.0 * t1) / (1.0 - t1 * t1)
+				}
+			}
+		}
+	}
+};
+
+trigReduced = (q: Int32, r: Float64, negative: Bool, mode: Int32): Float64 {
+	mode == 0
+		? (q == 0
+			? trigSinKernel(r)
+			: q == 1
+				? trigCosKernel(r)
+				: q == 2
+					? 0.0 - trigSinKernel(r)
+					: 0.0 - trigCosKernel(r)
+		) * (negative ? 0.0 - 1.0 : 1.0)
+		: mode == 1
+			? q == 0
+				? trigCosKernel(r)
+				: q == 1
+					? 0.0 - trigSinKernel(r)
+					: q == 2
+						? 0.0 - trigCosKernel(r)
+						: trigSinKernel(r)
+			: (q & 1) == 0
+				? trigTanKernel(r) * (negative ? 0.0 - 1.0 : 1.0)
+				: (0.0 - 1.0) / trigTanKernel(r) * (negative ? 0.0 - 1.0 : 1.0)
+};
+
+trigProductFinish = (
+	k: Int32,
+	b: Int32,
+	d2: Uint64,
+	d1: Uint64,
+	d0: Uint64,
+	dh: Uint64,
+	negative: Bool,
+	mode: Int32
+): Float64 {
+	mask = (Uint64(1) <: b) - Uint64(1);
+	q0 = Int32(((d0 :> b) | (dh <: (24 - b))) & Uint64(3));
+	fraction0 = ((Float64(d2) / 16777216.0 + Float64(d1)) / 16777216.0 + Float64(d0 & mask)) / Float64(Uint64(1) <: b);
+	roundUp = fraction0 >= 0.5;
+	q = roundUp ? (q0 + 1) & 3 : q0;
+	fraction = roundUp ? fraction0 - 1.0 : fraction0;
+	next trigReduced(
+		q,
+		fraction * 1.5707963109016418
+			+ fraction * 1.5893254773528196e-8
+			+ fraction * 6.36831716351095e-25,
+		negative,
+		mode
+	)
+};
+
+trigProduct = (
+	i: Int32,
+	k: Int32,
+	b: Int32,
+	a0: Uint64,
+	a1: Uint64,
+	a2: Uint64,
+	carry: Uint64,
+	d2: Uint64,
+	d1: Uint64,
+	d0: Uint64,
+	dh: Uint64,
+	negative: Bool,
+	mode: Int32
+): Float64 {
+	i > k + 1
+		? trigProductFinish(k, b, d2, d1, d0, dh, negative, mode)
+		: (carry + a0 * trigTwoOverPi(i) + a1 * trigTwoOverPi(i - 1) + a2 * trigTwoOverPi(i - 2)
+			>> (sum: Uint64) {
+				(sum & Uint64(0xffffff)) >> (digit: Uint64) {
+					trigProduct(
+						i + 1, k, b, a0, a1, a2, sum :> 24,
+						i == k - 2 ? digit : d2,
+						i == k - 1 ? digit : d1,
+						i == k ? digit : d0,
+						i == k + 1 ? digit : dh,
+						negative, mode
+					)
+				}
+			})
+};
+
+trigReduceLarge = (
+	x: Float64,
+	negative: Bool,
+	mode: Int32
+): Float64 {
+	raw = bits(x);
+	exponent = Int32((raw :> 52) & Uint64(0x7ff)) - 1023;
+	mantissa = (raw & Uint64(0xfffffffffffff)) | (Uint64(1) <: 52);
+	shift = 1204 - exponent;
+	k = shift / 24;
+	b = shift - k * 24;
+	next trigProduct(
+		0, k, b,
+		mantissa & Uint64(0xffffff),
+		(mantissa :> 24) & Uint64(0xffffff),
+		mantissa :> 48,
+		Uint64(0), Uint64(0), Uint64(0), Uint64(0), Uint64(0),
+		negative, mode
+	)
+};
+
+trigReduceCommon = (
+	x: Float64,
+	mode: Int32
+): Float64 {
+	n = nearest(x * 0.6366197723675814);
+	q = Int32(n) & 3;
+	next trigReduced(
+		q,
+		x - n * 1.5707963109016418
+			- n * 1.5893254773528196e-8
+			- n * 6.36831716351095e-25,
+		false,
+		mode
+	)
+};
+
+trigReduce = (
+	x: Float64,
+	mode: Int32
+): Float64 {
+	ax = abs(x);
+	next x != x || ax == infinity
+		? x - x
+		: x == 0.0
+			? mode == 1 ? 1.0 : x
+			: ax <= 0.7853981633974483
+				? trigReduced(0, x, false, mode)
+				: ax <= 1048576.0
+					? trigReduceCommon(x, mode)
+					: trigReduceLarge(ax, x < 0.0, mode)
+};
+
+export sin =
+	  (x: Float64): Float64 { trigReduce(x, 0) }
+	| (x: Float32): Float32 { Float32(trigReduce(Float64(x), 0)) };
+
+export cos =
+	  (x: Float64): Float64 { trigReduce(x, 1) }
+	| (x: Float32): Float32 { Float32(trigReduce(Float64(x), 1)) };
+
+export tan =
+	  (x: Float64): Float64 { trigReduce(x, 2) }
+	| (x: Float32): Float32 { Float32(trigReduce(Float64(x), 2)) };
+
+inverseAtanKernel = (z: Float64): Float64 {
+	z * z >> (z2: Float64) {
+		z / (1.0 + sqrt(1.0 + z2)) >> (w: Float64) {
+			w * w >> (w2: Float64) {
+				2.0 * w * (1.0 + w2 * (((((((((((
+					0.04 * w2 - 0.043478260869565216
+				) * w2 + 0.047619047619047616
+				) * w2 - 0.05263157894736842
+				) * w2 + 0.058823529411764705
+				) * w2 - 0.06666666666666667
+				) * w2 + 0.07692307692307693
+				) * w2 - 0.09090909090909091
+				) * w2 + 0.1111111111111111
+				) * w2 - 0.14285714285714285
+				) * w2 + 0.2
+				) * w2 - 0.3333333333333333))
+			}
+		}
+	}
+};
+
+inverseAtanPositive = (x: Float64): Float64 {
+	x > 2.414213562373095
+		? 1.5707963267948966 - inverseAtanKernel(1.0 / x)
+		: x > 0.41421356237309503
+			? 0.7853981633974483 + inverseAtanKernel((x - 1.0) / (x + 1.0))
+			: inverseAtanKernel(x)
+};
+
+inverseAtan64 = (x: Float64): Float64 {
+	ax = abs(x);
+	next x != x
+		? x
+		: ax == infinity
+			? copysign(1.5707963267948966, x)
+			: x == 0.0
+				? x
+				: copysign(inverseAtanPositive(ax), x)
+};
+
+inverseAtan2 = (y: Float64, x: Float64): Float64 {
+	ax = abs(x);
+	ay = abs(y);
+	xNegative = (bits(x) :> 63) != Uint64(0);
+	next x != x || y != y
+		? x + y
+		: ax == infinity && ay == infinity
+			? copysign(xNegative ? 2.356194490192345 : 0.7853981633974483, y)
+			: ay == infinity
+				? copysign(1.5707963267948966, y)
+				: ax == infinity
+					? copysign(xNegative ? 3.141592653589793 : 0.0, y)
+					: y == 0.0
+						? xNegative ? copysign(3.141592653589793, y) : y
+						: x == 0.0
+							? copysign(1.5707963267948966, y)
+							: x > 0.0
+								? inverseAtan64(y / x)
+								: copysign(3.141592653589793 - abs(inverseAtan64(y / x)), y)
+};
+
+export atan =
+	  (x: Float64): Float64 { inverseAtan64(x) }
+	| (x: Float32): Float32 { Float32(inverseAtan64(Float64(x))) };
+
+export atan2 =
+	  (y: Float64, x: Float64): Float64 { inverseAtan2(y, x) }
+	| (y: Float32, x: Float32): Float32 { Float32(inverseAtan2(Float64(y), Float64(x))) };
+
+export asin =
+	  (x: Float64): Float64 { inverseAtan2(x, sqrt((1.0 - x) * (1.0 + x))) }
+	| (x: Float32): Float32 { Float32(inverseAtan2(Float64(x), sqrt((1.0 - Float64(x)) * (1.0 + Float64(x))))) };
+
+export acos =
+	  (x: Float64): Float64 { inverseAtan2(sqrt((1.0 - x) * (1.0 + x)), x) }
+	| (x: Float32): Float32 { Float32(inverseAtan2(sqrt((1.0 - Float64(x)) * (1.0 + Float64(x))), Float64(x))) };
+
+export hypot =
+	  (x: Float64, y: Float64): Float64 {
+		ax = abs(x);
+		ay = abs(y);
+		next ax == infinity
+			? x
+			: ay == infinity
+				? y
+				: x != x
+					? x
+					: y != y
+						? y
+						: (max(ax, ay) >> (hi: Float64) {
+							hi == 0.0
+								? 0.0
+									: (min(ax, ay) / hi >> (ratio: Float64) {
+										hi * sqrt(1.0 + ratio * ratio)
+									})
+						})
+	}
+	| (x: Float32, y: Float32): Float32 { Float32(hypot(Float64(x), Float64(y))) };
+
+fastSinKernel = (x: Float64): Float64 {
+	x * x >> (z: Float64) {
+		x * (1.0 + z * (-0.16666666666666666 + z * (0.008333333333333333 + z * (-0.0001984126984126984 + z * 0.0000027557319223985893))))
+	}
+};
+
+fastCosKernel = (x: Float64): Float64 {
+	x * x >> (z: Float64) {
+		1.0 + z * (-0.5 + z * (0.041666666666666664 + z * (-0.001388888888888889 + z * 0.0000248015873015873)))
+	}
+};
+
+fastSinReduced = (q: Int32, r: Float64): Float64 {
+	q == 0
+		? fastSinKernel(r)
+		: q == 1
+			? fastCosKernel(r)
+			: q == 2
+				? 0.0 - fastSinKernel(r)
+				: 0.0 - fastCosKernel(r)
+};
+
+fastCosReduced = (q: Int32, r: Float64): Float64 {
+	q == 0
+		? fastCosKernel(r)
+		: q == 1
+			? 0.0 - fastSinKernel(r)
+			: q == 2
+				? 0.0 - fastCosKernel(r)
+				: fastSinKernel(r)
+};
+
+fastTanReduced = (q: Int32, r: Float64): Float64 {
+	(q & 1) == 0
+		? fastSinKernel(r) / fastCosKernel(r)
+		: (0.0 - fastCosKernel(r)) / fastSinKernel(r)
+};
+
+fastSin64 = (x: Float64): Float64 {
+	ax = abs(x);
+	next x != x || ax == infinity
+		? x - x
+		: x == 0.0
+			? x
+			: ax > 1048576.0
+				? trigReduce(x, 0)
+				: (nearest(x * 0.6366197723675814) >> (n: Float64) {
+					fastSinReduced(
+						Int32(n) & 3,
+						x - n * 1.5707963109016418 - n * 1.5893254773528196e-8
+					)
+				})
+};
+
+fastCos64 = (x: Float64): Float64 {
+	ax = abs(x);
+	next x != x || ax == infinity
+		? x - x
+		: x == 0.0
+			? 1.0
+			: ax > 1048576.0
+				? trigReduce(x, 1)
+				: (nearest(x * 0.6366197723675814) >> (n: Float64) {
+					fastCosReduced(
+						Int32(n) & 3,
+						x - n * 1.5707963109016418 - n * 1.5893254773528196e-8
+					)
+				})
+};
+
+fastTan64 = (x: Float64): Float64 {
+	ax = abs(x);
+	next x != x || ax == infinity
+		? x - x
+		: x == 0.0
+			? x
+			: ax > 1048576.0
+				? trigReduce(x, 2)
+				: (nearest(x * 0.6366197723675814) >> (n: Float64) {
+					fastTanReduced(
+						Int32(n) & 3,
+						x - n * 1.5707963109016418 - n * 1.5893254773528196e-8
+					)
+				})
+};
+
+fastSin =
+	  (x: Float64): Float64 { fastSin64(x) }
+	| (x: Float32): Float32 { Float32(fastSin64(Float64(x))) };
+
+fastCos =
+	  (x: Float64): Float64 { fastCos64(x) }
+	| (x: Float32): Float32 { Float32(fastCos64(Float64(x))) };
+
+fastTan =
+	  (x: Float64): Float64 { fastTan64(x) }
+	| (x: Float32): Float32 { Float32(fastTan64(Float64(x))) };
+
+export math = [
+	pi = 3.141592653589793,
+	tau = 6.283185307179586,
+	fastSin = fastSin,
+	fastCos = fastCos,
+	fastTan = fastTan
+];

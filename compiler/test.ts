@@ -21,7 +21,7 @@ declare const WebAssembly: {
 The GB programming language is a concise, type-safe, and functional programming language that
 emphasizes immutability, modularity, and streamlined syntax.
 
-## Design Constitution
+## Constitution
 
 Language features must avoid breaking these rules:
 
@@ -214,36 +214,41 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 		a.equal(tokens[5]?.line, 2);
 	});
 
-	s.test('should expose a borrowed Uint8 buffer to the host', (a: TestApi) => {
-		const source = `pixels = Buffer<Uint8>(4);
+	s.test(
+		'should expose a borrowed Uint8 buffer to the host',
+		(a: TestApi) => {
+			const source = `pixels = Buffer<Uint8>(4);
 export init = () {
 	set(pixels, 3, Uint8(4))
 };
 export frame = (): Buffer<Uint8> { pixels };`;
-		const compiled = Program({
-			sys: {
-				readFile: () => source,
-				readBytes: () => new Uint8Array(),
-			},
-		}).compileFile('life.gb');
-		a.equal(compiled.errors.length, 0);
-		a.assert(compiled.bytes);
+			const compiled = Program({
+				sys: {
+					readFile: () => source,
+					readBytes: () => new Uint8Array(),
+				},
+			}).compileFile('life.gb');
+			a.equal(compiled.errors.length, 0);
+			a.assert(compiled.bytes);
 
-		const instance = instantiateWasm(compiled.bytes);
-		const init = instance.exports.init;
-		const frame = instance.exports.frame;
-		a.assert(typeof init === 'function');
-		a.assert(typeof frame === 'function');
-		init();
+			const instance = instantiateWasm(compiled.bytes);
+			const init = instance.exports.init;
+			const frame = instance.exports.frame;
+			a.assert(typeof init === 'function');
+			a.assert(typeof frame === 'function');
+			init();
 
-		a.equalValues(
-			bufferView(instance, Number(frame()), Uint8Array),
-			Uint8Array.of(0, 0, 0, 4),
-		);
-	});
+			a.equalValues(
+				bufferView(instance, Number(frame()), Uint8Array),
+				Uint8Array.of(0, 0, 0, 4),
+			);
+		},
+	);
 
-	s.test('stores explicit float conversions at their declared width', (a: TestApi) => {
-		const source = `records = Buffer<Float32>(25);
+	s.test(
+		'stores explicit float conversions at their declared width',
+		(a: TestApi) => {
+			const source = `records = Buffer<Float32>(25);
 wide = Buffer<Float64>(2);
 integers = Buffer<Int64>(2);
 write = (index: Int32) {
@@ -271,85 +276,94 @@ export recycled = (): own Buffer<Float64> {
 export floats = (): Buffer<Float32> { records };
 export doubles = (): Buffer<Float64> { wide };
 export int64s = (): Buffer<Int64> { integers };`;
-		const compiled = Program({
-			sys: {
-				readFile: () => source,
-				readBytes: () => new Uint8Array(),
-			},
-		}).compileFile('float-buffer.gb');
-		a.equal(compiled.errors.length, 0);
-		a.assert(compiled.bytes);
+			const compiled = Program({
+				sys: {
+					readFile: () => source,
+					readBytes: () => new Uint8Array(),
+				},
+			}).compileFile('float-buffer.gb');
+			a.equal(compiled.errors.length, 0);
+			a.assert(compiled.bytes);
 
-		const instance = instantiateWasm(compiled.bytes);
-		const init = instance.exports.init;
-		const writeFloat32 = instance.exports.writeFloat32;
-		const growMemory = instance.exports.growMemory;
-		const recycled = instance.exports.recycled;
-		const floats = instance.exports.floats;
-		const doubles = instance.exports.doubles;
-		const int64s = instance.exports.int64s;
-		a.assert(typeof init === 'function');
-		a.assert(typeof writeFloat32 === 'function');
-		a.assert(typeof growMemory === 'function');
-		a.assert(typeof recycled === 'function');
-		a.assert(typeof floats === 'function');
-		a.assert(typeof doubles === 'function');
-		a.assert(typeof int64s === 'function');
-		init();
-		writeFloat32(1, 6.25);
+			const instance = instantiateWasm(compiled.bytes);
+			const init = instance.exports.init;
+			const writeFloat32 = instance.exports.writeFloat32;
+			const growMemory = instance.exports.growMemory;
+			const recycled = instance.exports.recycled;
+			const floats = instance.exports.floats;
+			const doubles = instance.exports.doubles;
+			const int64s = instance.exports.int64s;
+			a.assert(typeof init === 'function');
+			a.assert(typeof writeFloat32 === 'function');
+			a.assert(typeof growMemory === 'function');
+			a.assert(typeof recycled === 'function');
+			a.assert(typeof floats === 'function');
+			a.assert(typeof doubles === 'function');
+			a.assert(typeof int64s === 'function');
+			init();
+			writeFloat32(1, 6.25);
 
-		const floatPointer = Number(floats());
-		const floatsBeforeGrowth = bufferView(
-			instance,
-			floatPointer,
-			Float32Array,
-		);
-		a.equalValues(
-			Array.from(floatsBeforeGrowth),
-			[1, 6.25, ...Array.from({ length: 23 }, (_, index) => index + 3)],
-		);
-		growMemory();
-		const floatsAfterGrowth = bufferView(
-			instance,
-			floatPointer,
-			Float32Array,
-		);
-		a.assert(floatsAfterGrowth.buffer !== floatsBeforeGrowth.buffer);
-		a.equalValues(Array.from(floatsAfterGrowth), [
-			1,
-			6.25,
-			...Array.from({ length: 23 }, (_, index) => index + 3),
-		]);
+			const floatPointer = Number(floats());
+			const floatsBeforeGrowth = bufferView(
+				instance,
+				floatPointer,
+				Float32Array,
+			);
+			a.equalValues(Array.from(floatsBeforeGrowth), [
+				1,
+				6.25,
+				...Array.from({ length: 23 }, (_, index) => index + 3),
+			]);
+			growMemory();
+			const floatsAfterGrowth = bufferView(
+				instance,
+				floatPointer,
+				Float32Array,
+			);
+			a.assert(floatsAfterGrowth.buffer !== floatsBeforeGrowth.buffer);
+			a.equalValues(Array.from(floatsAfterGrowth), [
+				1,
+				6.25,
+				...Array.from({ length: 23 }, (_, index) => index + 3),
+			]);
 
-		const doublePointer = Number(doubles());
-		a.equalValues(
-			Array.from(bufferView(instance, doublePointer, Float64Array)),
-			[7, 9],
-		);
-		a.equalValues(
-			Array.from(bufferView(instance, Number(int64s()), BigInt64Array)),
-			[11n, 13n],
-		);
-		a.equalValues(
-			Array.from(bufferView(instance, Number(recycled()), Float64Array)),
-			[3.5],
-		);
+			const doublePointer = Number(doubles());
+			a.equalValues(
+				Array.from(bufferView(instance, doublePointer, Float64Array)),
+				[7, 9],
+			);
+			a.equalValues(
+				Array.from(
+					bufferView(instance, Number(int64s()), BigInt64Array),
+				),
+				[11n, 13n],
+			);
+			a.equalValues(
+				Array.from(
+					bufferView(instance, Number(recycled()), Float64Array),
+				),
+				[3.5],
+			);
 
-		a.throws(() => bufferView(instance, -1, Float32Array), {
-			message: 'Invalid GB buffer pointer',
-		});
-		a.throws(() => bufferView(instance, floatPointer + 2, Float32Array), {
-			message: 'Invalid GB buffer alignment',
-		});
-		new DataView(instance.exports.memory.buffer).setUint32(
-			floatPointer,
-			0xffffffff,
-			true,
-		);
-		a.throws(() => bufferView(instance, floatPointer, Float32Array), {
-			message: 'Invalid GB buffer length',
-		});
-	});
+			a.throws(() => bufferView(instance, -1, Float32Array), {
+				message: 'Invalid GB buffer pointer',
+			});
+			a.throws(
+				() => bufferView(instance, floatPointer + 2, Float32Array),
+				{
+					message: 'Invalid GB buffer alignment',
+				},
+			);
+			new DataView(instance.exports.memory.buffer).setUint32(
+				floatPointer,
+				0xffffffff,
+				true,
+			);
+			a.throws(() => bufferView(instance, floatPointer, Float32Array), {
+				message: 'Invalid GB buffer length',
+			});
+		},
+	);
 
 	s.test('emits stack-valid numeric conversions and stores', (a: TestApi) => {
 		const numericTypes = [
@@ -392,33 +406,36 @@ export write = (value: ${sourceType}) {
 		}
 	});
 
-	s.test('should infer arithmetic through a top-level scalar binding', (a: TestApi) => {
-		const source = `cols = 320;
+	s.test(
+		'should infer arithmetic through a top-level scalar binding',
+		(a: TestApi) => {
+			const source = `cols = 320;
 
 export seed = (index: Int32): Uint8 {
 	((index % cols) * 17 + (index / cols) * 31) % 23 < 5
 		? Uint8(1)
 		: Uint8(0)
 };`;
-		const compiled = Program({
-			sys: {
-				readFile: () => source,
-				readBytes: () => new Uint8Array(),
-			},
-		}).compileFile('case.gb');
-		a.equal(compiled.errors.length, 0);
-		a.assert(compiled.bytes);
-		if (!compiled.bytes) return;
+			const compiled = Program({
+				sys: {
+					readFile: () => source,
+					readBytes: () => new Uint8Array(),
+				},
+			}).compileFile('case.gb');
+			a.equal(compiled.errors.length, 0);
+			a.assert(compiled.bytes);
+			if (!compiled.bytes) return;
 
-		const instance = instantiateWasm(compiled.bytes);
-		const seed = instance.exports.seed;
-		a.assert(typeof seed === 'function');
-		if (typeof seed !== 'function') return;
-		a.equalValues(
-			[0, 4, 320, 321].map(index => Number(seed(index))),
-			[1, 0, 0, 1],
-		);
-	});
+			const instance = instantiateWasm(compiled.bytes);
+			const seed = instance.exports.seed;
+			a.assert(typeof seed === 'function');
+			if (typeof seed !== 'function') return;
+			a.equalValues(
+				[0, 4, 320, 321].map(index => Number(seed(index))),
+				[1, 0, 0, 1],
+			);
+		},
+	);
 
 	s.test('should reject an uncalled function in a conditional branch', a => {
 		const source = `export init = () {
@@ -440,8 +457,10 @@ export seed = (index: Int32): Uint8 {
 		);
 	});
 
-	s.test('should instantiate a loop with a Void helper branch', (a: TestApi) => {
-		const source = `pixels = Buffer<Uint8>(4);
+	s.test(
+		'should instantiate a loop with a Void helper branch',
+		(a: TestApi) => {
+			const source = `pixels = Buffer<Uint8>(4);
 initializeCell = (index: Int32) {
 	set(pixels, index, Uint8(index + 1))
 };
@@ -450,19 +469,20 @@ export init = () {
 		index >= 4 ? break : initializeCell(index)
 	}
 };`;
-		const compiled = Program({
-			sys: {
-				readFile: () => source,
-				readBytes: () => new Uint8Array(),
-			},
-		}).compileFile('life.gb');
-		a.equal(compiled.errors.length, 0);
-		a.assert(compiled.bytes);
+			const compiled = Program({
+				sys: {
+					readFile: () => source,
+					readBytes: () => new Uint8Array(),
+				},
+			}).compileFile('life.gb');
+			a.equal(compiled.errors.length, 0);
+			a.assert(compiled.bytes);
 
-		const init = instantiateWasm(compiled.bytes).exports.init;
-		a.assert(typeof init === 'function');
-		init();
-	});
+			const init = instantiateWasm(compiled.bytes).exports.init;
+			a.assert(typeof init === 'function');
+			init();
+		},
+	);
 
 	s.test('should report invalid arithmetic without Unknown cascades', a => {
 		const source = `export seed = (index: Int32, cols: Int32): Bool {
@@ -483,44 +503,54 @@ export init = () {
 		);
 	});
 
-	s.test('should infer fixed and conditional emission sequence types', (a: TestApi) => {
-		const compiled = Program().compile(`scalar = () { 1 };
+	s.test(
+		'should infer fixed and conditional emission sequence types',
+		(a: TestApi) => {
+			const compiled = Program().compile(`scalar = () { 1 };
 pair = () { (1, true) };
 base = () { (2, false) };
 forward = () { base() };
 conditional = (flag: Bool) { flag ? (1, true) : (2, false) };
 choice = (flag: Bool) { flag ? 1 : true };
 main { scalar() >> out; pair() >> out; forward() >> out; conditional(true) >> out; choice(true) >> out }`);
-		a.equal(compiled.errors.length, 0);
-		a.assert(compiled.bytes);
-		const emission = (name: string) => {
-			const definition = compiled.ast.children.find(
-				node => node.kind === 'def' && node.symbol.name === name,
+			a.equal(compiled.errors.length, 0);
+			a.assert(compiled.bytes);
+			const emission = (name: string) => {
+				const definition = compiled.ast.children.find(
+					node => node.kind === 'def' && node.symbol.name === name,
+				);
+				a.equal(definition?.kind, 'def');
+				if (
+					definition?.kind !== 'def' ||
+					definition.value.kind !== 'fn'
+				)
+					throw new Error(`Missing function ${name}`);
+				const type = definition.value.symbol.emissionType;
+				a.equal(type?.family, 'emission');
+				if (!type || type.family !== 'emission')
+					throw new Error(`Missing emission type for ${name}`);
+				return type;
+			};
+			a.equalValues(
+				emission('scalar').elements.map(type => type.name),
+				['Int32'],
 			);
-			a.equal(definition?.kind, 'def');
-			if (definition?.kind !== 'def' || definition.value.kind !== 'fn')
-				throw new Error(`Missing function ${name}`);
-			const type = definition.value.symbol.emissionType;
-			a.equal(type?.family, 'emission');
-			if (!type || type.family !== 'emission')
-				throw new Error(`Missing emission type for ${name}`);
-			return type;
-		};
-		a.equalValues(emission('scalar').elements.map(type => type.name), [
-			'Int32',
-		]);
-		for (const name of ['pair', 'forward', 'conditional'])
-			a.equalValues(emission(name).elements.map(type => type.name), [
-				'Int32',
-				'Bool',
-			]);
-		const choice = emission('choice').elements[0];
-		a.equal(choice?.kind, 'type');
-		a.equal(choice?.name, 'Int32 | Bool');
-	});
+			for (const name of ['pair', 'forward', 'conditional'])
+				a.equalValues(
+					emission(name).elements.map(type => type.name),
+					['Int32', 'Bool'],
+				);
+			const choice = emission('choice').elements[0];
+			a.equal(choice?.kind, 'type');
+			a.equal(choice?.name, 'Int32 | Bool');
+		},
+	);
 
-	s.test('should infer forwarded and dynamic rest emission types', (a: TestApi) => {
-		const compiled = Program().compile(`strings = (): { ...own String } { next 'a'; next 'b' };
+	s.test(
+		'should infer forwarded and dynamic rest emission types',
+		(a: TestApi) => {
+			const compiled = Program()
+				.compile(`strings = (): { ...own String } { next 'a'; next 'b' };
 forward = () { strings() };
 ints = (): { ...Int32 } { next 1; next 2 };
 bools = (): { ...Bool } { next true; next false };
@@ -528,57 +558,74 @@ choose = (flag: Bool) { flag ? ints() : bools() };
 until = (n: Int32) { loop >> { $ >= n ? break : $ } };
 mapped = (n: Int32) { until(n) >> { $ + 1 } };
 main { forward() >> String { out($) }; choose(true) >> Int32 { out($) } | Bool { out($) }; mapped(2) >> Int32 { out($) } }`);
-		a.equal(compiled.errors.length, 0);
-		a.assert(compiled.bytes);
-		const emission = (name: string) => {
-			const definition = compiled.ast.children.find(
-				node => node.kind === 'def' && node.symbol.name === name,
-			);
-			if (definition?.kind !== 'def' || definition.value.kind !== 'fn')
-				throw new Error(`Missing function ${name}`);
-			const type = definition.value.symbol.emissionType;
-			if (!type || type.family !== 'emission')
-				throw new Error(`Missing emission type for ${name}`);
-			return type;
-		};
-		a.equal(emission('forward').rest?.name, 'String');
-		a.equal(emission('forward').restOwnership, 'own');
-		a.equal(emission('choose').rest?.name, 'Int32 | Bool');
-		a.equal(emission('until').rest?.name, 'Int32');
-		a.equal(emission('mapped').rest?.name, 'Int32');
-	});
+			a.equal(compiled.errors.length, 0);
+			a.assert(compiled.bytes);
+			const emission = (name: string) => {
+				const definition = compiled.ast.children.find(
+					node => node.kind === 'def' && node.symbol.name === name,
+				);
+				if (
+					definition?.kind !== 'def' ||
+					definition.value.kind !== 'fn'
+				)
+					throw new Error(`Missing function ${name}`);
+				const type = definition.value.symbol.emissionType;
+				if (!type || type.family !== 'emission')
+					throw new Error(`Missing emission type for ${name}`);
+				return type;
+			};
+			a.equal(emission('forward').rest?.name, 'String');
+			a.equal(emission('forward').restOwnership, 'own');
+			a.equal(emission('choose').rest?.name, 'Int32 | Bool');
+			a.equal(emission('until').rest?.name, 'Int32');
+			a.equal(emission('mapped').rest?.name, 'Int32');
+		},
+	);
 
-	s.test('should defer unresolved recursive and generic emission inference', (a: TestApi) => {
-		const compiled = Program().compile(`recursive = (n: Int32) { n == 0 ? 0 : recursive(n - 1) };
+	s.test(
+		'should defer unresolved recursive and generic emission inference',
+		(a: TestApi) => {
+			const compiled = Program()
+				.compile(`recursive = (n: Int32) { n == 0 ? 0 : recursive(n - 1) };
 generic = <T>(value: T) { value };
 main { recursive(2) >> out; generic(2) >> out }`);
-		a.equal(compiled.errors.length, 0);
-		a.assert(compiled.bytes);
-		for (const name of ['recursive', 'generic']) {
-			const definition = compiled.ast.children.find(
-				node => node.kind === 'def' && node.symbol.name === name,
-			);
-			if (definition?.kind !== 'def' || definition.value.kind !== 'fn')
-				throw new Error(`Missing function ${name}`);
-			a.equal(definition.value.symbol.emissionType, undefined);
-			a.equal(definition.value.symbol.returnType?.kind, 'type');
-		}
-	});
+			a.equal(compiled.errors.length, 0);
+			a.assert(compiled.bytes);
+			for (const name of ['recursive', 'generic']) {
+				const definition = compiled.ast.children.find(
+					node => node.kind === 'def' && node.symbol.name === name,
+				);
+				if (
+					definition?.kind !== 'def' ||
+					definition.value.kind !== 'fn'
+				)
+					throw new Error(`Missing function ${name}`);
+				a.equal(definition.value.symbol.emissionType, undefined);
+				a.equal(definition.value.symbol.returnType?.kind, 'type');
+			}
+		},
+	);
 
 	const runEmissionProgram = (a: TestApi, source: string): string[] => {
 		const compiled = Program().compile(source);
 		a.equal(compiled.errors.length, 0);
 		a.assert(compiled.bytes);
 		const out: string[] = [];
-		const instance = instantiateWasm(compiled.bytes, value => out.push(value));
+		const instance = instantiateWasm(compiled.bytes, value =>
+			out.push(value),
+		);
 		const main = instance.exports.main;
 		a.equal(typeof main, 'function');
 		if (typeof main === 'function') main();
 		return out;
 	};
 
-	s.test('lowers fixed emission types to direct or fused Wasm calls', (a: TestApi) => {
-		const out = runEmissionProgram(a, `scalar = () { 7 };
+	s.test(
+		'lowers fixed emission types to direct or fused Wasm calls',
+		(a: TestApi) => {
+			const out = runEmissionProgram(
+				a,
+				`scalar = () { 7 };
 pair = () { (1, true) };
 other = () { (2, false) };
 forward = () { pair() };
@@ -587,12 +634,16 @@ main {
 	scalar() >> out;
 	forward() >> Int32 { out($) } | Bool { out($) };
 	choose(false) >> Int32 { out($) } | Bool { out($) }
-}`);
-		a.equalValues(out, ['7', '1', 'true', '2', 'false']);
-	});
+}`,
+			);
+			a.equalValues(out, ['7', '1', 'true', '2', 'false']);
+		},
+	);
 
 	s.test('fuses rest emission types through Wasm pipelines', (a: TestApi) => {
-		const out = runEmissionProgram(a, `strings = (): { ...own String } { next 'a'; next 'bb' };
+		const out = runEmissionProgram(
+			a,
+			`strings = (): { ...own String } { next 'a'; next 'bb' };
 otherStrings = (): { ...own String } { next 'ccc'; done };
 forward = () { strings() };
 stringChoice = (flag: Bool) { flag ? strings() : otherStrings() };
@@ -606,17 +657,24 @@ main {
 	stringChoice(false) >> String { length($) } >> out;
 	choose(false) >> Int32 { out($) } | Bool { out($) };
 	mapped(3) >> out
-}`);
+}`,
+		);
 		a.equalValues(out, ['1', '2', '3', 'true', 'false', '10', '11', '12']);
 	});
 
-	s.test('specializes higher-order fixed Wasm emissions before forwarding', (a: TestApi) => {
-		const out = runEmissionProgram(a, `type Pair<T> = { T, T };
+	s.test(
+		'specializes higher-order fixed Wasm emissions before forwarding',
+		(a: TestApi) => {
+			const out = runEmissionProgram(
+				a,
+				`type Pair<T> = { T, T };
 twice = (n: Int32): Pair<Int32> { next n; next n + 1 };
 apply = (cb: (Int32): Pair<Int32>, n: Int32): Pair<Int32> { cb(n) };
-main { apply(twice, 5) >> out }`);
-		a.equalValues(out, ['5', '6']);
-	});
+main { apply(twice, 5) >> out }`,
+			);
+			a.equalValues(out, ['5', '6']);
+		},
+	);
 	h('Hello World', ({ p }) => {
 		p(
 			`
@@ -809,11 +867,11 @@ main { sum([1, 2] >> length, 2) >> out }`,
 		});
 
 		// Integer arithmetic via WASM
-	 expr({ src: '1 + 2', ast: '(+ 1 2)', out: ['3'] });
-	 expr({ src: '10 - 3', ast: '(- 10 3)', out: ['7'] });
-	 expr({ src: '6 * 7', ast: '(* 6 7)', out: ['42'] });
-	 expr({ src: '100 / 4', ast: '(/ 100 4)', out: ['25'] });
-	 expr({
+		expr({ src: '1 + 2', ast: '(+ 1 2)', out: ['3'] });
+		expr({ src: '10 - 3', ast: '(- 10 3)', out: ['7'] });
+		expr({ src: '6 * 7', ast: '(* 6 7)', out: ['42'] });
+		expr({ src: '100 / 4', ast: '(/ 100 4)', out: ['25'] });
+		expr({
 			src: '(10 + 5) * 2',
 			ast: '(* (+ 10 5) 2)',
 			out: ['30'],
@@ -907,7 +965,7 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			});
 			expr({
 				src: "'v=${0.5}'",
-				ast: "(interp 0.5)",
+				ast: '(interp 0.5)',
 				out: ['v=0.5'],
 			});
 		});
@@ -944,7 +1002,29 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			});
 		});
 
-		h('Conditional operator', ({ expr, compileError }) => {
+		h('Conditional operator', ({ expr, rule, compileError }) => {
+			compileError({
+				src: `identity = (n: Int32): Int32 { n };
+main {
+	condition = false;
+	value = 1;
+	finiteValue = 2;
+	condition ? value :
+		finiteValue >> identity
+}`,
+				expected: 'Parenthesize the pipe in the ternary branch',
+			});
+			rule({
+				src: `identity = (n: Int32): Int32 { n };
+main {
+	condition = false;
+	value = 1;
+	finiteValue = 2;
+	condition ? value : (finiteValue >> identity) >> out
+}`,
+				ast: `(root (def :identity ? (fn (parameter :n typeident ?) typeident (next :n))) (main (def :condition ? :false) (def :value ? 1) (def :finiteValue ? 2) (>> (? :condition :value (>> :finiteValue :identity)) :out)))`,
+				out: ['2'],
+			});
 			compileError({
 				src: `main { (1 ? 2 : 3) >> out }`,
 				expected: 'compile-time constant',
@@ -1093,17 +1173,17 @@ main { sum([1, 2] >> length, 2) >> out }`,
 		match("'no holes'", 'string');
 
 		h('Escape Sequences', ({ expr, compileError }) => {
-		 expr({
+			expr({
 				src: `'line\\nA\\u{42}'`,
 				ast: "'line\\nA\\u{42}'",
 				out: ['line\nAB'],
 			});
-		 expr({
+			expr({
 				src: `'a\\nb\\rc\\td\\'e\\00f'`,
 				ast: `'a\\nb\\rc\\td\\'e\\00f'`,
 				out: ["a\nb\rc\td'e\0f"],
 			});
-		 expr({
+			expr({
 				src: `'\\41\\30\\"'`,
 				ast: `'\\41\\30\\"'`,
 				out: ['A0"'],
@@ -1261,35 +1341,42 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			out: ['6'],
 		});
 		compileError({
-			p: 'Every arm of an overload must return the same type. An overload is one operation with many input types, not unrelated functions sharing a name, so the result type never depends on which arm ran; arms that disagree on the return type are rejected.',
-			src: "f = (n: Int32): Int32 { n } | (s: String): Bool { length(s) == 0 }; main { f(5) >> out }",
+			p: 'Overload arms share a result type unless every arm preserves its first input type. This permits width-preserving scalar operations without allowing unrelated functions to share a name.',
+			src: 'f = (n: Int32): Int32 { n } | (s: String): Bool { length(s) == 0 }; main { f(5) >> out }',
 			expected: 'must return the same type',
+		});
+		expr({
+			p: 'A scalar overload may preserve the selected input width in its return type.',
+			pre: 'same = (x: Float32): Float32 { x } | (x: Float64): Float64 { x }',
+			src: 'same(Float32(1.5))',
+			ast: '(call :same (call typeident 1.5))',
+			out: ['1.5'],
 		});
 		compileError({
 			p: 'Two arms may not accept the same input type. Overload resolution must have a single answer, so a dispatch with two arms for one parameter type is rejected as ambiguous rather than silently preferring one.',
-			src: "f = (n: Int32): Int32 { n } | (m: Int32): Int32 { m }; main { f(5) >> out }",
+			src: 'f = (n: Int32): Int32 { n } | (m: Int32): Int32 { m }; main { f(5) >> out }',
 			expected: 'ambiguous overload',
 		});
 		expr({
 			p: '`extend name (param: T): R { … }` adds an arm to an existing overload, dispatched by `T` like any other arm — how an overload defined in one place gains new input types elsewhere.',
-			pre: "size = (n: Int32): Int32 { n }; extend size (s: String): Int32 { length(s) }",
+			pre: 'size = (n: Int32): Int32 { n }; extend size (s: String): Int32 { length(s) }',
 			src: "size('abc')",
 			ast: "(call :size 'abc')",
 			out: ['3'],
 		});
 		compileError({
 			p: '`extend` may only add to a name that is already an overload. Extending an undefined name is an error, so a misspelling cannot silently create a new one-arm function.',
-			src: "extend nope (n: Int32): Int32 { n }; main { }",
+			src: 'extend nope (n: Int32): Int32 { n }; main { }',
 			expected: 'not a dispatch',
 		});
 		compileError({
 			p: 'An arm added with `extend` must return the overload’s established return type — the same uniform-return rule that governs the original arms.',
-			src: "size = (n: Int32): Int32 { n }; extend size (s: String): Bool { true }; main { size(5) >> out }",
+			src: 'size = (n: Int32): Int32 { n }; extend size (s: String): Bool { true }; main { size(5) >> out }',
 			expected: 'must return the same type',
 		});
 		compileError({
 			p: 'An `extend` arm may not accept an input type an existing arm already handles; overlapping arms are rejected as ambiguous, exactly as within a single definition.',
-			src: "size = (n: Int32): Int32 { n }; extend size (m: Int32): Int32 { m }; main { size(5) >> out }",
+			src: 'size = (n: Int32): Int32 { n }; extend size (m: Int32): Int32 { m }; main { size(5) >> out }',
 			expected: 'ambiguous overload',
 		});
 	});
@@ -1298,15 +1385,18 @@ main { sum([1, 2] >> length, 2) >> out }`,
 		compileError({
 			p: 'A constructor must change or establish a type; constructing a value already typed as the target is redundant.',
 			src: 'main { Int32(123) >> out }',
-			expected: 'Redundant type constructor `Int32`; the argument is already `Int32`.',
+			expected:
+				'Redundant type constructor `Int32`; the argument is already `Int32`.',
 		});
 		compileError({
 			src: 'main { n: Int64 = 123; Int64(n) >> out }',
-			expected: 'Redundant type constructor `Int64`; the argument is already `Int64`.',
+			expected:
+				'Redundant type constructor `Int64`; the argument is already `Int64`.',
 		});
 		compileError({
 			src: "main { s: String = '${1}'; String(s) >> out }",
-			expected: 'Redundant type constructor `String`; the argument is already `String`.',
+			expected:
+				'Redundant type constructor `String`; the argument is already `String`.',
 		});
 		expr({
 			p: 'A constructor remains valid when it converts a value from a distinct type.',
@@ -1362,7 +1452,7 @@ main { sum([1, 2] >> length, 2) >> out }`,
 		});
 		compileError({
 			p: 'Every arm of a type constructor must return that type — `String(x)` always yields a `String` whatever the input — so an arm declaring any other return type is rejected. This is the uniform-return rule, pinned to the type by the constructor’s name.',
-			src: "type Celsius = Int32; extend String (c: Celsius): Int32 { 0 }; main { String(Celsius(5)) >> out }",
+			src: 'type Celsius = Int32; extend String (c: Celsius): Int32 { 0 }; main { String(Celsius(5)) >> out }',
 			expected: 'must return String',
 		});
 	});
@@ -1398,9 +1488,9 @@ main { sum([1, 2] >> length, 2) >> out }`,
 			out: ['10'],
 		});
 		expr({
-			pre: `double = (n: Int32): Int32 { n + n }; math = [ d = double ]`,
-			src: `math.d(5)`,
-			ast: `(call (. :math :d) 5)`,
+			pre: `double = (n: Int32): Int32 { n + n }; ops = [ d = double ]`,
+			src: `ops.d(5)`,
+			ast: `(call (. :ops :d) 5)`,
 			out: ['10'],
 		});
 		expr({
@@ -1578,7 +1668,7 @@ main { ps = [ [ x = 1, y = 2 ], [ x = 3, y = 4 ] ]; length(ps) >> out; ps >> eac
 			ast: `(call :x (, 1 2 3))`,
 			out: ['1', '2', '3'],
 		});
-	 expr({
+		expr({
 			pre: `add = (a: Int32, b: Int32): Int32 { a + b }`,
 			src: `add(b = 1, a = 2)`,
 			ast: `(call :add (, (propdef :b ? 1) (propdef :a ? 2)))`,
@@ -1877,113 +1967,121 @@ a = {
 		);
 	});
 
-	h('Anonymous Blocks (Shape 3: type-prefix with return `T:R { body }`)', ({ p }) => {
-		p(
-			`A type-prefix block may assert its output via \`T:R\`; the body
+	h(
+		'Anonymous Blocks (Shape 3: type-prefix with return `T:R { body }`)',
+		({ p }) => {
+			p(
+				`A type-prefix block may assert its output via \`T:R\`; the body
 			 (auto-emit or statement body) must produce exactly that signature.
 			 \`T:Void\` explicitly describes a terminal stage that emits nothing.`,
-			({ expr, compileError, rule }) => {
-				expr({
-					src: `5 >> Int32:Int32 { $ * 2 }`,
-					ast: `(>> 5 (fn (parameter ? typeident typeident) (next (* $ 2))))`,
-					out: ['10'],
-				});
-				expr({
-					src: `5 >> Int32:Bool { $ > 0 }`,
-					ast: `(>> 5 (fn (parameter ? typeident typeident) (next (> $ 0))))`,
-					out: ['true'],
-				});
-				rule({
-					src: `main { 5 >> Int32 { out($) } }`,
-					ast: `(root (main (>> 5 (fn (parameter ? typeident ?) (next (call :out $))))))`,
-					out: ['5'],
-				});
-				rule({
-					src: `main { [1, 2, 3] >> each >> Int32 { out($) } }`,
-					ast: `(root (main (>> (data (, 1 2 3)) :each (fn (parameter ? typeident ?) (next (call :out $))))))`,
-					out: ['1', '2', '3'],
-				});
-				expr({
-					src: `5 >> Int32:Int32 { next $; next $ + 1; }`,
-					ast: `(>> 5 (fn (parameter ? typeident typeident) (next $) (next (+ $ 1))))`,
-					out: ['5', '6'],
-				});
-				compileError({
-					src: `main { 5 >> Int32:Int32 { 'oops' } >> out }`,
-					expected: 'is not assignable',
-				});
-				compileError({
-					src: `main { 5 >> Int32 { out($) } >> Int32 { $ + 1 } >> out }`,
-					expected: 'unreachable',
-				});
-				rule({
-					src: `main { 5 >> Int32:Void { out($) } }`,
-					ast: `(root (main (>> 5 (fn (parameter ? typeident typeident) (next (call :out $))))))`,
-					out: ['5'],
-				});
-			},
-		);
-	});
+				({ expr, compileError, rule }) => {
+					expr({
+						src: `5 >> Int32:Int32 { $ * 2 }`,
+						ast: `(>> 5 (fn (parameter ? typeident typeident) (next (* $ 2))))`,
+						out: ['10'],
+					});
+					expr({
+						src: `5 >> Int32:Bool { $ > 0 }`,
+						ast: `(>> 5 (fn (parameter ? typeident typeident) (next (> $ 0))))`,
+						out: ['true'],
+					});
+					rule({
+						src: `main { 5 >> Int32 { out($) } }`,
+						ast: `(root (main (>> 5 (fn (parameter ? typeident ?) (next (call :out $))))))`,
+						out: ['5'],
+					});
+					rule({
+						src: `main { [1, 2, 3] >> each >> Int32 { out($) } }`,
+						ast: `(root (main (>> (data (, 1 2 3)) :each (fn (parameter ? typeident ?) (next (call :out $))))))`,
+						out: ['1', '2', '3'],
+					});
+					expr({
+						src: `5 >> Int32:Int32 { next $; next $ + 1; }`,
+						ast: `(>> 5 (fn (parameter ? typeident typeident) (next $) (next (+ $ 1))))`,
+						out: ['5', '6'],
+					});
+					compileError({
+						src: `main { 5 >> Int32:Int32 { 'oops' } >> out }`,
+						expected: 'is not assignable',
+					});
+					compileError({
+						src: `main { 5 >> Int32 { out($) } >> Int32 { $ + 1 } >> out }`,
+						expected: 'unreachable',
+					});
+					rule({
+						src: `main { 5 >> Int32:Void { out($) } }`,
+						ast: `(root (main (>> 5 (fn (parameter ? typeident typeident) (next (call :out $))))))`,
+						out: ['5'],
+					});
+				},
+			);
+		},
+	);
 
-	h('Anonymous Blocks (Shape 4: literal-type prefix `:T { body }`)', ({ p }) => {
-		p(
-			`A leading colon followed by a literal type creates an anonymous-slot block matching that literal type.
+	h(
+		'Anonymous Blocks (Shape 4: literal-type prefix `:T { body }`)',
+		({ p }) => {
+			p(
+				`A leading colon followed by a literal type creates an anonymous-slot block matching that literal type.
 			 Use this for matching literal values (\`true\`, \`false\`, \`0\`, \`'on'\`, etc.).
 			 Uppercase/named types use Shape 2 (\`T { body }\`) without the leading colon —
 			 \`:Int32 { ... }\` is a compile error. Parens around a single anonymous slot
 			 (\`(:T) { ... }\`) are likewise an error; the bare \`:T { ... }\` is canonical.`,
-			({ expr, compileError }) => {
-				expr({
-					src: `true >> :true { 1 }`,
-					ast: `(>> :true (fn (parameter ? typeident ?) (next 1)))`,
-					out: ['1'],
-				});
-				expr({
-					src: `false >> :false { 0 }`,
-					ast: `(>> :false (fn (parameter ? typeident ?) (next 0)))`,
-					out: ['0'],
-				});
-				expr({
-					pre: `check = (n: Int32): Bool { n > 0 }`,
-					src: `check(5) >> :true { 'positive' } | :false { 'non-positive' }`,
-					ast: `(>> (call :check 5) (| (fn (parameter ? typeident ?) (next 'positive')) (fn (parameter ? typeident ?) (next 'non-positive'))))`,
-					out: ['positive'],
-				});
-				compileError({
-					src: `main { loop >> :true { break } >> out }`,
-					expected: 'does not consume',
-				});
-				expr({
-					pre: `mode = (): 'on' | 'off' { 'on' }`,
-					src: `mode() >> :'on' { 'enabled' } | :'off' { 'disabled' }`,
-					ast: `(>> (call :mode ?) (| (fn (parameter ? typeident ?) (next 'enabled')) (fn (parameter ? typeident ?) (next 'disabled'))))`,
-					out: ['enabled'],
-				});
-				expr({
-					src: `0 >> :0 | false | '' { 'falsy' }`,
-					ast: `(>> 0 (fn (parameter ? typeident ?) (next 'falsy')))`,
-					out: ['falsy'],
-				});
-				compileError({
-					src: `main { 5 >> :Int32 { $ } >> out; }`,
-					expected: 'use `Int32`',
-				});
-				compileError({
-					src: `main { 5 >> (:Int32) { $ } >> out }`,
-					expected: 'Parens',
-				});
-				compileError({
-					pre: `check = (n: Int32): Bool { n > 0 }`,
-					src: `main { check(5) >> :true { 1 } >> out }`,
-					expected: 'does not consume',
-				});
-			},
-		);
-	});
+				({ expr, compileError }) => {
+					expr({
+						src: `true >> :true { 1 }`,
+						ast: `(>> :true (fn (parameter ? typeident ?) (next 1)))`,
+						out: ['1'],
+					});
+					expr({
+						src: `false >> :false { 0 }`,
+						ast: `(>> :false (fn (parameter ? typeident ?) (next 0)))`,
+						out: ['0'],
+					});
+					expr({
+						pre: `check = (n: Int32): Bool { n > 0 }`,
+						src: `check(5) >> :true { 'positive' } | :false { 'non-positive' }`,
+						ast: `(>> (call :check 5) (| (fn (parameter ? typeident ?) (next 'positive')) (fn (parameter ? typeident ?) (next 'non-positive'))))`,
+						out: ['positive'],
+					});
+					compileError({
+						src: `main { loop >> :true { break } >> out }`,
+						expected: 'does not consume',
+					});
+					expr({
+						pre: `mode = (): 'on' | 'off' { 'on' }`,
+						src: `mode() >> :'on' { 'enabled' } | :'off' { 'disabled' }`,
+						ast: `(>> (call :mode ?) (| (fn (parameter ? typeident ?) (next 'enabled')) (fn (parameter ? typeident ?) (next 'disabled'))))`,
+						out: ['enabled'],
+					});
+					expr({
+						src: `0 >> :0 | false | '' { 'falsy' }`,
+						ast: `(>> 0 (fn (parameter ? typeident ?) (next 'falsy')))`,
+						out: ['falsy'],
+					});
+					compileError({
+						src: `main { 5 >> :Int32 { $ } >> out; }`,
+						expected: 'use `Int32`',
+					});
+					compileError({
+						src: `main { 5 >> (:Int32) { $ } >> out }`,
+						expected: 'Parens',
+					});
+					compileError({
+						pre: `check = (n: Int32): Bool { n > 0 }`,
+						src: `main { check(5) >> :true { 1 } >> out }`,
+						expected: 'does not consume',
+					});
+				},
+			);
+		},
+	);
 
-	h('Anonymous Blocks (Shape 6: single-named slot `(name: T) { body }`)', ({ p }) => {
-		p(
-			`\`(name: T) { body }\` is a single-slot pattern that matches by type and binds the
+	h(
+		'Anonymous Blocks (Shape 6: single-named slot `(name: T) { body }`)',
+		({ p }) => {
+			p(
+				`\`(name: T) { body }\` is a single-slot pattern that matches by type and binds the
 			 whole upstream value to a local name. Match rule: if upstream type equals/conforms
 			 to \`T\`, bind. There is no field projection — to access one field of a multi-field
 			 record, use Shape 2 (\`[a: T, b: T] { $.b }\`).
@@ -1991,310 +2089,322 @@ a = {
 			 Body forms follow Shape 1: a single value-expression auto-emits; a statement body
 			 (with \`;\`) uses \`next\` for emissions. A statement body whose only statements are
 			 \`next\` of value-expressions is reducible — the compiler forces the shorter comma form.`,
-			({ expr, compileError }) => {
-				expr({
-					src: `5 >> (n: Int32) { n + 1 }`,
-					ast: `(>> 5 (fn (parameter :n typeident ?) (next (+ :n 1))))`,
-					out: ['6'],
-				});
-				expr({
-					pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { n > 0 ? n : fail() }`,
-					src: `risky(0) >> Int32 { $ } | (e: Fail) { e.code }`,
-					ast: `(>> (call :risky 0) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter :e typeident ?) (next (. :e :code)))))`,
-					out: ['7'],
-				});
-				expr({
-					pre: `type Point = [x: Int32, y: Int32]; p: Point = [x = 3, y = 4]`,
-					src: `p >> (q: Point) { q.x + q.y }`,
-					ast: `(>> :p (fn (parameter :q typeident ?) (next (+ (. :q :x) (. :q :y)))))`,
-					out: ['7'],
-				});
-				expr({
-					pre: `double = (n: Int32) { n * 2 }`,
-					src: `double(5)`,
-					ast: `(call :double 5)`,
-					out: ['10'],
-				});
-				expr({
-					pre: `double = (n: Int32) { n * 2 }`,
-					src: `double(n = 5)`,
-					ast: `(call :double (propdef :n ? 5))`,
-					out: ['10'],
-				});
-				expr({
-					src: `5 >> (n: Int32) { doubled = n * 2; next doubled; next doubled + 1; }`,
-					ast: `(>> 5 (fn (parameter :n typeident ?) (def :doubled ? (* :n 2)) (next :doubled) (next (+ :doubled 1))))`,
-					out: ['10', '11'],
-				});
-				compileError({
-					src: `main { 5 >> (n: Int32) { next n; next n + 1; } >> out }`,
-					expected: 'reducible',
-				});
-				compileError({
-					src: `main { [10, 20] >> (n: Int32) { n } >> out }`,
-					expected: 'not assignable',
-				});
-				compileError({
-					src: `main { 5 >> (n: Int32) { next n } >> out }`,
-					expected: '`next` is not allowed',
-				});
-			},
-		);
-	});
+				({ expr, compileError }) => {
+					expr({
+						src: `5 >> (n: Int32) { n + 1 }`,
+						ast: `(>> 5 (fn (parameter :n typeident ?) (next (+ :n 1))))`,
+						out: ['6'],
+					});
+					expr({
+						pre: `type Fail = Error & [ code: Int32 ]; fail = (): Fail { [ code = 7 ] }; risky = (n: Int32): Int32 | Fail { n > 0 ? n : fail() }`,
+						src: `risky(0) >> Int32 { $ } | (e: Fail) { e.code }`,
+						ast: `(>> (call :risky 0) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter :e typeident ?) (next (. :e :code)))))`,
+						out: ['7'],
+					});
+					expr({
+						pre: `type Point = [x: Int32, y: Int32]; p: Point = [x = 3, y = 4]`,
+						src: `p >> (q: Point) { q.x + q.y }`,
+						ast: `(>> :p (fn (parameter :q typeident ?) (next (+ (. :q :x) (. :q :y)))))`,
+						out: ['7'],
+					});
+					expr({
+						pre: `double = (n: Int32) { n * 2 }`,
+						src: `double(5)`,
+						ast: `(call :double 5)`,
+						out: ['10'],
+					});
+					expr({
+						pre: `double = (n: Int32) { n * 2 }`,
+						src: `double(n = 5)`,
+						ast: `(call :double (propdef :n ? 5))`,
+						out: ['10'],
+					});
+					expr({
+						src: `5 >> (n: Int32) { doubled = n * 2; next doubled; next doubled + 1; }`,
+						ast: `(>> 5 (fn (parameter :n typeident ?) (def :doubled ? (* :n 2)) (next :doubled) (next (+ :doubled 1))))`,
+						out: ['10', '11'],
+					});
+					compileError({
+						src: `main { 5 >> (n: Int32) { next n; next n + 1; } >> out }`,
+						expected: 'reducible',
+					});
+					compileError({
+						src: `main { [10, 20] >> (n: Int32) { n } >> out }`,
+						expected: 'not assignable',
+					});
+					compileError({
+						src: `main { 5 >> (n: Int32) { next n } >> out }`,
+						expected: '`next` is not allowed',
+					});
+				},
+			);
+		},
+	);
 
-	h('Anonymous Blocks (Shape 7: single-named slot with return `(name: T): R { body }`)', ({ p }) => {
-		p(
-			`Shape 7 extends Shape 6 with an explicit return type \`R\`. Every emission from the body
+	h(
+		'Anonymous Blocks (Shape 7: single-named slot with return `(name: T): R { body }`)',
+		({ p }) => {
+			p(
+				`Shape 7 extends Shape 6 with an explicit return type \`R\`. Every emission from the body
 			 (auto-emit or via \`next\`) must produce a value compatible with \`R\`. Without \`:R\`,
 			 the return type is inferred; with \`:R\`, it is asserted and checked.`,
-			({ expr, compileError, rule }) => {
-				expr({
-					pre: `double = (n: Int32): Int32 { n * 2 }`,
-					src: `double(5)`,
-					ast: `(call :double 5)`,
-					out: ['10'],
-				});
-				expr({
-					pre: `isPositive = (n: Int32): Bool { n > 0 }`,
-					src: `isPositive(5)`,
-					ast: `(call :isPositive 5)`,
-					out: ['true'],
-				});
-				expr({
-					pre: `type ParseErr = Error & [ code: Int32 ]; parseErr = (): ParseErr { [ code = 0 ] }; parseInt = (s: String): Int32 | Error { length(s) == 0 ? parseErr() : 42 }`,
-					src: `parseInt('42')`,
-					ast: `(call :parseInt '42')`,
-					out: ['42'],
-				});
-				expr({
-					pre: `square = (n: Int32): Int32 { n / 2 >> Int32 { $ * 2 } }`,
-					src: `square(6)`,
-					ast: `(call :square 6)`,
-					out: ['6'],
-				});
-				rule({
-					src: `print = (n: Int32) { out(n) }; main { 5 >> print }`,
-					ast: `(root (def :print ? (fn (parameter :n typeident ?) (next (call :out :n)))) (main (>> 5 :print)))`,
-					out: ['5'],
-				});
-				expr({
-					pre: `factorial = (n: Int32): Int32 { n <= 1 ? 1 : n * factorial(n - 1) }`,
-					src: `factorial(5)`,
-					ast: `(call :factorial 5)`,
-					out: ['120'],
-				});
-				expr({
-					pre: `pair = (n: Int32): [Int32, Int32] { [n, n + 1] }`,
-					src: `pair(5) >> { $.0 + $.1 }`,
-					ast: `(>> (call :pair 5) (fn (next (+ (. $ 0) (. $ 1)))))`,
-					out: ['11'],
-				});
-				expr({
-					pre: `spread = (n: Int32): { Int32, Int32 } { half = n / 2; next half; next n - half; }`,
-					src: `spread(10)`,
-					ast: `(call :spread 10)`,
-					out: ['5', '5'],
-				});
-				expr({
-					pre: `pair = (n: Int32): { Int32, Bool } { next n; next true }`,
-					src: `pair(7)`,
-					ast: `(call :pair 7)`,
-					out: ['7', 'true'],
-				});
-				expr({
-					pre: `pair = (n: Int32) { next n; next true }`,
-					src: `pair(7)`,
-					ast: `(call :pair 7)`,
-					out: ['7', 'true'],
-				});
-				expr({
-					pre: `pair = (n: Int32): { Int32, Bool } { next n; next true }; triple = (n: Int32): { Int32, Bool, Int32 } { next pair(n); next n + 1 }`,
-					src: `triple(7)`,
-					ast: `(call :triple 7)`,
-					out: ['7', 'true', '8'],
-				});
-				compileError({
-					src: `main { pair = (n: Int32): { Bool, Int32 } { next n; next true }; pair(7) >> out }`,
-					expected: 'emission 1',
-				});
-				compileError({
-					src: `main { pair = (n: Int32): { Int32, Bool } { n }; pair(7) >> out }`,
-					expected: 'declares 2 emissions but produces 1',
-				});
-				compileError({
-					src: `main { none = (): {} { done }; none() }`,
-					expected: 'Use `Void`',
-				});
-				compileError({
-					src: `main { one = (): { Int32 } { 1 }; one() >> out }`,
-					expected: 'Use the element type directly',
-				});
-				compileError({
-					src: `main { double = (n: Int32): Int32 { 'oops' }; double(5) >> out; }`,
-					expected: 'is not assignable',
-				});
-			},
-		);
-	});
+				({ expr, compileError, rule }) => {
+					expr({
+						pre: `double = (n: Int32): Int32 { n * 2 }`,
+						src: `double(5)`,
+						ast: `(call :double 5)`,
+						out: ['10'],
+					});
+					expr({
+						pre: `isPositive = (n: Int32): Bool { n > 0 }`,
+						src: `isPositive(5)`,
+						ast: `(call :isPositive 5)`,
+						out: ['true'],
+					});
+					expr({
+						pre: `type ParseErr = Error & [ code: Int32 ]; parseErr = (): ParseErr { [ code = 0 ] }; parseInt = (s: String): Int32 | Error { length(s) == 0 ? parseErr() : 42 }`,
+						src: `parseInt('42')`,
+						ast: `(call :parseInt '42')`,
+						out: ['42'],
+					});
+					expr({
+						pre: `square = (n: Int32): Int32 { n / 2 >> Int32 { $ * 2 } }`,
+						src: `square(6)`,
+						ast: `(call :square 6)`,
+						out: ['6'],
+					});
+					rule({
+						src: `print = (n: Int32) { out(n) }; main { 5 >> print }`,
+						ast: `(root (def :print ? (fn (parameter :n typeident ?) (next (call :out :n)))) (main (>> 5 :print)))`,
+						out: ['5'],
+					});
+					expr({
+						pre: `factorial = (n: Int32): Int32 { n <= 1 ? 1 : n * factorial(n - 1) }`,
+						src: `factorial(5)`,
+						ast: `(call :factorial 5)`,
+						out: ['120'],
+					});
+					expr({
+						pre: `pair = (n: Int32): [Int32, Int32] { [n, n + 1] }`,
+						src: `pair(5) >> { $.0 + $.1 }`,
+						ast: `(>> (call :pair 5) (fn (next (+ (. $ 0) (. $ 1)))))`,
+						out: ['11'],
+					});
+					expr({
+						pre: `spread = (n: Int32): { Int32, Int32 } { half = n / 2; next half; next n - half; }`,
+						src: `spread(10)`,
+						ast: `(call :spread 10)`,
+						out: ['5', '5'],
+					});
+					expr({
+						pre: `pair = (n: Int32): { Int32, Bool } { next n; next true }`,
+						src: `pair(7)`,
+						ast: `(call :pair 7)`,
+						out: ['7', 'true'],
+					});
+					expr({
+						pre: `pair = (n: Int32) { next n; next true }`,
+						src: `pair(7)`,
+						ast: `(call :pair 7)`,
+						out: ['7', 'true'],
+					});
+					expr({
+						pre: `pair = (n: Int32): { Int32, Bool } { next n; next true }; triple = (n: Int32): { Int32, Bool, Int32 } { next pair(n); next n + 1 }`,
+						src: `triple(7)`,
+						ast: `(call :triple 7)`,
+						out: ['7', 'true', '8'],
+					});
+					compileError({
+						src: `main { pair = (n: Int32): { Bool, Int32 } { next n; next true }; pair(7) >> out }`,
+						expected: 'emission 1',
+					});
+					compileError({
+						src: `main { pair = (n: Int32): { Int32, Bool } { n }; pair(7) >> out }`,
+						expected: 'declares 2 emissions but produces 1',
+					});
+					compileError({
+						src: `main { none = (): {} { done }; none() }`,
+						expected: 'Use `Void`',
+					});
+					compileError({
+						src: `main { one = (): { Int32 } { 1 }; one() >> out }`,
+						expected: 'Use the element type directly',
+					});
+					compileError({
+						src: `main { double = (n: Int32): Int32 { 'oops' }; double(5) >> out; }`,
+						expected: 'is not assignable',
+					});
+				},
+			);
+		},
+	);
 
-	h('Anonymous Blocks (Shape 8: multi-slot destructure `(a, b) { body }`)', ({ p }) => {
-		p(
-			`Multi-slot patterns destructure their input into named slots. The fn's parameter
+	h(
+		'Anonymous Blocks (Shape 8: multi-slot destructure `(a, b) { body }`)',
+		({ p }) => {
+			p(
+				`Multi-slot patterns destructure their input into named slots. The fn's parameter
 			 names define labels for \`$\`. Calls and chain piping conform to those labels:
 			 positional args bind by slot order, labeled args reorder to match the fn's labels.
 			 Mixing positional and labeled args in the same call is forbidden. Labels that don't
 			 match the fn's parameter names are a compile error.`,
-			({ expr, compileError }) => {
-				expr({
-					src: `[1, 2] >> (a, b) { a + b }`,
-					ast: `(>> (data (, 1 2)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ :a :b))))`,
-					out: ['3'],
-				});
-				expr({
-					src: `[1, 2] >> (a: Int32, b: Int32) { a + b }`,
-					ast: `(>> (data (, 1 2)) (fn (parameter :a typeident ?) (parameter :b typeident ?) (next (+ :a :b))))`,
-					out: ['3'],
-				});
-				expr({
-					pre: `sub = (a: Int32, b: Int32) { a - b }`,
-					src: `[b = 2, a = 1] >> sub`,
-					ast: `(>> (data (, (propdef :b ? 2) (propdef :a ? 1))) :sub)`,
-					out: ['-1'],
-				});
-				expr({
-					src: `[10, 20] >> (a, b) { a + b }`,
-					ast: `(>> (data (, 10 20)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ :a :b))))`,
-					out: ['30'],
-				});
-				expr({
-					pre: `add = (a: Int32, b: Int32) { a + b }`,
-					src: `add(1, 2)`,
-					ast: `(call :add (, 1 2))`,
-					out: ['3'],
-				});
-				expr({
-					pre: `sub = (a: Int32, b: Int32) { a - b }`,
-					src: `sub(b = 1, a = 2)`,
-					ast: `(call :sub (, (propdef :b ? 1) (propdef :a ? 2)))`,
-					out: ['1'],
-				});
-				expr({
-					pre: `add3 = (a: Int32, b: Int32, c: Int32) { a + b >> Int32 { $ + c } }`,
-					src: `add3(1, 2, 3)`,
-					ast: `(call :add3 (, 1 2 3))`,
-					out: ['6'],
-				});
-				expr({
-					src: `[1, 2, 3] >> (a, b, c) { a + b + c }`,
-					ast: `(>> (data (, 1 2 3)) (fn (parameter :a ? ?) (parameter :b ? ?) (parameter :c ? ?) (next (+ (+ :a :b) :c))))`,
-					out: ['6'],
-				});
-				expr({
-					src: `[1, 2, 3] >> (a, b) { a + b.0 + b.1 }`,
-					ast: `(>> (data (, 1 2 3)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ (+ :a (. :b 0)) (. :b 1)))))`,
-					out: ['6'],
-				});
-				expr({
-					src: `[1, 2, 3, 4] >> (a, b, c) { a + b + c.0 + c.1 }`,
-					ast: `(>> (data (, 1 2 3 4)) (fn (parameter :a ? ?) (parameter :b ? ?) (parameter :c ? ?) (next (+ (+ (+ :a :b) (. :c 0)) (. :c 1)))))`,
-					out: ['10'],
-				});
-				expr({
-					src: `[1, 2] >> (a, b) { a + b }`,
-					ast: `(>> (data (, 1 2)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ :a :b))))`,
-					out: ['3'],
-				});
-				compileError({
-					src: `main { 5 >> (a, b) { a + b } >> out }`,
-					expected: 'numeric operands',
-				});
-				compileError({
-					src: `main { [1, 2, 3] >> (a, b) { a + b } >> out }`,
-					expected: 'numeric operands',
-				});
-				compileError({
-					src: `main { [1, 2, 3] >> (a: Int32, b: Int32) { a + b } >> out }`,
-					expected: 'not assignable',
-				});
-				compileError({
-					pre: `add = (a: Int32, b: Int32) { a + b }`,
-					src: `main { add(x = 1, y = 2) >> out }`,
-					expected: 'no match',
-				});
-				compileError({
-					pre: `add = (a: Int32, b: Int32) { a + b }`,
-					src: `main { add(1, b = 2) >> out }`,
-					expected: 'cannot mix',
-				});
-			},
-		);
-	});
+				({ expr, compileError }) => {
+					expr({
+						src: `[1, 2] >> (a, b) { a + b }`,
+						ast: `(>> (data (, 1 2)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ :a :b))))`,
+						out: ['3'],
+					});
+					expr({
+						src: `[1, 2] >> (a: Int32, b: Int32) { a + b }`,
+						ast: `(>> (data (, 1 2)) (fn (parameter :a typeident ?) (parameter :b typeident ?) (next (+ :a :b))))`,
+						out: ['3'],
+					});
+					expr({
+						pre: `sub = (a: Int32, b: Int32) { a - b }`,
+						src: `[b = 2, a = 1] >> sub`,
+						ast: `(>> (data (, (propdef :b ? 2) (propdef :a ? 1))) :sub)`,
+						out: ['-1'],
+					});
+					expr({
+						src: `[10, 20] >> (a, b) { a + b }`,
+						ast: `(>> (data (, 10 20)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ :a :b))))`,
+						out: ['30'],
+					});
+					expr({
+						pre: `add = (a: Int32, b: Int32) { a + b }`,
+						src: `add(1, 2)`,
+						ast: `(call :add (, 1 2))`,
+						out: ['3'],
+					});
+					expr({
+						pre: `sub = (a: Int32, b: Int32) { a - b }`,
+						src: `sub(b = 1, a = 2)`,
+						ast: `(call :sub (, (propdef :b ? 1) (propdef :a ? 2)))`,
+						out: ['1'],
+					});
+					expr({
+						pre: `add3 = (a: Int32, b: Int32, c: Int32) { a + b >> Int32 { $ + c } }`,
+						src: `add3(1, 2, 3)`,
+						ast: `(call :add3 (, 1 2 3))`,
+						out: ['6'],
+					});
+					expr({
+						src: `[1, 2, 3] >> (a, b, c) { a + b + c }`,
+						ast: `(>> (data (, 1 2 3)) (fn (parameter :a ? ?) (parameter :b ? ?) (parameter :c ? ?) (next (+ (+ :a :b) :c))))`,
+						out: ['6'],
+					});
+					expr({
+						src: `[1, 2, 3] >> (a, b) { a + b.0 + b.1 }`,
+						ast: `(>> (data (, 1 2 3)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ (+ :a (. :b 0)) (. :b 1)))))`,
+						out: ['6'],
+					});
+					expr({
+						src: `[1, 2, 3, 4] >> (a, b, c) { a + b + c.0 + c.1 }`,
+						ast: `(>> (data (, 1 2 3 4)) (fn (parameter :a ? ?) (parameter :b ? ?) (parameter :c ? ?) (next (+ (+ (+ :a :b) (. :c 0)) (. :c 1)))))`,
+						out: ['10'],
+					});
+					expr({
+						src: `[1, 2] >> (a, b) { a + b }`,
+						ast: `(>> (data (, 1 2)) (fn (parameter :a ? ?) (parameter :b ? ?) (next (+ :a :b))))`,
+						out: ['3'],
+					});
+					compileError({
+						src: `main { 5 >> (a, b) { a + b } >> out }`,
+						expected: 'numeric operands',
+					});
+					compileError({
+						src: `main { [1, 2, 3] >> (a, b) { a + b } >> out }`,
+						expected: 'numeric operands',
+					});
+					compileError({
+						src: `main { [1, 2, 3] >> (a: Int32, b: Int32) { a + b } >> out }`,
+						expected: 'not assignable',
+					});
+					compileError({
+						pre: `add = (a: Int32, b: Int32) { a + b }`,
+						src: `main { add(x = 1, y = 2) >> out }`,
+						expected: 'no match',
+					});
+					compileError({
+						pre: `add = (a: Int32, b: Int32) { a + b }`,
+						src: `main { add(1, b = 2) >> out }`,
+						expected: 'cannot mix',
+					});
+				},
+			);
+		},
+	);
 
-	h('Anonymous Blocks (Shape 9: multi-slot destructure with return `(a, b): R { body }`)', ({ p }) => {
-		p(
-			`Shape 9 extends Shape 8 with an explicit return type \`R\`. Every emission from
+	h(
+		'Anonymous Blocks (Shape 9: multi-slot destructure with return `(a, b): R { body }`)',
+		({ p }) => {
+			p(
+				`Shape 9 extends Shape 8 with an explicit return type \`R\`. Every emission from
 			 the body must produce a value compatible with \`R\`. Same rules as Shape 7 (single
 			 slot + return), but with multiple destructured parameters.`,
-			({ expr, compileError }) => {
-				expr({
-					pre: `add = (a: Int32, b: Int32): Int32 { a + b }`,
-					src: `add(1, 2)`,
-					ast: `(call :add (, 1 2))`,
-					out: ['3'],
-				});
-				expr({
-					pre: `eq = (a: Int32, b: Int32): Bool { a == b }`,
-					src: `eq(3, 3)`,
-					ast: `(call :eq (, 3 3))`,
-					out: ['true'],
-				});
-				expr({
-					pre: `type DivErr = Error & [ code: Int32 ]; divErr = (): DivErr { [ code = 0 ] }; divide = (a: Int32, b: Int32): Int32 | Error { b == 0 ? divErr() : a / b }`,
-					src: `divide(10, 2)`,
-					ast: `(call :divide (, 10 2))`,
-					out: ['5'],
-				});
-				expr({
-					pre: `mid = (a: Int32, b: Int32, c: Int32): Int32 { a + b + c >> Int32 { $ / 3 } }`,
-					src: `mid(2, 4, 6)`,
-					ast: `(call :mid (, 2 4 6))`,
-					out: ['4'],
-				});
-				expr({
-					pre: `printPair = (a: Int32, b: Int32) { out(a); out(b); }`,
-					src: `printPair(1, 2)`,
-					ast: `(call :printPair (, 1 2))`,
-					out: ['1', '2'],
-				});
-				expr({
-					pre: `swap = (a: Int32, b: Int32): [Int32, Int32] { [b, a] }`,
-					src: `swap(1, 2) >> { $.0 - $.1 }`,
-					ast: `(>> (call :swap (, 1 2)) (fn (next (- (. $ 0) (. $ 1)))))`,
-					out: ['1'],
-				});
-				expr({
-					pre: `spread = (a: Int32, b: Int32): { Int32, Int32 } { next a; next b; }`,
-					src: `spread(7, 11)`,
-					ast: `(call :spread (, 7 11))`,
-					out: ['7', '11'],
-				});
-				expr({
-					pre: `ack = (m: Int32, n: Int32): Int32 { m == 0 ? n + 1 : (n == 0 ? ack(m - 1, 1) : ack(m - 1, ack(m, n - 1))) }`,
-					src: `ack(2, 3)`,
-					ast: `(call :ack (, 2 3))`,
-					out: ['9'],
-				});
-				compileError({
-					src: `main { bad = (a: Int32, b: Int32): Int32 { 'oops' }; bad(1, 2) >> out; }`,
-					expected: 'is not assignable',
-				});
-			},
-		);
-	});
+				({ expr, compileError }) => {
+					expr({
+						pre: `add = (a: Int32, b: Int32): Int32 { a + b }`,
+						src: `add(1, 2)`,
+						ast: `(call :add (, 1 2))`,
+						out: ['3'],
+					});
+					expr({
+						pre: `eq = (a: Int32, b: Int32): Bool { a == b }`,
+						src: `eq(3, 3)`,
+						ast: `(call :eq (, 3 3))`,
+						out: ['true'],
+					});
+					expr({
+						pre: `type DivErr = Error & [ code: Int32 ]; divErr = (): DivErr { [ code = 0 ] }; divide = (a: Int32, b: Int32): Int32 | Error { b == 0 ? divErr() : a / b }`,
+						src: `divide(10, 2)`,
+						ast: `(call :divide (, 10 2))`,
+						out: ['5'],
+					});
+					expr({
+						pre: `mid = (a: Int32, b: Int32, c: Int32): Int32 { a + b + c >> Int32 { $ / 3 } }`,
+						src: `mid(2, 4, 6)`,
+						ast: `(call :mid (, 2 4 6))`,
+						out: ['4'],
+					});
+					expr({
+						pre: `printPair = (a: Int32, b: Int32) { out(a); out(b); }`,
+						src: `printPair(1, 2)`,
+						ast: `(call :printPair (, 1 2))`,
+						out: ['1', '2'],
+					});
+					expr({
+						pre: `swap = (a: Int32, b: Int32): [Int32, Int32] { [b, a] }`,
+						src: `swap(1, 2) >> { $.0 - $.1 }`,
+						ast: `(>> (call :swap (, 1 2)) (fn (next (- (. $ 0) (. $ 1)))))`,
+						out: ['1'],
+					});
+					expr({
+						pre: `spread = (a: Int32, b: Int32): { Int32, Int32 } { next a; next b; }`,
+						src: `spread(7, 11)`,
+						ast: `(call :spread (, 7 11))`,
+						out: ['7', '11'],
+					});
+					expr({
+						pre: `ack = (m: Int32, n: Int32): Int32 { m == 0 ? n + 1 : (n == 0 ? ack(m - 1, 1) : ack(m - 1, ack(m, n - 1))) }`,
+						src: `ack(2, 3)`,
+						ast: `(call :ack (, 2 3))`,
+						out: ['9'],
+					});
+					compileError({
+						src: `main { bad = (a: Int32, b: Int32): Int32 { 'oops' }; bad(1, 2) >> out; }`,
+						expected: 'is not assignable',
+					});
+				},
+			);
+		},
+	);
 
-	h('Anonymous Blocks (Shape 12: parameter defaults `(name: T = expr) { body }`)', ({ p }) => {
-		p(
-			`A parameter may declare a default expression via \`= expr\`. The signature's type
+	h(
+		'Anonymous Blocks (Shape 12: parameter defaults `(name: T = expr) { body }`)',
+		({ p }) => {
+			p(
+				`A parameter may declare a default expression via \`= expr\`. The signature's type
 			 is effectively \`T | Void\` for callers (they may pass \`void\` to use the default);
 			 the body sees the narrowed concrete type \`T\` because the default substitution
 			 happens at the param-binding step. Default expressions may reference earlier params.
@@ -2303,62 +2413,63 @@ a = {
 			 - Positional: every slot must be specified. Pass \`void\` to use a defaulted slot's default.
 			 - Named: only mention overrides; omitted slots use their defaults.
 			 - Empty call \`f()\` requires a 0-param fn (no sugar for "all defaults"; use named or void).`,
-			({ expr, compileError }) => {
-				expr({
-					pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
-					src: `addOne(void)`,
-					ast: `(call :addOne :void)`,
-					out: ['42'],
-				});
-				expr({
-					pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
-					src: `addOne(5)`,
-					ast: `(call :addOne 5)`,
-					out: ['6'],
-				});
-				expr({
-					pre: `pair = (a: Int32 = 1, b: Int32 = 2): Int32 { a + b }`,
-					src: `pair(void, void)`,
-					ast: `(call :pair (, :void :void))`,
-					out: ['3'],
-				});
-				expr({
-					pre: `pair = (a: Int32 = 1, b: Int32 = 2): Int32 { a + b }`,
-					src: `pair(10, void)`,
-					ast: `(call :pair (, 10 :void))`,
-					out: ['12'],
-				});
-				expr({
-					pre: `pair = (a: Int32 = 1, b: Int32 = 2): Int32 { a + b }`,
-					src: `pair(b = 99)`,
-					ast: `(call :pair (propdef :b ? 99))`,
-					out: ['100'],
-				});
-				expr({
-					pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
-					src: `addOne(n = void)`,
-					ast: `(call :addOne (propdef :n ? :void))`,
-					out: ['42'],
-				});
-				expr({
-					pre: `relate = (a: Int32, b: Int32 = a + 1): Int32 { a + b }`,
-					src: `relate(3, void)`,
-					ast: `(call :relate (, 3 :void))`,
-					out: ['7'],
-				});
-				compileError({
-					pre: `f = (a: Int32, b: Int32): Int32 { a + b }`,
-					src: `main { f(void, 2) >> out }`,
-					expected: 'not assignable',
-				});
-				compileError({
-					pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
-					src: `main { addOne() >> out }`,
-					expected: 'No matching overload',
-				});
-			},
-		);
-	});
+				({ expr, compileError }) => {
+					expr({
+						pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
+						src: `addOne(void)`,
+						ast: `(call :addOne :void)`,
+						out: ['42'],
+					});
+					expr({
+						pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
+						src: `addOne(5)`,
+						ast: `(call :addOne 5)`,
+						out: ['6'],
+					});
+					expr({
+						pre: `pair = (a: Int32 = 1, b: Int32 = 2): Int32 { a + b }`,
+						src: `pair(void, void)`,
+						ast: `(call :pair (, :void :void))`,
+						out: ['3'],
+					});
+					expr({
+						pre: `pair = (a: Int32 = 1, b: Int32 = 2): Int32 { a + b }`,
+						src: `pair(10, void)`,
+						ast: `(call :pair (, 10 :void))`,
+						out: ['12'],
+					});
+					expr({
+						pre: `pair = (a: Int32 = 1, b: Int32 = 2): Int32 { a + b }`,
+						src: `pair(b = 99)`,
+						ast: `(call :pair (propdef :b ? 99))`,
+						out: ['100'],
+					});
+					expr({
+						pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
+						src: `addOne(n = void)`,
+						ast: `(call :addOne (propdef :n ? :void))`,
+						out: ['42'],
+					});
+					expr({
+						pre: `relate = (a: Int32, b: Int32 = a + 1): Int32 { a + b }`,
+						src: `relate(3, void)`,
+						ast: `(call :relate (, 3 :void))`,
+						out: ['7'],
+					});
+					compileError({
+						pre: `f = (a: Int32, b: Int32): Int32 { a + b }`,
+						src: `main { f(void, 2) >> out }`,
+						expected: 'not assignable',
+					});
+					compileError({
+						pre: `addOne = (n: Int32 = 41): Int32 { n + 1 }`,
+						src: `main { addOne() >> out }`,
+						expected: 'No matching overload',
+					});
+				},
+			);
+		},
+	);
 
 	h('Assignment', ({ ast, rule, compileError, testBlock }) => {
 		compileError({
@@ -2368,7 +2479,8 @@ a = {
 	next value + value
 };
 main { double(3) >> out }`,
-			expected: 'Redundant intermediate binding "value"; pipe its initializer into the following statement.',
+			expected:
+				'Redundant intermediate binding "value"; pipe its initializer into the following statement.',
 		});
 		testBlock({
 			p: 'Top-level bindings, mutable-capability bindings, locals retained across an intervening statement, and calculations involving non-Copy locals are not adjacent intermediates.',
@@ -2386,15 +2498,18 @@ export target = (): Int32 { 0 }`,
 		compileError({
 			p: 'A binding type annotation is redundant when the initializer already establishes exactly that type.',
 			src: 'cols: Int32 = 10; main { cols >> out }',
-			expected: 'Redundant type annotation `Int32`; the initializer is already `Int32`.',
+			expected:
+				'Redundant type annotation `Int32`; the initializer is already `Int32`.',
 		});
 		compileError({
 			src: 'main { ratio: Float64 = 1.5; ratio >> out }',
-			expected: 'Redundant type annotation `Float64`; the initializer is already `Float64`.',
+			expected:
+				'Redundant type annotation `Float64`; the initializer is already `Float64`.',
 		});
 		compileError({
 			src: 'main { bytes: Buffer<Uint8> = Buffer<Uint8>(4); length(bytes) >> out }',
-			expected: 'Redundant type annotation `Buffer<Uint8>`; the initializer is already `Buffer<Uint8>`.',
+			expected:
+				'Redundant type annotation `Buffer<Uint8>`; the initializer is already `Buffer<Uint8>`.',
 		});
 		ast({
 			src: `host = 'localhost'`,
@@ -2961,15 +3076,365 @@ export target = (): Int32 { 0 }`,
 		});
 	});
 
-	h('Buffer & Array (push)', ({ rule, testBlock, compileError, runtimeTrap, modules }) => {
-		compileError({
-			p: 'The unspecialized Buffer constructor requires an element type.',
-			src: `main { Buffer(1) }`,
-			expected: 'Buffer requires a type argument',
+	s.test('implements accurate trigonometry in GB source', (a: TestApi) => {
+			const source = `
+export sine = (x: Float64): Float64 { sin(x) };
+export cosine = (x: Float64): Float64 { cos(x) };
+export tangent = (x: Float64): Float64 { tan(x) };
+export arctangent = (x: Float64): Float64 { atan(x) };
+export arctangent2 = (y: Float64, x: Float64): Float64 { atan2(y, x) };
+export arcsine = (x: Float64): Float64 { asin(x) };
+export arccosine = (x: Float64): Float64 { acos(x) };
+export sine32 = (x: Float32): Float32 { sin(x) };
+export cosine32 = (x: Float32): Float32 { cos(x) };
+export tangent32 = (x: Float32): Float32 { tan(x) };
+export arctangent32 = (x: Float32): Float32 { atan(x) };
+export arctangent232 = (y: Float32, x: Float32): Float32 { atan2(y, x) };
+export arcsine32 = (x: Float32): Float32 { asin(x) };
+export arccosine32 = (x: Float32): Float32 { acos(x) };
+`;
+			const compiled = Program({
+				sys: {
+					readFile: () => source,
+					readBytes: () => new Uint8Array(),
+				},
+			}).compileFile('trig.gb');
+			a.equal(compiled.errors.length, 0);
+			a.assert(compiled.bytes);
+			if (!compiled.bytes) return;
+			const exports = instantiateWasm(compiled.bytes).exports;
+			const sine = exports.sine;
+			const cosine = exports.cosine;
+			const tangent = exports.tangent;
+			const arctangent = exports.arctangent;
+			const arctangent2 = exports.arctangent2;
+			const arcsine = exports.arcsine;
+			const arccosine = exports.arccosine;
+			const sine32 = exports.sine32;
+			const cosine32 = exports.cosine32;
+			const tangent32 = exports.tangent32;
+			const arctangent32 = exports.arctangent32;
+			const arctangent232 = exports.arctangent232;
+			const arcsine32 = exports.arcsine32;
+			const arccosine32 = exports.arccosine32;
+			a.assert(typeof sine === 'function');
+			a.assert(typeof cosine === 'function');
+			a.assert(typeof tangent === 'function');
+			a.assert(typeof arctangent === 'function');
+			a.assert(typeof arctangent2 === 'function');
+			a.assert(typeof arcsine === 'function');
+			a.assert(typeof arccosine === 'function');
+			a.assert(typeof sine32 === 'function');
+			a.assert(typeof cosine32 === 'function');
+			a.assert(typeof tangent32 === 'function');
+			a.assert(typeof arctangent32 === 'function');
+			a.assert(typeof arctangent232 === 'function');
+			a.assert(typeof arcsine32 === 'function');
+			a.assert(typeof arccosine32 === 'function');
+			if (
+				typeof sine !== 'function' ||
+				typeof cosine !== 'function' ||
+				typeof tangent !== 'function' ||
+				typeof arctangent !== 'function' ||
+				typeof arctangent2 !== 'function' ||
+				typeof arcsine !== 'function' ||
+				typeof arccosine !== 'function' ||
+				typeof sine32 !== 'function' ||
+				typeof cosine32 !== 'function' ||
+				typeof tangent32 !== 'function' ||
+				typeof arctangent32 !== 'function' ||
+				typeof arctangent232 !== 'function' ||
+				typeof arcsine32 !== 'function' ||
+				typeof arccosine32 !== 'function'
+			)
+				return;
+			const close = (actual: number, expected: number, tolerance: number) =>
+				a.assert(Math.abs(actual - expected) <= tolerance);
+			for (const value of [
+				0,
+				-0,
+				Math.PI / 6,
+				-Math.PI / 4,
+				1000000,
+				1e20,
+				-1e100,
+				Number.MAX_VALUE,
+			]) {
+				close(Number(sine(value)), Math.sin(value), 2e-15);
+				close(Number(cosine(value)), Math.cos(value), 2e-15);
+				close(Number(tangent(value)), Math.tan(value), 1e-13);
+			}
+			a.equal(Object.is(Number(sine(-0)), -0), true);
+			for (const value of [
+				-Infinity,
+				-10,
+				-1,
+				-0.25,
+				0,
+				0.25,
+				1,
+				10,
+				Infinity,
+			])
+				close(Number(arctangent(value)), Math.atan(value), 2e-15);
+			const quadrants: [number, number][] = [
+				[1, 1],
+				[1, -1],
+				[-1, -1],
+				[-1, 1],
+				[Infinity, Infinity],
+				[-Infinity, Infinity],
+				[Infinity, -Infinity],
+				[-Infinity, -Infinity],
+			];
+			for (const [y, x] of quadrants)
+				close(Number(arctangent2(y, x)), Math.atan2(y, x), 3e-15);
+			for (const value of [-1, -0.9, -0.25, 0, 0.25, 0.9, 1]) {
+				close(Number(arcsine(value)), Math.asin(value), 3e-15);
+				close(Number(arccosine(value)), Math.acos(value), 3e-15);
+			}
+			a.equal(Object.is(Number(arctangent(-0)), -0), true);
+			a.equal(Object.is(Number(arctangent2(-0, 1)), -0), true);
+			a.equal(Number(arctangent2(0, -0)), Math.PI);
+			a.equal(Number(arctangent2(-0, -0)), -Math.PI);
+			a.equal(Number.isNaN(Number(arcsine(1.01))), true);
+			a.equal(Number.isNaN(Number(arccosine(-1.01))), true);
+			for (const value of [0.25, -3.5, 100000]) {
+				const x = Math.fround(value);
+				a.equal(Number(sine32(x)), Math.fround(Math.sin(x)));
+				a.equal(Number(cosine32(x)), Math.fround(Math.cos(x)));
+				a.equal(Number(tangent32(x)), Math.fround(Math.tan(x)));
+				a.equal(Number(arctangent32(x)), Math.fround(Math.atan(x)));
+			}
+			for (const value of [-0.9, -0.25, 0, 0.25, 0.9]) {
+				const x = Math.fround(value);
+				a.equal(Number(arcsine32(x)), Math.fround(Math.asin(x)));
+				a.equal(Number(arccosine32(x)), Math.fround(Math.acos(x)));
+			}
+			a.equal(
+				Number(arctangent232(Math.fround(-1), Math.fround(-1))),
+				Math.fround(Math.atan2(-1, -1)),
+			);
+		});
+
+	s.test('provides stable hypot and namespaced math constants', (a: TestApi) => {
+		const source = `
+export distance = (x: Float64, y: Float64): Float64 { hypot(x, y) };
+export distance32 = (x: Float32, y: Float32): Float32 { hypot(x, y) };
+export pi = (): Float64 { math.pi };
+export tau = (): Float64 { math.tau };
+`;
+		const compiled = Program({
+			sys: {
+				readFile: () => source,
+				readBytes: () => new Uint8Array(),
+			},
+		}).compileFile('math.gb');
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+		if (!compiled.bytes) return;
+		const exports = instantiateWasm(compiled.bytes).exports;
+		const distance = exports.distance;
+		const distance32 = exports.distance32;
+		const pi = exports.pi;
+		const tau = exports.tau;
+		a.equal(typeof distance, 'function');
+		a.equal(typeof distance32, 'function');
+		a.equal(typeof pi, 'function');
+		a.equal(typeof tau, 'function');
+		if (
+			typeof distance !== 'function' ||
+			typeof distance32 !== 'function' ||
+			typeof pi !== 'function' ||
+			typeof tau !== 'function'
+		)
+			return;
+		a.equal(Number(distance(3, 4)), 5);
+		a.equal(Number(distance32(Math.fround(3), Math.fround(4))), 5);
+		a.equal(Number.isFinite(Number(distance(1e308, 1e308))), true);
+		a.equal(Number(distance(1e-308, 1e-308)) > 0, true);
+		a.equal(Number(distance(Infinity, 1)), Infinity);
+		a.equal(Number(distance(Infinity, NaN)), Infinity);
+		a.equal(Number(distance(NaN, Infinity)), Infinity);
+		a.equal(Number.isNaN(Number(distance(NaN, 1))), true);
+		a.equal(Number(pi()), Math.PI);
+		a.equal(Number(tau()), Math.PI * 2);
+		const bare = Program().compile('main { pi >> out }');
+		a.equal(
+			bare.errors.some(error => error.message.includes('not defined')),
+			true,
+		);
+	});
+
+	s.test('provides width-preserving fast trigonometry under math', (a: TestApi) => {
+		const source = `
+export sine = (x: Float64): Float64 { math.fastSin(x) };
+export cosine = (x: Float64): Float64 { math.fastCos(x) };
+export tangent = (x: Float64): Float64 { math.fastTan(x) };
+export sine32 = (x: Float32): Float32 { math.fastSin(x) };
+`;
+		const compiled = Program({
+			sys: {
+				readFile: () => source,
+				readBytes: () => new Uint8Array(),
+			},
+		}).compileFile('fast-math.gb');
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+		if (!compiled.bytes) return;
+		const exports = instantiateWasm(compiled.bytes).exports;
+		const sine = exports.sine;
+		const cosine = exports.cosine;
+		const tangent = exports.tangent;
+		const sine32 = exports.sine32;
+		a.equal(typeof sine, 'function');
+		a.equal(typeof cosine, 'function');
+		a.equal(typeof tangent, 'function');
+		a.equal(typeof sine32, 'function');
+		if (
+			typeof sine !== 'function' ||
+			typeof cosine !== 'function' ||
+			typeof tangent !== 'function' ||
+			typeof sine32 !== 'function'
+		)
+			return;
+		for (const x of [-1000, -3, -1, -0, 0.25, 1, 3, 1000]) {
+			a.assert(Math.abs(Number(sine(x)) - Math.sin(x)) <= 4e-8);
+			a.assert(Math.abs(Number(cosine(x)) - Math.cos(x)) <= 4e-8);
+			if (Math.abs(Math.cos(x)) > 0.1)
+				a.assert(Math.abs(Number(tangent(x)) - Math.tan(x)) <= 5e-7);
+		}
+		a.equal(Object.is(Number(sine(-0)), -0), true);
+		const x32 = Math.fround(0.75);
+		a.assert(
+			Math.abs(Number(sine32(x32)) - Math.fround(Math.sin(x32))) <= 1e-7,
+		);
+		const bare = Program().compile('main { fastSin(1.0) >> out }');
+		a.equal(
+			bare.errors.some(error => error.message.includes('not defined')),
+			true,
+		);
+	});
+
+	s.test('removes unreachable functions from emitted Wasm', (a: TestApi) => {
+		const plain = Program().compile('main { }');
+		const dead = Program().compile(
+			'export unused = (x: Float64): Float64 { sin(x) }; main { }',
+		);
+		const used = Program().compile('main { sin(1.0) >> out }');
+		a.equal(plain.errors.length, 0);
+		a.equal(dead.errors.length, 0);
+		a.equal(used.errors.length, 0);
+		a.assert(plain.bytes);
+		a.assert(dead.bytes);
+		a.assert(used.bytes);
+		if (!plain.bytes || !dead.bytes || !used.bytes) return;
+		a.equal(dead.bytes.length, plain.bytes.length);
+		a.assert(used.bytes.length > plain.bytes.length);
+	});
+
+	h('Direct math', ({ testBlock, compileError }) => {
+		testBlock({
+			p: 'Direct math operations preserve Float32 and Float64 widths.',
+			src: `export accept32 = (value: Float32): Float32 { value };
+#test {
+	equal(sqrt(9.0), 3.0);
+	accept32(sqrt(Float32(16.0))) >> out;
+	equal(abs(0.0 - 2.5), 2.5);
+	accept32(abs(Float32(0.0 - 2.5))) >> out;
+	equal(floor(2.75), 2.0);
+	equal(ceil(2.25), 3.0);
+	equal(trunc(0.0 - 2.75), 0.0 - 2.0);
+	equal(nearest(2.5), 2.0);
+	equal(nearest(3.5), 4.0);
+	equal(copysign(2.5, 0.0 - 1.0), 0.0 - 2.5);
+	equal(min(3.0, 7.0), 3.0);
+	accept32(max(Float32(3.0), Float32(7.0))) >> out;
+	accept32(nearest(Float32(2.5))) >> out;
+	accept32(copysign(Float32(2.5), Float32(0.0 - 1.0))) >> out
+}
+export target = (): Int32 { 0 }`,
+			out: ['4', '2.5', '7', '2', '-2.5'],
 		});
 		testBlock({
-			p: '`Buffer<T>(size)` constructs zero-initialized fixed-length storage, so every index through the final index is writable before returning it through the ABI.',
-			src: `export ints = (): own Buffer<Int32> {
+			p: 'Direct min, max, and abs preserve Wasm NaN and signed-zero behavior.',
+			src: `#test {
+	negativeZero = 0.0 / (0.0 - 1.0);
+	ok(min(nan, 1.0) != min(nan, 1.0));
+	equal(1.0 / min(0.0, negativeZero), 0.0 - infinity);
+	equal(1.0 / max(0.0, negativeZero), infinity);
+	equal(1.0 / abs(negativeZero), infinity);
+	equal(1.0 / copysign(0.0, negativeZero), 0.0 - infinity)
+}
+export target = (): Int32 { 0 }`,
+			out: [],
+		});
+		testBlock({
+			p: 'Direct integer min and max preserve width and signedness.',
+			src: `export i8 = (value: Int8): Int8 { value };
+export i16 = (value: Int16): Int16 { value };
+export i32 = (value: Int32): Int32 { value };
+export i64 = (value: Int64): Int64 { value };
+export u8 = (value: Uint8): Uint8 { value };
+export u16 = (value: Uint16): Uint16 { value };
+export u32 = (value: Uint32): Uint32 { value };
+export u64 = (value: Uint64): Uint64 { value };
+#test {
+	i8(min(Int8(0 - 4), Int8(3))) >> out;
+	i8(max(Int8(0 - 4), Int8(3))) >> out;
+	i16(min(Int16(0 - 300), Int16(200))) >> out;
+	i16(max(Int16(0 - 300), Int16(200))) >> out;
+	i32(min(0 - 4, 3)) >> out;
+	i32(max(0 - 4, 3)) >> out;
+	i64(min(Int64(0 - 5000000000), Int64(2))) >> out;
+	i64(max(Int64(0 - 5000000000), Int64(2))) >> out;
+	u8(min(Uint8(250), Uint8(3))) >> out;
+	u8(max(Uint8(250), Uint8(3))) >> out;
+	u16(min(Uint16(60000), Uint16(2))) >> out;
+	u16(max(Uint16(60000), Uint16(2))) >> out;
+	u32(min(Uint32(4294967295), Uint32(1))) >> out;
+	u32(max(Uint32(4294967295), Uint32(1))) >> out;
+	u64(min(Uint64(18446744073709551615), Uint64(1))) >> out;
+	u64(max(Uint64(18446744073709551615), Uint64(1))) >> out
+}
+export target = (): Int32 { 0 }`,
+			out: [
+				'-4',
+				'3',
+				'-300',
+				'200',
+				'-4',
+				'3',
+				'-5000000000',
+				'2',
+				'3',
+				'250',
+				'2',
+				'60000',
+				'1',
+				'4294967295',
+				'1',
+				'18446744073709551615',
+			],
+		});
+		compileError({
+			p: 'Direct float operations reject non-float arguments.',
+			src: `main { sqrt(4) }`,
+			expected: 'No matching overload',
+		});
+	});
+
+	h(
+		'Buffer & Array (push)',
+		({ rule, testBlock, compileError, runtimeTrap, modules }) => {
+			compileError({
+				p: 'The unspecialized Buffer constructor requires an element type.',
+				src: `main { Buffer(1) }`,
+				expected: 'Buffer requires a type argument',
+			});
+			testBlock({
+				p: '`Buffer<T>(size)` constructs zero-initialized fixed-length storage, so every index through the final index is writable before returning it through the ABI.',
+				src: `export ints = (): own Buffer<Int32> {
 	b = Buffer<Int32>(4);
 	set(b, 3, 9);
 	next b
@@ -2990,16 +3455,16 @@ export strings = (): own Buffer<String> {
 	equal(get(strings(), 1), 'right')
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		compileError({
-			p: '`push` accepts growable Arrays, not fixed-length Buffers.',
-			src: `main { push(Buffer<Int32>(1), 7) }`,
-			expected: 'not assignable',
-		});
-		testBlock({
-			p: '`findIndex` returns the first element accepted by a predicate and preserves the specialized Buffer element type.',
-			src: `export strings = (): own Buffer<String> {
+				out: [],
+			});
+			compileError({
+				p: '`push` accepts growable Arrays, not fixed-length Buffers.',
+				src: `main { push(Buffer<Int32>(1), 7) }`,
+				expected: 'not assignable',
+			});
+			testBlock({
+				p: '`findIndex` returns the first element accepted by a predicate and preserves the specialized Buffer element type.',
+				src: `export strings = (): own Buffer<String> {
 	push(push(Array<String>(0), 'left'), 'right')
 };
 #test {
@@ -3009,22 +3474,22 @@ export target = (): Int32 { 0 }`,
 	equal(findIndex(strings(), (s: String): Bool { s == 'right' }), 1)
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		rule({
-			p: '`fill` replaces every existing element from an indexed producer and returns the same mutable borrow for chaining.',
-			src: `main {
+				out: [],
+			});
+			rule({
+				p: '`fill` replaces every existing element from an indexed producer and returns the same mutable borrow for chaining.',
+				src: `main {
 	a = range(0, 4);
 	fill(a, { 7 }) >> values >> out;
 	b = range(0, 4);
 	fill(b, { $ * 2 }) >> values >> out
 }`,
-			ast: `(root (main (def :a ? (call :range (, 0 4))) (>> (call :fill (, :a (fn (parameter ? ? ?) (next 7)))) :values :out) (def :b ? (call :range (, 0 4))) (>> (call :fill (, :b (fn (parameter ? ? ?) (next (* $ 2))))) :values :out)))`,
-			out: ['7', '7', '7', '7', '0', '2', '4', '6'],
-		});
-		testBlock({
-			p: '`Array<T>` is a GB-defined growable collection backed by Buffer storage. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set mutates through exclusive access.',
-			src: `export empty = (): own Array<Int32> { Array<Int32>(0) };
+				ast: `(root (main (def :a ? (call :range (, 0 4))) (>> (call :fill (, :a (fn (parameter ? ? ?) (next 7)))) :values :out) (def :b ? (call :range (, 0 4))) (>> (call :fill (, :b (fn (parameter ? ? ?) (next (* $ 2))))) :values :out)))`,
+				out: ['7', '7', '7', '7', '0', '2', '4', '6'],
+			});
+			testBlock({
+				p: '`Array<T>` is a GB-defined growable collection backed by Buffer storage. `Array<T>(capacity)` constructs an empty Array, zero-capacity push grows to one, and set mutates through exclusive access.',
+				src: `export empty = (): own Array<Int32> { Array<Int32>(0) };
 export ints = (): own Array<Int32> { push(push(empty(), 3), 5) };
 export changed = (): own Array<Int32> { a = empty() -> push(3) -> push(5); set(a, 0, 7); next a };
 #test {
@@ -3036,11 +3501,11 @@ export changed = (): own Array<Int32> { a = empty() -> push(3) -> push(5); set(a
 	equal(get(changed(), 1), 5)
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		testBlock({
-			p: '`reserveCapacity(array, minimumCapacity)` consumes and returns an Array whose total capacity is at least the requested minimum. It preserves length and values, never shrinks, and composes through `->`.',
-			src: `export reserved = (): own Array<Int32> {
+				out: [],
+			});
+			testBlock({
+				p: '`reserveCapacity(array, minimumCapacity)` consumes and returns an Array whose total capacity is at least the requested minimum. It preserves length and values, never shrinks, and composes through `->`.',
+				src: `export reserved = (): own Array<Int32> {
 	Array<Int32>(0) -> reserveCapacity(8) -> push(3) -> push(5)
 };
 export unchanged = (): own Array<Int32> {
@@ -3063,11 +3528,11 @@ export strings = (): own Array<String> {
 	equal(get(strings(), 1), 'right')
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		testBlock({
-			p: '`values` and `slice` emit borrowed elements without consuming the Array. Slice is start-inclusive/end-exclusive, clamps a negative start to zero and stops at length.',
-			src: `export ints = (): own Array<Int32> { push(push(push(Array<Int32>(3), 2), 4), 6) };
+				out: [],
+			});
+			testBlock({
+				p: '`values` and `slice` emit borrowed elements without consuming the Array. Slice is start-inclusive/end-exclusive, clamps a negative start to zero and stops at length.',
+				src: `export ints = (): own Array<Int32> { push(push(push(Array<Int32>(3), 2), 4), 6) };
 export sumValues = (a: Array<Int32>): Int32 {
 	reduce(a, 0, (total: own Int32, n: Int32): own Int32 { total + n }) + length(a)
 };
@@ -3087,11 +3552,11 @@ export sumSlice = (a: Array<Int32>, start: Int32, end: Int32): Int32 {
 	equal(sumSlice(ints(), 2, 1), 3)
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		testBlock({
-			p: 'Array algorithms support heap-owning strings, inline records, nested Arrays, empty inputs, mapping, reduction, search, and borrowed slices.',
-			src: `type Item = [ id: Int32, name: String ];
+				out: [],
+			});
+			testBlock({
+				p: 'Array algorithms support heap-owning strings, inline records, nested Arrays, empty inputs, mapping, reduction, search, and borrowed slices.',
+				src: `type Item = [ id: Int32, name: String ];
 export strings = (): own Array<String> { push(push(Array<String>(2), 'a'), 'bb') };
 export records = (): own Array<Item> { push(push(Array<Item>(2), [ id = 1, name = 'one' ]), [ id = 2, name = 'two' ]) };
 export nested = (): own Array<Array<Int32> > { push(Array<Array<Int32> >(1), push(Array<Int32>(1), 9)) };
@@ -3117,31 +3582,31 @@ export slicedText = (a: Array<String>): Int32 {
 	equal(indexOf(strings(), 'z'), 0 - 1)
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		testBlock({
-			p: 'Array set borrows mutably and leaves the owner usable.',
-			src: `export changed = (): own Array<Int32> { a = push(Array<Int32>(1), 7); set(a, 0, 8); next a };
+				out: [],
+			});
+			testBlock({
+				p: 'Array set borrows mutably and leaves the owner usable.',
+				src: `export changed = (): own Array<Int32> { a = push(Array<Int32>(1), 7); set(a, 0, 8); next a };
 #test { equal(length(changed()), 1); equal(get(changed(), 0), 8) }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		compileError({
-			p: 'Array capacity reservation consumes its input even when the current capacity is already sufficient.',
-			src: `main { a = Array<Int32>(4); b = a -> reserveCapacity(2); length(a) >> out; length(b) >> out }`,
-			expected: 'used after move',
-		});
-		modules({
-			p: 'Exported Array contracts preserve borrowing and ownership transfer across module boundaries.',
-			files: {
-				'/arrays.gb': `export make = (n: Int32): own Array<String> {
+				out: [],
+			});
+			compileError({
+				p: 'Array capacity reservation consumes its input even when the current capacity is already sufficient.',
+				src: `main { a = Array<Int32>(4); b = a -> reserveCapacity(2); length(a) >> out; length(b) >> out }`,
+				expected: 'used after move',
+			});
+			modules({
+				p: 'Exported Array contracts preserve borrowing and ownership transfer across module boundaries.',
+				files: {
+					'/arrays.gb': `export make = (n: Int32): own Array<String> {
 	push(push(Array<String>(2), 'left\${n}'), 'right\${n}')
 };
 export size = (a: Array<String>): Int32 { length(a) };
 export replace = (a: own Array<String>, value: own String): own Array<String> {
 	set(a, 0, value); next a
 };`,
-				'/main.gb': `(make, size, replace) = @.arrays;
+					'/main.gb': `(make, size, replace) = @.arrays;
 main {
 	a = make(7);
 	size(a) >> out;
@@ -3150,41 +3615,41 @@ main {
 	get(b, 0) >> out;
 	get(b, 1) >> out
 }`,
-			},
-			entry: '/main.gb',
-			out: ['2', '2', 'new', 'right7'],
-		});
-		modules({
-			p: 'An imported consuming Array function moves its argument in the caller.',
-			files: {
-				'/arrays.gb': `export replace = (a: own Array<String>): own Array<String> {
+				},
+				entry: '/main.gb',
+				out: ['2', '2', 'new', 'right7'],
+			});
+			modules({
+				p: 'An imported consuming Array function moves its argument in the caller.',
+				files: {
+					'/arrays.gb': `export replace = (a: own Array<String>): own Array<String> {
 	set(a, 0, 'new'); next a
 };`,
-				'/main.gb': `(replace) = @.arrays;
+					'/main.gb': `(replace) = @.arrays;
 main {
 	a = push(Array<String>(1), 'old');
 	b = replace(a);
 	length(a) >> out;
 	length(b) >> out
 }`,
-			},
-			entry: '/main.gb',
-			errors: 'used after move',
-		});
-		runtimeTrap({
-			p: 'Array set replaces a live index or appends at length when capacity remains; it rejects gaps, while push is the automatic-growth operation.',
-			src: `main { a = push(Array<Int32>(2), 7); set(a, 2, 8) }`,
-		});
-		runtimeTrap({
-			p: 'Array capacity reservation rejects negative and impossible capacities consistently with construction.',
-			src: `main { Array<Int32>(0) -> reserveCapacity(0 - 1) >> length >> out }`,
-		});
-		runtimeTrap({
-			src: `main { Array<Int64>(0) -> reserveCapacity(536870911) >> length >> out }`,
-		});
-		testBlock({
-			p: '`Buffer<T>` is fixed-length storage. `set(buffer: var Buffer<T>, index, value: own T)` mutates any existing index without ownership transfer and returns Void.',
-			src: `export mk = (): own Buffer<Int32> { b = Buffer<Int32>(2); set(b, 0, 10); set(b, 1, 20); next b };
+				},
+				entry: '/main.gb',
+				errors: 'used after move',
+			});
+			runtimeTrap({
+				p: 'Array set replaces a live index or appends at length when capacity remains; it rejects gaps, while push is the automatic-growth operation.',
+				src: `main { a = push(Array<Int32>(2), 7); set(a, 2, 8) }`,
+			});
+			runtimeTrap({
+				p: 'Array capacity reservation rejects negative and impossible capacities consistently with construction.',
+				src: `main { Array<Int32>(0) -> reserveCapacity(0 - 1) >> length >> out }`,
+			});
+			runtimeTrap({
+				src: `main { Array<Int64>(0) -> reserveCapacity(536870911) >> length >> out }`,
+			});
+			testBlock({
+				p: '`Buffer<T>` is fixed-length storage. `set(buffer: var Buffer<T>, index, value: own T)` mutates any existing index without ownership transfer and returns Void.',
+				src: `export mk = (): own Buffer<Int32> { b = Buffer<Int32>(2); set(b, 0, 10); set(b, 1, 20); next b };
 #test {
 	equal(length(mk()), 2);
 	equal(capacity(mk()), 2);
@@ -3192,11 +3657,11 @@ main {
 	equal(get(mk(), 1), 20)
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		testBlock({
-			p: 'Intrinsics are ordinary function symbols: call syntax and pipe syntax use the same signature, data-block argument spreading, type checking, and backend lowering. Their names have no parser or pipe-stage grammar special case.',
-			src: `type Boom = Error & [ id: Int32 ];
+				out: [],
+			});
+			testBlock({
+				p: 'Intrinsics are ordinary function symbols: call syntax and pipe syntax use the same signature, data-block argument spreading, type checking, and backend lowering. Their names have no parser or pipe-stage grammar special case.',
+				src: `type Boom = Error & [ id: Int32 ];
 boom = (): own Boom { [ id = 1 ] };
 export one = (): own Buffer<Int32> { b = Buffer<Int32>(1); set(b, 0, 7); next b };
 export pipeLength = (): Int32 { b = one(); next b >> length };
@@ -3222,88 +3687,88 @@ export pipeStack = (): Int32 { b = boom(); next b >> runtime.stack >> length };
 	equal(pipeStack(), length(runtime.stack(boom())))
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		testBlock({
-			p: '`push` grows full storage internally, preserving live elements and length without exposing reallocation as an Array operation.',
-			src: `export grow4 = (): own Array<Int32> { push(push(push(Array<Int32>(2), 7), 8), 9) };
+				out: [],
+			});
+			testBlock({
+				p: '`push` grows full storage internally, preserving live elements and length without exposing reallocation as an Array operation.',
+				src: `export grow4 = (): own Array<Int32> { push(push(push(Array<Int32>(2), 7), 8), 9) };
 #test { equal(get(grow4(), 0), 7); equal(get(grow4(), 1), 8); equal(get(grow4(), 2), 9); equal(length(grow4()), 3); equal(capacity(grow4()), 4) }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		testBlock({
-			p: '`transfer` moves a buffer payload into a distinct empty destination, preserving owned elements and adopting the destination capacity.',
-			src: `export moved = (): own Buffer<String> { s = Buffer<String>(2); set(s, 0, 'a'); set(s, 1, 'b'); next transfer(s, Array<String>(4)) };
+				out: [],
+			});
+			testBlock({
+				p: '`transfer` moves a buffer payload into a distinct empty destination, preserving owned elements and adopting the destination capacity.',
+				src: `export moved = (): own Buffer<String> { s = Buffer<String>(2); set(s, 0, 'a'); set(s, 1, 'b'); next transfer(s, Array<String>(4)) };
 #test { equal(get(moved(), 0), 'a'); equal(get(moved(), 1), 'b'); equal(length(moved()), 2); equal(capacity(moved()), 4) }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-		compileError({
-			p: '`transfer` requires source and destination buffers with the same element type.',
-			src: `main { source = Buffer<Int32>(1); destination = Array<String>(1); transfer(source, destination) >> length >> out }`,
-			expected: 'not assignable',
-		});
-		compileError({
-			p: '`transfer` consumes both buffers, so neither input can be used afterward.',
-			src: `main { source = Buffer<Int32>(1); destination = Array<Int32>(1); moved = transfer(source, destination); length(source) >> out; length(moved) >> out }`,
-			expected: 'used after move',
-		});
-		runtimeTrap({
-			p: 'Buffer capacity is nonnegative and its byte size must fit signed runtime allocation arithmetic.',
-			src: `main { Buffer<Int32>(0 - 1) >> length >> out }`,
-		});
-		runtimeTrap({
-			src: `main { Buffer<Int64>(268435455) >> length >> out }`,
-		});
-		runtimeTrap({
-			p: '`get` requires `0 <= index < length`.',
-			src: `main { b = Buffer<Int32>(1); set(b, 0, 7); get(b, 1) >> out }`,
-		});
-		runtimeTrap({
-			src: `main { b = Buffer<Int32>(1); set(b, 0, 7); get(b, 0 - 1) >> out }`,
-		});
-		runtimeTrap({
-			p: '`set` overwrites a live slot or appends exactly at `length`; it rejects negative indices, gaps, and appends at capacity.',
-			src: `main { b = Buffer<Int32>(1); set(b, 0 - 1, 7) }`,
-		});
-		runtimeTrap({
-			src: `main { b = Array<Int32>(2); set(b, 1, 7) }`,
-		});
-		runtimeTrap({
-			src: `main { b = Buffer<Int32>(1); set(b, 0, 7); set(b, 1, 8) }`,
-		});
-		compileError({
-			p: '`transfer` requires distinct buffers, an empty destination, and destination capacity at least the source length.',
-			src: `main { b = Buffer<Int32>(1); transfer(b, b) >> length >> out }`,
-			expected: 'conflicting ownership slots',
-		});
-		runtimeTrap({
-			src: `main { source = Buffer<Int32>(1); destination = Array<Int32>(1); set(source, 0, 7); set(destination, 0, 8); transfer(source, destination) >> length >> out }`,
-		});
-		runtimeTrap({
-			src: `main { source = Buffer<Int32>(2); set(source, 0, 7); set(source, 1, 8); transfer(source, Array<Int32>(1)) >> length >> out }`,
-		});
-		testBlock({
-			p: 'push grows a scalar Array flat: building and dropping an Array every iteration reuses the heap — internal doubling frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
-			src: `export build = (b: own Array<Int32>, n: Int32): own Array<Int32> { n == 0 ? b : build(push(b, n), n - 1) };
+				out: [],
+			});
+			compileError({
+				p: '`transfer` requires source and destination buffers with the same element type.',
+				src: `main { source = Buffer<Int32>(1); destination = Array<String>(1); transfer(source, destination) >> length >> out }`,
+				expected: 'not assignable',
+			});
+			compileError({
+				p: '`transfer` consumes both buffers, so neither input can be used afterward.',
+				src: `main { source = Buffer<Int32>(1); destination = Array<Int32>(1); moved = transfer(source, destination); length(source) >> out; length(moved) >> out }`,
+				expected: 'used after move',
+			});
+			runtimeTrap({
+				p: 'Buffer capacity is nonnegative and its byte size must fit signed runtime allocation arithmetic.',
+				src: `main { Buffer<Int32>(0 - 1) >> length >> out }`,
+			});
+			runtimeTrap({
+				src: `main { Buffer<Int64>(268435455) >> length >> out }`,
+			});
+			runtimeTrap({
+				p: '`get` requires `0 <= index < length`.',
+				src: `main { b = Buffer<Int32>(1); set(b, 0, 7); get(b, 1) >> out }`,
+			});
+			runtimeTrap({
+				src: `main { b = Buffer<Int32>(1); set(b, 0, 7); get(b, 0 - 1) >> out }`,
+			});
+			runtimeTrap({
+				p: '`set` overwrites a live slot or appends exactly at `length`; it rejects negative indices, gaps, and appends at capacity.',
+				src: `main { b = Buffer<Int32>(1); set(b, 0 - 1, 7) }`,
+			});
+			runtimeTrap({
+				src: `main { b = Array<Int32>(2); set(b, 1, 7) }`,
+			});
+			runtimeTrap({
+				src: `main { b = Buffer<Int32>(1); set(b, 0, 7); set(b, 1, 8) }`,
+			});
+			compileError({
+				p: '`transfer` requires distinct buffers, an empty destination, and destination capacity at least the source length.',
+				src: `main { b = Buffer<Int32>(1); transfer(b, b) >> length >> out }`,
+				expected: 'conflicting ownership slots',
+			});
+			runtimeTrap({
+				src: `main { source = Buffer<Int32>(1); destination = Array<Int32>(1); set(source, 0, 7); set(destination, 0, 8); transfer(source, destination) >> length >> out }`,
+			});
+			runtimeTrap({
+				src: `main { source = Buffer<Int32>(2); set(source, 0, 7); set(source, 1, 8); transfer(source, Array<Int32>(1)) >> length >> out }`,
+			});
+			testBlock({
+				p: 'push grows a scalar Array flat: building and dropping an Array every iteration reuses the heap — internal doubling frees the old block and owned-in threads the accumulator through `push` without a caller temp.',
+				src: `export build = (b: own Array<Int32>, n: Int32): own Array<Int32> { n == 0 ? b : build(push(b, n), n - 1) };
 export step = (n: Int32): Int32 { b = build(Array<Int32>(0), 8); next length(b) };
 #test { equal(spin(50000, 0), 400000) }
 export spin = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spin(n - 1, acc + step(n)) }`,
-			out: [],
-			maxPages: 3,
-		});
-		testBlock({
-			p: 'push of heap elements (`Array<String>`) stays flat: the value element is moved into the Array (single owner), so per-iteration build-and-drop is bounded.',
-			src: `export buildS = (b: own Array<String>, n: Int32): own Array<String> { n == 0 ? b : buildS(push(b, '\${n}'), n - 1) };
+				out: [],
+				maxPages: 3,
+			});
+			testBlock({
+				p: 'push of heap elements (`Array<String>`) stays flat: the value element is moved into the Array (single owner), so per-iteration build-and-drop is bounded.',
+				src: `export buildS = (b: own Array<String>, n: Int32): own Array<String> { n == 0 ? b : buildS(push(b, '\${n}'), n - 1) };
 export stepS = (n: Int32): Int32 { b = buildS(Array<String>(0), 6); next length(b) };
 #test { equal(spinS(30000, 0), 180000) }
 export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc + stepS(n)) }`,
-			out: [],
-			maxPages: 3,
-		});
-		testBlock({
-			p: 'Repeated capacity reservation and drop with heap elements reuses memory and remains bounded.',
-			src: `export stepReserved = (n: Int32): Int32 {
+				out: [],
+				maxPages: 3,
+			});
+			testBlock({
+				p: 'Repeated capacity reservation and drop with heap elements reuses memory and remains bounded.',
+				src: `export stepReserved = (n: Int32): Int32 {
 	a = Array<String>(0) -> reserveCapacity(32) -> push('\${n}');
 	next length(a) + capacity(a)
 };
@@ -3311,12 +3776,12 @@ export spinS = (n: Int32, acc: Int32): Int32 { n == 0 ? acc : spinS(n - 1, acc +
 export spinReserved = (n: Int32, acc: Int32): Int32 {
 	n == 0 ? acc : spinReserved(n - 1, acc + stepReserved(n))
 }`,
-			out: [],
-			maxPages: 3,
-		});
-		testBlock({
-			p: '`range(start, end)` is GB source that produces an ascending, start-inclusive and end-exclusive `Array<Int32>`. Its recursive chain threads the owner returned by the intrinsic `set` stage; equal or descending endpoints produce an empty Array.',
-			src: `#test {
+				out: [],
+				maxPages: 3,
+			});
+			testBlock({
+				p: '`range(start, end)` is GB source that produces an ascending, start-inclusive and end-exclusive `Array<Int32>`. Its recursive chain threads the owner returned by the intrinsic `set` stage; equal or descending endpoints produce an empty Array.',
+				src: `#test {
 	equal(length(range(3, 7)), 4);
 	equal(get(range(3, 7), 0), 3);
 	equal(get(range(3, 7), 3), 6);
@@ -3326,12 +3791,12 @@ export spinReserved = (n: Int32, acc: Int32): Int32 {
 	equal(length(range(0, 100000)), 100000)
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-			maxPages: 8,
-		});
-		testBlock({
-			p: 'The prelude `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
-			src: `export ints = (): own Buffer<Int32> { b = Buffer<Int32>(3); set(b, 0, 3); set(b, 1, 5); set(b, 2, 7); next b };
+				out: [],
+				maxPages: 8,
+			});
+			testBlock({
+				p: 'The prelude `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
+				src: `export ints = (): own Buffer<Int32> { b = Buffer<Int32>(3); set(b, 0, 3); set(b, 1, 5); set(b, 2, 7); next b };
 export strs = (): own Buffer<String> { s0 = Array<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
 #test {
 	equal(indexOf(ints(), 5), 1);
@@ -3344,9 +3809,10 @@ export strs = (): own Buffer<String> { s0 = Array<String>(2); s1 = push(s0, 'a')
 	ok(contains(strs(), 'a'))
 }
 export target = (): Int32 { 0 }`,
-			out: [],
-		});
-	});
+				out: [],
+			});
+		},
+	);
 
 	h('Tail calls', ({ rule }) => {
 		rule({
@@ -3378,64 +3844,63 @@ main {
 		});
 	});
 
-	h('Forward references & mutual recursion', ({
-		rule,
-		compileError,
-		testBlock,
-	}) => {
-		rule({
-			p: 'Module-scope definitions are order-independent from a function body, `main`, or `#test`. Mutual tail recursion compiles to `return_call`, so cycles run at any depth.',
-			src: `isEven = (n: Int32): Bool { n == 0 ? true : isOdd(n - 1) };
+	h(
+		'Forward references & mutual recursion',
+		({ rule, compileError, testBlock }) => {
+			rule({
+				p: 'Module-scope definitions are order-independent from a function body, `main`, or `#test`. Mutual tail recursion compiles to `return_call`, so cycles run at any depth.',
+				src: `isEven = (n: Int32): Bool { n == 0 ? true : isOdd(n - 1) };
 isOdd = (n: Int32): Bool { n == 0 ? false : isEven(n - 1) };
 main {
 	isEven(10) >> out;
 	isEven(1000001) >> out;
 }`,
-			ast: `(root (def :isEven ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) :true (call :isOdd (- :n 1)))))) (def :isOdd ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) :false (call :isEven (- :n 1)))))) (main (>> (call :isEven 10) :out) (>> (call :isEven 1000001) :out)))`,
-			out: ['true', 'false'],
-			wasm: {
-				fn: 'isEven',
-				loop: false,
-				tailCalls: 1,
-				selfTailCalls: 0,
-			},
-		});
-		rule({
-			p: '`main` may precede the definitions it calls.',
-			src: `main { half(84) >> out }
+				ast: `(root (def :isEven ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) :true (call :isOdd (- :n 1)))))) (def :isOdd ? (fn (parameter :n typeident ?) typeident (next (? (== :n 0) :false (call :isEven (- :n 1)))))) (main (>> (call :isEven 10) :out) (>> (call :isEven 1000001) :out)))`,
+				out: ['true', 'false'],
+				wasm: {
+					fn: 'isEven',
+					loop: false,
+					tailCalls: 1,
+					selfTailCalls: 0,
+				},
+			});
+			rule({
+				p: '`main` may precede the definitions it calls.',
+				src: `main { half(84) >> out }
 half = (n: Int32): Int32 { n / 2 };`,
-			ast: `(root (main (>> (call :half 84) :out)) (def :half ? (fn (parameter :n typeident ?) typeident (next (/ :n 2)))))`,
-			out: ['42'],
-		});
-		rule({
-			p: 'Forward references resolve through `|`-dispatch definitions.',
-			src: `pick = (n: Int32): Int32 { later(n) };
+				ast: `(root (main (>> (call :half 84) :out)) (def :half ? (fn (parameter :n typeident ?) typeident (next (/ :n 2)))))`,
+				out: ['42'],
+			});
+			rule({
+				p: 'Forward references resolve through `|`-dispatch definitions.',
+				src: `pick = (n: Int32): Int32 { later(n) };
 later = (n: Int32): Int32 { n + 1 } | (b: Bool): Int32 { 0 };
 main { pick(4) >> out }`,
-			ast: `(root (def :pick ? (fn (parameter :n typeident ?) typeident (next (call :later :n)))) (def :later ? (| (fn (parameter :n typeident ?) typeident (next (+ :n 1))) (fn (parameter :b typeident ?) typeident (next 0)))) (main (>> (call :pick 4) :out)))`,
-			out: ['5'],
-		});
-		compileError({
-			p: 'Top-level initializers evaluate in source order and may only reference earlier definitions.',
-			src: `y = x + 1; x = 5; main { y >> out }`,
-			expected: 'Identifier not defined',
-		});
-		compileError({
-			p: 'A local cannot be used before its declaration.',
-			src: `main { a = b + 1; b = 2; a >> out }`,
-			expected: 'Identifier not defined',
-		});
-		compileError({
-			src: `main { missing(1) >> out }`,
-			expected: 'Identifier not defined',
-		});
-		testBlock({
-			p: '`#test` may call the definition it precedes.',
-			src: `#test { equal(dbl(2), 4); equal(dbl(3), 7) }
+				ast: `(root (def :pick ? (fn (parameter :n typeident ?) typeident (next (call :later :n)))) (def :later ? (| (fn (parameter :n typeident ?) typeident (next (+ :n 1))) (fn (parameter :b typeident ?) typeident (next 0)))) (main (>> (call :pick 4) :out)))`,
+				out: ['5'],
+			});
+			compileError({
+				p: 'Top-level initializers evaluate in source order and may only reference earlier definitions.',
+				src: `y = x + 1; x = 5; main { y >> out }`,
+				expected: 'Identifier not defined',
+			});
+			compileError({
+				p: 'A local cannot be used before its declaration.',
+				src: `main { a = b + 1; b = 2; a >> out }`,
+				expected: 'Identifier not defined',
+			});
+			compileError({
+				src: `main { missing(1) >> out }`,
+				expected: 'Identifier not defined',
+			});
+			testBlock({
+				p: '`#test` may call the definition it precedes.',
+				src: `#test { equal(dbl(2), 4); equal(dbl(3), 7) }
 export dbl = (n: Int32): Int32 { n * 2 };`,
-			out: ['6 != 7'],
-		});
-	});
+				out: ['6 != 7'],
+			});
+		},
+	);
 
 	h('Data block layout', ({ rule }) => {
 		rule({
@@ -3828,56 +4293,59 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 		});
 	});
 
-	h('Argument binding (positional / named / spread)', ({ rule, compileError }) => {
-		rule({
-			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(1, 2) >> out }`,
-			ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :sub (, 1 2)) :out)))`,
-			out: ['-1'],
-		});
-		rule({
-			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(b = 1, a = 2) >> out }`,
-			ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :sub (, (propdef :b ? 1) (propdef :a ? 2))) :out)))`,
-			out: ['1'],
-		});
-		rule({
-			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { [1, 2] >> sub >> out }`,
-			ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, 1 2)) :sub :out)))`,
-			out: ['-1'],
-		});
-		rule({
-			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { [ b = 2, a = 1 ] >> sub >> out }`,
-			ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, (propdef :b ? 2) (propdef :a ? 1))) :sub :out)))`,
-			out: ['-1'],
-		});
-		rule({
-			src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { subG(1, 2) >> out }`,
-			ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :subG (, 1 2)) :out)))`,
-			out: ['-1'],
-		});
-		rule({
-			src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { subG(b = 1, a = 2) >> out }`,
-			ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :subG (, (propdef :b ? 1) (propdef :a ? 2))) :out)))`,
-			out: ['1'],
-		});
-		rule({
-			src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { [1, 2] >> subG >> out }`,
-			ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, 1 2)) :subG :out)))`,
-			out: ['-1'],
-		});
-		rule({
-			src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { [ b = 2, a = 1 ] >> subG >> out }`,
-			ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, (propdef :b ? 2) (propdef :a ? 1))) :subG :out)))`,
-			out: ['-1'],
-		});
-		compileError({
-			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(1, b = 2) >> out }`,
-			expected: 'cannot mix positional and named',
-		});
-		compileError({
-			src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(a = 1) >> out }`,
-			expected: 'missing argument',
-		});
-	});
+	h(
+		'Argument binding (positional / named / spread)',
+		({ rule, compileError }) => {
+			rule({
+				src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(1, 2) >> out }`,
+				ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :sub (, 1 2)) :out)))`,
+				out: ['-1'],
+			});
+			rule({
+				src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(b = 1, a = 2) >> out }`,
+				ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :sub (, (propdef :b ? 1) (propdef :a ? 2))) :out)))`,
+				out: ['1'],
+			});
+			rule({
+				src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { [1, 2] >> sub >> out }`,
+				ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, 1 2)) :sub :out)))`,
+				out: ['-1'],
+			});
+			rule({
+				src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { [ b = 2, a = 1 ] >> sub >> out }`,
+				ast: `(root (def :sub ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, (propdef :b ? 2) (propdef :a ? 1))) :sub :out)))`,
+				out: ['-1'],
+			});
+			rule({
+				src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { subG(1, 2) >> out }`,
+				ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :subG (, 1 2)) :out)))`,
+				out: ['-1'],
+			});
+			rule({
+				src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { subG(b = 1, a = 2) >> out }`,
+				ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (call :subG (, (propdef :b ? 1) (propdef :a ? 2))) :out)))`,
+				out: ['1'],
+			});
+			rule({
+				src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { [1, 2] >> subG >> out }`,
+				ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, 1 2)) :subG :out)))`,
+				out: ['-1'],
+			});
+			rule({
+				src: `subG = (a: Int32, b: Int32): Int32 { a - b }; main { [ b = 2, a = 1 ] >> subG >> out }`,
+				ast: `(root (def :subG ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (- :a :b)))) (main (>> (data (, (propdef :b ? 2) (propdef :a ? 1))) :subG :out)))`,
+				out: ['-1'],
+			});
+			compileError({
+				src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(1, b = 2) >> out }`,
+				expected: 'cannot mix positional and named',
+			});
+			compileError({
+				src: `sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(a = 1) >> out }`,
+				expected: 'missing argument',
+			});
+		},
+	);
 
 	h('Arithmetic safety', ({ expr, rule, compileError }) => {
 		expr({
@@ -4036,9 +4504,16 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 					test(root) {
 						const owned = root.children[2];
 						s.equal(owned?.kind, 'type');
-						if (owned?.kind !== 'type' || owned.symbol.kind !== 'type') return;
+						if (
+							owned?.kind !== 'type' ||
+							owned.symbol.kind !== 'type'
+						)
+							return;
 						const type = owned.symbol.type;
-						s.equal(type.kind === 'type' && type.family === 'emission', true);
+						s.equal(
+							type.kind === 'type' && type.family === 'emission',
+							true,
+						);
 						if (type.kind === 'type' && type.family === 'emission')
 							s.equal(type.restOwnership, 'own');
 					},
@@ -4233,12 +4708,15 @@ main { triple(3) >> out }`,
 			});
 		});
 
-		h('Recursive type definitions with implicit Void termination', ({ ast }) => {
-			ast({
-				src: `type Reverse<T> = T >> [H, R] { [Reverse<R>, H] }`,
-				ast: `(type :Reverse (, (parameter :T ? ?)) (>> typeident (fn (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) (next (data (, (propdef ? typeident ?) (propdef ? typeident ?)))))))`,
-			});
-		});
+		h(
+			'Recursive type definitions with implicit Void termination',
+			({ ast }) => {
+				ast({
+					src: `type Reverse<T> = T >> [H, R] { [Reverse<R>, H] }`,
+					ast: `(type :Reverse (, (parameter :T ? ?)) (>> typeident (fn (parameter ? (data (, (parameter :H ? ?) (parameter :R ? ?))) ?) (next (data (, (propdef ? typeident ?) (propdef ? typeident ?)))))))`,
+				});
+			},
+		);
 
 		h('Constraints via unions', ({ rule, compileError }) => {
 			rule({
@@ -4608,7 +5086,8 @@ main { report(mk(9)) >> out }`,
 			});
 			compileError({
 				src: `main { 0 >> loop >> (counter: Int32) { counter + 1 } }`,
-				expected: '`loop` is valid only as a pipe source; use tail recursion for loop-carried state',
+				expected:
+					'`loop` is valid only as a pipe source; use tail recursion for loop-carried state',
 			});
 		});
 
