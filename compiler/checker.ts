@@ -6,6 +6,7 @@ import {
 	BufferSymbol,
 	Flags,
 	bufferTypeOf,
+	vectorTypeOf,
 	emissionElements,
 	fixedEmissionType,
 	restEmissionType,
@@ -14,6 +15,7 @@ import {
 	isIntType,
 	isCollection,
 	isNumericType,
+	isVectorType,
 	numberLiteralType,
 	numericResultType,
 	unifyTypeParam,
@@ -104,6 +106,8 @@ function typeToStr(type?: Type): string {
 	if (type?.kind === 'type' && type.family === 'union')
 		return type.members.map(m => m.name).join(' | ');
 	if (type?.kind === 'type' && type.family === 'buffer')
+		return `${type.name}<${typeToStr(type.elem)}>`;
+	if (type?.kind === 'type' && type.family === 'vector')
 		return `${type.name}<${typeToStr(type.elem)}>`;
 	return type?.name || 'unknown';
 }
@@ -284,6 +288,10 @@ function resolveNumericOp(node: InfixNode): Type {
 		(rType.kind === 'type' && rType.family === 'unknown')
 	)
 		return BT.Unknown;
+	if (isVectorType(lType) || isVectorType(rType))
+		return isVectorArithmetic(node.kind, lType, rType)
+			? lType
+			: invalidType;
 	if (!isNumericType(lType) || !isNumericType(rType)) return invalidType;
 	const base = numericResultType(lType, rType) ?? BT.Int32;
 	if (isFloatType(base)) return base;
@@ -1106,6 +1114,8 @@ function canAssign(to: Type, a: Type): boolean {
 			(!to.components || to.name === a.name) &&
 			canAssign(to.elem, a.elem)
 		);
+	if (to.family === 'vector' && a.family === 'vector')
+		return canAssign(to.elem, a.elem);
 	return canAssignData(to, a);
 }
 
@@ -1114,10 +1124,23 @@ function sameType(a: Type, b: Type): boolean {
 	return (
 		a.kind === 'type' &&
 		b.kind === 'type' &&
-		a.family === 'buffer' &&
-		b.family === 'buffer' &&
+		(a.family === 'buffer' || a.family === 'vector') &&
+		b.family === a.family &&
 		a.name === b.name &&
 		sameType(a.elem, b.elem)
+	);
+}
+
+function isVectorArithmetic(
+	kind: InfixNode['kind'],
+	left: Type,
+	right: Type,
+): boolean {
+	return (
+		isVectorType(left) &&
+		isVectorType(right) &&
+		sameType(left, right) &&
+		(kind === '+' || kind === '-' || kind === '*' || kind === '/')
 	);
 }
 
@@ -1344,6 +1367,8 @@ function containsApp(t: Type, seen = new Set<Type>()): boolean {
 		return Object.values(t.members).some(
 			m => m.type !== undefined && containsApp(m.type, seen),
 		);
+	if (t.family === 'buffer' || t.family === 'vector')
+		return containsApp(t.elem, seen);
 	return false;
 }
 
@@ -1392,6 +1417,10 @@ export function reduceType(t: Type, bindings: Map<string, Type>, depth = 0): Typ
 	if (t.family === 'buffer') {
 		const e = reduceType(t.elem, bindings, depth + 1);
 		return e === t.elem ? t : { ...t, elem: e };
+	}
+	if (t.family === 'vector') {
+		const e = reduceType(t.elem, bindings, depth + 1);
+		return e === t.elem ? t : vectorTypeOf(e);
 	}
 	if (t.family === 'data') return reduceDataMembers(t.members, bindings, depth);
 	return t;
@@ -1506,6 +1535,14 @@ export function checker({
 		const rt = resolver(right);
 		if (isInvalidType(lt) || isInvalidType(rt)) return;
 		if (isTypeParam(lt) || isTypeParam(rt)) return;
+		if (isVectorType(lt) || isVectorType(rt)) {
+			if (isVectorArithmetic(node.kind, lt, rt)) return;
+			error(
+				`Operator "${node.kind}" cannot be applied to types "${typeToStr(lt)}" and "${typeToStr(rt)}".`,
+				left,
+			);
+			return;
+		}
 		if (!(isNumericType(lt) && isNumericType(rt))) {
 			errors.push({
 				message: `Operator "${
@@ -1783,6 +1820,76 @@ export function checker({
 			error(`Buffer capacity must be an Int32`, node);
 	}
 
+	function validateVectorType(type: Type, node: Node): void {
+		if (type.kind === 'function') {
+			for (const parameter of type.parameters ?? [])
+				if (parameter.type) validateVectorType(parameter.type, node);
+			if (type.returnType) validateVectorType(type.returnType, node);
+			return;
+		}
+		if (type.family === 'buffer') {
+			validateVectorType(type.elem, node);
+			return;
+		}
+		if (type.family === 'data') {
+			for (const member of Object.values(type.members))
+				if (member.type) validateVectorType(member.type, node);
+			return;
+		}
+		if (type.family === 'union') {
+			for (const member of type.members) validateVectorType(member, node);
+			return;
+		}
+		if (!isVectorType(type)) return;
+		if (!sameType(type.elem, BT.Float32))
+			error(
+				`Type argument "${typeToStr(type.elem)}" does not satisfy Vector element constraint "Float32"`,
+				node,
+			);
+	}
+
+	function checkVectorCtorArg(
+		target: Extract<ResolvedType, { family: 'vector' }>,
+		node: NodeMap['call'],
+	): void {
+		validateVectorType(target, node.children[0]);
+		const raw = node.children[1];
+		const args = raw?.kind === ',' ? raw.children : raw ? [raw] : [];
+		for (const arg of args) check(arg);
+		if (args.length === 1) {
+			const argument = args[0];
+			const actual = argument ? resolver(argument) : BT.Unknown;
+			if (!isNumericType(actual))
+				error(
+					`Vector<${typeToStr(target.elem)}> splat requires a numeric scalar`,
+					argument ?? node,
+				);
+			return;
+		}
+		if (args.length === 2) {
+			const buffer = args[0];
+			const index = args[1];
+			const bufferType = buffer ? resolver(buffer) : BT.Unknown;
+			const indexType = index ? resolver(index) : BT.Unknown;
+			if (
+				bufferType.kind !== 'type' ||
+				bufferType.family !== 'buffer' ||
+				!sameType(bufferType.elem, target.elem)
+			)
+				error(
+					`Vector<${typeToStr(target.elem)}> load requires Buffer<${typeToStr(target.elem)}>`,
+					buffer ?? node,
+				);
+			if (!isIntType(indexType))
+				error('Vector load index must be an Int32', index ?? node);
+			return;
+		}
+		error(
+			`Vector<${typeToStr(target.elem)}>(…) requires one scalar or a buffer and index`,
+			node,
+		);
+	}
+
 	function checkScalarCtorArg(target: Type, node: NodeMap['call']) {
 		if (target.kind !== 'type' || !isNumericType(target)) return;
 		const args = node.children[1];
@@ -1829,6 +1936,7 @@ export function checker({
 						node,
 					);
 				} else if (fn.family === 'buffer') checkBufferCtorArg(node);
+				else if (fn.family === 'vector') checkVectorCtorArg(fn, node);
 				else if (fn.family === 'data') checkDataCtorArg(fn, node);
 				else checkScalarCtorArg(fn, node);
 				return;
@@ -2662,6 +2770,12 @@ export function checker({
 
 	function checkFnDef(node: NodeMap['fn']) {
 		resolver(node);
+		for (const parameter of node.parameters ?? []) {
+			const type = parameter.symbol.type;
+			if (type) validateVectorType(type, parameter);
+		}
+		if (node.symbol.returnType)
+			validateVectorType(node.symbol.returnType, node.returnType ?? node);
 		checkOnlyStmt(node);
 		checkReturnTypeAssignable(node);
 		checkNoClosureCapture(node);

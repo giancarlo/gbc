@@ -33,6 +33,7 @@ export type TypeFamily =
 	| 'fn'
 	| 'data'
 	| 'buffer'
+	| 'vector'
 	| 'literal'
 	| 'union'
 	| 'emission'
@@ -45,7 +46,7 @@ type TypeShape =
 			size: number;
 			family: Exclude<
 				TypeFamily,
-				'data' | 'buffer' | 'literal' | 'union' | 'emission'
+				'data' | 'buffer' | 'vector' | 'literal' | 'union' | 'emission'
 			>;
 	  }
 	| {
@@ -59,6 +60,13 @@ type TypeShape =
 			size: number;
 			family: 'buffer';
 			elem: Type;
+	  }
+	| {
+			name: string;
+			size: 16;
+			family: 'vector';
+			elem: Type;
+			lanes: number;
 	  }
 	| {
 			name: string;
@@ -266,7 +274,7 @@ function bindNamedTypeParam(
 	return true;
 }
 
-function unifyCollectionTypeParam(
+function unifyElementTypeParam(
 	paramType: Type,
 	argType: Type,
 	names: Set<string>,
@@ -274,9 +282,10 @@ function unifyCollectionTypeParam(
 ): boolean {
 	if (!(
 		paramType.kind === 'type' &&
-		paramType.family === 'buffer' &&
 		argType.kind === 'type' &&
-		argType.family === 'buffer'
+		'elem' in paramType &&
+		'elem' in argType &&
+		paramType.family === argType.family
 	))
 		return false;
 	unifyTypeParam(paramType.elem, argType.elem, names, out);
@@ -292,7 +301,7 @@ export function unifyTypeParam(
 	if (!paramType || !argType) return;
 	if (unifyFunctionTypeParam(paramType, argType, names, out)) return;
 	if (bindNamedTypeParam(paramType, argType, names, out)) return;
-	if (unifyCollectionTypeParam(paramType, argType, names, out)) return;
+	if (unifyElementTypeParam(paramType, argType, names, out)) return;
 	if (
 		paramType.kind === 'type' &&
 		paramType.family === 'emission' &&
@@ -402,12 +411,28 @@ const BufferElementType: ResolvedType = {
 	size: 4,
 };
 
+const VectorElementType: ResolvedType = {
+	name: 'T',
+	kind: 'type',
+	flags: 0,
+	family: 'unknown',
+	size: 4,
+};
+
 export const BufferSymbol: TypeSymbol = {
 	name: 'Buffer',
 	kind: 'type',
 	flags: 0,
 	type: bufferTypeOf(BufferElementType),
 	typeParams: [BufferElementType],
+};
+
+export const VectorSymbol: TypeSymbol = {
+	name: 'Vector',
+	kind: 'type',
+	flags: 0,
+	type: vectorTypeOf(VectorElementType),
+	typeParams: [VectorElementType],
 };
 
 export function bufferTypeOf(elem: Type): ResolvedType {
@@ -419,6 +444,25 @@ export function bufferTypeOf(elem: Type): ResolvedType {
 		size: 4,
 		elem,
 	};
+}
+
+export function vectorTypeOf(elem: Type): ResolvedType {
+	const lanes = elem.kind === 'type' && elem.size > 0 ? 16 / elem.size : 0;
+	return {
+		kind: 'type',
+		flags: 0,
+		name: 'Vector',
+		family: 'vector',
+		size: 16,
+		elem,
+		lanes,
+	};
+}
+
+export function isVectorType(
+	t: Type | undefined,
+): t is ResolvedType & { family: 'vector' } {
+	return t?.kind === 'type' && t.family === 'vector';
 }
 
 export function isCollection(
@@ -471,6 +515,28 @@ export function ProgramSymbolTable() {
 	const setType = typeParam();
 	const capacityType = typeParam();
 	const transferType = typeParam();
+	const simdType = typeParam();
+	const simdVector = vectorTypeOf(simdType);
+	const simdSum: SymbolMap['function'] = {
+		kind: 'function',
+		name: 'simd.sum',
+		flags: Flags.Intrinsic,
+		typeParams: [simdType],
+		parameters: [param('value', simdVector)],
+		returnType: simdType,
+	};
+	const simdStore: SymbolMap['function'] = {
+		kind: 'function',
+		name: 'simd.store',
+		flags: Flags.Intrinsic,
+		typeParams: [simdType],
+		parameters: [
+			param('buffer', bufferTypeOf(simdType), 'var'),
+			param('index', BaseTypes.Int32),
+			param('value', simdVector),
+		],
+		returnType: BaseTypes.Void,
+	};
 	return SymbolTable<Symbol>({
 		true: literal(true, BaseTypes.Bool),
 		false: literal(false, BaseTypes.Bool),
@@ -562,6 +628,22 @@ export function ProgramSymbolTable() {
 			returnOwnership: 'own',
 			returnBorrowOrigins: [1],
 		},
+		simd: {
+			kind: 'variable',
+			name: 'simd',
+			flags: 0,
+			type: {
+				kind: 'type',
+				name: 'simd',
+				flags: 0,
+				family: 'data',
+				size: 4,
+				members: {
+					sum: param('sum', simdSum),
+					store: param('store', simdStore),
+				},
+			},
+		},
 		out_buffer: {
 			kind: 'function',
 			name: 'out_buffer',
@@ -616,6 +698,7 @@ export function TypesSymbolTable() {
 	for (const [name, type] of Object.entries(BaseTypes))
 		symbols[name] = { kind: 'type', name, flags: 0, type };
 	symbols.Buffer = BufferSymbol;
+	symbols.Vector = VectorSymbol;
 	return SymbolTable<TypeSymbol>(symbols);
 }
 

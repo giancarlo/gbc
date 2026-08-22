@@ -337,7 +337,8 @@ function graphOfModule(
 			h === undefined &&
 			isSymbolLike(o) &&
 			typeof o.name === 'string' &&
-			(!isResolvedType(o) || o.family !== 'buffer') &&
+			(!isResolvedType(o) ||
+				(o.family !== 'buffer' && o.family !== 'vector')) &&
 			isExternalName(o.name)
 		)
 			return {

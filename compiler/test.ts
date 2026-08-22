@@ -3058,6 +3058,124 @@ main { wide(100000, 0) >> out }`,
 		});
 	});
 
+	s.test('emits typed WebAssembly SIMD operations', (a: TestApi) => {
+		const source = `twice = (value: Vector<Float32>): Vector<Float32> { value + value };
+identity = <T>(value: T): T { value };
+main {
+	buffer = Buffer<Float32>(8);
+	set(buffer, 0, Float32(1));
+	set(buffer, 1, Float32(2));
+	set(buffer, 2, Float32(3));
+	set(buffer, 3, Float32(4));
+	value = Vector<Float32>(buffer, 0);
+	one = Vector<Float32>(Float32(1));
+	two = Vector<Float32>(Float32(2));
+	simd.sum(value + one) >> out;
+	simd.sum(value - one) >> out;
+	simd.sum(value * two) >> out;
+	simd.sum(value / two) >> out;
+	simd.sum(identity(twice(one))) >> out;
+	simd.store(buffer, 4, value);
+	get(buffer, 7) >> out;
+	vectors = Buffer<Vector<Float32> >(1);
+	set(vectors, 0, Vector<Float32>(Float32(3)));
+	simd.sum(get(vectors, 0)) >> out
+}`;
+		const compiled = Program().compile(source);
+		if (compiled.errors.length)
+			throw new Error(compiled.errors.map(error => error.message).join('; '));
+		a.assert(compiled.bytes);
+		if (!compiled.bytes) return;
+		const output: string[] = [];
+		const instance = instantiateWasm(compiled.bytes, value => output.push(value));
+		instance.exports.main?.();
+		a.equalValues(output, ['14', '6', '20', '5', '8', '4', '12']);
+		const includes = (...sequence: number[]) =>
+			compiled.bytes?.some((_, index) =>
+				sequence.every((byte, offset) => compiled.bytes?.[index + offset] === byte),
+			) ?? false;
+		a.assert(includes(0xfd, 0x13));
+		a.assert(includes(0xfd, 0x00, 0x02, 0x00));
+		a.assert(includes(0xfd, 0x0b, 0x02, 0x00));
+		a.assert(includes(0xfd, 0xe4, 0x01));
+		a.assert(includes(0xfd, 0xe5, 0x01));
+		a.assert(includes(0xfd, 0xe6, 0x01));
+		a.assert(includes(0xfd, 0xe7, 0x01));
+	});
+
+	s.test('rejects Vector values at the host ABI boundary', (a: TestApi) => {
+		const entry = '/vector-export.gb';
+		const source = `export vector = (): Vector<Float32> { Vector<Float32>(Float32(1)) }`;
+		const compiled = Program({
+			sys: {
+				readFile: path => {
+					if (path === entry) return source;
+					throw new Error(`ENOENT: ${path}`);
+				},
+				readBytes: path => {
+					throw new Error(`ENOENT: ${path}`);
+				},
+			},
+		}).compileFile(entry, { requireMain: false });
+		a.assert(
+			compiled.errors.some(error =>
+				error.message.includes('cannot expose Vector values through the host ABI'),
+			),
+		);
+	});
+
+	s.test('defines pairwise Float32 vector reduction order', (a: TestApi) => {
+		const source = `main {
+	buffer = Buffer<Float32>(4);
+	set(buffer, 0, Float32(100000000000000000000.0));
+	set(buffer, 1, Float32(1));
+	set(buffer, 2, Float32(0.0 - 100000000000000000000.0));
+	set(buffer, 3, Float32(1));
+	simd.sum(Vector<Float32>(buffer, 0)) >> out
+}`;
+		const compiled = Program().compile(source);
+		if (compiled.errors.length)
+			throw new Error(compiled.errors.map(error => error.message).join('; '));
+		a.assert(compiled.bytes);
+		if (!compiled.bytes) return;
+		const output: string[] = [];
+		const instance = instantiateWasm(compiled.bytes, value => output.push(value));
+		instance.exports.main?.();
+		a.equalValues(output, ['0']);
+	});
+
+	h('SIMD vectors', ({ compileError, runtimeTrap }) => {
+		compileError({
+			src: `main { Vector<Int32>(1) }`,
+			expected: 'does not satisfy Vector element constraint',
+		});
+		compileError({
+			src: `main { Vector<Float32>(true) }`,
+			expected: 'splat requires a numeric scalar',
+		});
+		compileError({
+			src: `main { Vector<Float32>(Float32(1)) + Float32(2) }`,
+			expected: 'cannot be applied',
+		});
+		compileError({
+			src: `main { buffer = Buffer<Int32>(4); Vector<Float32>(buffer, 0) }`,
+			expected: 'load requires Buffer<Float32>',
+		});
+		compileError({
+			src: `main { buffer = Buffer<Int32>(4); simd.store(buffer, 0, Vector<Float32>(Float32(1))) }`,
+			expected: 'Vector<Int32>',
+		});
+		runtimeTrap({
+			src: `main { buffer = Buffer<Float32>(4); simd.sum(Vector<Float32>(buffer, 1)) >> out }`,
+		});
+		runtimeTrap({
+			src: `main { buffer = Buffer<Float32>(4); simd.store(buffer, 1, Vector<Float32>(Float32(1))) }`,
+		});
+		runtimeTrap({
+			src: `main { buffer = Buffer<Float32>(4); simd.sum(Vector<Float32>(buffer, 0 - 1)) >> out }`,
+		});
+	});
+
 	h('Time', ({ testBlock, compileError }) => {
 		testBlock({
 			p: '`monotonicMilliseconds` reads a clock that does not move backward.',

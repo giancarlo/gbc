@@ -5,8 +5,10 @@ import type { ScannerToken } from './scanner.js';
 import {
 	AnyData,
 	BufferSymbol,
+	VectorSymbol,
 	Flags,
 	bufferTypeOf,
+	vectorTypeOf,
 	fixedEmissionType,
 	restEmissionType,
 } from './symbol-table.js';
@@ -378,6 +380,11 @@ export function parseType(
 					substituteType(component, subst),
 				),
 			};
+		if (t.family === 'vector')
+			return {
+				...t,
+				elem: substituteType(t.elem, subst),
+			};
 		if (t.family === 'union')
 			return { ...t, members: t.members.map(m => substituteType(m, subst)) };
 		if (t.family === 'emission')
@@ -420,6 +427,19 @@ export function parseType(
 					name: sym.name,
 					flags: 0,
 					type: bufferTypeOf(elem),
+				},
+			};
+		}
+		if (sym === VectorSymbol) {
+			const a = argNodes[0];
+			const elem = a?.kind === 'typeident' ? a.symbol.type : AnyData;
+			return {
+				...node,
+				symbol: {
+					kind: 'type',
+					name: sym.name,
+					flags: 0,
+					type: vectorTypeOf(elem),
 				},
 			};
 		}

@@ -1,4 +1,4 @@
-import { sleb128, sleb128big, text, uleb128 } from '../sdk/index.js';
+import { CompilerError, sleb128, sleb128big, text, uleb128 } from '../sdk/index.js';
 
 import { isKnownNonZeroNumber, reduceType } from './checker.js';
 import {
@@ -12,6 +12,7 @@ import {
 	isIntType,
 	isCollection,
 	isNumericType,
+	isVectorType,
 	isUintType,
 	numberLiteralType,
 	numericResultType,
@@ -30,9 +31,21 @@ import type {
 } from './symbol-table.js';
 import type { SerialObject, SerialRef } from './bundle.js';
 
+type ArithmeticNode = NodeMap['+' | '-' | '*' | '/' | '%'];
+
 export interface SpliceInput {
 	objects: Map<GbcSymbol, SerialObject>;
 	resolveRef: (ref: SerialRef) => GbcSymbol | undefined;
+}
+
+function hasHostVectorSignature(definition: NodeMap['def']): boolean {
+	const value = definition.value;
+	return (
+		value.kind === 'fn' &&
+		((value.parameters ?? []).some(parameter =>
+			isVectorType(parameter.symbol.type),
+		) || isVectorType(value.symbol.returnType))
+	);
 }
 
 type ValueType = ResolvedType & {
@@ -92,6 +105,7 @@ function isTraceComposed(
 const I64 = 0x7e;
 const F32 = 0x7d;
 const F64 = 0x7c;
+const V128 = 0x7b;
 
 const SEC_TYPE = 1;
 const SEC_IMPORT = 2;
@@ -166,6 +180,7 @@ const OP_F32_SQRT = 0x91;
 const OP_F32_MIN = 0x96;
 const OP_F32_MAX = 0x97;
 const OP_F32_COPYSIGN = 0x98;
+const OP_F32_ADD = 0x92;
 const OP_F64_ABS = 0x99;
 const OP_F64_CEIL = 0x9b;
 const OP_F64_FLOOR = 0x9c;
@@ -208,6 +223,16 @@ const OP_F64_MIN = 0xa4;
 const OP_F64_MAX = 0xa5;
 const OP_F64_COPYSIGN = 0xa6;
 const OP_F64_NEG = 0x9a;
+
+const OP_SIMD_PREFIX = 0xfd;
+const SIMD_V128_LOAD = 0x00;
+const SIMD_V128_STORE = 0x0b;
+const SIMD_F32X4_SPLAT = 0x13;
+const SIMD_F32X4_EXTRACT_LANE = 0x1f;
+const SIMD_F32X4_ADD = 0xe4;
+const SIMD_F32X4_SUB = 0xe5;
+const SIMD_F32X4_MUL = 0xe6;
+const SIMD_F32X4_DIV = 0xe7;
 
 const OP_F32_CONVERT_I32_S = 0xb2;
 const OP_F32_CONVERT_I64_S = 0xb4;
@@ -295,6 +320,11 @@ function patchFixed5(body: number[], offset: number, n: number) {
 		body[offset + i] = (i < 4 ? (n & 0x7f) | 0x80 : n & 0x7f) & 0xff;
 		n >>= 7;
 	}
+}
+
+function emitSimdOpcode(opcode: number, out: number[]): void {
+	out.push(OP_SIMD_PREFIX);
+	uleb128(opcode, out);
 }
 
 function setTypeInPlace(target: object, src: object) {
@@ -517,6 +547,8 @@ function gbcToWasm(type: Type): number {
 		case 'union':
 		case 'literal':
 			return I32;
+		case 'vector':
+			return V128;
 		case 'void':
 			throw new Error('Void has no WASM value type');
 		case 'emission':
@@ -563,6 +595,7 @@ function isInlineData(t: Type): boolean {
 function fieldBytes(t: Type): number {
 	if (isUnionType(t)) return (unionPayloadWasm(t) === I64 ? 8 : 4) + 4;
 	if (t.kind === 'type') {
+		if (t.family === 'vector') return 16;
 		if (t.family === 'float') return t.size === 4 ? 4 : 8;
 		if (t.family === 'int' || t.family === 'uint') return t.size;
 		if (t.family === 'data') return fieldLayout(t.members).total;
@@ -1442,11 +1475,12 @@ export function compileWasm({
 	}
 
 	function inferArithType(
-		node: NodeMap['+' | '-' | '*' | '/' | '%'],
+		node: ArithmeticNode,
 		fn?: FuncBuilder,
 	): Type {
 		const lt = inferType(node.children[0], fn);
 		const rt = inferType(node.children[1], fn);
+		if (isVectorType(lt) && isVectorType(rt)) return lt;
 		return numericResultType(lt, rt) ?? BaseTypes.Unknown;
 	}
 
@@ -2121,6 +2155,7 @@ export function compileWasm({
 			(vt.family === 'int' ||
 				vt.family === 'uint' ||
 				vt.family === 'float' ||
+				vt.family === 'vector' ||
 				vt.family === 'bool' ||
 				vt.family === 'char' ||
 				vt.family === 'void')
@@ -3119,6 +3154,8 @@ export function compileWasm({
 		const rhs = node.children[1];
 		const lt = inferType(lhs, fn);
 		const rt = inferType(rhs, fn);
+		const vectorResult = compileVectorArith(node, lt, rt, fn);
+		if (vectorResult) return vectorResult;
 		const useFloat = isFloatType(lt) || isFloatType(rt);
 		const useWide = !useFloat && (isInt64Type(lt) || isInt64Type(rt));
 		const intType =
@@ -3158,6 +3195,26 @@ export function compileWasm({
 			);
 		fn.body.push(arithOpcode(node.kind, false, useWide, isUintType(lt) || isUintType(rt)));
 		return intType;
+	}
+
+	function compileVectorArith(
+		node: ArithmeticNode,
+		left: Type,
+		right: Type,
+		fn: FuncBuilder,
+	): Type | undefined {
+		if (!isVectorType(left) || !isVectorType(right)) return;
+		compileExpr(node.children[0], fn);
+		compileExpr(node.children[1], fn);
+		const opcode = node.kind === '+'
+			? SIMD_F32X4_ADD
+			: node.kind === '-'
+				? SIMD_F32X4_SUB
+				: node.kind === '*'
+					? SIMD_F32X4_MUL
+					: SIMD_F32X4_DIV;
+		emitSimdOpcode(opcode, fn.body);
+		return left;
 	}
 
 	type CompareKind = '==' | '!=' | '<' | '>' | '<=' | '>=';
@@ -3584,6 +3641,8 @@ export function compileWasm({
 	): Type {
 		const foundation = compileFloatFoundation(name, args, fn);
 		if (foundation) return foundation;
+		if (name === 'simd.sum') return compileVectorSum(args, fn);
+		if (name === 'simd.store') return compileVectorStore(args, fn);
 		switch (name) {
 			case 'sqrtFloat32':
 				return compileFloatIntrinsic(
@@ -4407,6 +4466,103 @@ export function compileWasm({
 		return args.kind === ',' ? args.children : [args];
 	}
 
+	function emitVectorBounds(
+		base: number,
+		idx: number,
+		lanes: number,
+		fn: FuncBuilder,
+	): void {
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(idx, fn.body);
+		emitHeaderRead(base, 0, fn);
+		fn.body.push(OP_I32_GT_U);
+		emitTrapIf(fn);
+		emitHeaderRead(base, 0, fn);
+		fn.body.push(OP_LOCAL_GET);
+		uleb128(idx, fn.body);
+		fn.body.push(OP_I32_SUB);
+		fn.body.push(OP_I32_CONST);
+		sleb128(lanes, fn.body);
+		fn.body.push(OP_I32_LT_U);
+		emitTrapIf(fn);
+	}
+
+	function compileVectorAddress(
+		buffer: Node,
+		index: Node,
+		vector: Extract<ResolvedType, { family: 'vector' }>,
+		fn: FuncBuilder,
+	): void {
+		const base = allocLocal(fn, I32);
+		const idx = allocLocal(fn, I32);
+		compileExpr(buffer, fn);
+		emitStoreLocal(base, fn);
+		compileExpr(index, fn);
+		emitStoreLocal(idx, fn);
+		emitVectorBounds(base, idx, vector.lanes, fn);
+		emitSlotAddr(base, idx, fieldBytes(vector.elem), fn);
+	}
+
+	function compileVectorCtor(
+		target: Extract<ResolvedType, { family: 'vector' }>,
+		args: Node | undefined,
+		fn: FuncBuilder,
+	): Type {
+		const values = bufArgList(args);
+		if (values.length === 1) {
+			const value = values[0];
+			if (!value) throw new Error('Vector splat requires a scalar');
+			const actual = compileExpr(value, fn);
+			coerceToFloat(actual, fn, BaseTypes.Float32);
+			emitSimdOpcode(SIMD_F32X4_SPLAT, fn.body);
+			return target;
+		}
+		const buffer = values[0];
+		const index = values[1];
+		if (!buffer || !index || values.length !== 2)
+			throw new Error('Vector load requires a buffer and index');
+		compileVectorAddress(buffer, index, target, fn);
+		emitSimdOpcode(SIMD_V128_LOAD, fn.body);
+		uleb128(2, fn.body);
+		uleb128(0, fn.body);
+		return target;
+	}
+
+	function compileVectorStore(args: Node | undefined, fn: FuncBuilder): Type {
+		const [buffer, index, value] = bufArgList(args);
+		if (!buffer || !index || !value)
+			throw new Error('simd.store requires a buffer, index, and vector');
+		const vector = inferType(value, fn);
+		if (!isVectorType(vector)) throw new Error('simd.store requires a vector');
+		compileVectorAddress(buffer, index, vector, fn);
+		compileExpr(value, fn);
+		emitSimdOpcode(SIMD_V128_STORE, fn.body);
+		uleb128(2, fn.body);
+		uleb128(0, fn.body);
+		return BaseTypes.Void;
+	}
+
+	function compileVectorSum(args: Node | undefined, fn: FuncBuilder): Type {
+		const [value] = bufArgList(args);
+		if (!value) throw new Error('simd.sum requires a vector');
+		const vector = compileExpr(value, fn);
+		if (!isVectorType(vector)) throw new Error('simd.sum requires a vector');
+		const local = allocLocal(fn, V128);
+		emitStoreLocal(local, fn);
+		const lane = (index: number): void => {
+			emitLoadLocal(local, fn);
+			emitSimdOpcode(SIMD_F32X4_EXTRACT_LANE, fn.body);
+			fn.body.push(index);
+		};
+		lane(0);
+		lane(1);
+		fn.body.push(OP_F32_ADD);
+		lane(2);
+		lane(3);
+		fn.body.push(OP_F32_ADD, OP_F32_ADD);
+		return BaseTypes.Float32;
+	}
+
 	function bufElemOf(bNode: Node, fn: FuncBuilder): Type {
 		const bt = inferType(bNode, fn);
 		return bt.kind === 'type' && bt.family === 'buffer'
@@ -4847,6 +5003,8 @@ export function compileWasm({
 		const args = node.children[1];
 		if (callee.kind === 'typeident') {
 			const calleeType = callee.symbol.type;
+			if (isVectorType(calleeType))
+				return compileVectorCtor(calleeType, args, fn);
 			const target = SCALAR_CTORS[callee.symbol.name ?? ''];
 			if (target) return compileScalarCtor(target, args, fn);
 			if (callee.symbol === BufferSymbol)
@@ -5275,6 +5433,12 @@ export function compileWasm({
 
 	function emitFieldStore(ft: Type, off: number, fn: FuncBuilder) {
 		const b = fieldBytes(ft);
+		if (isVectorType(ft)) {
+			emitSimdOpcode(SIMD_V128_STORE, fn.body);
+			uleb128(4, fn.body);
+			uleb128(off, fn.body);
+			return;
+		}
 		const op = isFloatType(ft)
 			? b === 8
 				? OP_F64_STORE
@@ -5294,6 +5458,12 @@ export function compileWasm({
 
 	function emitFieldLoad(ft: Type, off: number, fn: FuncBuilder) {
 		const b = fieldBytes(ft);
+		if (isVectorType(ft)) {
+			emitSimdOpcode(SIMD_V128_LOAD, fn.body);
+			uleb128(4, fn.body);
+			uleb128(off, fn.body);
+			return;
+		}
 		const op = isFloatType(ft)
 			? b === 8
 				? OP_F64_LOAD
@@ -7519,6 +7689,8 @@ export function compileWasm({
 			);
 		if (t.family === 'union')
 			return '(' + t.members.map(typeKey).join('|') + ')';
+		if (t.family === 'buffer' || t.family === 'vector')
+			return `${t.name}<${typeKey(t.elem)}>`;
 		return t.name;
 	}
 
@@ -7613,6 +7785,8 @@ export function compileWasm({
 	function detachType(t: Type, depth = 0): Type {
 		if (t.kind !== 'type' || depth > 8) return t;
 		if (t.family === 'buffer')
+			return { ...t, elem: detachType(t.elem, depth + 1) };
+		if (t.family === 'vector')
 			return { ...t, elem: detachType(t.elem, depth + 1) };
 		if (t.family === 'unknown') return t;
 		return { ...t };
@@ -8970,6 +9144,11 @@ export function compileWasm({
 		for (const def of hostExports) {
 			const name = def.symbol.name;
 			if (!name) continue;
+			if (hasHostVectorSignature(def))
+				throw new CompilerError(
+					`"${name}" cannot expose Vector values through the host ABI`,
+					def,
+				);
 			const builderIdx = exportedBuilderIdx(def);
 			if (builderIdx === undefined)
 				throw new Error(
