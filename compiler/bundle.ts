@@ -1,5 +1,5 @@
-import type { Node } from './node.js';
-import type { ResolvedType, Symbol, Type } from './symbol-table.js';
+import type { Node, NodeMap } from './node.js';
+import type { ResolvedType, Symbol, SymbolMap, Type } from './symbol-table.js';
 import type { LibraryObject } from './target-wasm.js';
 
 declare class TextEncoder {
@@ -11,7 +11,7 @@ declare class TextDecoder {
 	decode(input: Uint8Array): string;
 }
 
-const MAGIC = 0x4742_4d03;
+const MAGIC = 0x4742_4d01;
 
 const enum Tag {
 	Null = 0,
@@ -171,11 +171,41 @@ type Tagged =
 	| { t: Tag.Mod | Tag.TypeMod; h: string; s: string }
 	| { t: Tag.Arr; a: Tagged[] };
 
+const enum Wire {
+	Null,
+	Int,
+	Float,
+	Str,
+	True,
+	False,
+	Big,
+	Ref,
+	Ext,
+	Arr,
+	Mod,
+	TypeExt,
+	TypeMod,
+	RefArr,
+}
+
+interface Shape {
+	node: boolean;
+	kind?: string;
+	fields: { key: string; wire: Wire }[];
+}
+
 interface ModuleGraph {
 	path: string;
 	hash: string;
 	root: number;
-	objs: [string, Tagged][][];
+	objs: Tagged[][];
+	shapes: Shape[];
+	shapeIds: number[];
+}
+
+interface ShapeTrie {
+	children: Map<string, ShapeTrie>;
+	id?: number;
 }
 
 function ownersOf(
@@ -219,13 +249,83 @@ function ownersOf(
 	return owner;
 }
 
+function hasNonScalarEmission(symbol: SymbolMap['function']): boolean {
+	const emission = symbol.emissionType;
+	return emission?.kind === 'type' && emission.family === 'emission'
+		? emission.rest !== undefined || emission.elements.length > 1
+		: symbol.returnVariants
+			? symbol.returnVariants.length !== 1 ||
+				symbol.returnVariants.some(variant => variant.length !== 1)
+			: (symbol.returnTypes?.length ?? 0) > 1;
+}
+
+function streamInlineCandidate(fn: NodeMap['fn']): boolean {
+	const statements = fn.statements ?? [];
+	const tail = statements[statements.length - 1];
+	if (tail?.kind !== 'next' || !tail.children?.[0]) return false;
+	for (let i = 0; i < statements.length - 1; i++) {
+		const statement = statements[i];
+		if (statement?.kind !== 'def' && statement?.kind !== '=') return false;
+	}
+	return true;
+}
+
+function functionBodyRequired(fn: NodeMap['fn']): boolean {
+	return (
+		hasNonScalarEmission(fn.symbol) ||
+		!!fn.symbol.forwardsPipe ||
+		(fn.parameters?.length ?? 0) === 0 ||
+		streamInlineCandidate(fn)
+	);
+}
+
 function graphOfModule(
 	m: { path: string; hash: string; root: Node },
 	owner: Map<object, string>,
 	isExternalName: (name: string) => boolean,
+	objectSymbols: Set<Symbol>,
 ): ModuleGraph {
-	const objs: [string, Tagged][][] = [];
+	const objs: Tagged[][] = [];
+	const shapes: Shape[] = [];
+	const shapeIds: number[] = [];
+	const shapeRoot: ShapeTrie = { children: new Map() };
 	const index = new Map<object, number>();
+	const bodylessFns = new Set<NodeMap['fn']>();
+	if (m.root.kind === 'root')
+		for (const child of m.root.children)
+			if (
+				child.kind === 'def' &&
+				child.value.kind === 'fn' &&
+				objectSymbols.has(child.symbol) &&
+				!functionBodyRequired(child.value)
+			)
+				bodylessFns.add(child.value);
+	const shapeOf = (
+		node: boolean,
+		kind: string | undefined,
+		fields: { key: string; wire: Wire }[],
+	): number => {
+		let shape = shapeRoot;
+		const descend = (part: string) => {
+			let child = shape.children.get(part);
+			if (!child) {
+				child = { children: new Map() };
+				shape.children.set(part, child);
+			}
+			shape = child;
+		};
+		descend(node ? 'node' : 'object');
+		descend(kind === undefined ? 'kind:' : `kind:${kind}`);
+		for (const field of fields) {
+			descend(field.key);
+			descend(`wire:${field.wire}`);
+		}
+		if (shape.id === undefined) {
+			shape.id = shapes.length;
+			shapes.push({ node, kind, fields });
+		}
+		return shape.id;
+	};
 	const tagObject = (o: object): Tagged => {
 		const h = owner.get(o);
 		if (h !== undefined && h !== m.hash) {
@@ -264,17 +364,58 @@ function graphOfModule(
 		if (hit !== undefined) return hit;
 		const i = objs.length;
 		index.set(o, i);
-		const rec: [string, Tagged][] = [];
-		objs.push(rec);
+		objs.push([]);
+		shapeIds.push(0);
+		const nodeValue = isNode(o) ? o : undefined;
+		const node = nodeValue !== undefined;
+		const bodyless = nodeValue?.kind === 'fn' && bodylessFns.has(nodeValue);
+		const kindValue: unknown = Reflect.get(o, 'kind');
+		const kind = typeof kindValue === 'string' ? kindValue : undefined;
 		const keys = Object.keys(o).filter(
-			k => k !== 'scope' && k !== 'references',
+			k =>
+				k !== 'scope' &&
+				k !== 'references' &&
+				!(kind !== undefined && k === 'kind') &&
+				!(isSymbolLike(o) && k === 'definition') &&
+				!(bodyless && k === 'statements') &&
+				!(
+					node &&
+					(k === 'source' ||
+						k === 'start' ||
+						k === 'end' ||
+						k === 'line' ||
+						k === 'owner' ||
+						k === 'implicit')
+				),
 		);
-		const vals: unknown[] = keys.map((k): unknown => Reflect.get(o, k));
+		if (nodeValue?.kind === 'string') keys.push('value');
+		if (bodyless) keys.push('objectBacked');
+		const vals: unknown[] = keys.map((k): unknown =>
+			nodeValue?.kind === 'string' && k === 'value'
+				? nodeValue.source.slice(nodeValue.start, nodeValue.end)
+				: bodyless && k === 'children'
+				? []
+				: bodyless && k === 'objectBacked'
+					? true
+					: Reflect.get(o, k),
+		);
 		const tags = toTagged(vals);
-		keys.forEach((k, j) => rec.push([k, tags[j] ?? { t: Tag.Null }]));
+		const fields = keys.map((key, field) => ({
+			key,
+			wire: wireOf(tags[field] ?? { t: Tag.Null }),
+		}));
+		shapeIds[i] = shapeOf(node, kind, fields);
+		objs[i] = tags;
 		return i;
 	};
-	return { path: m.path, hash: m.hash, root: intern(m.root), objs };
+	return {
+		path: m.path,
+		hash: m.hash,
+		root: intern(m.root),
+		objs,
+		shapes,
+		shapeIds,
+	};
 }
 
 export function encodeBundle(
@@ -284,25 +425,65 @@ export function encodeBundle(
 	objects: LibraryObject[] = [],
 ): Uint8Array {
 	const owner = ownersOf(modules);
+	const storable = storableObjects(
+		objects,
+		owner,
+		isExternalName,
+		topLevelObjectSymbols(modules),
+	);
+	const objectSymbols = new Set(storable.map(object => object.sym));
 	const w = new Writer();
 	w.str(entry);
 	w.varint(modules.length);
 	for (const m of modules) {
-		const g = graphOfModule(m, owner, isExternalName);
+		const g = graphOfModule(m, owner, isExternalName, objectSymbols);
 		w.str(g.path);
 		w.str(g.hash);
 		w.varint(g.root);
 		w.varint(g.objs.length);
-		for (const rec of g.objs) {
-			w.varint(rec.length);
-			for (const [k, v] of rec) {
-				w.str(k);
-				writeVal(w, v);
+		w.varint(g.shapes.length);
+		for (const shape of g.shapes) {
+			w.u8((shape.node ? 1 : 0) | (shape.kind === undefined ? 0 : 2));
+			if (shape.kind !== undefined) w.str(shape.kind);
+			w.varint(shape.fields.length);
+			for (const field of shape.fields) {
+				w.str(field.key);
+				w.u8(field.wire);
 			}
 		}
+		for (let i = 0; i < g.objs.length; i++) {
+			w.varint(g.shapeIds[i] ?? 0);
+			const shape = g.shapes[g.shapeIds[i] ?? 0];
+			if (!shape) throw new Error('gbm: missing object shape');
+			const values = g.objs[i] ?? [];
+			for (let field = 0; field < shape.fields.length; field++)
+				writeTypedVal(
+					w,
+					values[field] ?? { t: Tag.Null },
+					shape.fields[field]?.wire ?? Wire.Null,
+					i,
+				);
+		}
 	}
-	writeObjects(w, objects, owner, isExternalName);
+	writeObjects(w, storable, owner, isExternalName);
 	return w.finish();
+}
+
+function topLevelObjectSymbols(
+	modules: { root: Node }[],
+): Set<Symbol> {
+	const symbols = new Set<Symbol>();
+	for (const module of modules) {
+		if (module.root.kind !== 'root') continue;
+		for (const child of module.root.children)
+			if (
+				child.kind === 'def' &&
+				typeof child.symbol.name === 'string' &&
+				child.symbol.name.length > 0
+			)
+				symbols.add(child.symbol);
+	}
+	return symbols;
 }
 
 const RK = { data: 0, tag: 1, global: 2, call: 3, callrt: 4 };
@@ -337,16 +518,8 @@ function writeObjects(
 	owner: Map<object, string>,
 	isExternalName: (name: string) => boolean,
 ): void {
-	const storable = objects.filter(o => {
-		if (owner.get(o.sym) === undefined) return false;
-		return o.relocs.every(r =>
-			r.kind === 'global' || r.kind === 'call'
-				? refOf(r.sym, owner, isExternalName) !== null
-				: true,
-		);
-	});
-	w.varint(storable.length);
-	for (const o of storable) {
+	w.varint(objects.length);
+	for (const o of objects) {
 		const hash = owner.get(o.sym);
 		if (hash === undefined) continue;
 		w.str(hash);
@@ -374,15 +547,63 @@ function writeObjects(
 	}
 }
 
-function writeVal(w: Writer, e: Tagged): void {
+function storableObjects(
+	objects: LibraryObject[],
+	owner: Map<object, string>,
+	isExternalName: (name: string) => boolean,
+	resolvable: Set<Symbol>,
+): LibraryObject[] {
+	return objects.filter(o => {
+		if (!resolvable.has(o.sym) || owner.get(o.sym) === undefined) return false;
+		return o.relocs.every(r =>
+			r.kind === 'global' || r.kind === 'call'
+				? refOf(r.sym, owner, isExternalName) !== null
+				: true,
+		);
+	});
+}
+
+function writeSigned(w: Writer, n: number): void {
+	w.varint(n < 0 ? -n * 2 - 1 : n * 2);
+}
+
+function wireOf(e: Tagged): Wire {
+	switch (e.t) {
+		case Tag.Null:
+			return Wire.Null;
+		case Tag.Int:
+			return Number.isInteger(e.n) ? Wire.Int : Wire.Float;
+		case Tag.Str:
+			return Wire.Str;
+		case Tag.True:
+			return Wire.True;
+		case Tag.False:
+			return Wire.False;
+		case Tag.Big:
+			return Wire.Big;
+		case Tag.Ref:
+			return Wire.Ref;
+		case Tag.Ext:
+			return Wire.Ext;
+		case Tag.Arr:
+			return e.a.every(value => value.t === Tag.Ref) ? Wire.RefArr : Wire.Arr;
+		case Tag.Mod:
+			return Wire.Mod;
+		case Tag.TypeExt:
+			return Wire.TypeExt;
+		case Tag.TypeMod:
+			return Wire.TypeMod;
+	}
+}
+
+function writeVal(w: Writer, e: Tagged, base: number): void {
 	w.u8(e.t);
 	switch (e.t) {
 		case Tag.Int: {
 			const n = e.n;
 			if (Number.isInteger(n)) {
 				w.u8(0);
-				const zig = n < 0 ? -n * 2 - 1 : n * 2;
-				w.varint(zig);
+				writeSigned(w, n);
 			} else {
 				w.u8(1);
 				w.f64(n);
@@ -401,14 +622,63 @@ function writeVal(w: Writer, e: Tagged): void {
 			w.str(e.s);
 			return;
 		case Tag.Ref:
-			w.varint(e.r);
+			writeSigned(w, e.r - base);
 			return;
 		case Tag.Arr:
 			w.varint(e.a.length);
-			for (const x of e.a) writeVal(w, x);
+			for (const x of e.a) writeVal(w, x, base);
 			return;
 		default:
 			return;
+	}
+}
+
+function writeTypedVal(w: Writer, e: Tagged, wire: Wire, base: number): void {
+	switch (wire) {
+		case Wire.Null:
+		case Wire.True:
+		case Wire.False:
+			return;
+		case Wire.Int:
+			if (e.t === Tag.Int) writeSigned(w, e.n);
+			return;
+		case Wire.Float:
+			if (e.t === Tag.Int) w.f64(e.n);
+			return;
+		case Wire.Str:
+		case Wire.Big:
+		case Wire.Ext:
+		case Wire.TypeExt:
+			if (
+				e.t === Tag.Str ||
+				e.t === Tag.Big ||
+				e.t === Tag.Ext ||
+				e.t === Tag.TypeExt
+			)
+				w.str(e.s);
+			return;
+		case Wire.Ref:
+			if (e.t === Tag.Ref) writeSigned(w, e.r - base);
+			return;
+		case Wire.Mod:
+		case Wire.TypeMod:
+			if (e.t === Tag.Mod || e.t === Tag.TypeMod) {
+				w.str(e.h);
+				w.str(e.s);
+			}
+			return;
+		case Wire.RefArr:
+			if (e.t === Tag.Arr) {
+				w.varint(e.a.length);
+				for (const value of e.a)
+					if (value.t === Tag.Ref) writeSigned(w, value.r - base);
+			}
+			return;
+		case Wire.Arr:
+			if (e.t === Tag.Arr) {
+				w.varint(e.a.length);
+				for (const value of e.a) writeVal(w, value, base);
+			}
 	}
 }
 
@@ -421,15 +691,16 @@ type DecVal =
 	| { t: Tag.Mod | Tag.TypeMod; h: string; s: string }
 	| { t: Tag.Arr; a: DecVal[] };
 
-function readVal(r: Reader): DecVal {
+function readSigned(r: Reader): number {
+	const zig = r.varint();
+	return zig % 2 === 0 ? zig / 2 : -(zig + 1) / 2;
+}
+
+function readVal(r: Reader, base: number): DecVal {
 	const t: Tag = r.u8();
 	switch (t) {
 		case Tag.Int: {
-			if (r.u8() === 0) {
-				const zig = r.varint();
-				const n = zig % 2 === 0 ? zig / 2 : -(zig + 1) / 2;
-				return { t: Tag.Int, n };
-			}
+			if (r.u8() === 0) return { t: Tag.Int, n: readSigned(r) };
 			return { t: Tag.Int, big: false, f: r.f64() };
 		}
 		case Tag.Str:
@@ -441,11 +712,11 @@ function readVal(r: Reader): DecVal {
 		case Tag.TypeMod:
 			return { t, h: r.str(), s: r.str() };
 		case Tag.Ref:
-			return { t: Tag.Ref, r: r.varint() };
+			return { t: Tag.Ref, r: base + readSigned(r) };
 		case Tag.Arr: {
 			const n = r.varint();
 			const a: DecVal[] = [];
-			for (let i = 0; i < n; i++) a.push(readVal(r));
+			for (let i = 0; i < n; i++) a.push(readVal(r, base));
 			return { t: Tag.Arr, a };
 		}
 		default:
@@ -453,10 +724,61 @@ function readVal(r: Reader): DecVal {
 	}
 }
 
+function readTypedVal(r: Reader, wire: Wire, base: number): DecVal {
+	switch (wire) {
+		case Wire.Null:
+			return { t: Tag.Null };
+		case Wire.True:
+			return { t: Tag.True };
+		case Wire.False:
+			return { t: Tag.False };
+		case Wire.Int:
+			return { t: Tag.Int, n: readSigned(r) };
+		case Wire.Float:
+			return { t: Tag.Int, big: false, f: r.f64() };
+		case Wire.Str:
+		case Wire.Big:
+		case Wire.Ext:
+		case Wire.TypeExt:
+			return {
+				t:
+					wire === Wire.Str
+						? Tag.Str
+						: wire === Wire.Big
+							? Tag.Big
+							: wire === Wire.Ext
+								? Tag.Ext
+								: Tag.TypeExt,
+				s: r.str(),
+			};
+		case Wire.Ref:
+			return { t: Tag.Ref, r: base + readSigned(r) };
+		case Wire.Mod:
+		case Wire.TypeMod:
+			return {
+				t: wire === Wire.Mod ? Tag.Mod : Tag.TypeMod,
+				h: r.str(),
+				s: r.str(),
+			};
+		case Wire.RefArr: {
+			const a: DecVal[] = [];
+			for (let n = r.varint(); n > 0; n--)
+				a.push({ t: Tag.Ref, r: base + readSigned(r) });
+			return { t: Tag.Arr, a };
+		}
+		case Wire.Arr: {
+			const a: DecVal[] = [];
+			for (let n = r.varint(); n > 0; n--) a.push(readVal(r, base));
+			return { t: Tag.Arr, a };
+		}
+	}
+}
+
 export interface DecodedModule {
 	hash: string;
 	root: number;
 	objs: [string, DecVal][][];
+	nodes: boolean[];
 }
 export type SerialRef = { mod?: string; name: string };
 export type SerialReloc =
@@ -526,14 +848,33 @@ export function decodeBundle(bytes: Uint8Array): DecodedBundle {
 		const hash = r.str();
 		const root = r.varint();
 		const objCount = r.varint();
-		const objs: [string, DecVal][][] = [];
-		for (let o = 0; o < objCount; o++) {
-			const fields = r.varint();
-			const rec: [string, DecVal][] = [];
-			for (let f = 0; f < fields; f++) rec.push([r.str(), readVal(r)]);
-			objs.push(rec);
+		const shapes: Shape[] = [];
+		for (let s = r.varint(); s > 0; s--) {
+			const flags = r.u8();
+			const kind = flags & 2 ? r.str() : undefined;
+			const fields: Shape['fields'] = [];
+			for (let f = r.varint(); f > 0; f--)
+				fields.push({ key: r.str(), wire: r.u8() });
+			shapes.push({ node: !!(flags & 1), kind, fields });
 		}
-		modules.set(path, { hash, root, objs });
+		const objs: [string, DecVal][][] = [];
+		const nodes: boolean[] = [];
+		for (let o = 0; o < objCount; o++) {
+			const shapeId = r.varint();
+			const shape = shapes[shapeId];
+			if (!shape)
+				throw new Error(
+					`gbm: bad object shape ${shapeId}/${shapes.length} at ${o}`,
+				);
+			const rec: [string, DecVal][] = [];
+			if (shape.kind !== undefined)
+				rec.push(['kind', { t: Tag.Str, s: shape.kind }]);
+			for (const field of shape.fields)
+				rec.push([field.key, readTypedVal(r, field.wire, o)]);
+			objs.push(rec);
+			nodes.push(shape.node);
+		}
+		modules.set(path, { hash, root, objs, nodes });
 	}
 	const objects = readObjects(r);
 	return { entry, modules, objects };
@@ -541,6 +882,7 @@ export function decodeBundle(bytes: Uint8Array): DecodedBundle {
 
 export function materializeModule(
 	m: DecodedModule,
+	source: string,
 	resolveExternalSymbol: (name: string) => Symbol,
 	resolveExternalType: (name: string) => Type,
 	resolveModSymbol: (hash: string, name: string) => Symbol,
@@ -579,7 +921,21 @@ export function materializeModule(
 		const o = objs[i];
 		if (!o) return;
 		for (const [k, v] of rec) o[k] = dec(v);
+		if (m.nodes[i]) {
+			o.source = source;
+			o.start = 0;
+			o.end = 0;
+			o.line = 0;
+		}
 	});
+	for (let i = 0; i < objs.length; i++) {
+		if (!m.nodes[i]) continue;
+		const node = objs[i];
+		if (!node || !DECLARING.has(String(node.kind))) continue;
+		const symbol = node.symbol;
+		if (symbol && typeof symbol === 'object')
+			Reflect.set(symbol, 'definition', node);
+	}
 	const root = objs[m.root];
 	if (!root || !isNode(root)) throw new Error('bundle root is not a node');
 	return root;

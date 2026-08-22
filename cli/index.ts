@@ -78,7 +78,7 @@ function buildCommand(files: string[], outdir: string | undefined, debug = false
 }
 
 /** `gbc library entry.gb` — validate the closure, seal it into a `.gbm`
- * bundle (sources + closure hashes) for dependency-free distribution. */
+ * bundle (checked graphs + closure hashes) for dependency-free distribution. */
 function libraryCommand(files: string[], outdir: string | undefined): number {
 	for (const srcFile of files) {
 		const resolved = resolve(srcFile);

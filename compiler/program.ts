@@ -227,10 +227,26 @@ export function buildStdlibBundle(sources: StdlibSources): Uint8Array {
 	};
 
 	const prelude = withoutPreludeTypes(() => build('prelude'));
-	const { symbols } = collectDefs(prelude);
+	const { symbols, defs: preludeDefs } = collectDefs(prelude);
 	const types = collectTypes(prelude);
 	const time = build('time', symbols, types);
 	const test = build('test', symbols, types);
+	const objects: LibraryObject[] = [];
+	compileWasm({
+		root: {
+			kind: 'root',
+			children: [
+				...preludeDefs,
+				...collectDefs(time).defs,
+				...collectDefs(test).defs,
+			],
+			start: 0,
+			end: 0,
+			line: 0,
+			source: '',
+		},
+		objectSink: objects,
+	});
 	return encodeBundle(
 		'prelude.gb',
 		[
@@ -239,6 +255,7 @@ export function buildStdlibBundle(sources: StdlibSources): Uint8Array {
 			{ path: 'test.gb', hash: fnv1a(sources.test), root: test.root },
 		],
 		name => builtinNames.has(name),
+		objects,
 	);
 }
 
@@ -375,6 +392,7 @@ function createModuleLoader(sys: System, entryDir: string) {
 			if (bundleMod) {
 				const root = materializeModule(
 					bundleMod,
+					key,
 					resolveExternalSymbol,
 					resolveExternalType,
 					resolveModSymbol,
@@ -586,11 +604,16 @@ function collectTypes(module: Module): Record<string, TypeSymbol> {
 	return types;
 }
 
+interface MaterializedModules {
+	modules: Map<string, Module>;
+	splice?: SpliceInput;
+}
+
 function materializeModules(
 	bytes: Uint8Array,
 	extraSymbols: Record<string, Symbol> = {},
 	extraTypes: Record<string, TypeSymbol> = {},
-): Map<string, Module> {
+): MaterializedModules {
 	const bundle = decodeBundle(bytes);
 	const builtinSymbols = ProgramSymbolTable().globalScope;
 	const builtinTypes = TypesSymbolTable().globalScope;
@@ -605,6 +628,7 @@ function materializeModules(
 	for (const [path, encoded] of bundle.modules) {
 		const root = materializeModule(
 			encoded,
+			path,
 			name => {
 				const symbol =
 					extraSymbols[name] ??
@@ -644,7 +668,26 @@ function materializeModules(
 		modules.set(path, module);
 	}
 	if (!modules.has(bundle.entry)) throw new Error('stdlib bundle has no entry module');
-	return modules;
+	const objects = new Map<Symbol, SerialObject>();
+	for (const object of bundle.objects) {
+		if (!object.name) continue;
+		const symbol = registry.get(object.hash)?.symbols[object.name];
+		if (symbol) objects.set(symbol, object);
+	}
+	const resolveRef = (ref: SerialRef): Symbol | undefined => {
+		if (ref.mod !== undefined)
+			return registry.get(ref.mod)?.symbols[ref.name];
+		return (
+			extraSymbols[ref.name] ??
+			extraTypes[ref.name] ??
+			builtinSymbols.get(ref.name) ??
+			builtinTypes.get(ref.name)
+		);
+	};
+	return {
+		modules,
+		splice: objects.size ? { objects, resolveRef } : undefined,
+	};
 }
 
 function namespaceSymbol(
@@ -687,11 +730,14 @@ let timeSymbols: Record<string, Symbol> = {};
 let testSymbols: Record<string, Symbol> = {};
 let stdlibDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
 let testDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
+let stdlibSplice: SpliceInput | undefined;
 let externalNames = new Set<string>();
 let initialized = false;
 
 function initializeStdlib(bytes: Uint8Array): void {
-	const modules = materializeModules(bytes);
+	const materialized = materializeModules(bytes);
+	const { modules } = materialized;
+	stdlibSplice = materialized.splice;
 	const prelude = modules.get('prelude.gb');
 	const time = modules.get('time.gb');
 	const test = modules.get('test.gb');
@@ -800,6 +846,16 @@ function withPrelude(
 	return { ...root, children: [...head, ...root.children] };
 }
 
+function withStdlibSplice(splice: SpliceInput | undefined): SpliceInput | undefined {
+	if (!stdlibSplice) return splice;
+	if (!splice) return stdlibSplice;
+	return {
+		objects: new Map([...stdlibSplice.objects, ...splice.objects]),
+		resolveRef: ref =>
+			splice.resolveRef(ref) ?? stdlibSplice?.resolveRef(ref),
+	};
+}
+
 export function Program(options?: ProgramOptions) {
 	if (!initialized)
 		throw new Error('compiler is not initialized; call loadCompiler first');
@@ -856,7 +912,7 @@ export function Program(options?: ProgramOptions) {
 					debugBuild: !!options?.debug,
 					hostExports,
 					sourcePaths: modeOptions.sourcePaths,
-					splice: modeOptions.splice?.(),
+					splice: withStdlibSplice(modeOptions.splice?.()),
 					maxMemoryPages: options?.maxMemoryPages,
 				});
 			} catch (e) {
@@ -911,6 +967,13 @@ export function Program(options?: ProgramOptions) {
 			...root,
 			children: root.children.filter(c => c.kind !== 'test'),
 		});
+		const collectObjects = (root: Node): void => {
+			compileWasm({
+				root,
+				sourcePaths,
+				objectSink: objects,
+			});
+		};
 		try {
 			const emptyRoot: NodeMap['root'] = {
 				kind: 'root',
@@ -920,13 +983,21 @@ export function Program(options?: ProgramOptions) {
 				line: 0,
 				source: '',
 			};
-			compileWasm({
-				root: withPrelude(emptyRoot, false, moduleDefs),
-				sourcePaths,
-				objectSink: objects,
-			});
+			collectObjects(withPrelude(emptyRoot, false, moduleDefs));
 		} catch {
 			objects.length = 0;
+			try {
+				collectObjects({
+					kind: 'root',
+					children: moduleDefs,
+					start: 0,
+					end: 0,
+					line: 0,
+					source: '',
+				});
+			} catch {
+				objects.length = 0;
+			}
 		}
 		const bundle = encodeBundle(
 			rel(path),
@@ -970,6 +1041,7 @@ export function Program(options?: ProgramOptions) {
 			root: withPrelude(root, testMode),
 			testMode,
 			debugBuild: !!options?.debug,
+			splice: withStdlibSplice(undefined),
 			maxMemoryPages: options?.maxMemoryPages,
 		});
 	}

@@ -26,7 +26,7 @@ export type BaseNodeMap = {
 	break: object;
 	ident: { symbol: Symbol };
 	label: object;
-	string: object;
+	string: { value?: string };
 	number: { value: number | bigint; float?: boolean };
 	literal: { value: unknown; references?: Node[] };
 	interp: { children: Node[]; strings: string[] };
@@ -81,6 +81,7 @@ export type BaseNodeMap = {
 	$: object;
 	negate: { children: [Node] };
 	fn: {
+		objectBacked?: true;
 		parameters?: NodeMap['parameter'][];
 		typeParameters?: NodeMap['parameter'][];
 		statements?: Node[];

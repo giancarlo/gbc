@@ -1,8 +1,16 @@
 import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
 import { tokenize } from '../sdk/index.js';
+import {
+	decodeBundle,
+	encodeBundle,
+	materializeModule,
+} from './bundle.js';
 import { Program, scan } from './index.js';
 import { bufferView, instantiateWasm } from './host.js';
+import type { NodeMap } from './node.js';
+import type { Symbol, Type } from './symbol-table.js';
+import { compileWasm, type LibraryObject } from './target-wasm.js';
 
 declare const WebAssembly: {
 	Module: new (bytes: Uint8Array) => unknown;
@@ -23,10 +31,167 @@ Language features must avoid breaking these rules:
 4. **No Bloat:** Only essential features.
 5. **Readable:** Prioritize clarity.
 6. **Performant:** Adapt the language when code generation requires it.
+7. **Scope:** Canonical scalar and core-data operations are top-level; specialize under namespaces.
 
 */
 export default spec('Language Reference', s => {
 	const { h } = s;
+
+	s.test('omits module source text from gbm bundles', a => {
+		const source = `export identity = (value: Int32): Int32 {
+			value
+		}`;
+		const built = Program({
+			sys: {
+				readFile: path => {
+					if (path === '/lib.gb') return source;
+					throw new Error(`ENOENT: ${path}`);
+				},
+				readBytes: path => {
+					throw new Error(`ENOENT: ${path}`);
+				},
+			},
+		}).buildLibrary('/lib.gb');
+		a.equal(built.errors.length, 0);
+		const bundle = built.bundle;
+		if (!bundle) throw new Error('Bundle build failed');
+		const positionFields = new Set(['source', 'start', 'end', 'line']);
+		const decoded = decodeBundle(bundle);
+		a.equal(
+			decoded.objects.some(object => object.name === 'identity'),
+			true,
+		);
+		const containsPositionFields = [...decoded.modules.values()].some(module =>
+			module.objs.some((record, index) =>
+				module.nodes[index]
+					? record.some(([name]) => positionFields.has(name))
+					: false,
+			),
+		);
+		a.equal(containsPositionFields, false);
+		const containsCheckerFields = [...decoded.modules.values()].some(module =>
+			module.objs.some(record =>
+				record.some(([name]) =>
+					['definition', 'owner', 'implicit'].includes(name),
+				),
+			),
+		);
+		a.equal(containsCheckerFields, false);
+		const sourceBytes = [...source].map(ch => ch.charCodeAt(0));
+		const includesSource = bundle.some((_, start) =>
+			sourceBytes.every((byte, offset) => bundle[start + offset] === byte),
+		);
+		a.equal(includesSource, false);
+	});
+
+	s.test('replaces stored function bodies with their wasm objects', a => {
+		const source = `touch = (value: Int32): Void { done };
+export stored = (value: Int32): Int32 { touch(value); next value + 1 };
+export inline = (value: Int32): Int32 { value + 1 };`;
+		const checked = Program({
+			sys: {
+				readFile: () => source,
+				readBytes: path => {
+					throw new Error(`ENOENT: ${path}`);
+				},
+			},
+		}).compileFile('/lib.gb');
+		const sourceDefinitions = checked.ast.children.filter(
+			(node): node is NodeMap['def'] => node.kind === 'def',
+		);
+		const root: NodeMap['root'] = {
+			...checked.ast,
+			children: sourceDefinitions,
+		};
+		const objects: LibraryObject[] = [];
+		const direct = compileWasm({ root, objectSink: objects });
+		const external = new Set(['Int32', 'Void']);
+		const decoded = decodeBundle(
+			encodeBundle(
+				'lib.gb',
+				[{ path: 'lib.gb', hash: 'fixture', root }],
+				name => external.has(name),
+				objects,
+			),
+		);
+		const module = decoded.modules.get('lib.gb');
+		if (!module) throw new Error('Missing fixture module');
+
+		const types = new Map<string, Type>();
+		const symbols = new Map<string, Symbol>();
+		for (const definition of sourceDefinitions) {
+			const fn = definition.value;
+			if (fn.kind !== 'fn') throw new Error('Fixture definition is not a function');
+			const returnType = fn.symbol.returnType;
+			if (returnType?.name) types.set(returnType.name, returnType);
+			if (fn.returnType?.kind === 'typeident' && fn.returnType.symbol.name)
+				symbols.set(fn.returnType.symbol.name, fn.returnType.symbol);
+			for (const parameter of fn.parameters ?? []) {
+				const type = parameter.symbol.type;
+				if (type?.name) types.set(type.name, type);
+				if (
+					parameter.type?.kind === 'typeident' &&
+					parameter.type.symbol.name
+				)
+					symbols.set(parameter.type.symbol.name, parameter.type.symbol);
+			}
+		}
+		const materialized = materializeModule(
+			module,
+			'lib.gb',
+			name => {
+				const symbol = symbols.get(name);
+				if (!symbol) throw new Error(`Missing external symbol ${name}`);
+				return symbol;
+			},
+			name => {
+				const type = types.get(name);
+				if (!type) throw new Error(`Missing external type ${name}`);
+				return type;
+			},
+			() => {
+				throw new Error('Unexpected module symbol');
+			},
+			() => {
+				throw new Error('Unexpected module type');
+			},
+		);
+		if (materialized.kind !== 'root')
+			throw new Error('Fixture module root was not restored');
+		const definitions = new Map<string, NodeMap['def']>(
+			materialized.children
+				.filter((node): node is NodeMap['def'] => node.kind === 'def')
+				.map(definition => [definition.symbol.name ?? '', definition]),
+		);
+		const stored = definitions.get('stored')?.value;
+		const inline = definitions.get('inline')?.value;
+		if (stored?.kind !== 'fn' || inline?.kind !== 'fn')
+			throw new Error('Missing fixture functions');
+		a.equal(stored.objectBacked, true);
+		a.equal(stored.statements, undefined);
+		a.equal(stored.children.length, 0);
+		a.equal(inline.objectBacked, undefined);
+		a.equal((inline.statements?.length ?? 0) > 0, true);
+
+		const objectMap = new Map<Symbol, (typeof decoded.objects)[number]>();
+		for (const object of decoded.objects) {
+			const symbol = definitions.get(object.name)?.symbol;
+			if (!symbol) throw new Error(`Missing object symbol ${object.name}`);
+			objectMap.set(symbol, object);
+		}
+		const spliced = compileWasm({
+			root: materialized,
+			splice: {
+				objects: objectMap,
+				resolveRef: ref => {
+					const symbol = definitions.get(ref.name)?.symbol;
+					if (!symbol) throw new Error(`Missing relocation ${ref.name}`);
+					return symbol;
+				},
+			},
+		});
+		a.equalValues([...spliced], [...direct]);
+	});
 
 	s.test('tokenizes editor input through the SDK', a => {
 		const source = "export value = 1\n'line\n${value}' \" export";

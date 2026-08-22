@@ -39,6 +39,10 @@ type ValueType = ResolvedType & {
 	family: Exclude<TypeFamily, 'void' | 'invalid' | 'unknown'>;
 };
 
+function identifierName(node: NodeMap['ident']): string {
+	return node.symbol.name ?? text(node);
+}
+
 function hasRuntimeValue(t: Type): t is ValueType {
 	return (
 		t.kind === 'type' &&
@@ -1824,7 +1828,7 @@ export function compileWasm({
 	}
 
 	function compileString(node: NodeMap['string'], fn: FuncBuilder): Type {
-		const raw = text(node);
+		const raw = node.value ?? text(node);
 		const decoded = decodeEscapes(raw.slice(1, -1));
 		emitDataConst(decoded, fn);
 		return BaseTypes.String;
@@ -2192,6 +2196,43 @@ export function compileWasm({
 	}
 
 	const returnsOwnedMemo = new Map<NodeMap['fn'], boolean>();
+	const definitionOwners = new Map<NodeMap['def'], NodeMap['fn']>();
+	{
+		const seen = new Set<Node>();
+		const childrenOf = (node: Node): readonly (Node | undefined)[] => {
+			switch (node.kind) {
+				case 'typeident':
+				case 'done':
+				case 'break':
+				case 'ident':
+				case 'label':
+				case 'string':
+				case 'number':
+				case 'literal':
+				case 'loop':
+				case 'comment':
+				case '@':
+				case '$':
+					return [];
+				case 'next':
+					return node.children ?? [];
+				case 'main':
+				case 'test':
+				case 'fn':
+					return [...node.children, ...(node.statements ?? [])];
+				default:
+					return node.children;
+			}
+		};
+		const visit = (node: Node | undefined, owner?: NodeMap['fn']): void => {
+			if (!node || seen.has(node)) return;
+			seen.add(node);
+			const nextOwner = node.kind === 'fn' ? node : owner;
+			if (node.kind === 'def' && owner) definitionOwners.set(node, owner);
+			for (const child of childrenOf(node)) visit(child, nextOwner);
+		};
+		visit(root);
+	}
 
 	function fnReturnsOwned(fnNode: NodeMap['fn']): boolean {
 		const emissionOwnership = directEmissionOwnership(fnNode.symbol);
@@ -2223,8 +2264,7 @@ export function compileWasm({
 		const def = node.symbol.definition;
 		return (
 			def?.kind === 'def' &&
-			def.start >= fnNode.start &&
-			def.end <= fnNode.end &&
+			definitionOwners.get(def) === fnNode &&
 			ownableExpr(def.value)
 		);
 	}
@@ -3635,7 +3675,7 @@ export function compileWasm({
 	if (root.kind === 'root')
 		for (const c of root.children)
 			if (c.kind === 'extend') {
-				const nm = text(c.children[0]);
+				const nm = identifierName(c.children[0]);
 				const arms = typeCtorArms.get(nm) ?? [];
 				arms.push(c.children[1]);
 				typeCtorArms.set(nm, arms);
@@ -7841,7 +7881,7 @@ export function compileWasm({
 			({ initBuf, wasmType, valueType } = initNumberGlobal(value, declaredType));
 			needsRuntimeInit = false;
 		} else if (value.kind === 'string') {
-			const raw = text(value);
+			const raw = value.value ?? text(value);
 			const decoded = decodeEscapes(raw.slice(1, -1));
 			const ptr = intern(decoded);
 			initBuf = [OP_I32_CONST];
@@ -8058,6 +8098,10 @@ export function compileWasm({
 				spliceObject(builder, obj);
 				continue;
 			}
+			if (fnNode.objectBacked)
+				throw new Error(
+					`gbm: missing object for "${builder.name ?? fnNode.symbol.name ?? ''}"`,
+				);
 			const before = internCalls;
 			compileFnBody(builder, fnNode);
 			if (builder.relocs && !builder.relocTainted) {
@@ -8127,6 +8171,54 @@ export function compileWasm({
 		}
 	}
 
+	function exportedBuilderIdx(def: NodeMap['def']): number | undefined {
+		return (
+			fnDefBuilderIdx.get(def.symbol) ??
+			(def.value.kind === 'fn'
+				? fnDefBuilderIdx.get(def.value.symbol)
+				: undefined)
+		);
+	}
+
+	function compactFunctions(mainIdx: number): number {
+		const reachable = new Set<number>();
+		const pending = [allocBuilderIdx, streqBuilderIdx, freeBuilderIdx, mainIdx];
+		if (debugBuild) pending.push(captureBuilderIdx);
+		for (const def of hostExports ?? []) {
+			const idx = exportedBuilderIdx(def);
+			if (idx !== undefined) pending.push(idx);
+		}
+		while (pending.length) {
+			const idx = pending.pop();
+			if (idx === undefined || reachable.has(idx)) continue;
+			reachable.add(idx);
+			for (const fix of funcBuilders[idx]?.callFixups ?? [])
+				pending.push(fix.builderIdx);
+		}
+		const remap = new Map<number, number>();
+		const kept = funcBuilders.filter((_, oldIdx) => {
+			if (!reachable.has(oldIdx)) return false;
+			remap.set(oldIdx, remap.size);
+			return true;
+		});
+		for (const builder of kept)
+			for (const fix of builder.callFixups) {
+				const idx = remap.get(fix.builderIdx);
+				if (idx === undefined)
+					throw new Error('reachable function calls an unreachable function');
+				fix.builderIdx = idx;
+			}
+		for (const [symbol, oldIdx] of fnDefBuilderIdx) {
+			const idx = remap.get(oldIdx);
+			if (idx === undefined) fnDefBuilderIdx.delete(symbol);
+			else fnDefBuilderIdx.set(symbol, idx);
+		}
+		funcBuilders.splice(0, funcBuilders.length, ...kept);
+		const remappedMain = remap.get(mainIdx);
+		if (remappedMain === undefined) throw new Error('main is unreachable');
+		return remappedMain;
+	}
+
 	compileBodies(declareTopLevel());
 
 	// Phase 4: compile main
@@ -8181,9 +8273,10 @@ export function compileWasm({
 	}
 
 	// Phase 5: resolve funcidx fixups
+	const compactMainBuilderIdx = compactFunctions(mainBuilderIdx);
 	const baseFuncIdx = imports.length;
 	resolveCallFixups(baseFuncIdx);
-	const mainFuncIdx = baseFuncIdx + mainBuilderIdx;
+	const mainFuncIdx = baseFuncIdx + compactMainBuilderIdx;
 
 		const shadowBase = (heap + 7) & ~7;
 		const heapStart =
@@ -8532,11 +8625,7 @@ export function compileWasm({
 		for (const def of hostExports) {
 			const name = def.symbol.name;
 			if (!name) continue;
-			const builderIdx =
-				fnDefBuilderIdx.get(def.symbol) ??
-				(def.value.kind === 'fn'
-					? fnDefBuilderIdx.get(def.value.symbol)
-					: undefined);
+			const builderIdx = exportedBuilderIdx(def);
 			if (builderIdx === undefined)
 				throw new Error(
 					`"${name}" cannot be exported to the host — generic and dispatch functions have no single wasm signature`,

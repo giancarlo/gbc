@@ -806,7 +806,7 @@ function resolveType(node: CheckedNode): Type | undefined {
 		case 'number':
 			return node.float ? BT.Float64 : numberLiteralType(node.value);
 		case 'string': {
-			const v = text(node).slice(1, -1);
+			const v = (node.value ?? text(node)).slice(1, -1);
 			return {
 				kind: 'type',
 				flags: 0,
@@ -2914,7 +2914,8 @@ export function checker({
 		// needs arms covering its domain.
 		const emitTypeOf = (n: Node): Type => {
 			if (n.kind === 'number') return litType(n.value);
-			if (n.kind === 'string') return litType(text(n).slice(1, -1));
+			if (n.kind === 'string')
+				return litType((n.value ?? text(n)).slice(1, -1));
 			if (n.kind === 'ident' && n.symbol.kind === 'literal') {
 				const v = n.symbol.value;
 				if (
