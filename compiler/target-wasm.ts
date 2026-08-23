@@ -19,6 +19,7 @@ import {
 	StackIntrinsic,
 	unifyTypeParam,
 } from './symbol-table.js';
+import { childNodes } from './node.js';
 
 import type { Node, NodeMap } from './node.js';
 import type {
@@ -327,8 +328,7 @@ function emitSimdOpcode(opcode: number, out: number[]): void {
 	uleb128(opcode, out);
 }
 
-function setTypeInPlace(target: object, src: object) {
-	for (const k of Object.keys(target)) Reflect.deleteProperty(target, k);
+function setTypeInPlace(target: ResolvedType, src: ResolvedType) {
 	Object.assign(target, src);
 }
 
@@ -1201,14 +1201,7 @@ export function compileWasm({
 				const info = infos.get(n.symbol);
 				if (info && !calleeIdents.has(n)) info.nonCall = true;
 			}
-			if ('children' in n && n.children) {
-				const kids = n.children;
-				for (let i = 0; i < kids.length; i++) visit(kids[i]);
-			}
-			if ('statements' in n && n.statements) {
-				const stmts = n.statements;
-				for (let i = 0; i < stmts.length; i++) visit(stmts[i]);
-			}
+			for (const child of childNodes(n)) visit(child);
 			if (n.kind === 'def' || n.kind === 'propdef') visit(n.value);
 			if (isFn) fnStack.pop();
 		};
@@ -1271,14 +1264,7 @@ export function compileWasm({
 			const walk = (n: Node | undefined): void => {
 				if (!n || hit) return;
 				if (n.kind === 'call' && flowsAtCall(n)) hit = true;
-				if ('children' in n && n.children) {
-					const kids = n.children;
-					for (let j = 0; j < kids.length; j++) walk(kids[j]);
-				}
-				if ('statements' in n && n.statements) {
-					const stmts = n.statements;
-					for (let j = 0; j < stmts.length; j++) walk(stmts[j]);
-				}
+				for (const child of childNodes(n)) walk(child);
 				if (n.kind === 'def' || n.kind === 'propdef') walk(n.value);
 			};
 			(fnNode.statements ?? []).forEach(walk);
@@ -2262,37 +2248,12 @@ export function compileWasm({
 	const definitionOwners = new Map<NodeMap['def'], NodeMap['fn']>();
 	{
 		const seen = new Set<Node>();
-		const childrenOf = (node: Node): readonly (Node | undefined)[] => {
-			switch (node.kind) {
-				case 'typeident':
-				case 'done':
-				case 'break':
-				case 'ident':
-				case 'label':
-				case 'string':
-				case 'number':
-				case 'literal':
-				case 'loop':
-				case 'comment':
-				case '@':
-				case '$':
-					return [];
-				case 'next':
-					return node.children ?? [];
-				case 'main':
-				case 'test':
-				case 'fn':
-					return [...node.children, ...(node.statements ?? [])];
-				default:
-					return node.children;
-			}
-		};
 		const visit = (node: Node | undefined, owner?: NodeMap['fn']): void => {
 			if (!node || seen.has(node)) return;
 			seen.add(node);
 			const nextOwner = node.kind === 'fn' ? node : owner;
 			if (node.kind === 'def' && owner) definitionOwners.set(node, owner);
-			for (const child of childrenOf(node)) visit(child, nextOwner);
+			for (const child of childNodes(node)) visit(child, nextOwner);
 		};
 		visit(root);
 	}
@@ -4020,7 +3981,10 @@ export function compileWasm({
 	const typeCtorArms = new Map<string, NodeMap['fn'][]>();
 	if (root.kind === 'root')
 		for (const c of root.children)
-			if (c.kind === 'extend') {
+			if (
+				c.kind === 'extend' &&
+				c.children[0].symbol.kind !== 'function'
+			) {
 				const nm = identifierName(c.children[0]);
 				const arms = typeCtorArms.get(nm) ?? [];
 				arms.push(c.children[1]);
@@ -5124,15 +5088,30 @@ export function compileWasm({
 			if (isCatchAllArm(o)) return false;
 			const ps = o.parameters;
 			if (!ps || ps.length !== ats.length) return false;
+			const typeParamNames = new Set(
+				(o.typeParams ?? [])
+					.map(type => type.name)
+					.filter((name): name is string => !!name),
+			);
+			const bindings = new Map<string, Type>();
+			ps.forEach((p, i) =>
+				unifyTypeParam(p.type, ats[i], typeParamNames, bindings),
+			);
 			return ps.every((p, i) => {
-				const pt = p.type;
+				const pt = p.type ? reduceType(p.type, bindings) : undefined;
 				const at = ats[i];
 				if (
 					pt?.kind !== 'type' ||
-					pt.family === 'unknown' ||
 					at?.kind !== 'type'
 				)
 					return false;
+				if (
+					pt.family === 'unknown' &&
+					pt.name &&
+					typeParamNames.has(pt.name)
+				)
+					return true;
+				if (pt.family === 'unknown') return false;
 				if (pt.family === at.family && pt.name === at.name) return true;
 				if (composes(at, pt)) return true;
 				return (
@@ -5545,6 +5524,13 @@ export function compileWasm({
 		const recv = node.children[0];
 		const field = node.children[1];
 		if (recv.kind === 'data') return compileMemberData(recv, field, fn);
+		if (
+			recv.kind === 'ident' &&
+			recv.symbol.kind === 'variable' &&
+			recv.symbol.flags & Flags.Module &&
+			field.kind === 'ident'
+		)
+			return compileIdent(field, fn);
 		const staticValue = staticNamespaceMember(recv, field);
 		if (staticValue) return compileExpr(staticValue, fn);
 		if (recv.kind === '$') return compileMemberDollar(field, fn);
@@ -7731,9 +7717,9 @@ export function compileWasm({
 		argTypes: Type[],
 		subst: Map<string, Type>,
 		bindings: Map<GbcSymbol, SymbolMap['function']>,
-	): { ph: object; saved: object }[] {
+	): { ph: ResolvedType; saved: ResolvedType }[] {
 		const tparams = template.typeParameters ?? [];
-		const restorePh: { ph: object; saved: object }[] = [];
+		const restorePh: { ph: ResolvedType; saved: ResolvedType }[] = [];
 		if (!tparams.length) return restorePh;
 		const names = new Set(
 			tparams.map(tp => tp.symbol.name).filter((n): n is string => !!n),
@@ -8482,8 +8468,24 @@ export function compileWasm({
 	function declareTopLevel(): { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] {
 		const fnsToCompile: { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] = [];
 		if (root.kind !== 'root') return fnsToCompile;
+		const declareArm = (arm: NodeMap['fn']): void => {
+			const p0 = arm.parameters?.[0];
+			if (arm.parameters?.length === 1 && p0 && !p0.type) {
+				fnTemplates.set(arm.symbol, arm);
+				return;
+			}
+			const declared = declareFn(arm.symbol, arm);
+			if (declared) fnsToCompile.push(declared);
+		};
 		computeDeclaredOwnedInParams(root);
 		for (const child of root.children) {
+			if (
+				child.kind === 'extend' &&
+				child.children[0].symbol.kind === 'function'
+			) {
+				declareArm(child.children[1]);
+				continue;
+			}
 			if (child.kind !== 'def') continue;
 			if (child.value.kind === 'fn') {
 				const declared = declareFn(child.symbol, child.value);
@@ -8494,13 +8496,7 @@ export function compileWasm({
 			if (arms)
 				for (const arm of arms) {
 					if (arm.kind !== 'fn') continue;
-					const p0 = arm.parameters?.[0];
-					if (arm.parameters?.length === 1 && p0 && !p0.type) {
-						fnTemplates.set(arm.symbol, arm);
-						continue;
-					}
-					const declared = declareFn(arm.symbol, arm);
-					if (declared) fnsToCompile.push(declared);
+					declareArm(arm);
 				}
 		}
 		for (const child of root.children) {
@@ -9214,17 +9210,18 @@ function decodeEscapes(s: string): string {
 			continue;
 		}
 		const next = s[i + 1];
-		const simple: Record<string, string> = {
-			n: '\n',
-			r: '\r',
-			t: '\t',
-			'\\': '\\',
-			"'": "'",
-			'"': '"',
-			$: '$',
-		};
-		if (next !== undefined && next in simple) {
-			out += simple[next];
+		const simple = new Map([
+			['n', '\n'],
+			['r', '\r'],
+			['t', '\t'],
+			['\\', '\\'],
+			["'", "'"],
+			['"', '"'],
+			['$', '$'],
+		]);
+		const escaped = next === undefined ? undefined : simple.get(next);
+		if (escaped !== undefined) {
+			out += escaped;
 			i += 2;
 		} else if (next === 'u' && s[i + 2] === '{') {
 			const end = s.indexOf('}', i + 3);

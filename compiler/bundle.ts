@@ -1,5 +1,5 @@
-import type { Node, NodeMap } from './node.js';
-import type { ResolvedType, Symbol, SymbolMap, Type } from './symbol-table.js';
+import { childNodes, type Node, type NodeMap } from './node.js';
+import type { Symbol, SymbolMap, Type } from './symbol-table.js';
 import type { LibraryObject } from './target-wasm.js';
 
 declare class TextEncoder {
@@ -29,25 +29,41 @@ const enum Tag {
 	TypeMod = 12,
 }
 
-const DECLARING = new Set([
-	'def',
-	'external',
-	'fn',
-	'parameter',
-	'propdef',
-	'type',
-]);
-
-function isNode(v: object): v is Node {
-	return 'kind' in v && 'start' in v && 'end' in v;
+interface EncodedObjectInfo {
+	kind?: string;
+	name?: string;
+	family?: string;
+	symbol: boolean;
 }
 
-function isSymbolLike(v: object): v is Symbol {
-	return 'kind' in v && 'flags' in v && !('start' in v);
+function encodedObjectInfo(entries: [string, unknown][]): EncodedObjectInfo {
+	let kind: string | undefined;
+	let name: string | undefined;
+	let family: string | undefined;
+	let flags = false;
+	let start = false;
+	for (const [key, value] of entries) {
+		if (key === 'kind' && typeof value === 'string') kind = value;
+		else if (key === 'name' && typeof value === 'string') name = value;
+		else if (key === 'family' && typeof value === 'string') family = value;
+		else if (key === 'flags' && typeof value === 'number') flags = true;
+		else if (key === 'start') start = true;
+	}
+	return { kind, name, family, symbol: flags && !start };
 }
 
-function isResolvedType(v: object): v is ResolvedType {
-	return 'kind' in v && v.kind === 'type' && 'family' in v;
+function declaringSymbol(node: Node): Symbol | undefined {
+	switch (node.kind) {
+		case 'def':
+		case 'external':
+		case 'fn':
+		case 'parameter':
+		case 'propdef':
+		case 'type':
+			return node.symbol;
+		default:
+			return undefined;
+	}
 }
 
 class Writer {
@@ -213,38 +229,18 @@ function ownersOf(
 ): Map<object, string> {
 	const owner = new Map<object, string>();
 	for (const m of modules) {
-		const seen = new Set<object>();
-		const walk = (vals: unknown[]): void => {
-			for (const v of vals) {
-				if (!v || typeof v !== 'object') continue;
-				if (Array.isArray(v)) {
-					const arr: unknown[] = v;
-					walk(arr);
-					continue;
-				}
-				if (!isNode(v) || seen.has(v)) continue;
-				seen.add(v);
-				if (DECLARING.has(v.kind) && 'symbol' in v) {
-					owner.set(v.symbol, m.hash);
-					const symbol: unknown = v.symbol;
-					if (
-						typeof symbol === 'object' &&
-						symbol !== null &&
-						'kind' in symbol &&
-						symbol.kind === 'type' &&
-						'type' in symbol &&
-						typeof symbol.type === 'object' &&
-						symbol.type !== null
-					)
-						owner.set(symbol.type, m.hash);
-				}
-				const kids: unknown[] = Object.keys(v)
-					.filter(k => k !== 'symbol')
-					.map((k): unknown => Reflect.get(v, k));
-				walk(kids);
+		const seen = new Set<Node>();
+		const walk = (node: Node | undefined): void => {
+			if (!node || seen.has(node)) return;
+			seen.add(node);
+			const symbol = declaringSymbol(node);
+			if (symbol) {
+				owner.set(symbol, m.hash);
+				if (symbol.kind === 'type') owner.set(symbol.type, m.hash);
 			}
+			for (const child of childNodes(node)) walk(child);
 		};
-		walk([m.root]);
+		walk(m.root);
 	}
 	return owner;
 }
@@ -290,7 +286,14 @@ function graphOfModule(
 	const shapeIds: number[] = [];
 	const shapeRoot: ShapeTrie = { children: new Map() };
 	const index = new Map<object, number>();
-	const bodylessFns = new Set<NodeMap['fn']>();
+	const moduleNodes = new Set<object>();
+	const collectNode = (node: Node | undefined): void => {
+		if (!node || moduleNodes.has(node)) return;
+		moduleNodes.add(node);
+		for (const child of childNodes(node)) collectNode(child);
+	};
+	collectNode(m.root);
+	const bodylessFns = new Set<object>();
 	if (m.root.kind === 'root')
 		for (const child of m.root.children)
 			if (
@@ -327,23 +330,28 @@ function graphOfModule(
 		return shape.id;
 	};
 	const tagObject = (o: object): Tagged => {
+		const entries: [string, unknown][] = Object.entries(o);
+		const info = encodedObjectInfo(entries);
+		const resolvedType = info.kind === 'type' && info.family !== undefined;
 		const h = owner.get(o);
 		if (h !== undefined && h !== m.hash) {
-			const name = isSymbolLike(o) ? o.name : undefined;
-			if (typeof name === 'string')
-				return { t: isResolvedType(o) ? Tag.TypeMod : Tag.Mod, h, s: name };
+			if (info.symbol && info.name)
+				return {
+					t: resolvedType ? Tag.TypeMod : Tag.Mod,
+					h,
+					s: info.name,
+				};
 		}
 		if (
 			h === undefined &&
-			isSymbolLike(o) &&
-			typeof o.name === 'string' &&
-			(!isResolvedType(o) ||
-				(o.family !== 'buffer' && o.family !== 'vector')) &&
-			isExternalName(o.name)
+			info.symbol &&
+			info.name &&
+			(!resolvedType || (info.family !== 'buffer' && info.family !== 'vector')) &&
+			isExternalName(info.name)
 		)
 			return {
-				t: isResolvedType(o) ? Tag.TypeExt : Tag.Ext,
-				s: o.name,
+				t: resolvedType ? Tag.TypeExt : Tag.Ext,
+				s: info.name,
 			};
 		return { t: Tag.Ref, r: intern(o) };
 	};
@@ -367,38 +375,43 @@ function graphOfModule(
 		index.set(o, i);
 		objs.push([]);
 		shapeIds.push(0);
-		const nodeValue = isNode(o) ? o : undefined;
-		const node = nodeValue !== undefined;
-		const bodyless = nodeValue?.kind === 'fn' && bodylessFns.has(nodeValue);
-		const kindValue: unknown = Reflect.get(o, 'kind');
-		const kind = typeof kindValue === 'string' ? kindValue : undefined;
-		const keys = Object.keys(o).filter(
-			k =>
-				k !== 'scope' &&
-				k !== 'references' &&
-				!(kind !== undefined && k === 'kind') &&
-				!(isSymbolLike(o) && k === 'definition') &&
-				!(bodyless && k === 'statements') &&
+		const node = moduleNodes.has(o);
+		const bodyless = bodylessFns.has(o);
+		const entries: [string, unknown][] = Object.entries(o);
+		const info = encodedObjectInfo(entries);
+		const kind = info.kind;
+		const serializedFields = entries.filter(
+			([key]) =>
+				key !== 'scope' &&
+				key !== 'references' &&
+				!(kind !== undefined && key === 'kind') &&
+				!(info.symbol && key === 'definition') &&
+				!(bodyless && key === 'statements') &&
 				!(
 					node &&
-					(k === 'source' ||
-						k === 'start' ||
-						k === 'end' ||
-						k === 'line' ||
-						k === 'owner' ||
-						k === 'implicit')
+					(key === 'source' ||
+						key === 'start' ||
+						key === 'end' ||
+						key === 'line' ||
+						key === 'owner' ||
+						key === 'implicit')
 				),
 		);
-		if (nodeValue?.kind === 'string') keys.push('value');
-		if (bodyless) keys.push('objectBacked');
-		const vals: unknown[] = keys.map((k): unknown =>
-			nodeValue?.kind === 'string' && k === 'value'
-				? nodeValue.source.slice(nodeValue.start, nodeValue.end)
-				: bodyless && k === 'children'
-				? []
-				: bodyless && k === 'objectBacked'
-					? true
-					: Reflect.get(o, k),
+		if (kind === 'string') {
+			const source = entries.find(([key]) => key === 'source')?.[1];
+			const start = entries.find(([key]) => key === 'start')?.[1];
+			const end = entries.find(([key]) => key === 'end')?.[1];
+			if (
+				typeof source === 'string' &&
+				typeof start === 'number' &&
+				typeof end === 'number'
+			)
+				serializedFields.push(['value', source.slice(start, end)]);
+		}
+		if (bodyless) serializedFields.push(['objectBacked', true]);
+		const keys = serializedFields.map(([key]) => key);
+		const vals: unknown[] = serializedFields.map(([key, value]): unknown =>
+			bodyless && key === 'children' ? [] : value,
 		);
 		const tags = toTagged(vals);
 		const fields = keys.map((key, field) => ({
@@ -424,6 +437,7 @@ export function encodeBundle(
 	modules: { path: string; hash: string; root: Node }[],
 	isExternalName: (name: string) => boolean,
 	objects: LibraryObject[] = [],
+	metadata: { test?: string } = {},
 ): Uint8Array {
 	const owner = ownersOf(modules);
 	const storable = storableObjects(
@@ -434,7 +448,7 @@ export function encodeBundle(
 	);
 	const objectSymbols = new Set(storable.map(object => object.sym));
 	const w = new Writer();
-	w.str(entry);
+	w.str(metadata.test ? `${entry}\0${metadata.test}` : entry);
 	w.varint(modules.length);
 	for (const m of modules) {
 		const g = graphOfModule(m, owner, isExternalName, objectSymbols);
@@ -685,8 +699,8 @@ function writeTypedVal(w: Writer, e: Tagged, wire: Wire, base: number): void {
 
 type DecVal =
 	| { t: Tag.Null | Tag.True | Tag.False }
-	| { t: Tag.Int; n: number }
-	| { t: Tag.Int; big: false; f: number }
+	| { t: Tag.Int; format: 'integer'; n: number }
+	| { t: Tag.Int; format: 'float'; f: number }
 	| { t: Tag.Str | Tag.Big | Tag.Ext | Tag.TypeExt; s: string }
 	| { t: Tag.Ref; r: number }
 	| { t: Tag.Mod | Tag.TypeMod; h: string; s: string }
@@ -701,8 +715,9 @@ function readVal(r: Reader, base: number): DecVal {
 	const t: Tag = r.u8();
 	switch (t) {
 		case Tag.Int: {
-			if (r.u8() === 0) return { t: Tag.Int, n: readSigned(r) };
-			return { t: Tag.Int, big: false, f: r.f64() };
+			if (r.u8() === 0)
+				return { t: Tag.Int, format: 'integer', n: readSigned(r) };
+			return { t: Tag.Int, format: 'float', f: r.f64() };
 		}
 		case Tag.Str:
 		case Tag.Big:
@@ -734,9 +749,9 @@ function readTypedVal(r: Reader, wire: Wire, base: number): DecVal {
 		case Wire.False:
 			return { t: Tag.False };
 		case Wire.Int:
-			return { t: Tag.Int, n: readSigned(r) };
+			return { t: Tag.Int, format: 'integer', n: readSigned(r) };
 		case Wire.Float:
-			return { t: Tag.Int, big: false, f: r.f64() };
+			return { t: Tag.Int, format: 'float', f: r.f64() };
 		case Wire.Str:
 		case Wire.Big:
 		case Wire.Ext:
@@ -799,6 +814,7 @@ export interface SerialObject {
 }
 export interface DecodedBundle {
 	entry: string;
+	test?: string;
 	modules: Map<string, DecodedModule>;
 	objects: SerialObject[];
 }
@@ -841,7 +857,7 @@ function readObjects(r: Reader): SerialObject[] {
 
 export function decodeBundle(bytes: Uint8Array): DecodedBundle {
 	const r = new Reader(bytes);
-	const entry = r.str();
+	const [entry = '', test] = r.str().split('\0', 2);
 	const count = r.varint();
 	const modules = new Map<string, DecodedModule>();
 	for (let i = 0; i < count; i++) {
@@ -878,7 +894,7 @@ export function decodeBundle(bytes: Uint8Array): DecodedBundle {
 		modules.set(path, { hash, root, objs, nodes });
 	}
 	const objects = readObjects(r);
-	return { entry, modules, objects };
+	return { entry, test, modules, objects };
 }
 
 export function materializeModule(
@@ -889,7 +905,20 @@ export function materializeModule(
 	resolveModSymbol: (hash: string, name: string) => Symbol,
 	resolveModType: (hash: string, name: string) => Type,
 ): Node {
-	const objs: Record<string, unknown>[] = m.objs.map(() => ({}));
+	const nodes: (Node | undefined)[] = [];
+	const objs: object[] = m.objs.map((_, i) => {
+		if (!m.nodes[i]) return {};
+		const node: NodeMap['root'] = {
+			kind: 'root',
+			children: [],
+			source,
+			start: 0,
+			end: 0,
+			line: 0,
+		};
+		nodes[i] = node;
+		return node;
+	});
 	const dec = (e: DecVal): unknown => {
 		switch (e.t) {
 			case Tag.Null:
@@ -899,7 +928,7 @@ export function materializeModule(
 			case Tag.False:
 				return false;
 			case Tag.Int:
-				return 'n' in e ? e.n : e.f;
+				return e.format === 'integer' ? e.n : e.f;
 			case Tag.Str:
 				return e.s;
 			case Tag.Big:
@@ -921,23 +950,17 @@ export function materializeModule(
 	m.objs.forEach((rec, i) => {
 		const o = objs[i];
 		if (!o) return;
-		for (const [k, v] of rec) o[k] = dec(v);
-		if (m.nodes[i]) {
-			o.source = source;
-			o.start = 0;
-			o.end = 0;
-			o.line = 0;
-		}
+		Object.assign(
+			o,
+			Object.fromEntries(rec.map(([key, value]) => [key, dec(value)])),
+		);
 	});
-	for (let i = 0; i < objs.length; i++) {
-		if (!m.nodes[i]) continue;
-		const node = objs[i];
-		if (!node || !DECLARING.has(String(node.kind))) continue;
-		const symbol = node.symbol;
-		if (symbol && typeof symbol === 'object')
-			Reflect.set(symbol, 'definition', node);
+	for (const node of nodes) {
+		if (!node) continue;
+		const symbol = declaringSymbol(node);
+		if (symbol) symbol.definition = node;
 	}
-	const root = objs[m.root];
-	if (!root || !isNode(root)) throw new Error('bundle root is not a node');
+	const root = nodes[m.root];
+	if (!root) throw new Error('bundle root is not a node');
 	return root;
 }

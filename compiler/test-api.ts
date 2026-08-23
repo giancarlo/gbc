@@ -335,7 +335,7 @@ export class SpecApi extends TestApiBase<SpecApi> {
 
 	/**
 	 * Compile `src` (a program containing `#test { ... }` blocks) in test mode
-	 * and run it. The test prelude's `ok`/`equal` are silent on a pass and emit
+	 * and run it. The test module's `ok`/`equal` are silent on a pass and emit
 	 * a failure line otherwise, so `out` is the sequence of failures (empty when
 	 * every assertion holds).
 	 */

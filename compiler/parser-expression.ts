@@ -898,12 +898,17 @@ export function parseExpression(
 						if (!importName) leftSymbol = symbolTable.get('@');
 					} else if (left.kind === 'ident') leftSymbol = left.symbol;
 
-					const propSymbol =
+					const members =
 						leftSymbol?.kind === 'data'
-							? leftSymbol.members[prop]
-							: undefined;
+							? leftSymbol.members
+							: leftSymbol?.kind === 'variable' &&
+								  leftSymbol.type?.kind === 'type' &&
+								  leftSymbol.type.family === 'data'
+								? leftSymbol.type.members
+								: undefined;
+					const propSymbol = members?.[prop];
 
-					if (leftSymbol?.kind === 'data' && !propSymbol)
+					if (members && !propSymbol)
 						throw error(
 							`Property "${prop}" does not exist in "${text(
 								left,

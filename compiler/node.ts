@@ -140,6 +140,28 @@ export type Node = NodeMap[keyof NodeMap];
 export type NodeKind = keyof NodeMap;
 export type InfixNode = Extract<Node, Infix>;
 
+export function childNodes(node: Node): readonly (Node | undefined)[] {
+	switch (node.kind) {
+		case 'typeident':
+		case 'done':
+		case 'break':
+		case 'ident':
+		case 'label':
+		case 'string':
+		case 'number':
+		case 'literal':
+		case 'loop':
+		case 'comment':
+		case '@':
+		case '$':
+			return [];
+		case 'next':
+			return node.children ?? [];
+		default:
+			return node.children;
+	}
+}
+
 export function syntheticNext(
 	value: Node,
 	owner: SymbolMap['function'],

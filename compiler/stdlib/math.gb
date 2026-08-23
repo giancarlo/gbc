@@ -256,7 +256,7 @@ trigReduceCommon = (
 	)
 };
 
-trigReduce = (
+export trigReduce = (
 	x: Float64,
 	mode: Int32
 ): Float64 {
@@ -271,18 +271,6 @@ trigReduce = (
 					? trigReduceCommon(x, mode)
 					: trigReduceLarge(ax, x < 0.0, mode)
 };
-
-export sin =
-	  (x: Float64): Float64 { trigReduce(x, 0) }
-	| (x: Float32): Float32 { Float32(trigReduce(Float64(x), 0)) };
-
-export cos =
-	  (x: Float64): Float64 { trigReduce(x, 1) }
-	| (x: Float32): Float32 { Float32(trigReduce(Float64(x), 1)) };
-
-export tan =
-	  (x: Float64): Float64 { trigReduce(x, 2) }
-	| (x: Float32): Float32 { Float32(trigReduce(Float64(x), 2)) };
 
 inverseAtanKernel = (z: Float64): Float64 {
 	z * z >> (z2: Float64) {
@@ -313,7 +301,7 @@ inverseAtanPositive = (x: Float64): Float64 {
 			: inverseAtanKernel(x)
 };
 
-inverseAtan64 = (x: Float64): Float64 {
+export inverseAtan64 = (x: Float64): Float64 {
 	ax = abs(x);
 	next x != x
 		? x
@@ -324,7 +312,7 @@ inverseAtan64 = (x: Float64): Float64 {
 				: copysign(inverseAtanPositive(ax), x)
 };
 
-inverseAtan2 = (y: Float64, x: Float64): Float64 {
+export inverseAtan2 = (y: Float64, x: Float64): Float64 {
 	ax = abs(x);
 	ay = abs(y);
 	xNegative = (bits(x) :> 63) != Uint64(0);
@@ -344,44 +332,6 @@ inverseAtan2 = (y: Float64, x: Float64): Float64 {
 								? inverseAtan64(y / x)
 								: copysign(3.141592653589793 - abs(inverseAtan64(y / x)), y)
 };
-
-export atan =
-	  (x: Float64): Float64 { inverseAtan64(x) }
-	| (x: Float32): Float32 { Float32(inverseAtan64(Float64(x))) };
-
-export atan2 =
-	  (y: Float64, x: Float64): Float64 { inverseAtan2(y, x) }
-	| (y: Float32, x: Float32): Float32 { Float32(inverseAtan2(Float64(y), Float64(x))) };
-
-export asin =
-	  (x: Float64): Float64 { inverseAtan2(x, sqrt((1.0 - x) * (1.0 + x))) }
-	| (x: Float32): Float32 { Float32(inverseAtan2(Float64(x), sqrt((1.0 - Float64(x)) * (1.0 + Float64(x))))) };
-
-export acos =
-	  (x: Float64): Float64 { inverseAtan2(sqrt((1.0 - x) * (1.0 + x)), x) }
-	| (x: Float32): Float32 { Float32(inverseAtan2(sqrt((1.0 - Float64(x)) * (1.0 + Float64(x))), Float64(x))) };
-
-export hypot =
-	  (x: Float64, y: Float64): Float64 {
-		ax = abs(x);
-		ay = abs(y);
-		next ax == infinity
-			? x
-			: ay == infinity
-				? y
-				: x != x
-					? x
-					: y != y
-						? y
-						: (max(ax, ay) >> (hi: Float64) {
-							hi == 0.0
-								? 0.0
-									: (min(ax, ay) / hi >> (ratio: Float64) {
-										hi * sqrt(1.0 + ratio * ratio)
-									})
-						})
-	}
-	| (x: Float32, y: Float32): Float32 { Float32(hypot(Float64(x), Float64(y))) };
 
 fastSinKernel = (x: Float64): Float64 {
 	x * x >> (z: Float64) {
@@ -469,22 +419,17 @@ fastTan64 = (x: Float64): Float64 {
 				})
 };
 
-fastSin =
+export fastSin =
 	  (x: Float64): Float64 { fastSin64(x) }
 	| (x: Float32): Float32 { Float32(fastSin64(Float64(x))) };
 
-fastCos =
+export fastCos =
 	  (x: Float64): Float64 { fastCos64(x) }
 	| (x: Float32): Float32 { Float32(fastCos64(Float64(x))) };
 
-fastTan =
+export fastTan =
 	  (x: Float64): Float64 { fastTan64(x) }
 	| (x: Float32): Float32 { Float32(fastTan64(Float64(x))) };
 
-export math = [
-	pi = 3.141592653589793,
-	tau = 6.283185307179586,
-	fastSin = fastSin,
-	fastCos = fastCos,
-	fastTan = fastTan
-];
+export pi = 3.141592653589793;
+export tau = 6.283185307179586;

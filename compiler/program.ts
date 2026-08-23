@@ -138,8 +138,8 @@ function normalizeErrors(errors: CompilerError[]): void {
 
 /**
  * Parse + type-check one module from source, returning its AST root and
- * top-level symbol scope. Has no knowledge of "stdlib" — the same function
- * loads the prelude now and any `@module` once the module system lands.
+ * top-level symbol scope. Has no knowledge of the standard library; it loads
+ * every source module through the same module interface.
  */
 function loadModule(
 	source: string,
@@ -165,14 +165,7 @@ function loadModule(
 	return { root, scope, errors: api.errors };
 }
 
-export interface StdlibSources {
-	prelude: string;
-	math: string;
-	time: string;
-	test: string;
-}
-
-function withoutPreludeTypes<T>(fn: () => T): T {
+function withoutStdlibTypes<T>(fn: () => T): T {
 	const intrinsicStates = [
 		OriginIntrinsic,
 		FramesIntrinsic,
@@ -198,11 +191,15 @@ function withoutPreludeTypes<T>(fn: () => T): T {
 			if (parameter) parameter.type = parameterType;
 			intrinsic.returnType = returnType;
 		}
-		setDivByZero(preludeTypes['DivByZero']?.type);
+		setDivByZero(stdlibEntryTypes['DivByZero']?.type);
 	}
 }
 
-export function buildStdlibBundle(sources: StdlibSources): Uint8Array {
+export function buildStdlibBundle(
+	entryPath: string,
+	testPath: string,
+	sys: System,
+): Uint8Array {
 	const builtinNames = new Set<string>();
 	for (const table of [
 		ProgramSymbolTable().globalScope,
@@ -211,58 +208,49 @@ export function buildStdlibBundle(sources: StdlibSources): Uint8Array {
 		for (const name of table.keys())
 			if (typeof name === 'string') builtinNames.add(name);
 
-	const build = (
-		path: keyof StdlibSources,
-		extraSymbols?: Record<string, Symbol>,
-		extraTypes?: Record<string, TypeSymbol>,
-	): Module => {
-		const source = sources[path];
-		const module = loadModule(source, extraSymbols, extraTypes);
-		if (module.errors.length)
-			throw new Error(
-				`${path} stdlib failed: ${module.errors
-					.map(e => `line ${e.position.line + 1}: ${e.message}`)
-					.join(', ')}`,
+	return withoutStdlibTypes(() => {
+		const baseSymbols: Record<string, Symbol> = {};
+		const baseTypes: Record<string, TypeSymbol> = {};
+		const { loadLibraryEntry, loadedModules, moduleDefs, sourcePaths } =
+			createModuleLoader(
+				sys,
+				dirName(entryPath),
+				baseSymbols,
+				baseTypes,
 			);
-		return module;
-	};
-
-	const prelude = withoutPreludeTypes(() => build('prelude'));
-	const { symbols, defs: preludeDefs } = collectDefs(prelude);
-	const types = collectTypes(prelude);
-	const math = build('math', symbols, types);
-	const time = build('time', symbols, types);
-	const test = build('test', symbols, types);
-	const mathCollected = collectDefs(math);
-	markConstantNamespaces(mathCollected.symbols);
-	const objects: LibraryObject[] = [];
-	compileWasm({
-		root: {
-			kind: 'root',
-			children: [
-				...preludeDefs,
-				...mathCollected.defs,
-				...collectDefs(time).defs,
-				...collectDefs(test).defs,
-			],
-			start: 0,
-			end: 0,
-			line: 0,
-			source: '',
-		},
-		objectSink: objects,
+		const entry = loadLibraryEntry(entryPath);
+		Object.assign(baseSymbols, collectDefs(entry.module).symbols);
+		Object.assign(baseTypes, collectTypes(entry.module));
+		loadLibraryEntry(testPath);
+		const objects: LibraryObject[] = [];
+		compileWasm({
+			root: {
+				kind: 'root',
+				children: moduleDefs,
+				start: 0,
+				end: 0,
+				line: 0,
+				source: '',
+			},
+			sourcePaths,
+			objectSink: objects,
+		});
+		const base = dirName(entryPath);
+		const relative = (path: string) =>
+			base && path.startsWith(`${base}/`)
+				? path.slice(base.length + 1)
+				: path;
+		return encodeBundle(
+			relative(entryPath),
+			loadedModules.map(module => ({
+				...module,
+				path: relative(module.path),
+			})),
+			name => builtinNames.has(name),
+			objects,
+			{ test: relative(testPath) },
+		);
 	});
-	return encodeBundle(
-		'prelude.gb',
-		[
-			{ path: 'prelude.gb', hash: fnv1a(sources.prelude), root: prelude.root },
-			{ path: 'math.gb', hash: fnv1a(sources.math), root: math.root },
-			{ path: 'time.gb', hash: fnv1a(sources.time), root: time.root },
-			{ path: 'test.gb', hash: fnv1a(sources.test), root: test.root },
-		],
-		name => builtinNames.has(name),
-		objects,
-	);
 }
 
 /**
@@ -273,8 +261,14 @@ export function buildStdlibBundle(sources: StdlibSources): Uint8Array {
  * program's map, which is what keeps them dependency-free for consumers.
  * Module identity is the resolved path; cycles are an error.
  */
-function createModuleLoader(sys: System, entryDir: string) {
+function createModuleLoader(
+	sys: System,
+	entryDir: string,
+	baseSymbols: Record<string, Symbol> = stdlibEntrySymbols,
+	baseTypes: Record<string, TypeSymbol> = stdlibEntryTypes,
+) {
 	type Loaded = {
+		module: Module;
 		symbol: SymbolMap['variable'];
 		exports: Record<string, Symbol>;
 		types: Record<string, TypeSymbol>;
@@ -319,11 +313,7 @@ function createModuleLoader(sys: System, entryDir: string) {
 	function resolveObjRef(ref: SerialRef): Symbol | undefined {
 		if (ref.mod !== undefined)
 			return registry.get(ref.mod)?.all[ref.name] ?? undefined;
-		return (
-			preludeSymbols[ref.name] ??
-			testSymbols[ref.name] ??
-			builtinSymbols.get(ref.name)
-		);
+		return baseSymbols[ref.name] ?? builtinSymbols.get(ref.name);
 	}
 	const moduleDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
 	/** Module source text → display path, for error-trace `Frame.file`. */
@@ -412,12 +402,10 @@ function createModuleLoader(sys: System, entryDir: string) {
 				src = readSource(path);
 				ctxStack.push(childCtx);
 				try {
-					mod = loadModule(
-						src,
-						{ ...preludeSymbols, ...testSymbols },
-						preludeTypes,
-						{ loader, module: true },
-					);
+					mod = loadModule(src, baseSymbols, baseTypes, {
+						loader,
+						module: true,
+					});
 				} finally {
 					ctxStack.pop();
 				}
@@ -448,17 +436,37 @@ function createModuleLoader(sys: System, entryDir: string) {
 			const symbol: SymbolMap['variable'] = {
 				kind: 'variable',
 				name: refName,
-				flags: 0,
+				flags: Flags.Module,
 				type: {
 					kind: 'type',
 					flags: 0,
 					name: refName,
 					family: 'data',
 					size: 4,
-					members: exports,
+					members: Object.fromEntries(
+						Object.entries(exports).map(
+							([name, member]): [string, Symbol] => {
+								if (member.kind !== 'function') return [name, member];
+								const binding: SymbolMap['variable'] = {
+									kind: 'variable',
+									name,
+									flags: 0,
+									type: member,
+								};
+								return [name, binding];
+							},
+						),
+					),
 				},
 			};
-			const loaded: Loaded = { symbol, exports, types, hash, root: mod.root };
+			const loaded: Loaded = {
+				module: mod,
+				symbol,
+				exports,
+				types,
+				hash,
+				root: mod.root,
+			};
 			loadedModules.push({ path, hash, root: mod.root });
 			registry.set(hash, { exports, types, all: symbols });
 			cache.set(key, loaded);
@@ -565,11 +573,8 @@ function createModuleLoader(sys: System, entryDir: string) {
 	};
 }
 
-// Prelude = the stdlib's gb definitions. It is GLOBAL: its symbols are
-// injected into every program's scope (like `error`/`length`) and its def
-// nodes — plus `extend Type …` ctor arms — are prepended to the codegen root
-// so their templates are inlinable.
-// Imported modules (future `@module.name`) are NOT global — resolved via `@`.
+// Definitions from the standard-library entry are global. Imported modules
+// remain namespaced and are resolved through their module bindings.
 function collectDefs(module: Module): {
 	symbols: Record<string, Symbol>;
 	defs: (NodeMap['def'] | NodeMap['extend'])[];
@@ -584,6 +589,9 @@ function collectDefs(module: Module): {
 		}
 		if (child.kind === 'extend') {
 			defs.push(child);
+			const name = child.children[0].symbol.name;
+			const target = name ? module.scope.get(name) : undefined;
+			if (name && target?.kind === 'function') symbols[name] = target;
 			continue;
 		}
 		if (
@@ -594,6 +602,14 @@ function collectDefs(module: Module): {
 		) {
 			if (child.symbol.name) symbols[child.symbol.name] = child.symbol;
 			defs.push(child);
+		} else if (
+			child.kind === 'def' &&
+			child.symbol.name &&
+			child.symbol.flags & Flags.Export
+		) {
+			symbols[child.symbol.name] = child.symbol;
+			if (!(child.symbol.flags & Flags.Module))
+				defs.push(child);
 		}
 	}
 	return { symbols, defs };
@@ -610,7 +626,40 @@ function collectTypes(module: Module): Record<string, TypeSymbol> {
 	return types;
 }
 
+function collectExports(module: Module): {
+	symbols: Record<string, Symbol>;
+	types: Record<string, TypeSymbol>;
+	defs: (NodeMap['def'] | NodeMap['extend'])[];
+} {
+	const collected = collectDefs(module);
+	const extensions = new Set(
+		collected.defs.flatMap(definition =>
+			definition.kind === 'extend' &&
+			definition.children[0].symbol.kind === 'function' &&
+			definition.children[0].symbol.name
+				? [definition.children[0].symbol.name]
+				: [],
+		),
+	);
+	return {
+		symbols: Object.fromEntries(
+			Object.entries(collected.symbols).filter(
+				([name, symbol]) =>
+					!!(symbol.flags & Flags.Export) || extensions.has(name),
+			),
+		),
+		types: Object.fromEntries(
+			Object.entries(collectTypes(module)).filter(
+				([, symbol]) => !!(symbol.flags & Flags.Export),
+			),
+		),
+		defs: collected.defs,
+	};
+}
+
 interface MaterializedModules {
+	entry: string;
+	test?: string;
 	modules: Map<string, Module>;
 	splice?: SpliceInput;
 }
@@ -691,116 +740,73 @@ function materializeModules(
 		);
 	};
 	return {
+		entry: bundle.entry,
+		test: bundle.test,
 		modules,
 		splice: objects.size ? { objects, resolveRef } : undefined,
 	};
 }
 
-function namespaceSymbol(
-	name: string,
-	members: Record<string, Symbol>,
-): SymbolMap['variable'] {
-	const namespaceMembers = Object.fromEntries(
-		Object.entries(members).map(([memberName, symbol]) => [
-			memberName,
-			symbol.kind === 'function'
-				? {
-						kind: 'variable' as const,
-						name: memberName,
-						flags: 0,
-						type: symbol,
-					}
-				: symbol,
-		]),
-	);
-	return {
-		kind: 'variable',
-		name,
-		flags: 0,
-		type: {
-			kind: 'type',
-			flags: 0,
-			name,
-			family: 'data',
-			size: 4,
-			members: namespaceMembers,
-		},
-	};
-}
-
-function markConstantNamespaces(symbols: Record<string, Symbol>): void {
-	for (const symbol of Object.values(symbols)) {
-		const definition = symbol.definition;
-		if (
-			symbol.kind === 'variable' &&
-			definition?.kind === 'def' &&
-			definition.value.kind === 'data'
-		)
-			symbol.flags |= Flags.Intrinsic;
-	}
-}
-
 const builtinSymbols = ProgramSymbolTable().globalScope;
 const builtinTypes = TypesSymbolTable().globalScope;
-let preludeSymbols: Record<string, Symbol> = {};
-let preludeTypes: Record<string, TypeSymbol> = {};
-let mathSymbols: Record<string, Symbol> = {};
-let mathDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
-let timeSymbols: Record<string, Symbol> = {};
+let stdlibEntrySymbols: Record<string, Symbol> = {};
+let stdlibEntryTypes: Record<string, TypeSymbol> = {};
+let stdlibSymbols: Record<string, Symbol> = {};
+let stdlibTypes: Record<string, TypeSymbol> = {};
 let testSymbols: Record<string, Symbol> = {};
+let testTypes: Record<string, TypeSymbol> = {};
 let stdlibDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
 let testDefs: (NodeMap['def'] | NodeMap['extend'])[] = [];
 let stdlibSplice: SpliceInput | undefined;
 let externalNames = new Set<string>();
 let initialized = false;
 
-function requiredStdlibModule(
+function collectStdlibModules(
 	modules: Map<string, Module>,
-	name: string,
-): Module {
-	const module = modules.get(name);
-	if (!module) throw new Error(`stdlib bundle is missing ${name}`);
-	return module;
+	test: Module,
+): void {
+	stdlibSymbols = {};
+	stdlibTypes = {};
+	stdlibDefs = [];
+	testSymbols = {};
+	testTypes = {};
+	testDefs = [];
+	for (const module of modules.values()) {
+		const collected = collectDefs(module);
+		Object.assign(stdlibSymbols, collected.symbols);
+		Object.assign(stdlibTypes, collectTypes(module));
+		if (module === test) {
+			const exports = collectExports(module);
+			testSymbols = exports.symbols;
+			testTypes = exports.types;
+			testDefs = collected.defs;
+		} else stdlibDefs.push(...collected.defs);
+	}
 }
 
 function initializeStdlib(bytes: Uint8Array): void {
 	const materialized = materializeModules(bytes);
-	const { modules } = materialized;
+	const { entry, test: testEntry, modules } = materialized;
 	stdlibSplice = materialized.splice;
-	const prelude = requiredStdlibModule(modules, 'prelude.gb');
-	const math = requiredStdlibModule(modules, 'math.gb');
-	const time = requiredStdlibModule(modules, 'time.gb');
-	const test = requiredStdlibModule(modules, 'test.gb');
-	const preludeCollected = collectDefs(prelude);
-	preludeSymbols = preludeCollected.symbols;
-	preludeTypes = collectTypes(prelude);
-	const mathCollected = collectDefs(math);
-	mathSymbols = Object.fromEntries(
-		Object.entries(mathCollected.symbols).filter(
-			([, symbol]) => symbol.flags & Flags.Export,
-		),
-	);
-	markConstantNamespaces(mathSymbols);
-	Object.assign(preludeSymbols, mathSymbols);
-	mathDefs = mathCollected.defs;
-	const timeCollected = collectDefs(time);
-	timeSymbols = timeCollected.symbols;
-	const timeExports = Object.fromEntries(
-		Object.entries(timeSymbols).filter(
-			([, symbol]) => symbol.flags & Flags.Export,
-		),
-	);
-	preludeSymbols.time = namespaceSymbol('time', timeExports);
-	stdlibDefs = [...preludeCollected.defs, ...timeCollected.defs];
-	const testCollected = collectDefs(test);
-	testSymbols = testCollected.symbols;
-	testDefs = testCollected.defs;
-
-	setDivByZero(preludeTypes['DivByZero']?.type);
-	setDivByZeroType(preludeTypes['DivByZero']?.type);
-	setTraceTypes(BaseTypes.Trace, preludeTypes['Frame']?.type);
-	const errorType = preludeTypes['Error']?.type;
-	const frameType = preludeTypes['Frame']?.type;
+	const index = modules.get(entry);
+	if (!index) throw new Error('stdlib bundle has no entry module');
+	const test = testEntry ? modules.get(testEntry) : undefined;
+	if (!test) throw new Error('stdlib bundle has no test entry');
+	const indexExports = collectExports(index);
+	stdlibEntrySymbols = {
+		...collectDefs(index).symbols,
+		...indexExports.symbols,
+	};
+	stdlibEntryTypes = {
+		...collectTypes(index),
+		...indexExports.types,
+	};
+	collectStdlibModules(modules, test);
+	setDivByZero(stdlibEntryTypes['DivByZero']?.type);
+	setDivByZeroType(stdlibEntryTypes['DivByZero']?.type);
+	setTraceTypes(BaseTypes.Trace, stdlibEntryTypes['Frame']?.type);
+	const errorType = stdlibEntryTypes['Error']?.type;
+	const frameType = stdlibEntryTypes['Frame']?.type;
 	for (const intrinsic of [
 		OriginIntrinsic,
 		FramesIntrinsic,
@@ -831,13 +837,7 @@ function initializeStdlib(bytes: Uint8Array): void {
 	for (const table of [builtinSymbols, builtinTypes])
 		for (const name of table.keys())
 			if (typeof name === 'string') externalNames.add(name);
-	for (const record of [
-		preludeSymbols,
-		mathSymbols,
-		testSymbols,
-		preludeTypes,
-		timeSymbols,
-	])
+	for (const record of [stdlibSymbols, stdlibTypes])
 		for (const name of Object.keys(record)) externalNames.add(name);
 	initialized = true;
 }
@@ -858,23 +858,25 @@ export async function loadCompiler(
 }
 function resolveExternalSymbol(name: string): Symbol {
 	const s =
-		preludeSymbols[name] ??
-		timeSymbols[name] ??
-		testSymbols[name] ??
+		stdlibEntrySymbols[name] ??
+		stdlibSymbols[name] ??
 		builtinSymbols.get(name) ??
-		preludeTypes[name] ??
+		stdlibEntryTypes[name] ??
 		builtinTypes.get(name);
 	if (!s) throw new Error(`bundle references unknown external "${name}"`);
 	return s;
 }
 
 function resolveExternalType(name: string): Type {
-	const type = preludeTypes[name]?.type ?? builtinTypes.get(name)?.type;
+	const type =
+		stdlibEntryTypes[name]?.type ??
+		stdlibTypes[name]?.type ??
+		builtinTypes.get(name)?.type;
 	if (!type) throw new Error(`bundle references unknown external type "${name}"`);
 	return type;
 }
 
-function withPrelude(
+function withStdlib(
 	root: Node,
 	testMode = false,
 	moduleDefs: (NodeMap['def'] | NodeMap['extend'])[] = [],
@@ -882,7 +884,6 @@ function withPrelude(
 	if (root.kind !== 'root') return root;
 	const head = [
 		...stdlibDefs,
-		...mathDefs,
 		...moduleDefs,
 		...(testMode ? testDefs : []),
 	];
@@ -906,15 +907,18 @@ export function Program(options?: ProgramOptions) {
 	const symbolTable = ProgramSymbolTable();
 	const typesTable = TypesSymbolTable();
 	const api = ParserApi(scan);
-	symbolTable.setSymbols(preludeSymbols);
-	symbolTable.setSymbols(testSymbols);
-	typesTable.setSymbols(preludeTypes);
+	symbolTable.setSymbols(stdlibEntrySymbols);
+	typesTable.setSymbols(stdlibEntryTypes);
 
 	function parser(src: string, parseOptions?: ParseOptions) {
 		api.start(src);
 		const scope = symbolTable.push();
 		const typeScope = typesTable.push();
-		const root = parse(api, symbolTable, typesTable, parseOptions);
+		const root = parse(api, symbolTable, typesTable, {
+			...parseOptions,
+			testSymbols,
+			testTypes,
+		});
 		typesTable.pop(typeScope);
 		symbolTable.pop(scope);
 		return { root, scope, errors: api.errors };
@@ -951,7 +955,7 @@ export function Program(options?: ProgramOptions) {
 		if (parsed.errors.length === 0) {
 			try {
 				bytes = compileWasm({
-					root: withPrelude(parsed.root, testMode, modeOptions.moduleDefs),
+					root: withStdlib(parsed.root, testMode, modeOptions.moduleDefs),
 					testMode,
 					debugBuild: !!options?.debug,
 					hostExports,
@@ -1027,7 +1031,7 @@ export function Program(options?: ProgramOptions) {
 				line: 0,
 				source: '',
 			};
-			collectObjects(withPrelude(emptyRoot, false, moduleDefs));
+			collectObjects(withStdlib(emptyRoot, false, moduleDefs));
 		} catch {
 			objects.length = 0;
 			try {
@@ -1082,7 +1086,7 @@ export function Program(options?: ProgramOptions) {
 
 	function compileAst(root: Node, testMode = false): Uint8Array {
 		return compileWasm({
-			root: withPrelude(root, testMode),
+			root: withStdlib(root, testMode),
 			testMode,
 			debugBuild: !!options?.debug,
 			splice: withStdlibSplice(undefined),

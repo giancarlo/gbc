@@ -3,6 +3,7 @@ import { ParserApi, Token, text } from '../sdk/index.js';
 import { parseExpression } from './parser-expression.js';
 import { parseType, typeParameters } from './parser-type.js';
 import { Flags, SymbolTable, TypesSymbolTable } from './symbol-table.js';
+import { childNodes } from './node.js';
 
 import type { ScannerToken } from './scanner.js';
 import type { Node, NodeMap } from './node.js';
@@ -11,7 +12,7 @@ import type { Symbol, SymbolMap, Type, TypeSymbol } from './symbol-table.js';
 export type RootNode = ReturnType<typeof parse>;
 
 /** A parsed `@` module reference: `@name` (library, via the import map) or
- * `@.seg.seg` (local file, relative to the importing file). */
+	* `@.seg.seg` (local file, relative to the importing file). */
 export interface ModuleRef {
 	dot: boolean;
 	segs: string[];
@@ -33,6 +34,9 @@ export interface ParseOptions {
 	loader?: ModuleLoader;
 	/** Parsing an imported module: `main` is forbidden. */
 	module?: boolean;
+	/** Symbols and types visible only inside `#test` blocks. */
+	testSymbols?: Record<string, Symbol>;
+	testTypes?: Record<string, TypeSymbol>;
 }
 
 export function parse(
@@ -317,6 +321,12 @@ export function parse(
 		}
 
 		if (isExport) markExported(expr);
+		if (
+			expr.kind === 'def' &&
+			expr.value.kind === 'ident' &&
+			expr.value.symbol.flags & Flags.Module
+		)
+			expr.symbol.flags |= Flags.Module;
 
 		return expr;
 	}
@@ -448,17 +458,26 @@ export function parse(
 			symbolTable.localReferenceDepth = symbolTable.stack.length;
 			try {
 				return symbolTable.withScope(scope => {
-					const children = deferred(() =>
-						parseStatementBlock(expression, '}'),
-					);
-					return {
-						...token,
-						kind: 'test' as const,
-						scope,
-						children,
-						end: consume('}').end,
-						statements: children,
-					};
+					const testTypeScope = typesTable.push();
+					try {
+						if (options.testSymbols)
+							symbolTable.setSymbols(options.testSymbols);
+						if (options.testTypes) typesTable.setSymbols(options.testTypes);
+						const children = deferred(() =>
+							parseStatementBlock(expression, '}'),
+						);
+						const testNode: NodeMap['test'] = {
+							...token,
+							kind: 'test',
+							scope,
+							children,
+							end: consume('}').end,
+							statements: children,
+						};
+						return testNode;
+					} finally {
+						typesTable.pop(testTypeScope);
+					}
 				});
 			} finally {
 				symbolTable.ignoreReferences = prev;
@@ -493,6 +512,7 @@ export function parse(
 	const defsByName = new Map<string, NodeMap['def']>();
 	for (const c of children)
 		if (c.kind === 'def' && c.symbol.name) defsByName.set(c.symbol.name, c);
+	const extendedFunctions = new Map<Symbol, SymbolMap['function']>();
 	const mergedChildren: Node[] = [];
 	for (const c of children) {
 		if (c.kind === 'extend') {
@@ -511,6 +531,30 @@ export function parse(
 				def.children[2] = merged;
 				continue;
 			}
+			const sourceTarget = c.children[0].symbol;
+			const target = extendedFunctions.get(sourceTarget) ?? sourceTarget;
+			if (
+				target.kind === 'function' &&
+				(target.overloads || target.flags & Flags.Intrinsic)
+			) {
+				let dispatch = extendedFunctions.get(sourceTarget);
+				if (!dispatch) {
+					dispatch = target.overloads
+						? { ...target, overloads: [...target.overloads] }
+						: {
+								kind: 'function',
+								name: target.name,
+								flags: target.flags & ~Flags.Intrinsic,
+								overloads: [target],
+							};
+					extendedFunctions.set(sourceTarget, dispatch);
+					symbolTable.set(targetName, dispatch);
+				}
+				dispatch.overloads?.push(arm.symbol);
+				c.children[0].symbol = dispatch;
+				mergedChildren.push(c);
+				continue;
+			}
 			// Extending a type's constructor: keep the node; the checker and
 			// codegen resolve the arm against the type's constructor dispatch.
 			if (typesTable.get(targetName)) {
@@ -524,6 +568,16 @@ export function parse(
 		}
 		mergedChildren.push(c);
 	}
+	const replaceExtendedFunction = (n: Node): void => {
+		if (n.kind === 'ident' || n.kind === 'fn' || n.kind === 'external') {
+			const replacement = extendedFunctions.get(n.symbol);
+			if (replacement) n.symbol = replacement;
+		}
+		for (const child of childNodes(n))
+			if (child) replaceExtendedFunction(child);
+	};
+	if (extendedFunctions.size > 0)
+		for (const child of mergedChildren) replaceExtendedFunction(child);
 	resolveForwardRefs();
 	validateTestPlacement(mergedChildren);
 	const root = {

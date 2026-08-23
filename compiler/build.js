@@ -1,16 +1,21 @@
-import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { buildLibrary, file, rx, tsconfig } from '@cxl/build';
 
 let stdlibPromise;
 function buildStdlib() {
 	return (stdlibPromise ??= (async () => {
 		const { buildStdlibBundle } = await import('../dist/compiler/program.js');
-		const [prelude, math, time, test] = await Promise.all(
-			['prelude', 'math', 'time', 'test'].map(name =>
-				readFile(new URL(`./stdlib/${name}.gb`, import.meta.url), 'utf8'),
+		const root = new URL('./stdlib/', import.meta.url);
+		return Buffer.from(
+			buildStdlibBundle(
+				new URL('index.gb', root).pathname,
+				new URL('test.gb', root).pathname,
+				{
+					readFile: path => readFileSync(path, 'utf8'),
+					readBytes: path => new Uint8Array(readFileSync(path)),
+				},
 			),
 		);
-		return Buffer.from(buildStdlibBundle({ prelude, math, time, test }));
 	})());
 }
 

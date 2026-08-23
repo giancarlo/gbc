@@ -7,6 +7,7 @@ export enum Flags {
 	Export = 2,
 	External = 16,
 	Intrinsic = 32,
+	Module = 64,
 }
 
 export type OwnershipMode = 'borrow' | 'var' | 'own';

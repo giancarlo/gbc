@@ -27,9 +27,9 @@ export default spec('Language Reference', s => {
 		const files: Record<string, string> = {
 			'/stdlib/index.gb': `export utility = @.support;`,
 			'/stdlib/support.gb': `export value = (): Int32 { 42 };`,
-			'/stdlib/unreferenced.gb': `export unused = (): Int32 { 0 };`,
+			'/stdlib/test.gb': `export verify = (condition: Bool) { condition };`,
 		};
-		const bundle = buildStdlibBundle('/stdlib/index.gb', {
+		const bundle = buildStdlibBundle('/stdlib/index.gb', '/stdlib/test.gb', {
 			readFile(path) {
 				const source = files[path];
 				if (source === undefined) throw new Error(`ENOENT: ${path}`);
@@ -41,7 +41,11 @@ export default spec('Language Reference', s => {
 		});
 		const decoded = decodeBundle(bundle);
 		a.equal(decoded.entry, 'index.gb');
-		a.equal([...decoded.modules.keys()].join(','), 'support.gb,index.gb');
+		a.equal(decoded.test, 'test.gb');
+		a.equal(
+			[...decoded.modules.keys()].join(','),
+			'support.gb,index.gb,test.gb',
+		);
 	});
 
 	s.test('omits module source text from gbm bundles', a => {
@@ -687,7 +691,7 @@ main { apply(twice, 5) >> out }`,
 			`
 		 This is a sample of a simple "Hello World" program. The _main_ block is our entry point.
 		 No code is allowed outside of it other than type and function definitions.
-		 The standard library is a global prelude whose symbols are available unqualified.
+		 The standard-library entry exports the symbols available globally and unqualified.
 		 The pipe \`>>\` operator will call the \`out\` function passing its left value as an argument.
 		`,
 			({ rule }) => {
@@ -3963,7 +3967,7 @@ export target = (): Int32 { 0 }`,
 				maxPages: 8,
 			});
 			testBlock({
-				p: 'The prelude `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
+				p: 'The standard-library entry’s `indexOf` returns the first matching index (`-1` if absent) and `contains` reports membership, comparing elements with `==`; both read the buffer by borrow, so the source survives (`length` still `3`).',
 				src: `export ints = (): own Buffer<Int32> { b = Buffer<Int32>(3); set(b, 0, 3); set(b, 1, 5); set(b, 2, 7); next b };
 export strs = (): own Buffer<String> { s0 = Array<String>(2); s1 = push(s0, 'a'); next push(s1, 'b') };
 #test {
@@ -4951,7 +4955,7 @@ main { triple(3) >> out }`,
 
 	h('Modules', ({ p, modules }) => {
 		p(
-			`A module is a single source file; \`export\` marks its public surface. The standard library is a global prelude — its symbols (\`out\`, \`each\`, …) are in scope unqualified. \`@.seg.seg\` names a local module relative to the importing file; \`@name\` names a library through the entry's \`#importmap\`. \`(a, b) = @…\` binds exports by name (two or more names); \`m = @…\` binds the whole module as a namespace. A library never sees the program's map — its own \`#importmap\` starts a fresh unit, so published libraries carry no dependencies.`,
+			`A module is a single source file; \`export\` marks its public surface. The standard library entry's symbols (\`out\`, \`each\`, …) are in scope unqualified. \`@.seg.seg\` names a local module relative to the importing file; \`@name\` names a library through the entry's \`#importmap\`. \`(a, b) = @…\` binds exports by name (two or more names); \`m = @…\` binds the whole module as a namespace. A library never sees the program's map — its own \`#importmap\` starts a fresh unit, so published libraries carry no dependencies.`,
 			({ ast }) => {
 				ast({
 					src: `export helper = (x: Int32) { x * 2 }`,
@@ -5272,6 +5276,10 @@ main { report(mk(9)) >> out }`,
 	});
 
 	h('Test blocks', ({ ast, compileError, rule, testBlock }) => {
+		compileError({
+			src: `main { ok(true) }`,
+			expected: 'Identifier not defined',
+		});
 		ast({
 			src: `#test { 5 == 5 } target = (): Int32 { 5 }`,
 			ast: `(test (== 5 5)) (def :target ? (fn typeident (next 5)))`,
