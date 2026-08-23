@@ -3,6 +3,8 @@ import {
 	BaseNode,
 	BinaryNodeBase,
 	CompilerError,
+	createCaseInsensitiveTrie,
+	createTrie,
 	findNodeAtIndex,
 	Flags,
 	LeafNode,
@@ -122,18 +124,59 @@ export default spec('sdk', s => {
 		s.test('createTrieMatcher', it => {
 			it.should('parse keywords that contain each other', a => {
 				const { createTrieMatcher } = ScannerApi({ source: 'main' });
-				const matcher = createTrieMatcher(['ma', 'main'], notIdent);
+				const matcher = createTrieMatcher(
+					createTrie('ma', 'main'),
+					notIdent,
+				);
 				a.equal(matcher()?.kind, 'main');
 			});
 			it.should('return undefined for no match', a => {
 				const { createTrieMatcher } = ScannerApi({ source: 'xtz' });
-				const matcher = createTrieMatcher(['xy', 'xyz'], notIdent);
+				const matcher = createTrieMatcher(
+					createTrie('xy', 'xyz'),
+					notIdent,
+				);
 				a.equal(matcher()?.kind, undefined);
 			});
 			it.should('handle partial matches correctly', a => {
 				const { createTrieMatcher } = ScannerApi({ source: 'mat-ch' });
-				const matcher = createTrieMatcher(['mat', 'match'], notIdent);
+				const matcher = createTrieMatcher(
+					createTrie('mat', 'match'),
+					notIdent,
+				);
 				a.equal(matcher()?.kind, 'mat');
+			});
+			it.should('match case-insensitive tries with canonical kinds', a => {
+				const { createTrieMatcher } = ScannerApi({ source: 'pRiNt' });
+				const matcher = createTrieMatcher(
+					createCaseInsensitiveTrie('PRINT'),
+					notIdent,
+				);
+				a.equal(matcher()?.kind, 'PRINT');
+			});
+			it.should('match overlapping case-insensitive keywords', a => {
+				const { createTrieMatcher } = ScannerApi({ source: 'gOtO' });
+				const matcher = createTrieMatcher(
+					createCaseInsensitiveTrie('GO', 'GOTO'),
+					notIdent,
+				);
+				a.equal(matcher()?.kind, 'GOTO');
+			});
+			it.should('respect case-insensitive keyword boundaries', a => {
+				const { createTrieMatcher } = ScannerApi({ source: 'PRINTABLE' });
+				const matcher = createTrieMatcher(
+					createCaseInsensitiveTrie('PRINT'),
+					notIdent,
+				);
+				a.equal(matcher()?.kind, undefined);
+			});
+			it.should('reject case-insensitive non-matches', a => {
+				const { createTrieMatcher } = ScannerApi({ source: 'plot' });
+				const matcher = createTrieMatcher(
+					createCaseInsensitiveTrie('PRINT'),
+					notIdent,
+				);
+				a.equal(matcher()?.kind, undefined);
 			});
 		});
 

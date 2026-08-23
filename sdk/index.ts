@@ -825,6 +825,22 @@ export function createTrie<T extends string>(...map: T[]) {
 	return trie;
 }
 
+export function createCaseInsensitiveTrie<T extends string>(...map: T[]) {
+	const trie = createTrie(...map);
+	const pending = [trie];
+	for (let i = 0; i < pending.length; i++) {
+		const node = pending[i];
+		if (!node) continue;
+		for (const [ch, child] of Object.entries(node)) {
+			if (!child) continue;
+			node[ch.toLowerCase()] = child;
+			node[ch.toUpperCase()] = child;
+			pending.push(child);
+		}
+	}
+	return trie;
+}
+
 export function ScannerApi({ source }: { source: string }) {
 	const length = source.length;
 	let index = 0;
@@ -927,7 +943,7 @@ export function ScannerApi({ source }: { source: string }) {
 	}
 
 	function createTrieMatcher<T extends string>(
-		map: readonly T[],
+		trie: TrieNode<T>,
 		end: MatchFn,
 	) {
 		function trieToken<Kind extends string>(
@@ -938,7 +954,6 @@ export function ScannerApi({ source }: { source: string }) {
 			return tk(kind, consumed);
 		}
 
-		const trie = createTrie(...map);
 		return (consumed = 0) => {
 			let ch = source.at(index + consumed);
 			let node = trie;

@@ -1,4 +1,4 @@
-import { ScannerApi, matchers, stringEscape } from '../sdk/index.js';
+import { createTrie, ScannerApi, matchers, stringEscape } from '../sdk/index.js';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
@@ -16,6 +16,8 @@ export const keywords = [
 	'type',
 	'var',
 ] as const;
+
+const keywordTrie = createTrie(...keywords);
 
 const { alpha, digit, hexDigit, binaryDigit, ident } = matchers;
 
@@ -38,7 +40,7 @@ export function scan(source: string) {
 		matchEnclosed,
 	} = ScannerApi({ source });
 
-	const keywordMatcher = createTrieMatcher(keywords, notIdent);
+	const keywordMatcher = createTrieMatcher(keywordTrie, notIdent);
 
 	const braceStack: number[] = [];
 	const braceLog: {
