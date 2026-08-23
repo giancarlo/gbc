@@ -589,9 +589,9 @@ function collectDefs(module: Module): {
 		}
 		if (child.kind === 'extend') {
 			defs.push(child);
-			const name = child.children[0].symbol.name;
-			const target = name ? module.scope.get(name) : undefined;
-			if (name && target?.kind === 'function') symbols[name] = target;
+			const target = child.children[0].symbol;
+			const name = target.name;
+			if (name && target.kind === 'function') symbols[name] = target;
 			continue;
 		}
 		if (

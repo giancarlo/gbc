@@ -5113,6 +5113,14 @@ export function compileWasm({
 					return true;
 				if (pt.family === 'unknown') return false;
 				if (pt.family === at.family && pt.name === at.name) return true;
+				if (pt.family === 'buffer' && at.family === 'buffer') return true;
+				if (
+					o.flags & Flags.Intrinsic &&
+					pt.family === 'data' &&
+					at.family === 'data' &&
+					at.name === '__data'
+				)
+					return true;
 				if (composes(at, pt)) return true;
 				return (
 					widen && isIntType(pt) && isIntType(at) && pt.size >= at.size
@@ -5647,6 +5655,11 @@ export function compileWasm({
 			coerceIntWidth(rt, declared, fn);
 			if (isInt64Type(declared) || !isInt64Type(rt)) rt = declared;
 		}
+		if (
+			declared?.kind === 'type' &&
+			(declared.family === 'data' || declared.family === 'buffer')
+		)
+			rt = declared;
 		if (isUnionType(rt)) {
 			const tagIdx = allocLocal(fn, I32);
 			const payIdx = allocLocal(fn, unionPayloadWasm(rt));
@@ -6954,7 +6967,7 @@ export function compileWasm({
 		if (builderIdx !== undefined)
 			return driveDirectCallStage(sym, builderIdx, inputType, rest, fn);
 		if (fnValue) return driveFnStage(fnValue, inputType, rest, fn);
-		const dispatched = driveOverloadDispatch(sym, inputType, rest, fn);
+		const dispatched = driveOverloadDispatch(stage, inputType, rest, fn);
 		if (dispatched) return dispatched;
 		if (sym.kind === 'function' && sym.flags & Flags.External)
 			return driveExternalStage(sym, inputType, rest, fn);
@@ -6993,24 +7006,45 @@ export function compileWasm({
 	}
 
 	function driveOverloadDispatch(
-		sym: GbcSymbol,
+		stage: NodeMap['ident'],
 		inputType: Type,
 		rest: Node[],
 		fn: FuncBuilder,
 	): Type | undefined {
+		const sym = stage.symbol;
 		const dt = sym.kind === 'function' ? sym : sym.type;
 		if (!dt || dt.kind !== 'function' || !dt.overloads) return undefined;
 		if (inputType.kind === 'type' && inputType.family === 'void')
 			return driveStages(rest, BaseTypes.Void, fn);
-		const arm = findDispatchArm(dt.overloads, [inputType]);
+		const unary = dt.overloads.filter(
+			candidate => (candidate.parameters?.length ?? 0) === 1,
+		);
+		let argTypes: Type[] = [inputType];
+		let arm = findDispatchArm(unary, argTypes);
+		if (!arm && inputType.kind === 'type' && inputType.family === 'data') {
+			const inputArity = Object.keys(inputType.members).length;
+			const spread = dt.overloads.filter(
+				candidate => (candidate.parameters?.length ?? 0) === inputArity,
+			);
+			argTypes = spread[0]
+				? inferStageArgumentTypes(inputType, spread[0])
+				: [];
+			arm = findDispatchArm(spread, argTypes);
+		}
 		if (!arm) return undefined;
+		if (arm.flags & Flags.Intrinsic)
+			return driveIntrinsicStage(stage, arm, inputType, rest, fn);
 		const tmpl = fnTemplates.get(arm);
 		if (tmpl) {
-			const idx = getOrCreateSpec(tmpl, [inputType]);
+			if (argTypes.length > 1)
+				spreadDataToStack(inputType, arm.parameters ?? [], fn);
+			const idx = getOrCreateSpec(tmpl, argTypes);
 			emitFixedCall(fn, idx);
 			const r = specReturn.get(idx) ?? armReturnOrVoid(arm.returnType);
 			return driveStages(rest, r, fn);
 		}
+		if (argTypes.length > 1)
+			spreadDataToStack(inputType, arm.parameters ?? [], fn);
 		emitArmCall(arm, sym.name, fn);
 		return driveStages(rest, armReturnOrVoid(arm.returnType), fn);
 	}

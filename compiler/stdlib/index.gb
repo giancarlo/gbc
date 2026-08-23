@@ -50,6 +50,19 @@ type Frame = [ name: String, fn: String, file: String, line: Int32 ];
 type Error = Trace;
 type DivByZero = Error;
 export type Array<T> = Buffer<T>;
+export type Matrix = [ rows: Int32, columns: Int32, values: Buffer<Float32> ];
+matrixIndex = (matrix: Matrix, row: Int32, column: Int32): Int32 {
+	row < 0 || row >= matrix.rows || column < 0 || column >= matrix.columns
+		? 0 - 1
+		: column * matrix.rows + row
+};
+extend get (matrix: Matrix, row: Int32, column: Int32): Float32 {
+	get(matrix.values, matrixIndex(matrix, row, column))
+};
+extend set (matrix: var Matrix, row: Int32, column: Int32, value: Float32): Void {
+	index = matrixIndex(matrix, row, column);
+	set(matrix.values, index, value)
+};
 type Each<T> = T >> [H, R] { H | Each<R> };
 each = <T>(t: T): Each<T> { t >> (h, r) { h, each(r) } };
 

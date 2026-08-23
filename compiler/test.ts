@@ -1380,7 +1380,7 @@ main {
 			pre: `extend get (s: String, i: Int32): Int32 { length(s) + i };
 b = Buffer<Int32>(1)`,
 			src: "set(b, 0, 7); get('abc', 2) + get(b, 0)",
-			ast: "(call :set @intrinsic (, :b 0 7)) (+ (call :get (, 'abc' 2)) (call :get (, :b 0)))",
+			ast: "(call :set (, :b 0 7)) (+ (call :get (, 'abc' 2)) (call :get (, :b 0)))",
 			out: ['12'],
 		});
 		expr({
@@ -1388,7 +1388,7 @@ b = Buffer<Int32>(1)`,
 			pre: `extend set (s: String, i: Int32, value: Int32): Void { value >> out };
 b = Buffer<Int32>(1)`,
 			src: "set(b, 0, 3); set('abc', 0, 9); get(b, 0)",
-			ast: "(call :set (, :b 0 3)) (call :set (, 'abc' 0 9)) (call :get @intrinsic (, :b 0))",
+			ast: "(call :set (, :b 0 3)) (call :set (, 'abc' 0 9)) (call :get (, :b 0))",
 			out: ['9', '3'],
 		});
 		compileError({
@@ -2567,13 +2567,13 @@ export target = (): Int32 { 0 }`,
 		rule({
 			p: 'Binding identities are immutable. An owning binding can be borrowed mutably without making the binding reassignable.',
 			src: `main { buffer = Buffer<Int32>(1); set(buffer, 0, 10); get(buffer, 0) >> out }`,
-			ast: `(root (main (def :buffer ? (call typeident 1)) (call :set @intrinsic (, :buffer 0 10)) (>> (call :get @intrinsic (, :buffer 0)) :out)))`,
+			ast: `(root (main (def :buffer ? (call typeident 1)) (call :set (, :buffer 0 10)) (>> (call :get (, :buffer 0)) :out)))`,
 			out: ['10'],
 		});
 		rule({
 			p: '`var T` parameters borrow an owner exclusively for the call without moving it; the caller can use the owner afterward.',
 			src: `write = (b: var Buffer<Int32>, n: Int32) { set(b, 0, n) }; main { b = Buffer<Int32>(1); write(b, 7); get(b, 0) >> out }`,
-			ast: `(root (def :write ? (fn (parameter :b typeident ?) (parameter :n typeident ?) (next (call :set @intrinsic (, :b 0 :n))))) (main (def :b ? (call typeident 1)) (call :write (, :b 7)) (>> (call :get @intrinsic (, :b 0)) :out)))`,
+			ast: `(root (def :write ? (fn (parameter :b typeident ?) (parameter :n typeident ?) (next (call :set (, :b 0 :n))))) (main (def :b ? (call typeident 1)) (call :write (, :b 7)) (>> (call :get (, :b 0)) :out)))`,
 			out: ['7'],
 		});
 		compileError({
@@ -3046,7 +3046,7 @@ main {
 	count = writeAll(b, 0);
 	reduce(b, count - count, (total: own Int32, n: Int32): own Int32 { total + n }) >> out
 }`,
-			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (call :set @intrinsic (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b ? (call typeident 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn (parameter :total typeident ?) (parameter :n typeident ?) typeident (next (+ :total :n))))) :out)))`,
+			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (call :set (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b ? (call typeident 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn (parameter :total typeident ?) (parameter :n typeident ?) typeident (next (+ :total :n))))) :out)))`,
 			out: ['4950'],
 			maxPages: 2,
 		});
@@ -3213,20 +3213,44 @@ main {
 		});
 	});
 
-	h('Matrix', ({ rule }) => {
+	h('Matrix', ({ rule, runtimeTrap }) => {
 		rule({
-			p: '`get(Matrix, row, column)` reads row-major Float32 storage while the existing Buffer arm remains available.',
+			p: 'Matrix `get` and `set` use column-major Float32 storage while the existing Buffer arms remain available.',
 			src: `main {
-	values = Buffer<Float32>(6);
-	set(values, 5, Float32(9));
-	matrix: Matrix = [ rows = 2, columns = 3, values = values ];
+	cells = Buffer<Float32>(6);
+	set(cells, 2, Float32(9));
+	matrix: Matrix = [ rows = 2, columns = 3, values = cells ];
+	get(matrix, 0, 1) >> out;
+	set(matrix, 1, 2, Float32(4));
 	get(matrix, 1, 2) >> out;
 	buffer = Buffer<Int32>(1);
 	set(buffer, 0, 7);
 	get(buffer, 0) >> out
 }`,
-			ast: `(root (main (def :values ? (call typeident 6)) (call :set (, :values 5 (call typeident 9))) (def :matrix typeident (data (, (propdef :rows ? 2) (propdef :columns ? 3) (propdef :values ? :values)))) (>> (call :get (, :matrix 1 2)) :out) (def :buffer ? (call typeident 1)) (call :set (, :buffer 0 7)) (>> (call :get (, :buffer 0)) :out)))`,
-			out: ['9', '7'],
+			ast: `(root (main (def :cells ? (call typeident 6)) (call :set (, :cells 2 (call typeident 9))) (def :matrix typeident @export (data (, (propdef :rows ? 2) (propdef :columns ? 3) (propdef :values ? :cells)))) (>> (call :get (, :matrix 0 1)) :out) (call :set (, :matrix 1 2 (call typeident 4))) (>> (call :get (, :matrix 1 2)) :out) (def :buffer ? (call typeident 1)) (call :set (, :buffer 0 7)) (>> (call :get (, :buffer 0)) :out)))`,
+			out: ['9', '4', '7'],
+		});
+		runtimeTrap({
+			p: 'Matrix coordinates are checked independently before column-major indexing.',
+			src: `main {
+	cells = Buffer<Float32>(4);
+	matrix: Matrix = [ rows = 2, columns = 2, values = cells ];
+	get(matrix, 0, 2) >> out
+}`,
+		});
+		runtimeTrap({
+			src: `main {
+	cells = Buffer<Float32>(4);
+	matrix: Matrix = [ rows = 2, columns = 2, values = cells ];
+	get(matrix, 0 - 1, 2) >> out
+}`,
+		});
+		runtimeTrap({
+			src: `main {
+	cells = Buffer<Float32>(4);
+	matrix: Matrix = [ rows = 2, columns = 2, values = cells ];
+	set(matrix, 0, 2, Float32(1))
+}`,
 		});
 	});
 

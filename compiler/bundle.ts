@@ -238,6 +238,10 @@ function ownersOf(
 				owner.set(symbol, m.hash);
 				if (symbol.kind === 'type') owner.set(symbol.type, m.hash);
 			}
+			if (node.kind === 'extend') {
+				const dispatch = node.children[0].symbol;
+				if (dispatch.kind === 'function') owner.set(dispatch, m.hash);
+			}
 			for (const child of childNodes(node)) walk(child);
 		};
 		walk(m.root);

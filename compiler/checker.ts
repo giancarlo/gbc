@@ -214,10 +214,16 @@ function pipeArgumentTypes(
 
 function resolveFunctionStageReturn(stage: Node, input: Type): Type | undefined {
 	const fnSym = resolveFunctionType(stage);
-	const rt = functionElementReturn(fnSym);
-	if (!fnSym || !rt) return undefined;
-	const args = pipeArgumentTypes(input, fnSym);
-	return substituteFunctionReturn(rt, fnSym, args);
+	if (!fnSym) return undefined;
+	const effective =
+		fnSym.overloads?.find(overload => {
+			const args = pipeArgumentTypes(input, overload);
+			return paramsMatch(overload.parameters, args);
+		}) ?? fnSym;
+	const rt = functionElementReturn(effective);
+	if (!rt) return undefined;
+	const args = pipeArgumentTypes(input, effective);
+	return substituteFunctionReturn(rt, effective, args);
 }
 
 function resolveReturnType(node: Node) {
@@ -1989,8 +1995,10 @@ export function checker({
 	}
 
 	function mutableArgRoot(arg: Node | undefined, node: Node): Symbol | undefined {
+		const position = arg;
+		while (arg?.kind === '.') arg = arg.children[0];
 		if (!arg || arg.kind !== 'ident' || arg.symbol.kind !== 'variable') {
-			error('a `var` parameter requires a mutable binding', arg ?? node);
+			error('a `var` parameter requires a mutable binding', position ?? node);
 			return;
 		}
 		if (mutableSymbol(arg.symbol)) return arg.symbol;
@@ -2054,15 +2062,22 @@ export function checker({
 		}
 	}
 
-	function checkDispatchDef(node: Node): void {
-		const dt = resolveType(node);
-		if (dt?.kind !== 'function' || !dt.overloads) return;
+	function checkDispatch(
+		dt: SymbolMap['function'] | undefined,
+		node: Node,
+	): void {
+		if (!dt?.overloads) return;
 		const ovs = dt.overloads;
 		const rts = ovs.map(o => o.returnType ?? BT.Void);
 		const first = rts[0];
 		const uniform =
 			first &&
-			rts.every(r => canAssign(first, r) && canAssign(r, first));
+			rts.every(
+				r =>
+					isTypeParam(first) ||
+					isTypeParam(r) ||
+					(canAssign(first, r) && canAssign(r, first)),
+			);
 		const widthPreserving = ovs.every(arm => {
 			const input = arm.parameters?.[0]?.type;
 			const output = arm.returnType;
@@ -2090,6 +2105,11 @@ export function checker({
 					return;
 				}
 			}
+	}
+
+	function checkDispatchDef(node: Node): void {
+		const dt = resolveType(node);
+		checkDispatch(dt?.kind === 'function' ? dt : undefined, node);
 	}
 
 	function checkDef(node: NodeMap['def']) {
@@ -3261,6 +3281,11 @@ export function checker({
 			}
 			case 'extend': {
 				check(node.children[1]);
+				const target = node.children[0].symbol;
+				if (target.kind === 'function') {
+					checkDispatch(target, node);
+					return;
+				}
 				const armSym = resolver(node.children[1]);
 				const targetName = text(node.children[0]);
 				const rt =
