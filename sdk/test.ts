@@ -4,6 +4,7 @@ import {
 	BinaryNodeBase,
 	CompilerError,
 	findNodeAtIndex,
+	Flags,
 	LeafNode,
 	RootNodeBase,
 	ScannerApi,
@@ -12,6 +13,7 @@ import {
 	tokenize,
 	UnaryNodeBase,
 } from './index.js';
+import type { Symbol, Type } from './index.js';
 
 type TestLeaf = LeafNode<'leaf'>;
 type TestRoot = RootNodeBase<TestLeaf>;
@@ -25,6 +27,29 @@ const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => ch === undefined || !ident(ch);
 
 export default spec('sdk', s => {
+	s.test('shared semantic types', a => {
+		const source = 'value';
+		const definition: TestLeaf = {
+			kind: 'leaf',
+			start: 0,
+			end: source.length,
+			line: 0,
+			source,
+		};
+		const type = { kind: 'type', name: 'Integer' } as const satisfies Type;
+		const symbol: Symbol<typeof definition, typeof type> = {
+			kind: 'variable',
+			name: 'value',
+			definition,
+			type,
+			flags: Flags.Variable,
+		};
+		a.equal(symbol.kind, 'variable');
+		a.equal(symbol.definition, definition);
+		a.equal(symbol.type, type);
+		a.equal(symbol.flags, Flags.Variable);
+	});
+
 	s.test('findNodeAtIndex', it => {
 		const source = 'ab';
 		const left: BaseNode = { start: 0, end: 1, line: 0, source };

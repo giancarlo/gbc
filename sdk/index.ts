@@ -116,10 +116,7 @@ export type InfixNode<Map extends NodeMap> = NodeWithChildren<
 export type TernaryNode<
 	Map extends NodeMap,
 	Optional extends boolean,
-> = NodeWithChildren<
-	Map,
-	TernaryNodeBase<MapNode<Map>, Optional>['children']
->;
+> = NodeWithChildren<Map, TernaryNodeBase<MapNode<Map>, Optional>['children']>;
 
 export type MapKind<Map extends NodeMap> = keyof Map;
 export type MapNode<Map extends NodeMap> = Map[keyof Map];
@@ -296,6 +293,39 @@ export function ErrorApi() {
 		error,
 		pushError,
 	};
+}
+
+export enum Flags {
+	None = 0,
+	Variable = 1,
+	Export = 2,
+	External = 16,
+	Intrinsic = 32,
+	Module = 64,
+}
+
+export type SymbolKind =
+	| 'type'
+	| 'literal'
+	| 'function'
+	| 'parameter'
+	| 'variable'
+	| 'data';
+
+export type Type =
+	| { kind: 'type'; name?: string }
+	| { kind: 'function'; name?: string };
+
+export interface Symbol<
+	Node extends BaseNode = BaseNode,
+	SymbolType extends Type = Type,
+> {
+	kind: SymbolKind;
+	name?: string;
+	definition?: Node;
+	references?: Position[];
+	type?: SymbolType;
+	flags: Flags;
 }
 
 export type SymbolTable<S extends { name: string }> = ReturnType<
@@ -765,7 +795,10 @@ export function findNodeAtIndex<Node extends BaseNode>(
 	node: Node,
 	index: number,
 ): NodeAtIndex<Node> | undefined;
-export function findNodeAtIndex(node: BaseNode, index: number): BaseNode | undefined {
+export function findNodeAtIndex(
+	node: BaseNode,
+	index: number,
+): BaseNode | undefined {
 	if (index < node.start || index >= node.end) return;
 	if (node.children) {
 		for (const child of node.children) {
