@@ -1,10 +1,17 @@
 import { TestApi, spec } from '@cxl/spec';
-import { Flags, type Symbol, type Type } from '../sdk/index.js';
+import {
+	Flags,
+	text,
+	tokenize,
+	type Symbol,
+	type Type,
+} from '../sdk/index.js';
 import {
 	childNodes,
 	type NodeMap,
 } from './index.js';
 import { compatibilityCases, demoNames } from './test-corpus.js';
+import { scan } from './scanner.js';
 
 declare const fetch: (url: URL) => Promise<{
 	ok: boolean;
@@ -21,6 +28,77 @@ declare global {
 }
 
 export default spec('basic', (a: TestApi) => {
+	a.test('scanner', it => {
+		it.should('scan canonical keywords, suffixes, operators, and positions', a => {
+			const source = 'pRiNt Value$ >= .5\nNEXT';
+			const tokens = [...tokenize(scan, source)];
+			a.equalValues(
+				tokens.map(token => ({
+					kind: token.kind,
+					text: text(token),
+					start: token.start,
+					end: token.end,
+					line: token.line,
+				})),
+				[
+					{ kind: 'print', text: 'pRiNt', start: 0, end: 5, line: 0 },
+					{ kind: 'ident', text: 'Value$', start: 6, end: 12, line: 0 },
+					{ kind: '>=', text: '>=', start: 13, end: 15, line: 0 },
+					{ kind: 'number', text: '.5', start: 16, end: 18, line: 0 },
+					{ kind: 'eol', text: '\n', start: 18, end: 19, line: 0 },
+					{ kind: 'next', text: 'NEXT', start: 19, end: 23, line: 1 },
+				],
+			);
+		});
+
+		it.should('scan labels, numeric formats, strings, comments, and continuations', a => {
+			const source =
+				'10 PRINT &H3C8, &O17, &B101, 1.2E-3!\nname: REM note\nvalue = _\r\n  "a\\"b"';
+			const tokens = [...tokenize(scan, source)];
+			a.equalValues(
+				tokens.map(token => [token.kind, text(token), token.line]),
+				[
+					['label', '10', 0],
+					['print', 'PRINT', 0],
+					['number', '&H3C8', 0],
+					[',', ',', 0],
+					['number', '&O17', 0],
+					[',', ',', 0],
+					['number', '&B101', 0],
+					[',', ',', 0],
+					['number', '1.2E-3!', 0],
+					['eol', '\n', 0],
+					['label', 'name:', 1],
+					['comment', 'REM note', 1],
+					['eol', '\n', 1],
+					['ident', 'value', 2],
+					['=', '=', 2],
+					['string', '"a\\"b"', 3],
+				],
+			);
+		});
+
+		it.should('preserve whitespace-only physical lines', a => {
+			const tokens = [...tokenize(scan, '\n \r\nx')];
+			a.equalValues(
+				tokens.map(token => [token.kind, token.start, token.end, token.line]),
+				[
+					['eol', 0, 1, 0],
+					['eol', 2, 4, 1],
+					['ident', 4, 5, 2],
+				],
+			);
+		});
+
+		it.should('recover after malformed tokens', a => {
+			const tokens = [...tokenize(scan, '&H\n` 1E+')];
+			a.equalValues(
+				tokens.map(token => token.kind),
+				['tokenizer-error', 'eol', 'tokenizer-error', 'tokenizer-error'],
+			);
+		});
+	});
+
 	a.test('in-memory AST', it => {
 		const source = 'x = 1 + 2';
 		const x: NodeMap['ident'] = {
@@ -219,7 +297,13 @@ export default spec('basic', (a: TestApi) => {
 			new Set(compatibilityCases.map(test => test.id)).size,
 			compatibilityCases.length,
 		);
-		for (const test of compatibilityCases) a.ok(test.source.trim().length > 0);
+		for (const test of compatibilityCases) {
+			a.ok(test.source.trim().length > 0);
+			const errors = [...tokenize(scan, test.source)].filter(
+				token => token.kind === 'tokenizer-error',
+			);
+			a.equal(errors.length, 0, test.id);
+		}
 	});
 
 	a.test('demo corpus', async a => {
@@ -239,6 +323,10 @@ export default spec('basic', (a: TestApi) => {
 		for (const demo of demos) {
 			a.ok(demo.ok, `${demo.file}: ${demo.status}`);
 			a.ok(demo.source.trim().length > 0);
+			const errors = [...tokenize(scan, demo.source)].filter(
+				token => token.kind === 'tokenizer-error',
+			);
+			a.equal(errors.length, 0, demo.file);
 		}
 	});
 });

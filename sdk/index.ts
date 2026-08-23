@@ -16,7 +16,7 @@ export type Scanner<Node extends Token<string>> = (src: string) => {
 	backtrack: (pos: Position) => void;
 };
 
-export interface TokenizerError extends Token<'error'> {
+export interface TokenizerError extends Token<'tokenizer-error'> {
 	error: CompilerError;
 }
 
@@ -41,7 +41,7 @@ export function* tokenize<Node extends Token<string>>(
 				Math.max(start + 1, value.position.end),
 			);
 			const error = {
-				kind: 'error',
+				kind: 'tokenizer-error',
 				start,
 				end,
 				line: value.position.line,

@@ -237,12 +237,12 @@ export default spec('sdk', s => {
 				tokens.map(({ kind, start, end }) => ({ kind, start, end })),
 				[
 					{ kind: 'word', start: 0, end: 3 },
-					{ kind: 'error', start: 4, end: 5 },
+					{ kind: 'tokenizer-error', start: 4, end: 5 },
 					{ kind: 'word', start: 6, end: 9 },
 				],
 			);
 			a.ok(
-				tokens[1]?.kind === 'error' &&
+				tokens[1]?.kind === 'tokenizer-error' &&
 					tokens[1].error instanceof CompilerError,
 			);
 		});
@@ -266,7 +266,7 @@ export default spec('sdk', s => {
 			];
 			a.equalValues(
 				tokens.map(({ kind, start, end }) => ({ kind, start, end })),
-				[{ kind: 'error', start: 0, end: 0 }],
+				[{ kind: 'tokenizer-error', start: 0, end: 0 }],
 			);
 		});
 	});
