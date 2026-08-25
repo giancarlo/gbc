@@ -1,16 +1,15 @@
 import { TestApi, spec } from '@cxl/spec';
 import {
 	Flags,
+	childNodes,
 	text,
 	tokenize,
 	type Symbol,
 	type Type,
 } from '../sdk/index.js';
-import {
-	childNodes,
-	type NodeMap,
-} from './index.js';
+import { type NodeMap } from './index.js';
 import { compatibilityCases, demoNames } from './test-corpus.js';
+import { parseAssignment, parseExpression } from './parser.js';
 import { scan } from './scanner.js';
 
 declare const fetch: (url: URL) => Promise<{
@@ -96,6 +95,75 @@ export default spec('basic', (a: TestApi) => {
 				tokens.map(token => token.kind),
 				['tokenizer-error', 'eol', 'tokenizer-error', 'tokenizer-error'],
 			);
+		});
+	});
+
+	a.test('expression parser', it => {
+		it.should('preserve BASIC precedence and associativity', a => {
+			const arithmetic = parseExpression('-2 ^ 2 + 3 * 4');
+			a.equal(arithmetic.errors.length, 0);
+			a.equal(arithmetic.node?.kind, '+');
+			const addChildren = arithmetic.node
+				? childNodes(arithmetic.node) ?? []
+				: [];
+			a.equal(addChildren[0]?.kind, 'negate');
+			a.equal(addChildren[1]?.kind, '*');
+			const negateChildren = addChildren[0]
+				? childNodes(addChildren[0]) ?? []
+				: [];
+			a.equal(negateChildren[0]?.kind, '^');
+
+			const power = parseExpression('2 ^ 3 ^ 2');
+			const powerChildren = power.node ? childNodes(power.node) ?? [] : [];
+			a.equal(power.node?.kind, '^');
+			a.equal(powerChildren[1]?.kind, '^');
+		});
+
+		it.should('parse postfix calls, members, ranges, and expression arguments', a => {
+			const result = parseExpression('display.point(1, 2 TO 4, => x)');
+			a.equal(result.errors.length, 0);
+			a.equal(result.node?.kind, 'call');
+			const children = result.node ? childNodes(result.node) ?? [] : [];
+			a.equal(children[0]?.kind, 'member');
+			a.equal(children[1]?.kind, 'argument');
+			const rangeArgument = children[2];
+			const expressionArgument = children[3];
+			const rangeChildren = rangeArgument
+				? childNodes(rangeArgument) ?? []
+				: [];
+			const expressionChildren = expressionArgument
+				? childNodes(expressionArgument) ?? []
+				: [];
+			a.equal(rangeChildren[0]?.kind, 'range');
+			a.equal(expressionChildren[0]?.kind, 'expression');
+
+			const empty = parseExpression('f(, x,)');
+			const emptyChildren = empty.node ? childNodes(empty.node) ?? [] : [];
+			const firstEmpty = emptyChildren[1];
+			const lastEmpty = emptyChildren[3];
+			a.equal(empty.errors.length, 0);
+			a.equal(emptyChildren.length, 4);
+			a.equal(firstEmpty ? childNodes(firstEmpty)?.[0] : undefined, undefined);
+			a.equal(lastEmpty ? childNodes(lastEmpty)?.[0] : undefined, undefined);
+		});
+
+		it.should('keep comparison and assignment contexts distinct', a => {
+			const comparison = parseExpression('x = 1');
+			const assignment = parseAssignment('x = 1');
+			a.equal(comparison.errors.length, 0);
+			a.equal(assignment.errors.length, 0);
+			a.equal(comparison.node?.kind, '=');
+			a.equal(assignment.node?.kind, 'assign');
+
+			const invalid = parseAssignment('1 = 2');
+			a.equal(invalid.node, undefined);
+			a.equal(invalid.errors[0]?.message, 'Expected assignable expression');
+		});
+
+		it.should('report malformed expressions', a => {
+			const result = parseExpression('1 +');
+			a.equal(result.node, undefined);
+			a.equal(result.errors.length, 1);
 		});
 	});
 

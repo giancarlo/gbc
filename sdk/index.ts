@@ -148,9 +148,13 @@ export const matchers = {
 	hexDigitUnderscore: ch => ch === '_' || hexDigit(ch),
 	binaryDigit: ch => ch === '0' || ch === '1',
 	binaryDigitUnderscore: ch => ch === '0' || ch === '1' || ch === '_',
+	octalDigit: ch => ch >= '0' && ch <= '7',
 	ident: ch => ch === '_' || alnum(ch),
 	notIdent: ch => ch !== '_' && !alnum(ch),
 	eol: ch => ch === '\n',
+	lineBreak: ch => ch === '\r' || ch === '\n',
+	notLineBreak: ch => ch !== '\r' && ch !== '\n',
+	horizontalSpace: ch => ch === ' ' || ch === '\t',
 } as const satisfies Record<string, MatchFn>;
 
 export const stringEscape = (n: number, src: string) =>
@@ -810,6 +814,17 @@ export function findNodeAtIndex(
 	return node;
 }
 
+export type ChildrenOf<Node extends BaseNode> = Node extends {
+	children: infer Children extends readonly unknown[];
+}
+	? Children
+	: undefined;
+
+export function childNodes<Node extends BaseNode>(node: Node): ChildrenOf<Node>;
+export function childNodes(node: BaseNode): NodeChildren | undefined {
+	return node.children;
+}
+
 /**
  * Builds a trie from the input map and
  */
@@ -855,6 +870,15 @@ export function ScannerApi({ source }: { source: string }) {
 			line,
 			source,
 		};
+	}
+
+	function lineToken<Kind extends string>(
+		kind: Kind,
+		consume: number,
+	): Token<Kind> {
+		const result = tk(kind, consume);
+		line = endLine = result.line + 1;
+		return result;
 	}
 
 	function matchUntil(match: MatchFn, consumed = 0) {
@@ -972,6 +996,7 @@ export function ScannerApi({ source }: { source: string }) {
 	return {
 		createTrieMatcher,
 		tk,
+		lineToken,
 		matchWhile,
 		matchUntil,
 		matchString,

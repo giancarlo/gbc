@@ -171,18 +171,3 @@ export type Node = NodeMap[keyof NodeMap];
 export type NodeKind = keyof NodeMap;
 export type InfixNode = Extract<Node, Infix>;
 export type ComparisonOperator = '=' | '<>' | '<' | '<=' | '>' | '>=';
-
-export function childNodes(node: Node): readonly (Node | undefined)[] {
-	switch (node.kind) {
-		case 'number':
-		case 'string':
-		case 'ident':
-		case 'label':
-		case 'exit':
-		case 'parameter':
-		case 'field':
-			return [];
-		default:
-			return node.children;
-	}
-}

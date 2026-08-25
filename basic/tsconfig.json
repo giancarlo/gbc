@@ -3,6 +3,6 @@
 	"compilerOptions": {
 		"outDir": "../dist/basic"
 	},
-	"files": ["index.ts", "scanner.ts"],
+	"files": ["index.ts", "parser.ts", "scanner.ts"],
 	"references": [{ "path": "../sdk" }]
 }

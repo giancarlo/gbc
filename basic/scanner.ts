@@ -117,15 +117,20 @@ export const keywords = [
 ] as const;
 
 const keywordTrie = createCaseInsensitiveTrie(...keywords);
-const { alpha, digit, hexDigit, alnum } = matchers;
-const horizontal = (ch: string) => ch === ' ' || ch === '\t';
-const lineBreak = (ch: string) => ch === '\r' || ch === '\n';
+const {
+	alpha,
+	alnum,
+	digit,
+	hexDigit,
+	horizontalSpace,
+	lineBreak,
+	notLineBreak,
+	octalDigit,
+} = matchers;
 const identCh = (ch: string) => ch === '_' || alnum(ch);
 const suffix = (ch: string) =>
 	ch === '$' || ch === '%' || ch === '&' || ch === '!' || ch === '#' || ch === '@';
 const notIdent = (ch: string) => !identCh(ch) && !suffix(ch);
-const notEol = (ch: string) => !lineBreak(ch);
-const octalDigit = (ch: string) => ch >= '0' && ch <= '7';
 
 export function scan(source: string) {
 	const api = ScannerApi({ source });
@@ -135,6 +140,7 @@ export function scan(source: string) {
 		current,
 		eof,
 		error,
+		lineToken,
 		matchEnclosed,
 		matchWhile,
 		skip,
@@ -150,23 +156,20 @@ export function scan(source: string) {
 
 	function scanEol() {
 		const consumed = current() === '\r' && current(1) === '\n' ? 2 : 1;
-		const result = tk('eol', consumed);
-		apiBacktrack({ ...result, line: result.line + 1 });
 		lineStart = true;
-		return result;
+		return lineToken('eol', consumed);
 	}
 
 	function continuationLength() {
 		let n = 1;
-		while (horizontal(current(n))) n++;
+		while (horizontalSpace(current(n))) n++;
 		if (current(n) === '\r') n++;
 		if (current(n) !== '\n') return 0;
 		return n + 1;
 	}
 
 	function skipContinuation(consumed: number) {
-		const result = tk('continuation', consumed);
-		apiBacktrack({ ...result, line: result.line + 1 });
+		lineToken('continuation', consumed);
 	}
 
 	function scanString() {
@@ -248,7 +251,7 @@ export function scan(source: string) {
 
 	function scanLeadingToken() {
 		const ch = current();
-		if (ch === "'") return token('comment', matchWhile(notEol, 1));
+		if (ch === "'") return token('comment', matchWhile(notLineBreak, 1));
 
 		if (lineStart && (alpha(ch) || ch === '_')) {
 			const n = matchWhile(identCh, 1);
@@ -257,11 +260,11 @@ export function scan(source: string) {
 
 		if (lineStart && digit(ch)) {
 			const n = digitRun(0, digit);
-			if (horizontal(current(n)) || lineBreak(current(n)) || eof(n))
+			if (horizontalSpace(current(n)) || lineBreak(current(n)) || eof(n))
 				return token('label', n);
 		}
 
-		if (isRemComment()) return token('comment', matchWhile(notEol, 3));
+		if (isRemComment()) return token('comment', matchWhile(notLineBreak, 3));
 	}
 
 	function scanComparison(ch: string, la: string) {
@@ -327,7 +330,7 @@ export function scan(source: string) {
 
 	function next() {
 		for (;;) {
-			const spaces = matchWhile(horizontal);
+			const spaces = matchWhile(horizontalSpace);
 			if (spaces) skip(spaces);
 			if (eof()) return tk('eof', 0);
 			if (lineBreak(current())) return scanEol();

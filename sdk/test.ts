@@ -2,12 +2,14 @@ import { spec } from '@cxl/spec';
 import {
 	BaseNode,
 	BinaryNodeBase,
+	childNodes,
 	CompilerError,
 	createCaseInsensitiveTrie,
 	createTrie,
 	findNodeAtIndex,
 	Flags,
 	LeafNode,
+	matchers,
 	RootNodeBase,
 	ScannerApi,
 	stringEscape,
@@ -29,6 +31,26 @@ const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => ch === undefined || !ident(ch);
 
 export default spec('sdk', s => {
+	s.test('shared AST and scanner helpers', a => {
+		const source = 'ab';
+		const leaf: BaseNode = { start: 0, end: 1, line: 0, source };
+		const parent: BaseNode = {
+			start: 0,
+			end: 2,
+			line: 0,
+			source,
+			children: [leaf, undefined],
+		};
+		a.equal(childNodes(leaf), undefined);
+		a.equalValues(childNodes(parent), [leaf, undefined]);
+		a.equal(matchers.horizontalSpace('\t'), true);
+		a.equal(matchers.lineBreak('\r'), true);
+		a.equal(matchers.notLineBreak('x'), true);
+		a.equal(matchers.notLineBreak('\n'), false);
+		a.equal(matchers.octalDigit('7'), true);
+		a.equal(matchers.octalDigit('8'), false);
+	});
+
 	s.test('shared semantic types', a => {
 		const source = 'value';
 		const definition: TestLeaf = {
@@ -121,6 +143,16 @@ export default spec('sdk', s => {
 	});
 
 	s.test('ScannerApi', s => {
+		s.test('lineToken', a => {
+			const api = ScannerApi({ source: '\r\nx' });
+			const eol = api.lineToken('eol', 2);
+			const ident = api.tk('ident', 1);
+			a.equalValues(
+				[eol.start, eol.end, eol.line, ident.start, ident.end, ident.line],
+				[0, 2, 0, 2, 3, 1],
+			);
+		});
+
 		s.test('createTrieMatcher', it => {
 			it.should('parse keywords that contain each other', a => {
 				const { createTrieMatcher } = ScannerApi({ source: 'main' });
