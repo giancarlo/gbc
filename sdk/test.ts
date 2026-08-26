@@ -10,6 +10,7 @@ import {
 	Flags,
 	LeafNode,
 	matchers,
+	ParserApi,
 	RootNodeBase,
 	ScannerApi,
 	stringEscape,
@@ -17,7 +18,7 @@ import {
 	tokenize,
 	UnaryNodeBase,
 } from './index.js';
-import type { Symbol, Type } from './index.js';
+import type { NodeWithChildren, Symbol, Token, Type } from './index.js';
 
 type TestLeaf = LeafNode<'leaf'>;
 type TestRoot = RootNodeBase<TestLeaf>;
@@ -25,6 +26,13 @@ type TestUnary = UnaryNodeBase<TestLeaf>;
 type TestBinary = BinaryNodeBase<TestLeaf>;
 type TestTernary = TernaryNodeBase<TestLeaf>;
 type TestOptional = TernaryNodeBase<TestLeaf, true>;
+type TestArgument = LeafNode<'argument'>;
+type TestNodeMap = {
+	leaf: TestLeaf;
+	arguments: Token<'arguments'> & { children: TestArgument[] };
+	unary: Token<'unary'> & { children: [TestLeaf] };
+};
+type TestArgumentParent = NodeWithChildren<TestNodeMap, TestArgument[]>;
 
 const _ident = /\w/;
 const ident = (ch: string) => ch === '_' || _ident.test(ch);
@@ -49,6 +57,48 @@ export default spec('sdk', s => {
 		a.equal(matchers.notLineBreak('\n'), false);
 		a.equal(matchers.octalDigit('7'), true);
 		a.equal(matchers.octalDigit('8'), false);
+	});
+
+	s.test('parser API', it => {
+		it.should('filter child shapes and look ahead without consuming', a => {
+			const source = 'a ! b';
+			const argument: TestArgument = {
+				kind: 'argument',
+				start: 0,
+				end: 1,
+				line: 0,
+				source,
+			};
+			const parent: TestArgumentParent = {
+				kind: 'arguments',
+				start: 0,
+				end: 1,
+				line: 0,
+				source,
+				children: [argument],
+			};
+			const parser = ParserApi(value => {
+				const scanner = ScannerApi({ source: value });
+				return {
+					backtrack: scanner.backtrack,
+					next() {
+						scanner.skipWhitespace();
+						if (scanner.eof()) return scanner.tk('eof', 0);
+						if (scanner.current() === '!')
+							throw scanner.error('Unexpected input', 1);
+						return scanner.tk(scanner.current() === 'a' ? 'a' : 'b', 1);
+					},
+				};
+			});
+
+			parser.start(source);
+			a.equal(parent.kind, 'arguments');
+			a.equal(parser.peekKind('b'), true);
+			a.equal(parser.current().kind, 'a');
+			a.equal(parser.errors.length, 0);
+			a.equal(parser.next().kind, 'b');
+			a.equal(parser.errors.length, 1);
+		});
 	});
 
 	s.test('shared semantic types', a => {

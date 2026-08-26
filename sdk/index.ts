@@ -95,7 +95,7 @@ export type Operator<Kind extends keyof Map, Map extends NodeMap> =
 			prefix(node: Token<Kind>): MapNode<Map>;
 	  };
 
-type NodeWithChildren<Map extends NodeMap, Children = MapNode<Map>[]> = {
+export type NodeWithChildren<Map extends NodeMap, Children = MapNode<Map>[]> = {
 	[K in keyof Map]: Map[K] extends {
 		children: Children;
 	}
@@ -432,6 +432,7 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 		parseUntilKind,
 		parseList,
 		parseListWithEmpty,
+		peekKind,
 		start,
 		backtrack,
 		parseWhile,
@@ -450,6 +451,17 @@ export function ParserApi<Node extends Token<string>>(scanner: Scanner<Node>) {
 
 	function next(): Node {
 		return catchAndRecover(() => (token = scan.next()), next);
+	}
+
+	function peekKind<K extends Node['kind']>(kind: K) {
+		const position = token;
+		const errorCount = errors.length;
+		try {
+			return next().kind === kind;
+		} finally {
+			backtrack(position);
+			errors.length = errorCount;
+		}
 	}
 
 	function skipWhile(kind: Node['kind']) {
