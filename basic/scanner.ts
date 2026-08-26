@@ -255,7 +255,13 @@ export function scan(source: string) {
 
 		if (lineStart && (alpha(ch) || ch === '_')) {
 			const n = matchWhile(identCh, 1);
-			if (current(n) === ':') return token('label', n + 1);
+			let value = '';
+			for (let i = 0; i < n; i++) value += current(i);
+			if (
+				current(n) === ':' &&
+				!keywords.some(keyword => keyword === value.toLowerCase())
+			)
+				return token('label', n + 1);
 		}
 
 		if (lineStart && digit(ch)) {

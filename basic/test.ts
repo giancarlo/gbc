@@ -9,7 +9,7 @@ import {
 } from '../sdk/index.js';
 import { type NodeMap } from './index.js';
 import { compatibilityCases, demoNames } from './test-corpus.js';
-import { parseAssignment, parseExpression } from './parser.js';
+import { parseAssignment, parseExpression, parseProgram } from './parser.js';
 import { scan } from './scanner.js';
 
 declare const fetch: (url: URL) => Promise<{
@@ -164,6 +164,45 @@ export default spec('basic', (a: TestApi) => {
 			const result = parseExpression('1 +');
 			a.equal(result.node, undefined);
 			a.equal(result.errors.length, 1);
+		});
+	});
+
+	a.test('statement parser', it => {
+		it.should('parse CALL and LINE INPUT statements', a => {
+			const result = parseProgram('CALL test(10)\nLINE INPUT "Name"; name$');
+			a.equalValues(result.errors, []);
+			a.equalValues(
+				result.node
+					? childNodes(result.node)?.flatMap(node => node ? [node.kind] : []) ?? []
+					: [],
+				['callstmt', 'lineinput'],
+			);
+		});
+
+		it.should('parse declarations, procedures, control flow, and commands', a => {
+			const result = parseProgram(
+				'DIM SHARED x(1 TO 2)\nSUB Render(y)\nIF y THEN\nFOR i = 1 TO y\nPSET (i, y), 3\nNEXT i\nELSE\nPLAY "C"\nEND IF\nEND SUB',
+			);
+			a.equalValues(result.errors, []);
+			a.equal(result.node?.kind, 'root');
+			const children = result.node ? childNodes(result.node) : undefined;
+			a.equal(children?.[0]?.kind, 'variable');
+			a.equal(children?.[1]?.kind, 'procedure');
+			const procedureChildren = children?.[1]
+				? childNodes(children[1])
+				: undefined;
+			a.equal(procedureChildren?.at(-1)?.kind, 'block');
+		});
+
+		it.should('preserve labels and colon-separated statements', a => {
+			const result = parseProgram('10 PRINT "A"\nagain: GOTO again');
+			a.equalValues(result.errors, []);
+			a.equalValues(
+				result.node
+					? childNodes(result.node)?.flatMap(node => node ? [node.kind] : []) ?? []
+					: [],
+				['label', 'print', 'label', 'goto'],
+			);
 		});
 	});
 
@@ -367,10 +406,8 @@ export default spec('basic', (a: TestApi) => {
 		);
 		for (const test of compatibilityCases) {
 			a.ok(test.source.trim().length > 0);
-			const errors = [...tokenize(scan, test.source)].filter(
-				token => token.kind === 'tokenizer-error',
-			);
-			a.equal(errors.length, 0, test.id);
+			const result = parseProgram(test.source);
+			a.equal(result.errors.length, 0, test.id);
 		}
 	});
 
@@ -391,10 +428,8 @@ export default spec('basic', (a: TestApi) => {
 		for (const demo of demos) {
 			a.ok(demo.ok, `${demo.file}: ${demo.status}`);
 			a.ok(demo.source.trim().length > 0);
-			const errors = [...tokenize(scan, demo.source)].filter(
-				token => token.kind === 'tokenizer-error',
-			);
-			a.equal(errors.length, 0, demo.file);
+			const result = parseProgram(demo.source);
+			a.equal(result.errors.length, 0, demo.file);
 		}
 	});
 });
