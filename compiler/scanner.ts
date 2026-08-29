@@ -212,8 +212,9 @@ export function scan(source: string) {
 				return la === '.' && current(2) === '.'
 					? tk('...', 3)
 					: tk('.', 1);
-			case ',':
 			case '?':
+				return la === '?' ? tk('??', 2) : tk('?', 1);
+			case ',':
 			case '*':
 			case '/':
 			case '%':

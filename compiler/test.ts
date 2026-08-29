@@ -48,7 +48,7 @@ export default spec('Language Reference', s => {
 		);
 	});
 
-	s.test('omits module source text from gbm bundles', a => {
+	s.test('omits module source text from gbm bundles', (a: TestApi) => {
 		const source = `export identity = (value: Int32): Int32 {
 			value
 		}`;
@@ -65,7 +65,8 @@ export default spec('Language Reference', s => {
 		}).buildLibrary('/lib.gb');
 		a.equal(built.errors.length, 0);
 		const bundle = built.bundle;
-		if (!bundle) throw new Error('Bundle build failed');
+		a.assert(bundle, 'Bundle build failed');
+		if (!bundle) return;
 		const positionFields = new Set(['source', 'start', 'end', 'line']);
 		const decoded = decodeBundle(bundle);
 		a.equal(
@@ -95,7 +96,7 @@ export default spec('Language Reference', s => {
 		a.equal(includesSource, false);
 	});
 
-	s.test('replaces stored function bodies with their wasm objects', a => {
+	s.test('replaces stored function bodies with their wasm objects', (a: TestApi) => {
 		const source = `touch = (value: Int32): Void { done };
 export stored = (value: Int32): Int32 { touch(value); next value + 1 };
 export inline = (value: Int32): Int32 { value + 1 };`;
@@ -126,13 +127,15 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 			),
 		);
 		const module = decoded.modules.get('lib.gb');
-		if (!module) throw new Error('Missing fixture module');
+		a.assert(module, 'Missing fixture module');
+		if (!module) return;
 
 		const types = new Map<string, Type>();
 		const symbols = new Map<string, Symbol>();
 		for (const definition of sourceDefinitions) {
 			const fn = definition.value;
-			if (fn.kind !== 'fn') throw new Error('Fixture definition is not a function');
+			a.equal(fn.kind, 'fn');
+			if (fn.kind !== 'fn') continue;
 			const returnType = fn.symbol.returnType;
 			if (returnType?.name) types.set(returnType.name, returnType);
 			if (fn.returnType?.kind === 'typeident' && fn.returnType.symbol.name)
@@ -167,8 +170,8 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 				throw new Error('Unexpected module type');
 			},
 		);
-		if (materialized.kind !== 'root')
-			throw new Error('Fixture module root was not restored');
+		a.equal(materialized.kind, 'root');
+		if (materialized.kind !== 'root') return;
 		const definitions = new Map<string, NodeMap['def']>(
 			materialized.children
 				.filter((node): node is NodeMap['def'] => node.kind === 'def')
@@ -176,8 +179,11 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 		);
 		const stored = definitions.get('stored')?.value;
 		const inline = definitions.get('inline')?.value;
-		if (stored?.kind !== 'fn' || inline?.kind !== 'fn')
-			throw new Error('Missing fixture functions');
+		a.assert(
+			stored?.kind === 'fn' && inline?.kind === 'fn',
+			'Missing fixture functions',
+		);
+		if (stored?.kind !== 'fn' || inline?.kind !== 'fn') return;
 		a.equal(stored.objectBacked, true);
 		a.equal(stored.statements, undefined);
 		a.equal(stored.children.length, 0);
@@ -187,7 +193,8 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 		const objectMap = new Map<Symbol, (typeof decoded.objects)[number]>();
 		for (const object of decoded.objects) {
 			const symbol = definitions.get(object.name)?.symbol;
-			if (!symbol) throw new Error(`Missing object symbol ${object.name}`);
+			a.assert(symbol, `Missing object symbol ${object.name}`);
+			if (!symbol) continue;
 			objectMap.set(symbol, object);
 		}
 		const spliced = compileWasm({
@@ -217,7 +224,7 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 				'strhead',
 				'ident',
 				'strtail',
-				'error',
+				'tokenizer-error',
 				'export',
 			],
 		);
@@ -239,7 +246,11 @@ export frame = (): Buffer<Uint8> { pixels };`;
 					readBytes: () => new Uint8Array(),
 				},
 			}).compileFile('life.gb');
-			a.equal(compiled.errors.length, 0);
+			a.equal(
+				compiled.errors.length,
+				0,
+				compiled.errors.map(error => error.message).join('; '),
+			);
 			a.assert(compiled.bytes);
 
 			const instance = instantiateWasm(compiled.bytes);
@@ -293,7 +304,11 @@ export int64s = (): Buffer<Int64> { integers };`;
 					readBytes: () => new Uint8Array(),
 				},
 			}).compileFile('float-buffer.gb');
-			a.equal(compiled.errors.length, 0);
+			a.equal(
+				compiled.errors.length,
+				0,
+				compiled.errors.map(error => error.message).join('; '),
+			);
 			a.assert(compiled.bytes);
 
 			const instance = instantiateWasm(compiled.bytes);
@@ -355,7 +370,6 @@ export int64s = (): Buffer<Int64> { integers };`;
 				),
 				[3.5],
 			);
-
 			a.throws(() => bufferView(instance, -1, Float32Array), {
 				message: 'Invalid GB buffer pointer',
 			});
@@ -393,9 +407,16 @@ export int64s = (): Buffer<Int64> { integers };`;
 		for (const sourceType of numericTypes) {
 			for (const targetType of numericTypes) {
 				const pair = `${sourceType} -> ${targetType}`;
+				const checkedConversion =
+					(sourceType === 'Float32' || sourceType === 'Float64') &&
+					!targetType.startsWith('Float');
 				const source = `buffer = Buffer<${targetType}>(1);
-export write = (value: ${sourceType}) {
-	set(buffer, 0, ${targetType}(value))
+export write = (value: ${sourceType})${checkedConversion ? ': Void | NumericOverflow | OutOfMemory' : ''} {
+	${
+		checkedConversion
+			? `${targetType}(value) >> ${targetType} { set(buffer, 0, $) } | NumericOverflow { $ } | OutOfMemory { $ }`
+			: `set(buffer, 0, ${targetType}(value))`
+	}
 };`;
 				const compiled = Program({
 					sys: {
@@ -433,7 +454,11 @@ export seed = (index: Int32): Uint8 {
 					readBytes: () => new Uint8Array(),
 				},
 			}).compileFile('case.gb');
-			a.equal(compiled.errors.length, 0);
+			a.equal(
+				compiled.errors.length,
+				0,
+				compiled.errors.map(error => error.message).join('; '),
+			);
 			a.assert(compiled.bytes);
 			if (!compiled.bytes) return;
 
@@ -530,7 +555,6 @@ main { scalar() >> out; pair() >> out; forward() >> out; conditional(true) >> ou
 				const definition = compiled.ast.children.find(
 					node => node.kind === 'def' && node.symbol.name === name,
 				);
-				a.equal(definition?.kind, 'def');
 				if (
 					definition?.kind !== 'def' ||
 					definition.value.kind !== 'fn'
@@ -609,8 +633,10 @@ main { recursive(2) >> out; generic(2) >> out }`);
 				if (
 					definition?.kind !== 'def' ||
 					definition.value.kind !== 'fn'
-				)
-					throw new Error(`Missing function ${name}`);
+				) {
+					a.assert(false, `Missing function ${name}`);
+					continue;
+				}
 				a.equal(definition.value.symbol.emissionType, undefined);
 				a.equal(definition.value.symbol.returnType?.kind, 'type');
 			}
@@ -1375,20 +1401,20 @@ main {
 			ast: "(call :size 'abc')",
 			out: ['3'],
 		});
-		expr({
-			p: 'A built-in function may gain a user-defined arm while retaining its intrinsic behavior for existing inputs.',
-			pre: `extend get (s: String, i: Int32): Int32 { length(s) + i };
+			expr({
+				p: 'A built-in function may gain a user-defined arm while retaining its intrinsic behavior for existing inputs.',
+				pre: `extend get (s: String, i: Int32): Int32 { length(s) + i };
 b = Buffer<Int32>(1)`,
-			src: "set(b, 0, 7); get('abc', 2) + get(b, 0)",
-			ast: "(call :set (, :b 0 7)) (+ (call :get (, 'abc' 2)) (call :get (, :b 0)))",
+				src: "(set(b, 0, 7) ?? (get(b, 0) >> Int32 { get('abc', 2) + $ } | Error { $ }))",
+				ast: "(?? (call :set (, :b 0 7)) (>> (call :get (, :b 0)) (| (fn (parameter ? typeident ?) (next (+ (call :get (, 'abc' 2)) $))) (fn (parameter ? typeident ?) (next $)))))",
 			out: ['12'],
 		});
-		expr({
-			p: 'An extended mutating built-in dispatches to the user arm without replacing its intrinsic arm.',
-			pre: `extend set (s: String, i: Int32, value: Int32): Void { value >> out };
+			expr({
+				p: 'An extended mutating built-in dispatches to the user arm without replacing its intrinsic arm.',
+				pre: `extend set (s: String, i: Int32, value: Int32): Void { value >> out };
 b = Buffer<Int32>(1)`,
-			src: "set(b, 0, 3); set('abc', 0, 9); get(b, 0)",
-			ast: "(call :set (, :b 0 3)) (call :set (, 'abc' 0 9)) (call :get (, :b 0))",
+				src: "(set(b, 0, 3) ?? set('abc', 0, 9) ?? (get(b, 0) >> Int32 { $ } | Error { $ }))",
+				ast: "(?? (call :set (, :b 0 3)) (?? (call :set (, 'abc' 0 9)) (>> (call :get (, :b 0)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next $))))))",
 			out: ['9', '3'],
 		});
 		compileError({
@@ -1995,6 +2021,10 @@ a = {
 				compileError({
 					src: `main { 5 >> Int32 { } >> out }`,
 					expected: 'empty',
+				});
+				compileError({
+					src: `main { 5 >> Int32 { done } }`,
+					expected: 'done-only',
 				});
 				compileError({
 					src: `main { 5 >> [1, 2] { $ } >> out }`,
@@ -2810,12 +2840,12 @@ main { a = Array<Int32>(1); a >> forward >> consume }`,
 			out: ['-1', '99'],
 		});
 		rule({
-			src: `d = (n: Int32): own Int32 | DivByZero { 10 / n }; f = (u: Int32 | DivByZero): Int32 { u >> Int32 { $ } | DivByZero { 0 - 1 } }; main { f(d(2)) >> out; f(d(0)) >> out; }`,
+			src: `d = (n: Int32): own Int32 | DivByZero | NumericOverflow { 10 / n }; f = (u: Int32 | DivByZero | NumericOverflow): Int32 { u >> Int32 { $ } | Error { 0 - 1 } }; main { f(d(2)) >> out; f(d(0)) >> out; }`,
 			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (def :f ? (fn (parameter :u typeident ?) typeident (next (>> :u (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 1)))))))) (main (>> (call :f (call :d 2)) :out) (>> (call :f (call :d 0)) :out)))`,
 			out: ['5', '-1'],
 		});
 		rule({
-			src: `d = (n: Int32): Int32 | DivByZero { 10 / n }; id = (u: Int32 | DivByZero): Int32 | DivByZero { u }; main { id(d(2)) >> Int32 { $ } | DivByZero { 0 } >> out; id(d(0)) >> Int32 { $ } | DivByZero { 0 } >> out; }`,
+			src: `d = (n: Int32): Int32 | DivByZero | NumericOverflow { 10 / n }; id = (u: Int32 | DivByZero | NumericOverflow): Int32 | DivByZero | NumericOverflow { u }; main { id(d(2)) >> Int32 { $ } | Error { 0 } >> out; id(d(0)) >> Int32 { $ } | Error { 0 } >> out; }`,
 			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (def :id ? (fn (parameter :u typeident ?) typeident (next :u))) (main (>> (call :id (call :d 2)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out) (>> (call :id (call :d 0)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out)))`,
 			out: ['5', '0'],
 		});
@@ -2849,9 +2879,11 @@ main { a = Array<Int32>(1); a >> forward >> consume }`,
 			src: `main { bad = (): Void { 1 }; bad() >> out }`,
 			expected: 'declares no emissions but produces 1',
 		});
-		compileError({
-			src: `emit = (n: Int32): Int32 | Void { n }; main { emit(7) >> out }`,
-			expected: 'one fixed emission layout',
+		expr({
+			pre: `emit = (n: Int32): Int32 | Void { n }`,
+			src: `(emit(7) ?? 9)`,
+			ast: `(?? (call :emit 7) 9)`,
+			out: ['7'],
 		});
 		compileError({
 			src: `emit = (n: Int32): Int32 | { Bool, Int32 } { n }; main { emit(7) >> out }`,
@@ -2914,10 +2946,10 @@ main {
 			out: ['1000000000000'],
 		});
 		rule({
-			src: `f = (a: Int64, b: Int64): Int64 | DivByZero { a / b };
+			src: `f = (a: Int64, b: Int64): Int64 | DivByZero | NumericOverflow { a / b };
 main {
-	f(Int64(20), Int64(4)) >> Int64 { $ } | DivByZero { Int64(0) } >> out;
-	f(Int64(20), Int64(0)) >> Int64 { $ } | DivByZero { Int64(0 - 1) } >> out;
+	f(Int64(20), Int64(4)) >> Int64 { $ } | Error { Int64(0) } >> out;
+	f(Int64(20), Int64(0)) >> Int64 { $ } | Error { Int64(0 - 1) } >> out;
 }`,
 			ast: `(root (def :f ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (/ :a :b)))) (main (>> (call :f (, (call typeident 20) (call typeident 4))) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (call typeident 0)))) :out) (>> (call :f (, (call typeident 20) (call typeident 0))) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (call typeident (- 0 1))))) :out)))`,
 			out: ['5', '-1'],
@@ -3037,17 +3069,18 @@ main { spin(400000, 0) >> out }`,
 	h('Heap — churn shapes (tail recursion)', ({ rule }) => {
 		rule({
 			p: 'A scalar tail-recursive accumulator can mutate an owned Buffer without moving or reallocating it.',
-			src: `writeAll = (b: var Buffer<Int32>, i: Int32): Int32 {
-	set(b, i, i);
-	next i == 99 ? 100 : writeAll(b, i + 1)
+			src: `writeAll = (b: var Buffer<Int32>, i: Int32): Int32 | IndexOutOfBounds | OutOfMemory {
+	set(b, i, i) ?? (i == 99 ? 100 : writeAll(b, i + 1))
 };
 main {
 	b = Buffer<Int32>(100);
-	count = writeAll(b, 0);
-	reduce(b, count - count, (total: own Int32, n: Int32): own Int32 { total + n }) >> out
+	writeAll(b, 0) >> Int32 {
+		count = $;
+		next get(b, 99) >> Int32 { count + $ } | IndexOutOfBounds { 0 - 1 } | OutOfMemory { 0 - 1 }
+	} | IndexOutOfBounds { 0 - 1 } | OutOfMemory { 0 - 1 } >> out
 }`,
-			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (call :set (, :b :i :i)) (next (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1))))))) (main (def :b ? (call typeident 100)) (def :count ? (call :writeAll (, :b 0))) (>> (call :reduce (, :b (- :count :count) (fn (parameter :total typeident ?) (parameter :n typeident ?) typeident (next (+ :total :n))))) :out)))`,
-			out: ['4950'],
+			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (next (?? (call :set (, :b :i :i)) (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1)))))))) (main (def :b ? (call typeident 100)) (>> (call :writeAll (, :b 0)) (| (| (fn (parameter ? typeident ?) (def :count ? $) (next (>> (call :get (, :b 99)) (| (| (fn (parameter ? typeident ?) (next (+ :count $))) (fn (parameter ? typeident ?) (next (- 0 1)))) (fn (parameter ? typeident ?) (next (- 0 1))))))) (fn (parameter ? typeident ?) (next (- 0 1)))) (fn (parameter ? typeident ?) (next (- 0 1)))) :out)))`,
+			out: ['199'],
 			maxPages: 2,
 		});
 		rule({
@@ -3096,7 +3129,7 @@ main { wide(100000, 0) >> out }`,
 	});
 
 	s.test('emits typed WebAssembly SIMD operations', (a: TestApi) => {
-		const source = `twice = (value: Vector<Float32>): Vector<Float32> { value + value };
+	const source = `twice = (value: Vector<Float32>): Vector<Float32> { value + value };
 identity = <T>(value: T): T { value };
 main {
 	buffer = Buffer<Float32>(8);
@@ -3119,8 +3152,7 @@ main {
 	simd.sum(get(vectors, 0)) >> out
 }`;
 		const compiled = Program().compile(source);
-		if (compiled.errors.length)
-			throw new Error(compiled.errors.map(error => error.message).join('; '));
+		a.equal(compiled.errors.length, 0);
 		a.assert(compiled.bytes);
 		if (!compiled.bytes) return;
 		const output: string[] = [];
@@ -3171,8 +3203,7 @@ main {
 	simd.sum(Vector<Float32>(buffer, 0)) >> out
 }`;
 		const compiled = Program().compile(source);
-		if (compiled.errors.length)
-			throw new Error(compiled.errors.map(error => error.message).join('; '));
+		a.equal(compiled.errors.length, 0);
 		a.assert(compiled.bytes);
 		if (!compiled.bytes) return;
 		const output: string[] = [];
@@ -4030,10 +4061,10 @@ main {
 			out: ['0'],
 		});
 		rule({
-			src: `f = (n: Int32, d: Int32): Int32 | DivByZero { n == 0 ? 10 / d : f(n - 1, d) };
+			src: `f = (n: Int32, d: Int32): Int32 | DivByZero | NumericOverflow { n == 0 ? 10 / d : f(n - 1, d) };
 main {
-	f(1000000, 2) >> Int32 { $ } | DivByZero { 0 - 1 } >> out;
-	f(1000000, 0) >> Int32 { $ } | DivByZero { 0 - 1 } >> out;
+	f(1000000, 2) >> Int32 { $ } | Error { 0 - 1 } >> out;
+	f(1000000, 0) >> Int32 { $ } | Error { 0 - 1 } >> out;
 }`,
 			ast: `(root (def :f ? (fn (parameter :n typeident ?) (parameter :d typeident ?) typeident (next (? (== :n 0) (/ 10 :d) (call :f (, (- :n 1) :d)))))) (main (>> (call :f (, 1000000 2)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 1)))) :out) (>> (call :f (, 1000000 0)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 1)))) :out)))`,
 			out: ['5', '-1'],
@@ -4121,11 +4152,11 @@ main {
 			out: ['1', '3.14'],
 		});
 		rule({
-			src: `d = (n: Int32): Int32 | DivByZero { 10 / n };
+			src: `d = (n: Int32): Int32 | DivByZero | NumericOverflow { 10 / n };
 main {
 	pair = [ d(2), d(0) ];
-	pair.0 >> Int32 { $ } | DivByZero { 0 - 9 } >> out;
-	pair.1 >> Int32 { $ } | DivByZero { 0 - 9 } >> out;
+	pair.0 >> Int32 { $ } | Error { 0 - 9 } >> out;
+	pair.1 >> Int32 { $ } | Error { 0 - 9 } >> out;
 }`,
 			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (main (def :pair ? (data (, (call :d 2) (call :d 0)))) (>> (. :pair 0) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 9)))) :out) (>> (. :pair 1) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 9)))) :out)))`,
 			out: ['5', '-9'],
@@ -4185,9 +4216,9 @@ main {
 			out: ['true', '2.5', '9'],
 		});
 		rule({
-			src: `d = (n: Int32): Int32 | DivByZero { 10 / n };
+			src: `d = (n: Int32): Int32 | DivByZero | NumericOverflow { 10 / n };
 main {
-	[ d(2), d(0) ] >> (a: Int32 | DivByZero, b: Int32 | DivByZero) { a } >> Int32 { $ } | DivByZero { 0 - 9 } >> out
+	[ d(2), d(0) ] >> (a: Int32 | DivByZero | NumericOverflow, b: Int32 | DivByZero | NumericOverflow) { a } >> Int32 { $ } | Error { 0 - 9 } >> out
 }`,
 			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (main (>> (data (, (call :d 2) (call :d 0))) (fn (parameter :a typeident ?) (parameter :b typeident ?) (next :a)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next (- 0 9)))) :out)))`,
 			out: ['5'],
@@ -4559,17 +4590,17 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 			expected: 'not assignable',
 		});
 		rule({
-			src: `d = (n: Int32): Int32 | DivByZero { 10 / n }; main { d(2) >> Int32 { $ } | DivByZero { 0 } >> out; d(0) >> Int32 { $ } | DivByZero { 0 } >> out; }`,
+			src: `d = (n: Int32): Int32 | DivByZero | NumericOverflow { 10 / n }; main { d(2) >> Int32 { $ } | Error { 0 } >> out; d(0) >> Int32 { $ } | Error { 0 } >> out; }`,
 			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (main (>> (call :d 2) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out) (>> (call :d 0) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out)))`,
 			out: ['5', '0'],
 		});
 		rule({
-			src: `d = (n: Int32): Int32 | DivByZero { 10 / n }; main { x = d(2); y = d(0); x >> Int32 { $ } | DivByZero { 0 } >> out; y >> Int32 { $ } | DivByZero { 0 } >> out; }`,
+			src: `d = (n: Int32): Int32 | DivByZero | NumericOverflow { 10 / n }; main { x = d(2); y = d(0); x >> Int32 { $ } | Error { 0 } >> out; y >> Int32 { $ } | Error { 0 } >> out; }`,
 			ast: `(root (def :d ? (fn (parameter :n typeident ?) typeident (next (/ 10 :n)))) (main (def :x ? (call :d 2)) (def :y ? (call :d 0)) (>> :x (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out) (>> :y (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))) :out)))`,
 			out: ['5', '0'],
 		});
 		rule({
-			src: `recip = (n: Int32): Int32 { 10 / n >> Int32 { $ } | DivByZero { 0 } }; main { recip(5) >> out; recip(0) >> out; }`,
+			src: `recip = (n: Int32): Int32 { 10 / n >> Int32 { $ } | Error { 0 } }; main { recip(5) >> out; recip(0) >> out; }`,
 			ast: `(root (def :recip ? (fn (parameter :n typeident ?) typeident (next (>> (/ 10 :n) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next 0))))))) (main (>> (call :recip 5) :out) (>> (call :recip 0) :out)))`,
 			out: ['2', '0'],
 		});
@@ -4642,7 +4673,7 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 				compileError({
 					pre: `once = (n: Int32): Int32 { n }; apply = (cb: (Int32): Void | Int32, n: Int32): Void | Int32 { cb(n) }`,
 					src: `main { apply(once, 5) >> out }`,
-					expected: 'one fixed emission layout',
+					expected: 'not assignable',
 				});
 				compileError({
 					src: `type Bad = { Int32, Bool } | Int32`,
@@ -4682,9 +4713,9 @@ main { b = mk(9); s = runtime.stack(b); length(s) >> out; reduce(s, '', appendNa
 					src: `external pair: (Int32): { Int32, Int32 }; main { pair(1) >> out }`,
 					expected: 'host ABI cannot emit multiple values',
 				});
-				compileError({
+				ast({
 					src: `external maybe: (Int32): Void | Int32; main { maybe(1) >> out }`,
-					expected: 'one fixed emission layout',
+					ast: `(external @external :maybe (fn (parameter ? typeident ?) typeident)) (main (>> (call :maybe @external 1) :out))`,
 				});
 			},
 		);

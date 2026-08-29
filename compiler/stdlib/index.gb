@@ -49,6 +49,10 @@ external exitHost: (code: Int32);
 type Frame = [ name: String, fn: String, file: String, line: Int32 ];
 type Error = Trace;
 type DivByZero = Error;
+type IndexOutOfBounds = Error & [ index: Int32, length: Int32 ];
+type InvalidCapacity = Error & [ capacity: Int32, maximum: Int32 ];
+type NumericOverflow = Error & [ operation: String ];
+type OutOfMemory = Error;
 export type Array<T> = Buffer<T>;
 export type Matrix = [ rows: Int32, columns: Int32, values: Buffer<Float32> ];
 matrixIndex = (matrix: Matrix, row: Int32, column: Int32): Int32 {

@@ -16,6 +16,7 @@
 		"parser.ts",
 		"parser-type.ts",
 		"program.ts",
+		"runtime-errors.ts",
 		"symbol-table.ts",
 		"target-wasm.ts",
 		"node.ts"

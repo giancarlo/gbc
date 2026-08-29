@@ -72,10 +72,13 @@ export default spec('Tail recursion benchmarks', s => {
 	const scalarFloat = compileRun(SCALAR_FLOAT_SOURCE);
 	const simdFloat = compileRun(SIMD_FLOAT_SOURCE);
 	const expected = 49_995_000;
-	if (loop() !== expected || calls() !== expected)
-		throw new Error('benchmark checksum mismatch');
-	if (scalarFloat() !== 0 || simdFloat() !== 0)
-		throw new Error('SIMD benchmark checksum mismatch');
+
+	s.test('benchmark checksums', a => {
+		a.equal(loop(), expected);
+		a.equal(calls(), expected);
+		a.equal(scalarFloat(), 0);
+		a.equal(simdFloat(), 0);
+	});
 
 	s.test('direct self-tail two-field accumulator', a =>
 		a.benchmark(loop, { warmup: 250, sampleTime: 50, samples: 30 }),

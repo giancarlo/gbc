@@ -295,7 +295,6 @@ export function parseExpression(
 			(type): type is NodeMap['typeident'] =>
 				type?.kind === 'typeident' &&
 				type.symbol.type.kind === 'type' &&
-				type.symbol.type.family !== 'void' &&
 				type.symbol.type.family !== 'emission',
 		);
 		if (scalarUnion) {
@@ -709,6 +708,7 @@ export function parseExpression(
 	}
 
 	const commaPrecedence = 1;
+	const fallbackPrecedence = 1.25;
 	const pipePrecedence = 1.5;
 	const parser = parserTable<NodeMap, ScannerToken>(
 		({
@@ -719,6 +719,7 @@ export function parseExpression(
 			prefix,
 			current,
 		}) => ({
+			'??': infixOperator(fallbackPrecedence, fallbackPrecedence - 0.01),
 			'>>': {
 				precedence: pipePrecedence,
 				infix(tk, left) {

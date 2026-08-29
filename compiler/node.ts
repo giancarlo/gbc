@@ -74,6 +74,7 @@ export type BaseNodeMap = {
 	};
 	'@': object;
 	'=': { children: [Node, Node] };
+	'??': { children: [Node, Node] };
 	'?': { children: [Node, Node, (Node | undefined)?] };
 	'~': { children: [Node] };
 	'!': { children: [Node] };

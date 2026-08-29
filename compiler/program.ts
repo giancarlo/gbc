@@ -20,6 +20,7 @@ import {
 	type SpliceInput,
 } from './target-wasm.js';
 import { checker, setDivByZero } from './checker.js';
+import { setRuntimeErrorTypes } from './runtime-errors.js';
 import {
 	encodeBundle,
 	decodeBundle,
@@ -136,6 +137,15 @@ function normalizeErrors(errors: CompilerError[]): void {
 	errors.splice(0, errors.length, ...unique);
 }
 
+function configureRuntimeErrorTypes(types: Record<string, TypeSymbol>): void {
+	setRuntimeErrorTypes({
+		IndexOutOfBounds: types.IndexOutOfBounds?.type,
+		InvalidCapacity: types.InvalidCapacity?.type,
+		NumericOverflow: types.NumericOverflow?.type,
+		OutOfMemory: types.OutOfMemory?.type,
+	});
+}
+
 /**
  * Parse + type-check one module from source, returning its AST root and
  * top-level symbol scope. Has no knowledge of the standard library; it loads
@@ -157,12 +167,13 @@ function loadModule(
 	const scope = symbolTable.push();
 	const typeScope = typesTable.push();
 	const root = parse(api, symbolTable, typesTable, parseOptions);
+	const module = { root, scope, errors: api.errors };
 	if (!api.errors.length && !skipCheck)
 		checker({ root, errors: api.errors }).run();
 	normalizeErrors(api.errors);
 	typesTable.pop(typeScope);
 	symbolTable.pop(scope);
-	return { root, scope, errors: api.errors };
+	return module;
 }
 
 function withoutStdlibTypes<T>(fn: () => T): T {
@@ -183,6 +194,7 @@ function withoutStdlibTypes<T>(fn: () => T): T {
 	}
 	FramesIntrinsic.returnType = BaseTypes.Int32;
 	setDivByZero(undefined);
+	setRuntimeErrorTypes({});
 	try {
 		return fn();
 	} finally {
@@ -192,6 +204,7 @@ function withoutStdlibTypes<T>(fn: () => T): T {
 			intrinsic.returnType = returnType;
 		}
 		setDivByZero(stdlibEntryTypes['DivByZero']?.type);
+		configureRuntimeErrorTypes(stdlibEntryTypes);
 	}
 }
 
@@ -804,6 +817,7 @@ function initializeStdlib(bytes: Uint8Array): void {
 	collectStdlibModules(modules, test);
 	setDivByZero(stdlibEntryTypes['DivByZero']?.type);
 	setDivByZeroType(stdlibEntryTypes['DivByZero']?.type);
+	configureRuntimeErrorTypes(stdlibEntryTypes);
 	setTraceTypes(BaseTypes.Trace, stdlibEntryTypes['Frame']?.type);
 	const errorType = stdlibEntryTypes['Error']?.type;
 	const frameType = stdlibEntryTypes['Frame']?.type;

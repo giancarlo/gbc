@@ -1,5 +1,6 @@
 import { CompilerError, Position, text } from '../sdk/index.js';
 
+import { childNodes } from './node.js';
 import type { InfixNode, Node, NodeMap } from './node.js';
 import {
 	BaseTypes as BT,
@@ -20,6 +21,7 @@ import {
 	numericResultType,
 	unifyTypeParam,
 } from './symbol-table.js';
+import { runtimeErrorType, runtimeResultType } from './runtime-errors.js';
 import type {
 	OwnershipMode,
 	ResolvedType,
@@ -123,6 +125,44 @@ function bufferCtorType(node: NodeMap['call']): Type | undefined {
 	return isCollection(sym.type) ? sym.type : undefined;
 }
 
+function constantNumericValue(node: Node): number | undefined {
+	if (node.kind === 'number' && typeof node.value === 'number') return node.value;
+	if (node.kind !== 'call') return;
+	const callee = node.children[0];
+	const argument = node.children[1];
+	if (
+		callee.kind !== 'typeident' ||
+		!argument ||
+		argument.kind === ',' ||
+		!isNumericType(callee.symbol.type)
+	)
+		return;
+	return constantNumericValue(argument);
+}
+
+function scalarCtorType(node: NodeMap['call']): Type | undefined {
+	const callee = node.children[0];
+	const argument = node.children[1];
+	if (
+		callee.kind !== 'typeident' ||
+		!argument ||
+		argument.kind === ',' ||
+		callee.symbol.type.kind !== 'type' ||
+		(callee.symbol.type.family !== 'int' && callee.symbol.type.family !== 'uint') ||
+		!isFloatType(resolver(argument))
+	)
+		return;
+	const target = callee.symbol.type;
+	const constant = constantNumericValue(argument);
+	if (constant !== undefined && Number.isFinite(constant)) {
+		const bits = target.size * 8;
+		const minimum = target.family === 'uint' ? 0 : -(2 ** (bits - 1));
+		const maximum = target.family === 'uint' ? 2 ** bits : 2 ** (bits - 1);
+		if (constant >= minimum && constant < maximum) return target;
+	}
+	return runtimeResultType(target, 'NumericOverflow');
+}
+
 function functionElementReturn(
 	fn: SymbolMap['function'] | undefined,
 ): Type | undefined {
@@ -139,6 +179,8 @@ function functionElementReturn(
 function callReturnType(node: NodeMap['call']): Type | undefined {
 	const buf = bufferCtorType(node);
 	if (buf) return buf;
+	const scalar = scalarCtorType(node);
+	if (scalar) return scalar;
 	const fnSym = resolveFunctionType(node.children[0]);
 	const argsNode = node.children[1];
 	const args =
@@ -276,12 +318,56 @@ export function isKnownNonZeroNumber(
 	if (node.kind === 'number') return node.value !== 0;
 	if (node.kind !== 'ident') return false;
 	const sym = node.symbol;
-	if (sym.flags & Flags.Variable || seen?.has(sym)) return false;
+	if (seen?.has(sym)) return false;
 	const definition = sym.definition;
 	if (definition?.kind !== 'def') return false;
 	const visited = seen ?? new Set<Symbol>();
 	visited.add(sym);
 	return isKnownNonZeroNumber(definition.value, visited);
+}
+
+function knownNumberValue(
+	node: Node,
+	seen?: Set<Symbol>,
+): number | bigint | undefined {
+	if (node.kind === 'number') return node.value;
+	if (node.kind !== 'ident') return;
+	const sym = node.symbol;
+	if (seen?.has(sym)) return;
+	const definition = sym.definition;
+	if (definition?.kind !== 'def') return;
+	const visited = seen ?? new Set<Symbol>();
+	visited.add(sym);
+	return knownNumberValue(definition.value, visited);
+}
+
+function numericLiteralValue(type: Type): number | bigint | undefined {
+	return type.kind === 'type' &&
+		type.family === 'literal' &&
+		(typeof type.value === 'number' || typeof type.value === 'bigint')
+		? type.value
+		: undefined;
+}
+
+function numericOperationErrors(
+	node: InfixNode,
+	base: Type,
+	right: Type,
+): Type[] {
+	const errors: Type[] = [];
+	const literal = numericLiteralValue(right);
+	if ((node.kind === '/' || node.kind === '%') && divByZero) {
+		const rhs = node.children[1];
+		if (literal === undefined ? !isKnownNonZeroNumber(rhs) : literal === 0)
+			errors.push(divByZero);
+	}
+	const overflow = runtimeErrorType('NumericOverflow');
+	if (node.kind === '/' && base.kind === 'type' && base.family === 'int' && overflow) {
+		const divisor = literal ?? knownNumberValue(node.children[1]);
+		if (divisor === undefined || divisor === -1 || divisor === -1n)
+			errors.push(overflow);
+	}
+	return errors;
 }
 
 function resolveNumericOp(node: InfixNode): Type {
@@ -301,15 +387,7 @@ function resolveNumericOp(node: InfixNode): Type {
 	if (!isNumericType(lType) || !isNumericType(rType)) return invalidType;
 	const base = numericResultType(lType, rType) ?? BT.Int32;
 	if (isFloatType(base)) return base;
-	// Integer division by a value that isn't a known non-zero literal can
-	// fail, so the result type carries `DivByZero` (const-fold narrows the
-	// literal case back to plain `Int`).
-	if ((node.kind === '/' || node.kind === '%') && divByZero) {
-		const rhs = node.children[1];
-		if (!isKnownNonZeroNumber(rhs))
-			return unionOf([base, divByZero]);
-	}
-	return base;
+	return unionOf([base, ...numericOperationErrors(node, base, rType)]);
 }
 
 function resolveBitwiseType(node: InfixNode): Type {
@@ -430,24 +508,32 @@ function mergeAlternativeEmissions(
 function callEmissionType(node: NodeMap['call']): EmissionShape | undefined {
 	const fn = resolveFunctionType(node.children[0]);
 	if (!fn) return undefined;
-	let emission = fn.emissionType;
-	if (!emission && fn.returnTypes && !fn.returnVariants)
-		emission = fixedEmissionType(fn.returnTypes, fn.returnOwnerships);
-	if (emission?.family !== 'emission') {
-		if (fn.returnVariants) return undefined;
+	const scalarEmission = (): EmissionShape | undefined => {
 		const scalar = callReturnType(node);
 		if (!knownEmissionType(scalar)) return undefined;
 		return scalar.kind === 'type' && scalar.family === 'void'
 			? fixedEmissionShape([])
 			: fixedEmissionShape([scalar]);
-	}
+	};
 	const argsNode = node.children[1];
 	const args =
 		argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
+	const argTypes = args.map(resolver);
+	const effective =
+		fn.overloads?.find(overload => paramsMatch(overload.parameters, argTypes)) ?? fn;
+	if (effective.flags & Flags.Intrinsic)
+		return scalarEmission();
+	let emission = fn.emissionType;
+	if (!emission && fn.returnTypes && !fn.returnVariants)
+		emission = fixedEmissionType(fn.returnTypes, fn.returnOwnerships);
+	if (emission?.family !== 'emission') {
+		if (fn.returnVariants) return undefined;
+		return scalarEmission();
+	}
 	const specialized = substituteFunctionReturn(
 		emission,
-		fn,
-		args.map(resolver),
+		effective,
+		argTypes,
 	);
 	if (specialized.kind !== 'type' || specialized.family !== 'emission')
 		return undefined;
@@ -557,10 +643,34 @@ function conditionalEmissionType(
 		: undefined;
 }
 
+function fallbackEmissionType(
+	node: NodeMap['??'],
+	contextual: boolean,
+): EmissionShape | undefined {
+	const left = valueEmissionType(node.children[0], contextual);
+	const right = valueEmissionType(node.children[1], contextual);
+	if (!left || !right) return undefined;
+	if (left.elements.length === 0 && !left.rest) return right;
+	if (left.elements.length === 1 && !left.rest) {
+		const first = left.elements[0];
+		if (first?.kind !== 'type' || first.family !== 'union') return left;
+		const members = first.members.filter(
+			member => member.kind !== 'type' || member.family !== 'void',
+		);
+		if (members.length === first.members.length) return left;
+		return mergeAlternativeEmissions(
+			fixedEmissionShape([unionOf(members)]),
+			right,
+		);
+	}
+	return mergeAlternativeEmissions(left, right);
+}
+
 function valueEmissionType(
 	node: Node,
 	contextual = false,
 ): EmissionShape | undefined {
+	if (node.kind === '??') return fallbackEmissionType(node, contextual);
 	if (node.kind === ',') {
 		const parts: EmissionShape[] = [];
 		for (const child of node.children) {
@@ -868,6 +978,11 @@ function resolveType(node: CheckedNode): Type | undefined {
 				truthy.kind === 'break' || truthy.kind === 'done' ? falsy : truthy;
 			return result ? resolver(result) : BT.Void;
 		}
+		case '??':
+			return fallbackResultType(
+				resolver(node.children[0]),
+				resolver(node.children[1]),
+			);
 		case '>>':
 			return resolvePipeType(node);
 		case '&':
@@ -947,7 +1062,13 @@ function resolvePipeType(node: NodeMap['>>']): Type {
 				rets.push(resolver(n));
 				return;
 			}
-			const body = n.statements?.[0];
+			const statement = n.statements?.[0];
+			if (!statement) {
+				rets.push(BT.Void);
+				return;
+			}
+			const body =
+				statement.kind === 'next' ? statement.children?.[0] : statement;
 			if (!body) {
 				rets.push(BT.Void);
 				return;
@@ -997,13 +1118,26 @@ function resolveDispatchType(node: NodeMap['|']): Type {
 /**
  * Determines the type of a node based on its kind and associated type declarations.
  */
+function hasUnresolvedType(type: Type): boolean {
+	if (type.kind !== 'type') return false;
+	if (type.family === 'unknown') return true;
+	if (type.family === 'union') return type.members.some(hasUnresolvedType);
+	if (type.family === 'emission') {
+		return (
+			type.elements.some(hasUnresolvedType) ||
+			(!!type.rest && hasUnresolvedType(type.rest))
+		);
+	}
+	return false;
+}
+
 function resolver(node: CheckedNode): Type {
 	if (node[typeSymbol]) return node[typeSymbol];
 	const t = reduceType(resolveType(node) ?? BT.Unknown, EMPTY_BINDINGS);
 	// Don't cache an unresolved result: the walkPipes pre-pass may resolve an
 	// expression whose referenced defs aren't typed yet; caching Unknown would
 	// poison the later check pass. Re-resolving Unknown is idempotent.
-	if (!(t.kind === 'type' && t.family === 'unknown')) node[typeSymbol] = t;
+	if (!hasUnresolvedType(t)) node[typeSymbol] = t;
 	return t;
 }
 
@@ -1013,8 +1147,7 @@ function annotateDollar(node: CheckedNode, type: Type): void {
 		return;
 	}
 	if (node.kind === 'fn') return;
-	if (!('children' in node) || !node.children) return;
-	const kids = node.children;
+	const kids = childNodes(node);
 	for (let i = 0; i < kids.length; i++) {
 		const k = kids[i];
 		if (k) annotateDollar(k, type);
@@ -1033,11 +1166,9 @@ function isTypeParam(t: Type | undefined): boolean {
 
 function refsAny(node: Node, outer: Set<Symbol>): boolean {
 	if (node.kind === 'ident') return outer.has(node.symbol);
-	if ('children' in node && node.children)
-		for (let i = 0; i < node.children.length; i++) {
-			const k = node.children[i];
+	for (const k of childNodes(node)) {
 			if (k && refsAny(k, outer)) return true;
-		}
+	}
 	if (node.kind === 'fn' || node.kind === 'main')
 		for (const s of node.statements ?? [])
 			if (refsAny(s, outer)) return true;
@@ -1303,9 +1434,15 @@ function unusedValueMessage(type: Type): string {
  */
 function unionOf(types: Type[]): Type {
 	const seen = new Map<string, ResolvedType>();
-	for (const t of types) {
-		if (t.kind === 'type' && t.family !== 'void') seen.set(t.name, t);
-	}
+	const add = (type: Type): void => {
+		if (type.kind !== 'type') return;
+		if (type.family === 'union') {
+			for (const member of type.members) add(member);
+			return;
+		}
+		seen.set(type.name, type);
+	};
+	for (const type of types) add(type);
 	const members = Array.from(seen.values());
 	if (members.length === 0) return BT.Void;
 	const first = members[0];
@@ -1324,6 +1461,19 @@ function unionOf(types: Type[]): Type {
 		size: maxSize,
 		members,
 	};
+}
+
+function fallbackResultType(left: Type, right: Type): Type {
+	const types: Type[] = [];
+	if (left.kind === 'type' && left.family === 'union')
+		types.push(
+			...left.members.filter(
+				member => member.kind !== 'type' || member.family !== 'void',
+			),
+		);
+	else if (!(left.kind === 'type' && left.family === 'void')) types.push(left);
+	types.push(right);
+	return unionOf(types);
 }
 
 function getListTypes(node: NodeMap[',']) {
@@ -1975,8 +2125,9 @@ export function checker({
 
 	function referencesSymbol(node: Node, symbol: Symbol): boolean {
 		if (node.kind === 'ident') return bindingRoot(node.symbol) === symbol;
-		if (!('children' in node) || !node.children) return false;
-		return node.children.some(child => !!child && referencesSymbol(child, symbol));
+		return childNodes(node).some(
+			child => !!child && referencesSymbol(child, symbol),
+		);
 	}
 
 	function bindingRoot(symbol: Symbol): Symbol {
@@ -2313,8 +2464,7 @@ export function checker({
 
 	function nestedFunctionReferences(node: Node, symbol: Symbol): boolean {
 		if (node.kind === 'fn') return referencesSymbol(node, symbol);
-		if (!('children' in node) || !node.children) return false;
-		return node.children.some(
+		return childNodes(node).some(
 			child => !!child && nestedFunctionReferences(child, symbol),
 		);
 	}
@@ -2343,8 +2493,7 @@ export function checker({
 				node.symbol.definition?.kind === 'parameter')
 		)
 			return !isCopyType(resolver(node));
-		if (!('children' in node) || !node.children) return false;
-		return node.children.some(
+		return childNodes(node).some(
 			child => !!child && referencesNonCopyBinding(child, ignored),
 		);
 	}
@@ -2450,11 +2599,9 @@ export function checker({
 			return;
 		}
 		if (n.kind === 'fn' || n.kind === 'main' || n.kind === 'test') return;
-		if ('children' in n && n.children)
-			for (let i = 0; i < n.children.length; i++) {
-				const k = n.children[i];
+		for (const k of childNodes(n)) {
 				if (k) flagMovedUses(k, moved, borrowed);
-			}
+		}
 	}
 	function walkEmbeds(
 		value: Node,
@@ -2566,11 +2713,9 @@ export function checker({
 	): void {
 		if (n.kind === 'fn' || n.kind === 'main' || n.kind === 'test') return;
 		if (n.kind === 'call') markCallMoves(n, owned, moved);
-		if ('children' in n && n.children)
-			for (let i = 0; i < n.children.length; i++) {
-				const k = n.children[i];
+		for (const k of childNodes(n)) {
 				if (k) markConsumingMoves(k, owned, moved);
-			}
+		}
 	}
 	function checkMoves(node: {
 		parameters?: NodeMap['parameter'][];
@@ -2883,6 +3028,17 @@ export function checker({
 			);
 	}
 
+	function checkTypedStageBody(c: NodeMap['fn']) {
+		if (!c.parameters?.length) return;
+		const stmts = c.statements;
+		if (!stmts?.length) {
+			error('empty body in a typed block is invalid', c);
+			return;
+		}
+		if (!c.returnType && stmts.length === 1 && stmts[0]?.kind === 'done')
+			error('done-only body in a typed block is invalid', c);
+	}
+
 	function checkPipeStageFn(c: NodeMap['fn'], i: number) {
 		const stmts = c.statements;
 		const hasStmts = !!stmts?.length;
@@ -2891,8 +3047,7 @@ export function checker({
 				'Empty `() { }` is not allowed; use `{ }` for a no-op function.',
 				c,
 			);
-		if (c.parameters?.length && !hasStmts)
-			error('empty body in a typed block is invalid', c);
+		checkTypedStageBody(c);
 		checkOnlyStmt(c, i);
 		if (hasStmts && !c.parameters?.length) {
 			const emits = stmts.some(
@@ -2934,11 +3089,9 @@ export function checker({
 	function rejectAssignments(node: Node): void {
 		if (node.kind === '=')
 			error(`Cannot reassign binding "${text(node.children[0])}"`, node.children[0]);
-		if ('children' in node && node.children)
-			for (let i = 0; i < node.children.length; i++) {
-				const child = node.children[i];
+		for (const child of childNodes(node)) {
 				if (child) rejectAssignments(child);
-			}
+		}
 		if (node.kind === 'fn' && node.statements)
 			for (const statement of node.statements) rejectAssignments(statement);
 	}
@@ -3097,8 +3250,12 @@ export function checker({
 			) {
 				const accept = stageAcceptType(stage);
 				if (accept !== undefined && !isTypeParam(accept)) {
-					const members: Type[] =
-						emit.family === 'union' ? emit.members : [emit];
+					const members: Type[] = (
+						emit.family === 'union' ? emit.members : [emit]
+					).filter(
+						member =>
+							member.kind !== 'type' || member.family !== 'void',
+					);
 					const uncovered = members.find(m => !covers(accept, m));
 					if (uncovered)
 						error(
@@ -3218,11 +3375,9 @@ export function checker({
 	function checkStageConditions(node: Node) {
 		if (node.kind === 'fn') return;
 		if (node.kind === '?') requireBoolCond(node.children[0]);
-		if ('children' in node && node.children)
-			for (let i = 0; i < node.children.length; i++) {
-				const c = node.children[i];
+		for (const c of childNodes(node)) {
 				if (c) checkStageConditions(c);
-			}
+		}
 	}
 
 	function checkTernary(node: NodeMap['?']) {
@@ -3365,6 +3520,7 @@ export function checker({
 				for (const c of node.children) check(c);
 				return;
 			}
+			case '??':
 			case ',':
 			case 'interp':
 				for (const c of node.children) check(c);
@@ -3506,12 +3662,22 @@ export function checker({
 		});
 	}
 
+	function pipeStageParams(
+		stage: Node,
+		fnSym: SymbolMap['function'],
+	): Symbol[] | undefined {
+		if (fnSym.parameters) return fnSym.parameters;
+		return stage.kind === 'fn'
+			? stage.parameters?.map(parameter => parameter.symbol)
+			: undefined;
+	}
+
 	function inferPipeStage(stage: Node, input: Node) {
 		checkStageReachable(stage, input);
 		const fnSym = pipeStageFn(stage);
 		if (!fnSym) return;
 		const inputType = resolver(input);
-		const params = fnSym.parameters;
+		const params = pipeStageParams(stage, fnSym);
 		if (
 			stage.kind === 'fn' &&
 			stage.statements &&
@@ -3574,7 +3740,6 @@ export function checker({
 	}
 
 	function walkPipes(node: Node) {
-		if (node.kind === 'fn') resolveFnType(node);
 		if (node.kind === '>>') inferPipeStageParams(node.children);
 		switch (node.kind) {
 			case 'string':
@@ -3604,20 +3769,14 @@ export function checker({
 				if (statements) for (const s of statements) walkPipes(s);
 			}
 		}
-		if (
-			node.kind === 'fn' &&
-			node.symbol.name &&
-			!node.symbol.emissionType
-		)
-			resolveFnType(node);
+		if (node.kind === 'fn') resolveFnType(node);
 	}
 
 	function finalizeFnSemantics(node: Node, seen = new Set<Node>()): void {
 		if (seen.has(node)) return;
 		seen.add(node);
-		if ('children' in node)
-			for (const child of node.children ?? [])
-				if (child) finalizeFnSemantics(child, seen);
+		for (const child of childNodes(node))
+			if (child) finalizeFnSemantics(child, seen);
 		if (node.kind === 'fn' && node.statements) {
 			for (const statement of node.statements)
 				finalizeFnSemantics(statement, seen);

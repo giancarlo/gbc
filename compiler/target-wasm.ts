@@ -20,6 +20,11 @@ import {
 	unifyTypeParam,
 } from './symbol-table.js';
 import { childNodes } from './node.js';
+import {
+	runtimeErrorType,
+	runtimeResultType,
+	type RuntimeErrorName,
+} from './runtime-errors.js';
 
 import type { Node, NodeMap } from './node.js';
 import type {
@@ -562,6 +567,12 @@ function gbcToWasm(type: Type): number {
 
 function unionPayloadWasm(t: Type): number {
 	if (t.kind !== 'type' || t.family !== 'union') return I32;
+	if (
+		t.members.some(
+			member => member.kind === 'type' && member.family === 'vector',
+		)
+	)
+		return V128;
 	let maxSize = 0;
 	for (const m of t.members)
 		if (m.kind === 'type' && m.size > maxSize) maxSize = m.size;
@@ -593,7 +604,10 @@ function isInlineData(t: Type): boolean {
 }
 
 function fieldBytes(t: Type): number {
-	if (isUnionType(t)) return (unionPayloadWasm(t) === I64 ? 8 : 4) + 4;
+	if (isUnionType(t)) {
+		const payload = unionPayloadWasm(t);
+		return (payload === V128 ? 16 : payload === I64 ? 8 : 4) + 4;
+	}
 	if (t.kind === 'type') {
 		if (t.family === 'vector') return 16;
 		if (t.family === 'float') return t.size === 4 ? 4 : 8;
@@ -619,7 +633,10 @@ function typeOwnsHeap(t: Type | undefined): boolean {
 }
 
 function fieldAlign(t: Type): number {
-	if (isUnionType(t)) return unionPayloadWasm(t) === I64 ? 8 : 4;
+	if (isUnionType(t)) {
+		const payload = unionPayloadWasm(t);
+		return payload === V128 ? 16 : payload === I64 ? 8 : 4;
+	}
 	if (t.kind === 'type' && t.family === 'data') {
 		let a = 1;
 		for (const k of Object.keys(t.members)) {
@@ -1427,17 +1444,6 @@ export function compileWasm({
 	// keyed by builder index — used so a template call reports the concrete
 	// result type, not the template's abstract one.
 	const specReturn = new Map<number, Type>();
-	const nominalIds = new Map<Type, number>();
-
-	function nominalId(t: Type): number | undefined {
-		if (!namedData(t)) return undefined;
-		let id = nominalIds.get(t);
-		if (id === undefined) {
-			id = nominalIds.size + 1;
-			nominalIds.set(t, id);
-		}
-		return id;
-	}
 	// Function-typed params are bound to a concrete function at each call
 	// site (monomorphized, never a runtime funcref). Active during a spec body.
 	const fnArgBindings = new Map<GbcSymbol, SymbolMap['function']>();
@@ -1470,17 +1476,55 @@ export function compileWasm({
 		return numericResultType(lt, rt) ?? BaseTypes.Unknown;
 	}
 
+	function constantNumericValue(node: Node): number | undefined {
+		if (node.kind === 'number' && typeof node.value === 'number') return node.value;
+		if (node.kind !== 'call') return;
+		const callee = node.children[0];
+		const argument = node.children[1];
+		if (callee.kind !== 'typeident' || !argument || argument.kind === ',') return;
+		return constantNumericValue(argument);
+	}
+
+	function floatFitsInteger(value: number, target: ResolvedType): boolean {
+		if (!Number.isFinite(value)) return false;
+		const bits = target.size * 8;
+		const unsigned = target.family === 'uint';
+		const minimum = unsigned ? 0 : -(2 ** (bits - 1));
+		const maximum = unsigned ? 2 ** bits : 2 ** (bits - 1);
+		return value >= minimum && value < maximum;
+	}
+
+	function inferTypeConstructorCall(node: NodeMap['call']): Type {
+		const callee = node.children[0];
+		if (callee.kind !== 'typeident') return BaseTypes.Unknown;
+		const target = callee.symbol.type;
+		if (callee.symbol === BufferSymbol) return bufferTypeOf(BaseTypes.Unknown);
+		if (isCollection(target)) return target;
+		const argument = node.children[1];
+		if (
+			target.kind === 'type' &&
+			(target.family === 'int' || target.family === 'uint') &&
+			argument && argument.kind !== ',' && isFloatType(inferType(argument))
+		) {
+			const value = constantNumericValue(argument);
+			if (value !== undefined && Number.isFinite(value)) {
+				const bits = target.size * 8;
+				const minimum = target.family === 'uint' ? 0 : -(2 ** (bits - 1));
+				const maximum = target.family === 'uint' ? 2 ** bits : 2 ** (bits - 1);
+				if (value >= minimum && value < maximum) return target;
+			}
+			return runtimeResultType(target, 'NumericOverflow');
+		}
+		return target;
+	}
+
 	function inferCallType(node: NodeMap['call']): Type {
 		const callee = node.children[0];
 		if (callee.kind === '.') {
 			const sfn = resolveStaticMemberFn(callee);
 			return sfn ? sfn.returnType ?? BaseTypes.Void : BaseTypes.Unknown;
 		}
-		if (callee.kind === 'typeident') {
-			const cs = callee.symbol;
-			if (cs === BufferSymbol) return bufferTypeOf(BaseTypes.Unknown);
-			return cs.type;
-		}
+		if (callee.kind === 'typeident') return inferTypeConstructorCall(node);
 		if (callee.kind !== 'ident') return BaseTypes.Unknown;
 		const sym = callee.symbol;
 		const bound = fnArgBindings.get(sym);
@@ -1540,6 +1584,7 @@ export function compileWasm({
 	}
 
 	function inferStageReturn(stage: Node, input: Type): Type {
+		if (stage.kind === '|') return inferDispatchReturn(stage, input);
 		if (stage.kind === '.') {
 			const fnSym = resolveStaticMemberFn(stage);
 			if (fnSym)
@@ -1570,6 +1615,22 @@ export function compileWasm({
 		return BaseTypes.Unknown;
 	}
 
+	function inferDispatchReturn(stage: NodeMap['|'], input: Type): Type {
+		let result: Type | undefined;
+		const walk = (arm: Node): void => {
+			if (arm.kind === '|') {
+				walk(arm.children[0]);
+				walk(arm.children[1]);
+				return;
+			}
+			const armInput = stageDispatchType(arm) ?? input;
+			const armResult = inferStageReturn(arm, armInput);
+			result = result ? unionOfTypes(result, armResult) : armResult;
+		};
+		walk(stage);
+		return result ?? BaseTypes.Unknown;
+	}
+
 	function inferPipeType(node: NodeMap['>>'], fn?: FuncBuilder): Type {
 		const flat = flattenPipe(node.children);
 		const first = flat[0];
@@ -1580,6 +1641,18 @@ export function compileWasm({
 			if (stage) output = inferStageReturn(stage, output);
 		}
 		return output;
+	}
+
+	function fallbackResultType(left: Type, right: Type): Type {
+		let result = right;
+		const add = (member: Type): void => {
+			if (member.kind === 'type' && member.family === 'void') return;
+			result = unionOfTypes(result, member);
+		};
+		if (left.kind === 'type' && left.family === 'union')
+			for (const member of left.members) add(member);
+		else add(left);
+		return result;
 	}
 
 	function inferMemberType(node: NodeMap['.'], fn?: FuncBuilder): Type {
@@ -1671,6 +1744,11 @@ export function compileWasm({
 				return inferType(node.children[0], fn);
 			case '?':
 				return inferType(node.children[1], fn);
+			case '??':
+				return fallbackResultType(
+					inferType(node.children[0], fn),
+					inferType(node.children[1], fn),
+				);
 			case '>>':
 				return inferPipeType(node, fn);
 			case 'call':
@@ -1767,6 +1845,20 @@ export function compileWasm({
 			);
 	}
 
+	function normalizeNarrowInteger(target: ResolvedType, fn: FuncBuilder): void {
+		if (target.size !== 1 && target.size !== 2) return;
+		const bits = target.size === 1 ? 24 : 16;
+		if (target.family === 'uint') {
+			emitConst(target.size === 1 ? 0xff : 0xffff, fn);
+			fn.body.push(OP_I32_AND);
+			return;
+		}
+		emitConst(bits, fn);
+		fn.body.push(OP_I32_SHL);
+		emitConst(bits, fn);
+		fn.body.push(OP_I32_SHR_S);
+	}
+
 	function truncateFloatToInt(have: Type, want: Type, fn: FuncBuilder) {
 		const sourceIsF32 = gbcToWasm(have) === F32;
 		const targetIsI64 = isInt64Type(want);
@@ -1830,9 +1922,6 @@ export function compileWasm({
 		}
 		return have;
 	}
-	function unionTagOf(union: Type, have: Type): number {
-		return memberTag(resolveUnionMember(union, have));
-	}
 	function relocTaint(fn: FuncBuilder) {
 		if (fn.relocs) fn.relocTainted = true;
 	}
@@ -1851,8 +1940,25 @@ export function compileWasm({
 		return tags;
 	}
 
+	function bitcastVector(from: number, to: number, fn: FuncBuilder): boolean {
+		if (to === V128) {
+			const opcode =
+				from === I64 ? 0x12 : from === F32 ? 0x13 : from === F64 ? 0x14 : 0x11;
+			emitSimdOpcode(opcode, fn.body);
+			return true;
+		}
+		if (from === V128) {
+			const opcode =
+				to === I64 ? 0x1d : to === F32 ? 0x1f : to === F64 ? 0x21 : 0x1b;
+			emitSimdOpcode(opcode, fn.body);
+			fn.body.push(0);
+			return true;
+		}
+		return false;
+	}
+
 	function bitcast(from: number, to: number, fn: FuncBuilder) {
-		if (from === to) return;
+		if (from === to || bitcastVector(from, to, fn)) return;
 		if (from === I32 && to === I64) fn.body.push(OP_I64_EXTEND_I32_U);
 		else if (from === I64 && to === I32) fn.body.push(OP_I32_WRAP_I64);
 		else if (from === F64 && to === I64) fn.body.push(OP_I64_REINTERPRET_F64);
@@ -1871,6 +1977,10 @@ export function compileWasm({
 	function coerceToUnion(have: Type, union: Type, fn: FuncBuilder) {
 		if (hasRuntimeValue(have))
 			bitcast(gbcToWasm(have), unionPayloadWasm(union), fn);
+		else {
+			fn.body.push(OP_I32_CONST, 0);
+			bitcast(I32, unionPayloadWasm(union), fn);
+		}
 		const m = resolveUnionMember(union, have);
 		emitTagConst(memberTag(m), memberKey(m), fn);
 	}
@@ -2658,9 +2768,95 @@ export function compileWasm({
 		};
 	}
 
-	function constEvalInt(node: Node, fn: FuncBuilder): number | undefined {
+	function coerceFallbackValue(have: Type, result: Type, fn: FuncBuilder): void {
+		if (!isUnionType(result)) {
+			coerceIntWidth(have, result, fn);
+			return;
+		}
+		if (!isUnionType(have)) {
+			coerceToUnion(have, result, fn);
+			return;
+		}
+		const havePayload = unionPayloadWasm(have);
+		const resultPayload = unionPayloadWasm(result);
+		if (havePayload === resultPayload) return;
+		const tag = allocLocal(fn, I32);
+		const payload = allocLocal(fn, havePayload);
+		emitStoreLocal(tag, fn);
+		emitStoreLocal(payload, fn);
+		emitLoadLocal(payload, fn);
+		bitcast(havePayload, resultPayload, fn);
+		emitLoadLocal(tag, fn);
+	}
+
+	function compileValueExpr(node: Node, fn: FuncBuilder): Type {
+		const savedPipeValue = fn.pipeValue;
+		fn.pipeValue = true;
+		try {
+			return compileExpr(node, fn);
+		} finally {
+			fn.pipeValue = savedPipeValue;
+		}
+	}
+
+	function compileFallbackValue(node: NodeMap['??'], fn: FuncBuilder): Type {
+		const rightNode = node.children[1];
+		const left = compileValueExpr(node.children[0], fn);
+		if (left.kind === 'type' && left.family === 'void')
+			return compileValueExpr(rightNode, fn);
+		if (left.kind !== 'type' || left.family !== 'union') return left;
+		const voidMember = left.members.find(
+			member => member.kind === 'type' && member.family === 'void',
+		);
+		if (!voidMember) return left;
+		const result = fallbackResultType(left, inferType(rightNode, fn));
+		const leftTag = allocLocal(fn, I32);
+		const leftPayload = allocLocal(fn, unionPayloadWasm(left));
+		emitStoreLocal(leftTag, fn);
+		emitStoreLocal(leftPayload, fn);
+		const resultTag = isUnionType(result) ? allocLocal(fn, I32) : undefined;
+		const resultValue = allocLocal(
+			fn,
+			isUnionType(result) ? unionPayloadWasm(result) : gbcToWasm(result),
+		);
+		const storeResult = (actual: Type): void => {
+			coerceFallbackValue(actual, result, fn);
+			if (resultTag !== undefined) emitStoreLocal(resultTag, fn);
+			emitStoreLocal(resultValue, fn);
+		};
+		emitLoadLocal(leftTag, fn);
+		emitTagConst(memberTag(voidMember), memberKey(voidMember), fn);
+		fn.body.push(OP_I32_EQ, OP_IF, 0x40);
+		fn.blockDepth++;
+		storeResult(compileValueExpr(rightNode, fn));
+		fn.body.push(OP_ELSE);
+		emitLoadLocal(leftPayload, fn);
+		if (resultTag !== undefined) emitLoadLocal(leftTag, fn);
+		else bitcast(unionPayloadWasm(left), gbcToWasm(result), fn);
+		storeResult(left);
+		fn.body.push(OP_END);
+		fn.blockDepth--;
+		emitLoadLocal(resultValue, fn);
+		if (resultTag !== undefined) emitLoadLocal(resultTag, fn);
+		return result;
+	}
+
+	function constEvalInt(
+		node: Node,
+		fn: FuncBuilder,
+		seen?: Set<GbcSymbol>,
+	): number | undefined {
 		if (node.kind === 'number' && !node.float && typeof node.value === 'number')
 			return node.value;
+		if (node.kind === 'ident') {
+			const sym = node.symbol;
+			if (sym.flags & Flags.Variable || seen?.has(sym)) return;
+			const definition = sym.definition;
+			if (definition?.kind !== 'def') return;
+			const visited = seen ?? new Set<GbcSymbol>();
+			visited.add(sym);
+			return constEvalInt(definition.value, fn, visited);
+		}
 		if (node.kind === 'call') {
 			const callee = node.children[0];
 			const arg = node.children[1];
@@ -2933,6 +3129,8 @@ export function compileWasm({
 				);
 			case '?':
 				return compileTernary(node, fn);
+			case '??':
+				return compileFallbackValue(node, fn);
 			case '>>':
 				return compilePipe(node.children, fn);
 			case 'data':
@@ -3016,90 +3214,101 @@ export function compileWasm({
 	): Type | undefined {
 		const rhs = node.children[1];
 		const dz = divByZeroType;
-		if (useFloat || !dz || isKnownNonZeroNumber(rhs))
-			return undefined;
-		if (nominalId(dz) === undefined) return undefined;
+		const overflow = runtimeErrorType('NumericOverflow');
+		if (useFloat) return undefined;
+		const zeroError = isKnownNonZeroNumber(rhs) ? undefined : dz;
+		const divisor = constEvalInt(rhs, fn);
+		const overflowError =
+			node.kind === '/' &&
+			!isUintType(intType) &&
+			(divisor === undefined || divisor === -1)
+				? overflow
+				: undefined;
+		if (!zeroError && !overflowError) return undefined;
 		const lhs = node.children[0];
-		const divUnion = unionOfTypes(intType, dz);
-		const errTag = unionTagOf(divUnion, dz);
-		const okTag = unionTagOf(divUnion, intType);
+		let result = intType;
+		if (zeroError) result = unionOfTypes(result, zeroError);
+		if (overflowError) result = runtimeResultType(result, 'NumericOverflow');
 		const at = compileExpr(lhs, fn);
 		if (useWide) coerceToInt64(at, fn);
 		const dividendLocal = allocLocal(fn, payWasm);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(dividendLocal, fn.body);
+		emitStoreLocal(dividendLocal, fn);
 		const bt = compileExpr(rhs, fn);
 		if (useWide) coerceToInt64(bt, fn);
 		const divLocal = allocLocal(fn, payWasm);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(divLocal, fn.body);
-		const payloadLocal = allocLocal(fn, payWasm);
+		emitStoreLocal(divLocal, fn);
+		const payloadLocal = allocLocal(fn, unionPayloadWasm(result));
 		const tagLocal = allocLocal(fn, I32);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(divLocal, fn.body);
-		fn.body.push(useWide ? OP_I64_EQZ : OP_I32_EQZ);
-		fn.body.push(OP_IF);
-		fn.body.push(0x40);
-		fn.blockDepth++;
-		const dzFrame = staticFramePtr(
-			dz.name ?? 'DivByZero',
-			fn.name ?? 'main',
-			node.line + 1,
-			sourceFileOf(node),
-		);
-		if (debugBuild) {
-			const boxLocal = allocLocal(fn, I32);
-			fn.body.push(OP_I32_CONST, 4);
-			emitFixedCall(fn, allocBuilderIdx);
-			fn.body.push(OP_LOCAL_TEE);
-			uleb128(boxLocal, fn.body);
-			fn.body.push(OP_I32_CONST);
-			sleb128(dzFrame, fn.body);
-			emitFixedCall(fn, captureBuilderIdx);
-			fn.body.push(OP_I32_STORE);
-			uleb128(2, fn.body);
-			uleb128(0, fn.body);
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(boxLocal, fn.body);
-			if (useWide) fn.body.push(OP_I64_EXTEND_I32_U);
-		} else {
-			relocTaint(fn);
-			fn.body.push(useWide ? OP_I64_CONST : OP_I32_CONST);
-			sleb128(internWords([dzFrame]), fn.body);
-		}
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(payloadLocal, fn.body);
-		fn.body.push(OP_I32_CONST);
-		sleb128(errTag, fn.body);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(tagLocal, fn.body);
-		fn.body.push(OP_ELSE);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(dividendLocal, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(divLocal, fn.body);
-		fn.body.push(
-			arithOpcode(
-				node.kind,
-				false,
-				useWide,
-				isUintType(inferType(node.children[0], fn)) ||
-					isUintType(inferType(node.children[1], fn)),
-			),
-		);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(payloadLocal, fn.body);
-		fn.body.push(OP_I32_CONST);
-		sleb128(okTag, fn.body);
-		fn.body.push(OP_LOCAL_SET);
-		uleb128(tagLocal, fn.body);
-		fn.body.push(OP_END);
-		fn.blockDepth--;
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(payloadLocal, fn.body);
-		fn.body.push(OP_LOCAL_GET);
-		uleb128(tagLocal, fn.body);
-		return divUnion;
+		const store = (actual: Type): void => {
+			coerceFallbackValue(actual, result, fn);
+			emitStoreLocal(tagLocal, fn);
+			emitStoreLocal(payloadLocal, fn);
+		};
+		const emitSuccess = (): void => {
+			emitLoadLocal(dividendLocal, fn);
+			emitLoadLocal(divLocal, fn);
+			fn.body.push(
+				arithOpcode(
+					node.kind,
+					false,
+					useWide,
+					isUintType(inferType(node.children[0], fn)) ||
+						isUintType(inferType(node.children[1], fn)),
+				),
+			);
+			store(intType);
+		};
+		const emitOverflowCheck = (): void => {
+			if (!overflowError) {
+				emitSuccess();
+				return;
+			}
+			emitLoadLocal(dividendLocal, fn);
+			if (useWide) {
+				fn.body.push(OP_I64_CONST);
+				sleb128big(-(1n << 63n), fn.body);
+				fn.body.push(OP_I64_EQ);
+			} else {
+				emitConst(-0x80000000, fn);
+				fn.body.push(OP_I32_EQ);
+			}
+			emitLoadLocal(divLocal, fn);
+			if (useWide) {
+				fn.body.push(OP_I64_CONST);
+				sleb128big(-1n, fn.body);
+				fn.body.push(OP_I64_EQ);
+			} else {
+				emitConst(-1, fn);
+				fn.body.push(OP_I32_EQ);
+			}
+			fn.body.push(OP_I32_AND, OP_IF, 0x40);
+			fn.blockDepth++;
+			store(
+				emitErrorValue(overflowError, node, fn, [
+					{
+						name: 'operation',
+						emit: () => emitDataConst(`${intType.name} division`, fn),
+					},
+				]),
+			);
+			fn.body.push(OP_ELSE);
+			emitSuccess();
+			fn.body.push(OP_END);
+			fn.blockDepth--;
+		};
+		if (zeroError) {
+			emitLoadLocal(divLocal, fn);
+			fn.body.push(useWide ? OP_I64_EQZ : OP_I32_EQZ, OP_IF, 0x40);
+			fn.blockDepth++;
+			store(emitErrorValue(zeroError, node, fn));
+			fn.body.push(OP_ELSE);
+			emitOverflowCheck();
+			fn.body.push(OP_END);
+			fn.blockDepth--;
+		} else emitOverflowCheck();
+		emitLoadLocal(payloadLocal, fn);
+		emitLoadLocal(tagLocal, fn);
+		return result;
 	}
 
 	function compileArith(
@@ -3309,14 +3518,6 @@ export function compileWasm({
 		return emitHeaderLength(args, fn);
 	}
 
-	function compileDropped(node: Node, fn: FuncBuilder) {
-		const t = compileExpr(node, fn);
-		if (hasRuntimeValue(t)) {
-			fn.body.push(OP_DROP);
-			if (isUnionType(t)) fn.body.push(OP_DROP);
-		}
-	}
-
 	function compileTraceIntrinsic(
 		name: string,
 		args: Node | undefined,
@@ -3340,6 +3541,64 @@ export function compileWasm({
 		fn.body.push(OP_I32_LOAD);
 		uleb128(2, fn.body);
 		uleb128(off, fn.body);
+		if (name === 'frameAt') {
+			const iArg = argList[1];
+			if (!iArg) throw new Error('frameAt() requires an index');
+			const h = allocLocal(fn, I32);
+			const iL = allocLocal(fn, I32);
+			emitStoreLocal(h, fn);
+			compileExpr(iArg, fn);
+			emitStoreLocal(iL, fn);
+			const count = allocLocal(fn, I32);
+			if (!debugBuild) emitConst(1, fn);
+			else {
+				emitLoadLocal(h, fn);
+				fn.body.push(OP_GLOBAL_GET);
+				uleb128(shadowLimitIdx, fn.body);
+				fn.body.push(0x49, OP_IF, I32);
+				emitConst(1, fn);
+				fn.body.push(OP_ELSE);
+				emitLoadLocal(h, fn);
+				fn.body.push(OP_I32_LOAD);
+				uleb128(2, fn.body);
+				uleb128(0, fn.body);
+				fn.body.push(OP_END);
+			}
+			emitStoreLocal(count, fn);
+			emitLoadLocal(iL, fn);
+			emitLoadLocal(count, fn);
+			fn.body.push(OP_I32_GE_U);
+			emitTrapIf(fn);
+					if (!debugBuild) {
+						emitLoadLocal(h, fn);
+						return frameType ?? BaseTypes.Unknown;
+					}
+					emitLoadLocal(h, fn);
+					fn.body.push(OP_GLOBAL_GET);
+					uleb128(shadowLimitIdx, fn.body);
+					fn.body.push(0x49, OP_IF, I32);
+					emitLoadLocal(h, fn);
+					fn.body.push(OP_ELSE);
+					emitLoadLocal(iL, fn);
+					fn.body.push(OP_I32_EQZ, OP_IF, I32);
+					emitLoadLocal(h, fn);
+					fn.body.push(OP_I32_LOAD);
+					uleb128(2, fn.body);
+					uleb128(4, fn.body);
+					fn.body.push(OP_ELSE);
+					emitLoadLocal(h, fn);
+					emitLoadLocal(count, fn);
+					emitConst(1, fn);
+					fn.body.push(OP_I32_SUB);
+					emitLoadLocal(iL, fn);
+					fn.body.push(OP_I32_SUB);
+					emitConst(2, fn);
+					fn.body.push(OP_I32_SHL, OP_I32_ADD, OP_I32_LOAD);
+					uleb128(2, fn.body);
+					uleb128(8, fn.body);
+					fn.body.push(OP_END, OP_END);
+			return frameType ?? BaseTypes.Unknown;
+		}
 		// Handle on the stack: below heapStart it IS the (static) origin
 		// frame; above, it points at a captured chain [count][origin][…].
 		if (!debugBuild) {
@@ -3348,7 +3607,6 @@ export function compileWasm({
 				fn.body.push(OP_I32_CONST, 1);
 				return BaseTypes.Int32;
 			}
-			if (name === 'frameAt' && argList[1]) compileDropped(argList[1], fn);
 			return frameType ?? BaseTypes.Unknown;
 		}
 		const h = allocLocal(fn, I32);
@@ -3369,52 +3627,6 @@ export function compileWasm({
 			uleb128(0, fn.body);
 			fn.body.push(OP_END);
 			return BaseTypes.Int32;
-		}
-		if (name === 'frameAt') {
-			const iArg = argList[1];
-			if (!iArg) throw new Error('frameAt() requires an index');
-			const iL = allocLocal(fn, I32);
-			compileExpr(iArg, fn);
-			fn.body.push(OP_LOCAL_SET);
-			uleb128(iL, fn.body);
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(h, fn.body);
-			fn.body.push(OP_GLOBAL_GET);
-			uleb128(shadowLimitIdx, fn.body);
-			fn.body.push(0x49, OP_IF, I32);
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(h, fn.body);
-			fn.body.push(OP_ELSE);
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(iL, fn.body);
-			fn.body.push(OP_I32_EQZ, OP_IF, I32);
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(h, fn.body);
-			fn.body.push(OP_I32_LOAD);
-			uleb128(2, fn.body);
-			uleb128(4, fn.body);
-			fn.body.push(OP_ELSE);
-			// entries at +8, outermost-first; logical i (innermost-first)
-			// -> physical count-1-i.
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(h, fn.body);
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(h, fn.body);
-			fn.body.push(OP_I32_LOAD);
-			uleb128(2, fn.body);
-			uleb128(0, fn.body);
-			fn.body.push(OP_I32_CONST, 1, OP_I32_SUB);
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(iL, fn.body);
-			fn.body.push(OP_I32_SUB);
-			fn.body.push(OP_I32_CONST, 2, OP_I32_SHL);
-			fn.body.push(OP_I32_ADD);
-			fn.body.push(OP_I32_LOAD);
-			uleb128(2, fn.body);
-			uleb128(8, fn.body);
-			fn.body.push(OP_END);
-			fn.body.push(OP_END);
-			return frameType ?? BaseTypes.Unknown;
 		}
 		// origin
 		fn.body.push(OP_LOCAL_GET);
@@ -3893,12 +4105,67 @@ export function compileWasm({
 		return type;
 	}
 
+	function compileCheckedFloatToInt(
+		target: ResolvedType,
+		argument: Node,
+		fn: FuncBuilder,
+	): Type {
+		const have = compileExpr(argument, fn);
+		const sourceLocal = allocLocal(fn, gbcToWasm(have));
+		emitStoreLocal(sourceLocal, fn);
+		const emitAsFloat64 = (): void => {
+			emitLoadLocal(sourceLocal, fn);
+			if (gbcToWasm(have) === F32) fn.body.push(OP_F64_PROMOTE_F32);
+		};
+		const bits = target.size * 8;
+		const unsigned = target.family === 'uint';
+		const minimum = unsigned ? 0 : -(2 ** (bits - 1));
+		const maximum = unsigned ? 2 ** bits : 2 ** (bits - 1);
+		emitAsFloat64();
+		emitAsFloat64();
+		fn.body.push(OP_F64_NE);
+		emitAsFloat64();
+		fn.body.push(OP_F64_CONST);
+		f64le(minimum, fn.body);
+		fn.body.push(OP_F64_LT, OP_I32_OR);
+		emitAsFloat64();
+		fn.body.push(OP_F64_CONST);
+		f64le(maximum, fn.body);
+		fn.body.push(OP_F64_GE, OP_I32_OR);
+		return emitCheckedRuntimeResult(
+			'NumericOverflow',
+			target,
+			argument,
+			fn,
+			() => {
+				emitLoadLocal(sourceLocal, fn);
+				truncateFloatToInt(have, target, fn);
+				normalizeNarrowInteger(target, fn);
+			},
+			[
+				{
+					name: 'operation',
+					emit: () => emitDataConst(`${target.name} conversion`, fn),
+				},
+			],
+		);
+	}
+
 	function compileScalarCtor(
 		target: ResolvedType,
 		args: Node | undefined,
 		fn: FuncBuilder,
 	): Type {
 		if (!args) throw new Error(`${target.name}() requires an argument`);
+		const inferred = inferType(args, fn);
+		if (
+			(target.family === 'int' || target.family === 'uint') &&
+			isFloatType(inferred)
+		) {
+			const constant = constantNumericValue(args);
+			if (constant === undefined || !floatFitsInteger(constant, target))
+				return compileCheckedFloatToInt(target, args, fn);
+		}
 		const t = compileExpr(args, fn);
 		if (target.family === 'float') {
 			if (!isFloatType(t) || gbcToWasm(t) !== gbcToWasm(target))
@@ -3917,21 +4184,7 @@ export function compileWasm({
 		}
 		if (isFloatType(t)) truncateFloatToInt(t, target, fn);
 		else if (gbcToWasm(t) === I64) fn.body.push(OP_I32_WRAP_I64);
-		if (target.family === 'uint') {
-			if (target.size === 1 || target.size === 2) {
-				fn.body.push(OP_I32_CONST);
-				sleb128(target.size === 1 ? 0xff : 0xffff, fn.body);
-				fn.body.push(OP_I32_AND);
-			}
-		} else if (target.size === 1 || target.size === 2) {
-			const bits = target.size === 1 ? 24 : 16;
-			fn.body.push(OP_I32_CONST);
-			sleb128(bits, fn.body);
-			fn.body.push(0x74);
-			fn.body.push(OP_I32_CONST);
-			sleb128(bits, fn.body);
-			fn.body.push(0x75);
-		}
+		normalizeNarrowInteger(target, fn);
 		return target;
 	}
 
@@ -4345,12 +4598,12 @@ export function compileWasm({
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(cap, fn.body);
 		fn.body.push(OP_I32_CONST, 0, OP_I32_LT_S);
-		emitTrapIf(fn);
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(cap, fn.body);
 		fn.body.push(OP_I32_CONST);
-		sleb128(Math.floor((0x7fffffff - 8) / stride), fn.body);
-		fn.body.push(OP_I32_GT_S);
+		const maximum = Math.floor((0x7fffffff - 8) / stride);
+		sleb128(maximum, fn.body);
+		fn.body.push(OP_I32_GT_S, OP_I32_OR);
 		emitTrapIf(fn);
 		fn.body.push(OP_I32_CONST);
 		sleb128(8, fn.body);
@@ -4568,6 +4821,162 @@ export function compileWasm({
 		fn.body.push(OP_END);
 	}
 
+	type RuntimeErrorPayloadField = { name: string; emit: () => void };
+	type ErrorDataType = ResolvedType & { family: 'data' };
+	type ErrorLayout = ReturnType<typeof fieldLayout>;
+
+	function emitStaticError(frame: number, fn: FuncBuilder): void {
+		relocTaint(fn);
+		emitConst(internWords([frame]), fn);
+	}
+
+	function emitFieldlessError(
+		error: ErrorDataType,
+		frame: number,
+		layout: ErrorLayout,
+		traceIndex: number,
+		fn: FuncBuilder,
+	): Type {
+		if (!debugBuild) {
+			emitStaticError(frame, fn);
+			return error;
+		}
+		emitConst(Math.max(4, layout.total), fn);
+		emitFixedCall(fn, allocBuilderIdx);
+		const box = allocLocal(fn, I32);
+		emitStoreLocal(box, fn);
+		emitLoadLocal(box, fn);
+		fn.body.push(OP_IF, I32);
+		emitLoadLocal(box, fn);
+		emitConst(frame, fn);
+		emitFixedCall(fn, captureBuilderIdx);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(traceIndex >= 0 ? (layout.offs[traceIndex] ?? 0) : 0, fn.body);
+		emitLoadLocal(box, fn);
+		fn.body.push(OP_ELSE);
+		emitStaticError(frame, fn);
+		fn.body.push(OP_END);
+		return error;
+	}
+
+	function emitPayloadError(
+		error: ErrorDataType,
+		node: Node,
+		frame: number,
+		layout: ErrorLayout,
+		traceIndex: number,
+		payloadFields: RuntimeErrorPayloadField[],
+		fn: FuncBuilder,
+	): Type {
+		const result = runtimeResultType(error, 'OutOfMemory');
+		if (!isUnionType(result)) throw new Error('OutOfMemory type is unavailable');
+		const payload = allocLocal(fn, unionPayloadWasm(result));
+		const tag = allocLocal(fn, I32);
+		emitConst(Math.max(4, layout.total), fn);
+		emitFixedCall(fn, allocBuilderIdx);
+		const box = allocLocal(fn, I32);
+		emitStoreLocal(box, fn);
+		emitLoadLocal(box, fn);
+		fn.body.push(OP_I32_EQZ, OP_IF, 0x40);
+		const oom = runtimeErrorType('OutOfMemory');
+		if (!oom) throw new Error('OutOfMemory type is unavailable');
+		emitStaticError(
+			staticFramePtr(oom.name ?? 'OutOfMemory', fn.name ?? 'main', node.line + 1, sourceFileOf(node)),
+			fn,
+		);
+		coerceToUnion(oom, result, fn);
+		emitStoreLocal(tag, fn);
+		emitStoreLocal(payload, fn);
+		fn.body.push(OP_ELSE);
+		emitLoadLocal(box, fn);
+		emitConst(frame, fn);
+		if (debugBuild) emitFixedCall(fn, captureBuilderIdx);
+		fn.body.push(OP_I32_STORE);
+		uleb128(2, fn.body);
+		uleb128(traceIndex >= 0 ? (layout.offs[traceIndex] ?? 0) : 0, fn.body);
+		for (const field of payloadFields) {
+			const index = layout.keys.indexOf(field.name);
+			const member = index >= 0 ? error.members[field.name] : undefined;
+			if (index < 0 || !member?.type) continue;
+			emitLoadLocal(box, fn);
+			field.emit();
+			emitFieldStore(member.type, layout.offs[index] ?? 0, fn);
+		}
+		emitLoadLocal(box, fn);
+		coerceToUnion(error, result, fn);
+		emitStoreLocal(tag, fn);
+		emitStoreLocal(payload, fn);
+		fn.body.push(OP_END);
+		emitLoadLocal(payload, fn);
+		emitLoadLocal(tag, fn);
+		return result;
+	}
+
+	function emitErrorValue(
+		error: Type,
+		node: Node,
+		fn: FuncBuilder,
+		payloadFields: RuntimeErrorPayloadField[] = [],
+	): Type {
+		if (error.kind !== 'type' || error.family !== 'data')
+			throw new Error('Runtime error type is unavailable');
+		const frame = staticFramePtr(error.name, fn.name ?? 'main', node.line + 1, sourceFileOf(node));
+		const layout = fieldLayout(error.members);
+		const traceIndex = layout.keys.indexOf('__trace');
+		if (error.name === 'OutOfMemory') {
+			emitStaticError(frame, fn);
+			return error;
+		}
+		return layout.keys.some(key => key !== '__trace')
+			? emitPayloadError(error, node, frame, layout, traceIndex, payloadFields, fn)
+			: emitFieldlessError(error, frame, layout, traceIndex, fn);
+	}
+
+	function emitRuntimeError(
+		name: RuntimeErrorName,
+		node: Node,
+		fn: FuncBuilder,
+		payloadFields: RuntimeErrorPayloadField[] = [],
+	): Type {
+		const error = runtimeErrorType(name);
+		if (!error) throw new Error(`Runtime error type "${name}" is unavailable`);
+		return emitErrorValue(error, node, fn, payloadFields);
+	}
+
+	function emitCheckedRuntimeResult(
+		name: RuntimeErrorName,
+		success: Type,
+		node: Node,
+		fn: FuncBuilder,
+		emitSuccess: () => void,
+		payloadFields: RuntimeErrorPayloadField[] = [],
+	): Type {
+		if (!runtimeErrorType(name)) {
+			fn.body.push(OP_DROP);
+			emitSuccess();
+			return success;
+		}
+		const result = runtimeResultType(success, name);
+		if (!isUnionType(result)) throw new Error(`Runtime result for "${name}" is unavailable`);
+		const payload = allocLocal(fn, unionPayloadWasm(result));
+		const tag = allocLocal(fn, I32);
+		fn.body.push(OP_IF, 0x40);
+		const error = emitRuntimeError(name, node, fn, payloadFields);
+		coerceFallbackValue(error, result, fn);
+		emitStoreLocal(tag, fn);
+		emitStoreLocal(payload, fn);
+		fn.body.push(OP_ELSE);
+		emitSuccess();
+		coerceToUnion(success, result, fn);
+		emitStoreLocal(tag, fn);
+		emitStoreLocal(payload, fn);
+		fn.body.push(OP_END);
+		emitLoadLocal(payload, fn);
+		emitLoadLocal(tag, fn);
+		return result;
+	}
+
 	// Free one heap element living at `addr` (a String pointer, a nested buffer
 	// pointer, or an inline record's heap members). Scalars own nothing.
 	function freeElemAt(addr: () => void, elem: Type, fn: FuncBuilder) {
@@ -4657,11 +5066,10 @@ export function compileWasm({
 		uleb128(idx, fn.body);
 		emitHeaderRead(base, 0, fn);
 		fn.body.push(OP_I32_GT_U);
-		emitTrapIf(fn);
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(idx, fn.body);
 		emitHeaderRead(base, 4, fn);
-		fn.body.push(OP_I32_GE_U);
+		fn.body.push(OP_I32_GE_U, OP_I32_OR);
 		emitTrapIf(fn);
 		emitSlotAddr(base, idx, stride, fn);
 		fn.body.push(OP_LOCAL_SET);
@@ -5795,7 +6203,7 @@ export function compileWasm({
 		}
 
 		let originalUnion: ResolvedType | undefined;
-		while (source.kind === 'call') {
+		while (source.kind === 'call' && !fn.pipeValue) {
 			if (!originalUnion) originalUnion = callReturnUnion(source);
 			const r = tryInlinePipeCall(source, stages, fn);
 			if (r.kind === 'done') return BaseTypes.Void;
@@ -7069,7 +7477,8 @@ export function compileWasm({
 			t.family === 'uint' ||
 			t.family === 'float' ||
 			t.family === 'bool' ||
-			t.family === 'string'
+			t.family === 'string' ||
+			t.family === 'vector'
 		)
 			return t;
 		return undefined;
@@ -7186,12 +7595,64 @@ export function compileWasm({
 		throw new Error(`Unsupported pipe stage: ${stage.kind}`);
 	}
 
+	function dispatchValueType(
+		dispatchStages: Node[],
+		afterStages: Node[],
+	): Type | undefined {
+		let valueType: Type | undefined;
+		for (const stage of dispatchStages) {
+			const dispatchType = stageDispatchType(stage);
+			if (!dispatchType) continue;
+			let result = inferStageReturn(stage, dispatchType);
+			for (const after of afterStages)
+				result = inferStageReturn(after, result);
+			valueType = valueType ? unionOfTypes(valueType, result) : result;
+		}
+		return valueType;
+	}
+
+	function allocDispatchResult(result: Type, fn: FuncBuilder) {
+		const value = allocLocal(
+			fn,
+			isUnionType(result) ? unionPayloadWasm(result) : gbcToWasm(result),
+		);
+		return {
+			value,
+			tag: isUnionType(result) ? allocLocal(fn, I32) : -1,
+		};
+	}
+
+	function loadDispatchInput(
+		arm: Type,
+		input: Type,
+		valueLocal: number,
+		fn: FuncBuilder,
+	): void {
+		if (!hasRuntimeValue(arm)) return;
+		emitLoadLocal(valueLocal, fn);
+		if (isUnionType(input))
+			bitcast(unionPayloadWasm(input), gbcToWasm(arm), fn);
+	}
+
+	function storeDispatchResult(
+		emitted: Type,
+		result: Type,
+		valueLocal: number,
+		tagLocal: number,
+		fn: FuncBuilder,
+	): void {
+		coerceFallbackValue(emitted, result, fn);
+		if (tagLocal >= 0) emitStoreLocal(tagLocal, fn);
+		emitStoreLocal(valueLocal, fn);
+	}
+
 	function driveDispatch(
 		dispatchStages: Node[],
 		afterStages: Node[],
 		inputType: Type,
 		fn: FuncBuilder,
 	): Type {
+		const valueMode = !!fn.pipeValue;
 		const isUnion = isUnionType(inputType);
 		const valueLocal = allocLocal(
 			fn,
@@ -7205,18 +7666,28 @@ export function compileWasm({
 		}
 		fn.body.push(OP_LOCAL_SET);
 		uleb128(valueLocal, fn.body);
-		const valueReturn =
-			afterStages.length === 0 &&
-			hasRuntimeValue(fn.returnType) &&
-			!isUnionType(fn.returnType);
+		const valueType = valueMode
+			? dispatchValueType(dispatchStages, afterStages)
+			: undefined;
+		const resultType = valueType ?? fn.returnType;
+		const valueReturn = valueMode
+			? !!valueType && hasRuntimeValue(valueType)
+			: afterStages.length === 0 && hasRuntimeValue(fn.returnType);
 		const savedDispatchFusion = fn.fusion;
 		let resultLocal = -1;
+		let resultTagLocal = -1;
 		if (valueReturn) {
-			resultLocal = allocLocal(fn, gbcToWasm(fn.returnType));
-			fn.fusion = {
+			const locals = allocDispatchResult(resultType, fn);
+			resultLocal = locals.value;
+			resultTagLocal = locals.tag;
+			if (!valueMode) fn.fusion = {
 				// The emitted value becomes the frame result — it escapes,
 				// so report no drive type and nothing gets freed.
-				emit: () => {
+				emit: emitted => {
+					if (isUnionType(resultType)) {
+						coerceFallbackValue(emitted, resultType, fn);
+						emitStoreLocal(resultTagLocal, fn);
+					}
 					fn.body.push(OP_LOCAL_SET);
 					uleb128(resultLocal, fn.body);
 					return undefined;
@@ -7240,15 +7711,12 @@ export function compileWasm({
 			fn.body.push(OP_IF);
 			fn.body.push(0x40);
 			fn.blockDepth++;
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(valueLocal, fn.body);
-			if (isUnion && hasRuntimeValue(armMember))
-				bitcast(
-					unionPayloadWasm(inputType),
-					gbcToWasm(armMember),
-					fn,
+			loadDispatchInput(armMember, inputType, valueLocal, fn);
+			const emitted = driveFnStage(ds, armMember, afterStages, fn);
+			if (valueMode && valueReturn)
+				storeDispatchResult(
+					emitted, resultType, resultLocal, resultTagLocal, fn,
 				);
-			driveFnStage(ds, armMember, afterStages, fn);
 			fn.body.push(OP_END);
 			fn.blockDepth--;
 		}
@@ -7256,9 +7724,13 @@ export function compileWasm({
 			fn.fusion = savedDispatchFusion;
 			fn.body.push(OP_LOCAL_GET);
 			uleb128(resultLocal, fn.body);
-			return fn.returnType;
+			if (resultTagLocal >= 0) {
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(resultTagLocal, fn.body);
+			}
+			return resultType;
 		}
-		return BaseTypes.Void;
+		return valueType ?? BaseTypes.Void;
 	}
 
 	// Emit `tag == ids[0] || tag == ids[1] || ...` as an i32 boolean.

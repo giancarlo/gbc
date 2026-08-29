@@ -89,7 +89,7 @@ export function parseType(
 		if (types.every(type => type === first)) return first;
 		const members = new Map<string, ResolvedType>();
 		for (const type of types) {
-			if (type.kind !== 'type' || type.family === 'void') continue;
+			if (type.kind !== 'type') continue;
 			if (type.family === 'union')
 				for (const member of type.members)
 					if (member.kind === 'type')
@@ -132,7 +132,6 @@ export function parseType(
 				(node): node is NodeMap['typeident'] =>
 					node?.kind === 'typeident' &&
 					node.symbol.type.kind === 'type' &&
-					node.symbol.type.family !== 'void' &&
 					node.symbol.type.family !== 'emission',
 			)
 		)
