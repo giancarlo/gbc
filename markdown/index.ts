@@ -8,6 +8,11 @@ import {
 } from '../sdk/index.js';
 
 type Children = Node[];
+type TableAlignment = 'center' | 'left' | 'right';
+type TableCell<Kind extends 'td' | 'th'> = Token<Kind> & {
+	alignment?: TableAlignment;
+	children: Children;
+};
 /* eslint @typescript-eslint/no-empty-object-type: off */
 type NodeMapBase = {
 	code: { value: string };
@@ -40,6 +45,9 @@ type NodeMapBase = {
 	a: LinkDefinition;
 	img: LinkDefinition;
 	html: { block: boolean };
+	table: { header: TableCell<'th'>[]; rows: TableCell<'td'>[][] };
+	td: { alignment?: TableAlignment; children: Children };
+	th: { alignment?: TableAlignment; children: Children };
 };
 type NodeMap = MakeNodeMap<NodeMapBase>;
 
@@ -559,6 +567,8 @@ export function scannerInline(src: string) {
 					),
 					linkTextEnd,
 					linkTextStart,
+					refStart: 0,
+					refEnd: 0,
 					...result,
 				};
 		}
@@ -973,6 +983,70 @@ function trimLineEndings(value: string) {
 		.join('\n');
 }
 
+function splitTableRow(value: string, requirePipe = true) {
+	const cells: string[] = [];
+	let cellStart = 0;
+	let pipes = 0;
+
+	for (let i = 0; i < value.length; i++) {
+		if (value.charAt(i) !== '|') continue;
+		let backslashes = 0;
+		for (let j = i - 1; j >= 0 && value.charAt(j) === '\\'; j--)
+			backslashes++;
+		if (backslashes % 2) continue;
+		cells.push(value.slice(cellStart, i));
+		cellStart = i + 1;
+		pipes++;
+	}
+
+	if (!pipes) return requirePipe ? undefined : [value.trim()];
+	cells.push(value.slice(cellStart));
+	if (!cells[0]?.trim()) cells.shift();
+	if (!cells.at(-1)?.trim()) cells.pop();
+	return cells.map(cell => unescapeTablePipes(cell.trim()));
+}
+
+function unescapeTablePipes(value: string) {
+	let result = '';
+	let i = 0;
+	while (i < value.length) {
+		if (value.charAt(i) !== '\\') {
+			result += value.charAt(i);
+			i++;
+			continue;
+		}
+		let end = i;
+		while (value.charAt(end) === '\\') end++;
+		const count = end - i;
+		result += '\\'.repeat(
+			value.charAt(end) === '|' && count % 2 ? count - 1 : count,
+		);
+		i = end;
+	}
+	return result;
+}
+
+function tableAlignments(value: string) {
+	const cells = splitTableRow(value);
+	if (!cells?.length) return;
+	const alignments: (TableAlignment | undefined)[] = [];
+
+	for (const cell of cells) {
+		if (!/^:?-+:?$/.test(cell)) return;
+		alignments.push(
+			cell.startsWith(':')
+				? cell.endsWith(':')
+					? 'center'
+					: 'left'
+				: cell.endsWith(':')
+					? 'right'
+					: undefined,
+		);
+	}
+
+	return alignments;
+}
+
 function normalizeLabel(s: string) {
 	return s.toLowerCase().toUpperCase().replace(/\s+/g, ' ').trim();
 }
@@ -1111,9 +1185,7 @@ export function parserInline(
 		const parts = getLinkParts(token, linkRefs);
 		if (
 			!parts &&
-			kind === 'a' &&
-			'refStart' in token &&
-			'refEnd' in token &&
+			token.kind === 'a' &&
 			token.refEnd > token.refStart
 		) {
 			const afterX = token.linkTextEnd + 1;
@@ -1129,8 +1201,7 @@ export function parserInline(
 		}
 		if (
 			!parts &&
-			kind === 'a' &&
-			'refEnd' in token &&
+			token.kind === 'a' &&
 			token.refEnd === 0 &&
 			token.linkTextEnd > token.linkTextStart
 		) {
@@ -1321,6 +1392,61 @@ function parserBlock(
 					: text(token).slice(offset, offsetEnd)),
 		};
 		defer.push(node);
+		return node;
+	}
+
+	function tableCell<Kind extends 'td' | 'th'>(
+		token: BlockToken,
+		kind: Kind,
+		value: string,
+		alignment?: TableAlignment,
+	): TableCell<Kind> {
+		const child = textNode(token, 0, value, 0);
+		return { ...token, kind, alignment, children: [child] };
+	}
+
+	function table(token: Extract<BlockToken, { kind: 'text' }>) {
+		const header = splitTableRow(text(token));
+		if (!header) return;
+		const eol = next();
+		if (eol.kind !== 'eol' || eol.count !== 1) {
+			backtrack(token);
+			return;
+		}
+		const delimiter = next();
+		const alignments = tableAlignments(text(delimiter));
+		if (!alignments || header.length !== alignments.length) {
+			backtrack(token);
+			return;
+		}
+
+		const headerCells = header.map((value, index) =>
+			tableCell(token, 'th', value, alignments[index]),
+		);
+		const rows: TableCell<'td'>[][] = [];
+		let end = delimiter.end;
+		let currentToken = next();
+
+		while (currentToken.kind === 'eol' && currentToken.count === 1) {
+			const row = next();
+			if (row.kind !== 'text') break;
+			const values = splitTableRow(text(row), false) ?? [];
+			rows.push(
+				alignments.map((alignment, index) =>
+					tableCell(row, 'td', values[index] ?? '', alignment),
+				),
+			);
+			end = row.end;
+			currentToken = next();
+		}
+
+		const node: NodeMap['table'] = {
+			...token,
+			kind: 'table',
+			header: headerCells,
+			rows,
+			end,
+		};
 		return node;
 	}
 
@@ -1551,8 +1677,9 @@ function parserBlock(
 				node => node.kind !== 'text' || node.value,
 			);
 			if (!child || child.kind === 'p') return child?.kind === 'p';
-			if (!('children' in child) || !child.children) return false;
-			children = child.children;
+			const nested = nodeChildren(child);
+			if (!nested) return false;
+			children = nested;
 		}
 	}
 
@@ -1911,6 +2038,8 @@ function parserBlock(
 				break;
 		}
 
+		const tableNode = table(token);
+		if (tableNode) return tableNode;
 		return p(token);
 	}
 
@@ -1976,20 +2105,41 @@ function isLoose(children: { pCount: number }[]) {
 
 function hasLink(nodes: Node[]): boolean {
 	return nodes.some(
-		n =>
-			n.kind === 'a' ||
-			('children' in n && n.children && hasLink(n.children)),
+		n => n.kind === 'a' || !!nodeChildren(n)?.some(child => hasLink([child])),
 	);
 }
 
 function plainText(nodes: Node[]): string {
 	return nodes
 		.map(n => {
-			if ('children' in n && n.children) return plainText(n.children);
+			const children = nodeChildren(n);
+			if (children) return plainText(children);
 			if (n.kind === 'text') return n.value;
 			return '';
 		})
 		.join('');
+}
+
+function nodeChildren(node: Node) {
+	switch (node.kind) {
+		case 'a':
+		case 'blockquote':
+		case 'em':
+		case 'heading':
+		case 'img':
+		case 'li':
+		case 'ol':
+		case 'p':
+		case 'strong':
+		case 'td':
+		case 'th':
+		case 'ul':
+			return node.children;
+		case 'text':
+			return node.children;
+		default:
+			return;
+	}
 }
 
 function renderList(node: NodeMap['ul'] | NodeMap['ol']) {
@@ -2008,6 +2158,21 @@ function renderList(node: NodeMap['ul'] | NodeMap['ol']) {
 	}
 
 	return result.join('');
+}
+
+function renderTableCell<Kind extends 'td' | 'th'>(node: TableCell<Kind>) {
+	const alignment = node.alignment ? ` align="${node.alignment}"` : '';
+	return `<${node.kind}${alignment}>${renderChildren(node.children)}</${node.kind}>`;
+}
+
+function renderTable(node: NodeMap['table']) {
+	const header = node.header.map(renderTableCell).join('');
+	const body = node.rows.length
+		? `<tbody>${node.rows
+				.map(row => `<tr>${row.map(renderTableCell).join('')}</tr>`)
+				.join('')}</tbody>`
+		: '';
+	return `<table><thead><tr>${header}</tr></thead>${body}</table>`;
 }
 
 export function compiler(node: Node): string {
@@ -2055,6 +2220,8 @@ export function compiler(node: Node): string {
 			return renderChildren(node.children, node.kind);
 		case 'ul':
 			return `<ul>${renderList(node)}</ul>`;
+		case 'table':
+			return renderTable(node);
 		case 'heading':
 			return renderChildren(node.children, `h${node.level}`);
 		case 'block': {

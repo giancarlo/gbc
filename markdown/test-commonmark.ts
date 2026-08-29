@@ -3224,4 +3224,51 @@ export default [
 		html: '<p>Multiple     spaces</p>\n',
 		section: 'Textual content',
 	},
+	{
+		md: '| foo | bar |\n| --- | --- |\n| baz | bim |\n',
+		html:
+			'<table><thead><tr><th>foo</th><th>bar</th></tr></thead><tbody><tr><td>baz</td><td>bim</td></tr></tbody></table>\n',
+		section: 'Tables (extension)',
+	},
+	{
+		md: '| abc | defghi |\n:-: | -----------:\nbar | baz\n',
+		html:
+			'<table><thead><tr><th align="center">abc</th><th align="right">defghi</th></tr></thead><tbody><tr><td align="center">bar</td><td align="right">baz</td></tr></tbody></table>\n',
+		section: 'Tables (extension)',
+	},
+	{
+		md: '| f\\|oo  |\n| ------ |\n| b `\\|` az |\n| b **\\|** im |\n',
+		html:
+			'<table><thead><tr><th>f|oo</th></tr></thead><tbody><tr><td>b <code>|</code> az</td></tr><tr><td>b <strong>|</strong> im</td></tr></tbody></table>\n',
+		section: 'Tables (extension)',
+	},
+	{
+		md: '| abc | def |\n| --- | --- |\n| bar | baz |\n> bar\n',
+		html:
+			'<table><thead><tr><th>abc</th><th>def</th></tr></thead><tbody><tr><td>bar</td><td>baz</td></tr></tbody></table><blockquote><p>bar</p></blockquote>\n',
+		section: 'Tables (extension)',
+	},
+	{
+		md: '| abc | def |\n| --- | --- |\n| bar | baz |\nbar\n\nbar\n',
+		html:
+			'<table><thead><tr><th>abc</th><th>def</th></tr></thead><tbody><tr><td>bar</td><td>baz</td></tr><tr><td>bar</td><td></td></tr></tbody></table><p>bar</p>\n',
+		section: 'Tables (extension)',
+	},
+	{
+		md: '| abc | def |\n| --- |\n| bar |\n',
+		html: '<p>| abc | def |\n| --- |\n| bar |</p>\n',
+		section: 'Tables (extension)',
+	},
+	{
+		md: '| abc | def |\n| --- | --- |\n| bar |\n| bar | baz | boo |\n',
+		html:
+			'<table><thead><tr><th>abc</th><th>def</th></tr></thead><tbody><tr><td>bar</td><td></td></tr><tr><td>bar</td><td>baz</td></tr></tbody></table>\n',
+		section: 'Tables (extension)',
+	},
+	{
+		md: '| abc | def |\n| --- | --- |\n',
+		html:
+			'<table><thead><tr><th>abc</th><th>def</th></tr></thead></table>\n',
+		section: 'Tables (extension)',
+	},
 ];
