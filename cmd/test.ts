@@ -5,7 +5,7 @@ import { IrKind, IrSeparator, IrWordFlags, scan, program } from './index.js';
 //import { ast } from './debug.js';
 
 export default spec('cmd', s => {
-	s.test('Scanner', it => {
+	s.test('Scanner', (it: TestApi) => {
 		function match(
 			a: TestApi,
 			src: string,
@@ -40,12 +40,11 @@ export default spec('cmd', s => {
 		function word(src: string) {
 			const root = program().parse(src).root;
 			const list = root.children[0];
-			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			it.assert(list?.kind === 'list', 'Expected command list');
 			const command = list.children[0];
-			if (!command || command.kind !== 'command')
-				throw new Error('Expected command');
+			it.assert(command?.kind === 'command', 'Expected command');
 			const result = command.parts[0];
-			if (!result || result.kind !== 'word') throw new Error('Expected word');
+			it.assert(result?.kind === 'word', 'Expected word');
 			return result;
 		}
 
@@ -112,7 +111,7 @@ export default spec('cmd', s => {
 					'word',
 					'comment',
 					'newline',
-					'error',
+					'tokenizer-error',
 				],
 			);
 		});
@@ -201,20 +200,17 @@ export default spec('cmd', s => {
 			);
 		});
 
-		it.should('parse and compile POSIX function definitions', a => {
+		it.should('parse and compile POSIX function definitions', (a: TestApi) => {
 			const compiled = program().compile(
 				'greet() { echo hi; } 2>errors\nsubshell() (echo ok)',
 			);
 			const list = compiled.ast.children[0];
-			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			a.assert(list?.kind === 'list', 'Expected command list');
 			const greet = list.children[0];
 			const subshell = list.children[1];
-			if (!greet || greet.kind !== 'function')
-				throw new Error('Expected function definition');
-			if (!subshell || subshell.kind !== 'function')
-				throw new Error('Expected function definition');
-			if (!greet.body || !subshell.body)
-				throw new Error('Expected function body');
+			a.assert(greet?.kind === 'function', 'Expected function definition');
+			a.assert(subshell?.kind === 'function', 'Expected function definition');
+			a.assert(greet.body && subshell.body, 'Expected function body');
 
 			a.equalValues(
 				{
@@ -247,13 +243,12 @@ export default spec('cmd', s => {
 			);
 		});
 
-		it.should('traverse function definitions through shared AST children', a => {
+		it.should('traverse function definitions through shared AST children', (a: TestApi) => {
 			const root = program().parse('greet() { echo hi; }').root;
 			const list = root.children[0];
-			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			a.assert(list?.kind === 'list', 'Expected command list');
 			const fn = list.children[0];
-			if (!fn || fn.kind !== 'function')
-				throw new Error('Expected function definition');
+			a.assert(fn?.kind === 'function', 'Expected function definition');
 
 			a.equal(findNodeAtIndex(root, 0), fn.name);
 			a.equal(findNodeAtIndex(root, 7), fn);
@@ -277,31 +272,28 @@ export default spec('cmd', s => {
 			);
 		});
 
-		it.should('preserve POSIX parsing by default', a => {
+		it.should('preserve POSIX parsing by default', (a: TestApi) => {
 			const root = program().parse('type File = string').root;
 			const list = root.children[0];
-			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			a.assert(list?.kind === 'list', 'Expected command list');
 			const command = list.children[0];
-			if (!command || command.kind !== 'command')
-				throw new Error('Expected POSIX command');
+			a.assert(command?.kind === 'command', 'Expected POSIX command');
 			a.equalValues(
 				command.parts.map(part => part.kind === 'word' ? part.value : undefined),
 				['type', 'File', '=', 'string'],
 			);
 			const invocationRoot = program().parse('core.open! file').root;
 			const invocationList = invocationRoot.children[0];
-			if (!invocationList || invocationList.kind !== 'list')
-				throw new Error('Expected invocation list');
+			a.assert(invocationList?.kind === 'list', 'Expected invocation list');
 			const invocation = invocationList.children[0];
-			if (!invocation || invocation.kind !== 'command')
-				throw new Error('Expected POSIX invocation');
+			a.assert(invocation?.kind === 'command', 'Expected POSIX invocation');
 			a.equalValues(
 				invocation.parts.map(part => part.kind === 'word' ? part.value : undefined),
 				['core.open!', 'file'],
 			);
 		});
 
-		it.should('expose typed declarations in the IDE dialect', a => {
+		it.should('expose typed declarations in the IDE dialect', (a: TestApi) => {
 			const source = [
 				'type File=string',
 				'type Directory = string',
@@ -310,18 +302,14 @@ export default spec('cmd', s => {
 			].join('\n');
 			const parsed = program({ dialect: 'ide' }).parse(source);
 			const list = parsed.root.children[0];
-			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			a.assert(list?.kind === 'list', 'Expected command list');
 			const [file, directory, fn, invocation] = list.children;
-			if (!file || file.kind !== 'typealias')
-				throw new Error('Expected File alias');
-			if (!directory || directory.kind !== 'typealias')
-				throw new Error('Expected Directory alias');
-			if (!fn || fn.kind !== 'function')
-				throw new Error('Expected typed function');
-			if (!fn.returnType) throw new Error('Expected return type');
-			if (!fn.body) throw new Error('Expected function body');
-			if (!invocation || invocation.kind !== 'command')
-				throw new Error('Expected function invocation');
+			a.assert(file?.kind === 'typealias', 'Expected File alias');
+			a.assert(directory?.kind === 'typealias', 'Expected Directory alias');
+			a.assert(fn?.kind === 'function', 'Expected typed function');
+			a.assert(fn.returnType, 'Expected return type');
+			a.assert(fn.body, 'Expected function body');
+			a.assert(invocation?.kind === 'command', 'Expected function invocation');
 
 			a.equalValues(
 				{
@@ -360,15 +348,14 @@ export default spec('cmd', s => {
 			a.equalValues(parsed.errors, []);
 		});
 
-		it.should('parse IDE command names and optional or rest parameters', a => {
+		it.should('parse IDE command names and optional or rest parameters', (a: TestApi) => {
 			const parsed = program({ dialect: 'ide' }).parse(
 				'core.open!(file?: File, ...flags: string): string { echo ok; }',
 			);
 			const list = parsed.root.children[0];
-			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			a.assert(list?.kind === 'list', 'Expected command list');
 			const fn = list.children[0];
-			if (!fn || fn.kind !== 'function')
-				throw new Error('Expected typed function');
+			a.assert(fn?.kind === 'function', 'Expected typed function');
 
 			a.equalValues(
 				{
@@ -391,7 +378,7 @@ export default spec('cmd', s => {
 			a.equalValues(parsed.errors, []);
 		});
 
-		it.should('parse bodyless IDE built-in declarations', a => {
+		it.should('parse bodyless IDE built-in declarations', (a: TestApi) => {
 			const cmd = program({ dialect: 'ide' });
 			const parsed = cmd.parse([
 				'type File = string',
@@ -399,13 +386,11 @@ export default spec('cmd', s => {
 				'core.quit()',
 			].join('\n'));
 			const list = parsed.root.children[0];
-			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			a.assert(list?.kind === 'list', 'Expected command list');
 			const open = list.children[1];
 			const quit = list.children[2];
-			if (!open || open.kind !== 'function')
-				throw new Error('Expected open declaration');
-			if (!quit || quit.kind !== 'function')
-				throw new Error('Expected quit declaration');
+			a.assert(open?.kind === 'function', 'Expected open declaration');
+			a.assert(quit?.kind === 'function', 'Expected quit declaration');
 
 			a.equalValues(
 				{
@@ -621,21 +606,19 @@ export default spec('cmd', s => {
 			]);
 		});
 
-		it.should('return a partial AST after malformed trailing syntax', a => {
+		it.should('return a partial AST after malformed trailing syntax', (a: TestApi) => {
 			const parsed = program().parse('echo ok &&');
 			const list = parsed.root.children[0];
-			if (!list || list.kind !== 'list') throw new Error('Expected command list');
+			a.assert(list?.kind === 'list', 'Expected command list');
 			const command = list.children[0];
-			if (!command || command.kind !== 'command')
-				throw new Error('Expected command');
+			a.assert(command?.kind === 'command', 'Expected command');
 			a.equalValues(command.parts.map(part => part.kind === 'word' && part.value), [
 				'echo',
 				'ok',
 			]);
 
 			const recovered = program().parse('echo ) cat').root.children[0];
-			if (!recovered || recovered.kind !== 'list')
-				throw new Error('Expected recovered command list');
+			a.assert(recovered?.kind === 'list', 'Expected recovered command list');
 			a.equalValues(
 				recovered.children.map(node =>
 					node.kind === 'command' && node.parts[0]?.kind === 'word'
@@ -646,16 +629,18 @@ export default spec('cmd', s => {
 			);
 		});
 
-		it.should('find the most specific node at an offset', a => {
+		it.should('find the most specific node at an offset', (a: TestApi) => {
 			const root = program().parse('echo hi | cat').root;
 			const list = root.children[0]!;
-			if (list.kind !== 'list') throw new Error('Expected list');
+			a.assert(list.kind === 'list', 'Expected list');
 			const pipe = list.children[0]!;
-			if (pipe.kind !== '|') throw new Error('Expected pipe');
+			a.assert(pipe.kind === '|', 'Expected pipe');
 			const left = pipe.children[0];
 			const right = pipe.children[1];
-			if (left.kind !== 'command' || right.kind !== 'command')
-				throw new Error('Expected commands');
+			a.assert(
+				left.kind === 'command' && right.kind === 'command',
+				'Expected commands',
+			);
 
 			a.equal(findNodeAtIndex(root, 0), left.parts[0]);
 			a.equal(findNodeAtIndex(root, 4), left);
@@ -665,12 +650,12 @@ export default spec('cmd', s => {
 			a.equal(findNodeAtIndex(root, 10), right.parts[0]);
 		});
 
-		it.should('find canonical redirect, group, and list children', a => {
+		it.should('find canonical redirect, group, and list children', (a: TestApi) => {
 			const redirectRoot = program().parse('cat 2>out').root;
 			const redirectList = redirectRoot.children[0]!;
-			if (redirectList.kind !== 'list') throw new Error('Expected list');
+			a.assert(redirectList.kind === 'list', 'Expected list');
 			const command = redirectList.children[0]!;
-			if (command.kind !== 'command') throw new Error('Expected command');
+			a.assert(command.kind === 'command', 'Expected command');
 			const redirect = command.redirects[0]!;
 
 			a.equalValues(command.children, [command.parts[0], redirect]);
@@ -681,11 +666,11 @@ export default spec('cmd', s => {
 
 			const groupRoot = program().parse('(echo)').root;
 			const groupList = groupRoot.children[0]!;
-			if (groupList.kind !== 'list') throw new Error('Expected list');
+			a.assert(groupList.kind === 'list', 'Expected list');
 			const groupCommand = groupList.children[0]!;
-			if (groupCommand.kind !== 'command') throw new Error('Expected command');
+			a.assert(groupCommand.kind === 'command', 'Expected command');
 			const group = groupCommand.parts[0]!;
-			if (group.kind !== 'group') throw new Error('Expected group');
+			a.assert(group.kind === 'group', 'Expected group');
 
 			a.equal(findNodeAtIndex(groupRoot, 0), group);
 			a.equal(findNodeAtIndex(groupRoot, 1)?.kind, 'word');
@@ -693,7 +678,7 @@ export default spec('cmd', s => {
 
 			const listRoot = program().parse('echo;cat').root;
 			const list = listRoot.children[0]!;
-			if (list.kind !== 'list') throw new Error('Expected list');
+			a.assert(list.kind === 'list', 'Expected list');
 			a.equal(findNodeAtIndex(listRoot, 4), list);
 			a.equal(findNodeAtIndex(listRoot, 5)?.kind, 'word');
 		});
