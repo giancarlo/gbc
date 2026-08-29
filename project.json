@@ -11,6 +11,7 @@
 		}
 	},
 	"ai": {
+		"patchApproval": "ask",
 		"instructions": ["To run tests: npm test --prefix gbc/dirName"]
 	}
 }
