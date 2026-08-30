@@ -3,3 +3,4 @@ node_modules
 .eslintcache
 workspace/test
 docs/@cxl
+.coaxial
