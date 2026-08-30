@@ -1,4 +1,4 @@
-import { MakeNodeMap } from '../sdk/index.js';
+import type { MakeNodeMap } from '../sdk/index.js';
 
 import type {
 	OwnershipMode,

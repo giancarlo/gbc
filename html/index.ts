@@ -21,18 +21,22 @@ export function scanner(src: string) {
 		return tk(kind, consume);
 	}
 
+	function isCommentStart() {
+		return (
+			current() === '<' &&
+			current(1) === '!' &&
+			current(2) === '-' &&
+			current(3) === '-'
+		);
+	}
+
 	function next() {
 		skipWhitespace();
 		const ch = current();
 
 		if (!ch) return emit('eof', 0);
 
-		if (
-			ch === '<' &&
-			current(1) === '!' &&
-			current(2) === '-' &&
-			current(3) === '-'
-		) {
+		if (isCommentStart()) {
 			const start = tk('', 0).end;
 			const closeIdx = src.indexOf('-->', start + 4);
 			const consume =

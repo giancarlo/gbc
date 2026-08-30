@@ -1,5 +1,5 @@
 import { TestApi, spec } from '@cxl/spec';
-import { each, findNodeAtIndex, Token, tokenize } from '../sdk/index.js';
+import { each, findNodeAtIndex, type Token, tokenize } from '../sdk/index.js';
 
 import { IrKind, IrSeparator, IrWordFlags, scan, program } from './index.js';
 //import { ast } from './debug.js';

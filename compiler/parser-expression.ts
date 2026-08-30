@@ -1,23 +1,23 @@
 import {
 	ParserApi,
-	UnaryNode,
-	Token,
+	type UnaryNode,
+	type Token,
 	line,
 	text,
 	parserTable,
 } from '../sdk/index.js';
 import {
 	EmptyFunction,
-	OwnershipMode,
+	type OwnershipMode,
 	ScopeOwner,
-	Symbol,
-	SymbolMap,
+	type Symbol,
+	type SymbolMap,
 	SymbolTable,
 	TypesSymbolTable,
-	Type,
+	type Type,
 	Flags,
 } from './symbol-table.js';
-import { Node, NodeMap, syntheticNext } from './node.js';
+import { type Node, type NodeMap, syntheticNext } from './node.js';
 import { typeParameters } from './parser-type.js';
 import type { ScannerToken } from './scanner.js';
 import type { ModuleLoader, ModuleRef } from './parser.js';
@@ -581,7 +581,7 @@ export function parseExpression(
 
 	function expectScopeOwner(): SymbolMap['function'] {
 		const owner = symbolTable.get(ScopeOwner);
-		if (!owner || owner.kind !== 'function')
+		if (owner?.kind !== 'function')
 			throw error('Invalid function scope.', current());
 		return owner;
 	}
@@ -853,6 +853,22 @@ export function parseExpression(
 			'%': infixOperator(12),
 			'@': {
 				prefix(tk) {
+					const namespace = current();
+					if (namespace.kind === 'ident') {
+						const symbol = symbolTable.getWithReference(
+							`@${text(namespace)}`,
+							tk,
+						);
+						if (symbol) {
+							api.next();
+							return {
+								...tk,
+								kind: 'ident',
+								symbol,
+								end: namespace.end,
+							};
+						}
+					}
 					if (loader) {
 						api.backtrack(tk);
 						const ref = parseModuleRef();

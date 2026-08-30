@@ -1,4 +1,4 @@
-import { MakeNodeMap } from '../sdk/index.js';
+import type { MakeNodeMap } from '../sdk/index.js';
 import type { Symbol } from '../sdk/index.js';
 
 type Infix = { children: [Node, Node] };

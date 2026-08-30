@@ -621,7 +621,7 @@ function fieldBytes(t: Type): number {
 // Scalars/void: no. String: yes. A collection always owns its block. A record
 // owns heap iff any member (or the hidden trace slot) does.
 function typeOwnsHeap(t: Type | undefined): boolean {
-	if (!t || t.kind !== 'type') return false;
+	if (t?.kind !== 'type') return false;
 	if (t.family === 'string') return true;
 	if (t.family === 'buffer') return true;
 	if (t.family === 'data') {
@@ -973,8 +973,7 @@ export function compileWasm({
 		for (let i = 0; i < types.length; i++) {
 			const t = types[i];
 			if (
-				t &&
-				t.params.length === params.length &&
+				t?.params.length === params.length &&
 				t.results.length === results.length &&
 				t.params.every((p, j) => p === params[j]) &&
 				t.results.every((r, j) => r === results[j])
@@ -1663,7 +1662,7 @@ export function compileWasm({
 			const members = recvType.members;
 			if (field.kind === 'ident') {
 				const m = members[field.symbol.name ?? ''];
-				if (m && m.kind === 'variable' && m.type) return m.type;
+				if (m?.kind === 'variable' && m.type) return m.type;
 			}
 			if (field.kind === 'number') {
 				// Positional access on a typed receiver: index the member
@@ -1671,7 +1670,7 @@ export function compileWasm({
 				// works when the receiver is a literal in hand.
 				const key = Object.keys(members)[Number(field.value)];
 				const m = key === undefined ? undefined : members[key];
-				if (m && m.kind === 'variable' && m.type) return m.type;
+				if (m?.kind === 'variable' && m.type) return m.type;
 				const items = dataItems(recv);
 				const item = items[Number(field.value)];
 				if (item) return inferType(itemValue(item), fn);
@@ -2556,7 +2555,7 @@ export function compileWasm({
 		base = 0,
 		visiting: Set<Type> = new Set(),
 	) {
-		if (!t || t.kind !== 'type') return;
+		if (t?.kind !== 'type') return;
 		if (t.family === 'buffer') {
 			emitCollectionElemFrees(loadPtr, t.elem, fn);
 			return;
@@ -2580,8 +2579,7 @@ export function compileWasm({
 			const u = o.type;
 			if (
 				o.tagIdx !== undefined &&
-				u &&
-				u.kind === 'type' &&
+				u?.kind === 'type' &&
 				u.family === 'union'
 			) {
 				// Free only when the live member is heap-typed; scalars in
@@ -5359,10 +5357,10 @@ export function compileWasm({
 		const field = callee.children[1];
 		if (recv.kind !== 'ident' || field.kind !== 'ident') return undefined;
 		const rt = recv.symbol.type;
-		if (!rt || rt.kind !== 'type' || rt.family !== 'data') return undefined;
+		if (rt?.kind !== 'type' || rt.family !== 'data') return undefined;
 		const m = rt.members[field.symbol.name ?? ''];
 		const mt = m?.type;
-		if (mt && mt.kind === 'function') return mt;
+		if (mt?.kind === 'function') return mt;
 		return undefined;
 	}
 
@@ -5495,7 +5493,7 @@ export function compileWasm({
 		const armMatches = (o: SymbolMap['function'], widen: boolean) => {
 			if (isCatchAllArm(o)) return false;
 			const ps = o.parameters;
-			if (!ps || ps.length !== ats.length) return false;
+			if (ps?.length !== ats.length) return false;
 			const typeParamNames = new Set(
 				(o.typeParams ?? [])
 					.map(type => type.name)
@@ -5573,7 +5571,7 @@ export function compileWasm({
 		fn: FuncBuilder,
 	): Type | undefined {
 		const dt = calleeSym.kind === 'function' ? calleeSym : calleeSym.type;
-		if (!dt || dt.kind !== 'function' || !dt.overloads) return undefined;
+		if (dt?.kind !== 'function' || !dt.overloads) return undefined;
 		const argTypes = collectArgTypes(args, fn);
 		const arm = findDispatchArm(dt.overloads, argTypes);
 		if (!arm)
@@ -7421,7 +7419,7 @@ export function compileWasm({
 	): Type | undefined {
 		const sym = stage.symbol;
 		const dt = sym.kind === 'function' ? sym : sym.type;
-		if (!dt || dt.kind !== 'function' || !dt.overloads) return undefined;
+		if (dt?.kind !== 'function' || !dt.overloads) return undefined;
 		if (inputType.kind === 'type' && inputType.family === 'void')
 			return driveStages(rest, BaseTypes.Void, fn);
 		const unary = dt.overloads.filter(
@@ -7465,11 +7463,11 @@ export function compileWasm({
 		const p = params[0];
 		if (params.length !== 1 || !p) return undefined;
 		let t = p.symbol.type;
-		if ((!t || t.kind !== 'type') && p.type?.kind === 'typeident') {
+		if ((t?.kind !== 'type') && p.type?.kind === 'typeident') {
 			const ts = p.type.symbol;
 			t = ts.type;
 		}
-		if (!t || t.kind !== 'type') return undefined;
+		if (t?.kind !== 'type') return undefined;
 		if (
 			t.family === 'literal' ||
 			namedData(t) ||
@@ -7561,7 +7559,7 @@ export function compileWasm({
 		const firstDispatchType = stageDispatchType(stage);
 		const useDispatch =
 			(dispatchOnInput && firstDispatchType) ||
-			(firstDispatchType && firstDispatchType.family === 'literal');
+			(firstDispatchType?.family === 'literal');
 		if (useDispatch) {
 			let n = 0;
 			while (n < stages.length) {
@@ -8065,7 +8063,7 @@ export function compileWasm({
 			returnType.name
 		) {
 			const concrete = typeArgs?.get(returnType.name);
-			if (concrete && concrete.kind === 'type' && concrete.family !== 'unknown')
+			if (concrete?.kind === 'type' && concrete.family !== 'unknown')
 				return concrete;
 		}
 		return returnType;
@@ -8300,8 +8298,7 @@ export function compileWasm({
 			if (
 				sym.type?.kind === 'type' &&
 				sym.type.family === 'union' &&
-				at &&
-				at.kind === 'type' &&
+				at?.kind === 'type' &&
 				at.family !== 'union'
 			)
 				sym.type = at;
@@ -8328,7 +8325,7 @@ export function compileWasm({
 		// shrunk per-level type; restored from `saved` after the body compiles.
 		params.forEach((p, i) => {
 			const at = argTypes[i];
-			if (at && at.kind === 'type' && p.symbol.type?.kind !== 'function')
+			if (at?.kind === 'type' && p.symbol.type?.kind !== 'function')
 				p.symbol.type = at;
 		});
 		const { builder, builderIdx, returnType } = allocFuncBuilder(

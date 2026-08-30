@@ -1,4 +1,4 @@
-import { ParserApi, Token, parserTable, text } from '../sdk/index.js';
+import { ParserApi, type Token, parserTable, text } from '../sdk/index.js';
 
 import { syntheticNext, type Node, type NodeMap } from './node.js';
 import type { ScannerToken } from './scanner.js';

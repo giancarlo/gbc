@@ -8,10 +8,9 @@ HTML Parser
 
 -   Branch Version: [0.0.1](https://npmjs.com/package/@cxl/gbc.html/v/0.0.1)
 -   License: GPL-3.0
--   Documentation: [Link](https:/github.com/giancarlo/gbc/html)
+-   Documentation: [Link](https://github.com/giancarlo/@cxl/gbc.html)
 -   Report Issues: [Github](https://github.com/giancarlo/gbc/issues)
 
 ## Installation
 
 	npm install @cxl/gbc.html
-

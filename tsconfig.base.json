@@ -2,24 +2,15 @@
 	"compilerOptions": {
 		"incremental": true,
 		"strict": true,
-		"target": "esnext",
 		"module": "nodenext",
-		"lib": [
-			"ESNext"
-		],
-		"experimentalDecorators": true,
-		"sourceMap": false,
 		"moduleResolution": "nodenext",
+		"verbatimModuleSyntax": true,
+		"isolatedModules": true,
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
 		"noUncheckedIndexedAccess": true,
-		"composite": true,
-		"skipLibCheck": true,
-		"typeRoots": [],
-		"verbatimModuleSyntax": true,
-		"isolatedModules": true,
 		"noUncheckedSideEffectImports": true,
+		"composite": true,
 		"types": []
-	},
-	"files": []
+	}
 }

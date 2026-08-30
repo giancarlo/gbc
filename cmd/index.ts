@@ -1,5 +1,5 @@
 import {
-	MakeNodeMap,
+	type MakeNodeMap,
 	ParserApi,
 	ScannerApi,
 	text,

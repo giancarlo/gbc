@@ -1,5 +1,10 @@
-import { TestApiBase, TestFn, Test } from '@cxl/spec';
-import { CompilerError, Token, each, formatError } from '../sdk/index.js';
+import { TestApiBase, type TestFn, Test } from '@cxl/spec';
+import {
+	CompilerError,
+	type Token,
+	each,
+	formatError,
+} from '../sdk/index.js';
 
 import { scan } from './scanner.js';
 import { Program } from './program.js';

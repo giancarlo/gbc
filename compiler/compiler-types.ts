@@ -1,6 +1,6 @@
 import { text } from '../sdk/index.js';
 import { Flags } from './symbol-table.js';
-import { Node, NodeMap } from './node.js';
+import type { Node, NodeMap } from './node.js';
 
 function def(node: NodeMap['def']) {
 	const symbol = node.symbol;

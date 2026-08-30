@@ -2,7 +2,7 @@
 	"name": "@cxl/gbc.markdown",
 	"version": "0.0.1-beta.1",
 	"bugs": "https://github.com/giancarlo/gbc/issues",
-	"homepage": "https://github.com/giancarlo/gbc/tree/main/markdown",
+	"homepage": "https://github.com/giancarlo/@cxl/gbc.markdown",
 	"description": "Markdown Parser",
 	"type": "module",
 	"license": "GPL-3.0",

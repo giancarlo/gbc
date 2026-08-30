@@ -1,22 +1,22 @@
 import { spec } from '@cxl/spec';
 import {
-	BaseNode,
-	BinaryNodeBase,
+	type BaseNode,
+	type BinaryNodeBase,
 	childNodes,
 	CompilerError,
 	createCaseInsensitiveTrie,
 	createTrie,
 	findNodeAtIndex,
 	Flags,
-	LeafNode,
+	type LeafNode,
 	matchers,
 	ParserApi,
-	RootNodeBase,
+	type RootNodeBase,
 	ScannerApi,
 	stringEscape,
-	TernaryNodeBase,
+	type TernaryNodeBase,
 	tokenize,
-	UnaryNodeBase,
+	type UnaryNodeBase,
 } from './index.js';
 import type { NodeWithChildren, Symbol, Token, Type } from './index.js';
 

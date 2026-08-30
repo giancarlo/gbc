@@ -14,6 +14,10 @@ function buildStdlib() {
 					readFile: path => readFileSync(path, 'utf8'),
 					readBytes: path => new Uint8Array(readFileSync(path)),
 				},
+				[
+					new URL('math.gb', root).pathname,
+					new URL('time.gb', root).pathname,
+				],
 			),
 		);
 	})());

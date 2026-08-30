@@ -66,7 +66,6 @@ export default spec('Language Reference', s => {
 		a.equal(built.errors.length, 0);
 		const bundle = built.bundle;
 		a.assert(bundle, 'Bundle build failed');
-		if (!bundle) return;
 		const positionFields = new Set(['source', 'start', 'end', 'line']);
 		const decoded = decodeBundle(bundle);
 		a.equal(
@@ -128,7 +127,6 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 		);
 		const module = decoded.modules.get('lib.gb');
 		a.assert(module, 'Missing fixture module');
-		if (!module) return;
 
 		const types = new Map<string, Type>();
 		const symbols = new Map<string, Symbol>();
@@ -170,8 +168,7 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 				throw new Error('Unexpected module type');
 			},
 		);
-		a.equal(materialized.kind, 'root');
-		if (materialized.kind !== 'root') return;
+		a.assert(materialized.kind === 'root');
 		const definitions = new Map<string, NodeMap['def']>(
 			materialized.children
 				.filter((node): node is NodeMap['def'] => node.kind === 'def')
@@ -183,7 +180,6 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 			stored?.kind === 'fn' && inline?.kind === 'fn',
 			'Missing fixture functions',
 		);
-		if (stored?.kind !== 'fn' || inline?.kind !== 'fn') return;
 		a.equal(stored.objectBacked, true);
 		a.equal(stored.statements, undefined);
 		a.equal(stored.children.length, 0);
@@ -460,12 +456,10 @@ export seed = (index: Int32): Uint8 {
 				compiled.errors.map(error => error.message).join('; '),
 			);
 			a.assert(compiled.bytes);
-			if (!compiled.bytes) return;
 
 			const instance = instantiateWasm(compiled.bytes);
 			const seed = instance.exports.seed;
 			a.assert(typeof seed === 'function');
-			if (typeof seed !== 'function') return;
 			a.equalValues(
 				[0, 4, 320, 321].map(index => Number(seed(index))),
 				[1, 0, 0, 1],
@@ -3154,7 +3148,6 @@ main {
 		const compiled = Program().compile(source);
 		a.equal(compiled.errors.length, 0);
 		a.assert(compiled.bytes);
-		if (!compiled.bytes) return;
 		const output: string[] = [];
 		const instance = instantiateWasm(compiled.bytes, value => output.push(value));
 		instance.exports.main?.();
@@ -3205,7 +3198,6 @@ main {
 		const compiled = Program().compile(source);
 		a.equal(compiled.errors.length, 0);
 		a.assert(compiled.bytes);
-		if (!compiled.bytes) return;
 		const output: string[] = [];
 		const instance = instantiateWasm(compiled.bytes, value => output.push(value));
 		instance.exports.main?.();
@@ -3289,8 +3281,8 @@ main {
 		testBlock({
 			p: '`monotonicMilliseconds` reads a clock that does not move backward.',
 			src: `#test {
-	start = time.monotonicMilliseconds();
-	end = time.monotonicMilliseconds();
+	start = @time.monotonicMilliseconds();
+	end = @time.monotonicMilliseconds();
 	ok(end >= start)
 }
 export target = (): Int32 { 0 }`,
@@ -3298,27 +3290,27 @@ export target = (): Int32 { 0 }`,
 		});
 		compileError({
 			p: 'Standard modules expose names through their top-level namespace only.',
-			src: `main { monotonicMilliseconds() }`,
+			src: `main { time.monotonicMilliseconds() }`,
 			expected: 'not defined',
 		});
 	});
 
 	s.test('implements accurate trigonometry in GB source', (a: TestApi) => {
 			const source = `
-export sine = (x: Float64): Float64 { sin(x) };
-export cosine = (x: Float64): Float64 { cos(x) };
-export tangent = (x: Float64): Float64 { tan(x) };
-export arctangent = (x: Float64): Float64 { atan(x) };
-export arctangent2 = (y: Float64, x: Float64): Float64 { atan2(y, x) };
-export arcsine = (x: Float64): Float64 { asin(x) };
-export arccosine = (x: Float64): Float64 { acos(x) };
-export sine32 = (x: Float32): Float32 { sin(x) };
-export cosine32 = (x: Float32): Float32 { cos(x) };
-export tangent32 = (x: Float32): Float32 { tan(x) };
-export arctangent32 = (x: Float32): Float32 { atan(x) };
-export arctangent232 = (y: Float32, x: Float32): Float32 { atan2(y, x) };
-export arcsine32 = (x: Float32): Float32 { asin(x) };
-export arccosine32 = (x: Float32): Float32 { acos(x) };
+export sine = (x: Float64): Float64 { @math.sin(x) };
+export cosine = (x: Float64): Float64 { @math.cos(x) };
+export tangent = (x: Float64): Float64 { @math.tan(x) };
+export arctangent = (x: Float64): Float64 { @math.atan(x) };
+export arctangent2 = (y: Float64, x: Float64): Float64 { @math.atan2(y, x) };
+export arcsine = (x: Float64): Float64 { @math.asin(x) };
+export arccosine = (x: Float64): Float64 { @math.acos(x) };
+export sine32 = (x: Float32): Float32 { @math.sin(x) };
+export cosine32 = (x: Float32): Float32 { @math.cos(x) };
+export tangent32 = (x: Float32): Float32 { @math.tan(x) };
+export arctangent32 = (x: Float32): Float32 { @math.atan(x) };
+export arctangent232 = (y: Float32, x: Float32): Float32 { @math.atan2(y, x) };
+export arcsine32 = (x: Float32): Float32 { @math.asin(x) };
+export arccosine32 = (x: Float32): Float32 { @math.acos(x) };
 `;
 			const compiled = Program({
 				sys: {
@@ -3328,7 +3320,6 @@ export arccosine32 = (x: Float32): Float32 { acos(x) };
 			}).compileFile('trig.gb');
 			a.equal(compiled.errors.length, 0);
 			a.assert(compiled.bytes);
-			if (!compiled.bytes) return;
 			const exports = instantiateWasm(compiled.bytes).exports;
 			const sine = exports.sine;
 			const cosine = exports.cosine;
@@ -3358,23 +3349,6 @@ export arccosine32 = (x: Float32): Float32 { acos(x) };
 			a.assert(typeof arctangent232 === 'function');
 			a.assert(typeof arcsine32 === 'function');
 			a.assert(typeof arccosine32 === 'function');
-			if (
-				typeof sine !== 'function' ||
-				typeof cosine !== 'function' ||
-				typeof tangent !== 'function' ||
-				typeof arctangent !== 'function' ||
-				typeof arctangent2 !== 'function' ||
-				typeof arcsine !== 'function' ||
-				typeof arccosine !== 'function' ||
-				typeof sine32 !== 'function' ||
-				typeof cosine32 !== 'function' ||
-				typeof tangent32 !== 'function' ||
-				typeof arctangent32 !== 'function' ||
-				typeof arctangent232 !== 'function' ||
-				typeof arcsine32 !== 'function' ||
-				typeof arccosine32 !== 'function'
-			)
-				return;
 			const close = (actual: number, expected: number, tolerance: number) =>
 				a.assert(Math.abs(actual - expected) <= tolerance);
 			for (const value of [
@@ -3446,10 +3420,10 @@ export arccosine32 = (x: Float32): Float32 { acos(x) };
 
 	s.test('provides stable hypot and namespaced math constants', (a: TestApi) => {
 		const source = `
-export distance = (x: Float64, y: Float64): Float64 { hypot(x, y) };
-export distance32 = (x: Float32, y: Float32): Float32 { hypot(x, y) };
-export pi = (): Float64 { math.pi };
-export tau = (): Float64 { math.tau };
+export distance = (x: Float64, y: Float64): Float64 { @math.hypot(x, y) };
+export distance32 = (x: Float32, y: Float32): Float32 { @math.hypot(x, y) };
+export pi = (): Float64 { @math.pi };
+export tau = (): Float64 { @math.tau };
 `;
 		const compiled = Program({
 			sys: {
@@ -3459,23 +3433,15 @@ export tau = (): Float64 { math.tau };
 		}).compileFile('math.gb');
 		a.equal(compiled.errors.length, 0);
 		a.assert(compiled.bytes);
-		if (!compiled.bytes) return;
 		const exports = instantiateWasm(compiled.bytes).exports;
 		const distance = exports.distance;
 		const distance32 = exports.distance32;
 		const pi = exports.pi;
 		const tau = exports.tau;
-		a.equal(typeof distance, 'function');
-		a.equal(typeof distance32, 'function');
-		a.equal(typeof pi, 'function');
-		a.equal(typeof tau, 'function');
-		if (
-			typeof distance !== 'function' ||
-			typeof distance32 !== 'function' ||
-			typeof pi !== 'function' ||
-			typeof tau !== 'function'
-		)
-			return;
+		a.assert(typeof distance === 'function');
+		a.assert(typeof distance32 === 'function');
+		a.assert(typeof pi === 'function');
+		a.assert(typeof tau === 'function');
 		a.equal(Number(distance(3, 4)), 5);
 		a.equal(Number(distance32(Math.fround(3), Math.fround(4))), 5);
 		a.equal(Number.isFinite(Number(distance(1e308, 1e308))), true);
@@ -3486,7 +3452,7 @@ export tau = (): Float64 { math.tau };
 		a.equal(Number.isNaN(Number(distance(NaN, 1))), true);
 		a.equal(Number(pi()), Math.PI);
 		a.equal(Number(tau()), Math.PI * 2);
-		const bare = Program().compile('main { pi >> out }');
+		const bare = Program().compile('main { math.pi >> out }');
 		a.equal(
 			bare.errors.some(error => error.message.includes('not defined')),
 			true,
@@ -3495,10 +3461,10 @@ export tau = (): Float64 { math.tau };
 
 	s.test('provides width-preserving fast trigonometry under math', (a: TestApi) => {
 		const source = `
-export sine = (x: Float64): Float64 { math.fastSin(x) };
-export cosine = (x: Float64): Float64 { math.fastCos(x) };
-export tangent = (x: Float64): Float64 { math.fastTan(x) };
-export sine32 = (x: Float32): Float32 { math.fastSin(x) };
+export sine = (x: Float64): Float64 { @math.fastSin(x) };
+export cosine = (x: Float64): Float64 { @math.fastCos(x) };
+export tangent = (x: Float64): Float64 { @math.fastTan(x) };
+export sine32 = (x: Float32): Float32 { @math.fastSin(x) };
 `;
 		const compiled = Program({
 			sys: {
@@ -3508,23 +3474,15 @@ export sine32 = (x: Float32): Float32 { math.fastSin(x) };
 		}).compileFile('fast-math.gb');
 		a.equal(compiled.errors.length, 0);
 		a.assert(compiled.bytes);
-		if (!compiled.bytes) return;
 		const exports = instantiateWasm(compiled.bytes).exports;
 		const sine = exports.sine;
 		const cosine = exports.cosine;
 		const tangent = exports.tangent;
 		const sine32 = exports.sine32;
-		a.equal(typeof sine, 'function');
-		a.equal(typeof cosine, 'function');
-		a.equal(typeof tangent, 'function');
-		a.equal(typeof sine32, 'function');
-		if (
-			typeof sine !== 'function' ||
-			typeof cosine !== 'function' ||
-			typeof tangent !== 'function' ||
-			typeof sine32 !== 'function'
-		)
-			return;
+		a.assert(typeof sine === 'function');
+		a.assert(typeof cosine === 'function');
+		a.assert(typeof tangent === 'function');
+		a.assert(typeof sine32 === 'function');
 		for (const x of [-1000, -3, -1, -0, 0.25, 1, 3, 1000]) {
 			a.assert(Math.abs(Number(sine(x)) - Math.sin(x)) <= 4e-8);
 			a.assert(Math.abs(Number(cosine(x)) - Math.cos(x)) <= 4e-8);
@@ -3536,7 +3494,7 @@ export sine32 = (x: Float32): Float32 { math.fastSin(x) };
 		a.assert(
 			Math.abs(Number(sine32(x32)) - Math.fround(Math.sin(x32))) <= 1e-7,
 		);
-		const bare = Program().compile('main { fastSin(1.0) >> out }');
+		const bare = Program().compile('main { math.fastSin(1.0) >> out }');
 		a.equal(
 			bare.errors.some(error => error.message.includes('not defined')),
 			true,
@@ -3546,16 +3504,15 @@ export sine32 = (x: Float32): Float32 { math.fastSin(x) };
 	s.test('removes unreachable functions from emitted Wasm', (a: TestApi) => {
 		const plain = Program().compile('main { }');
 		const dead = Program().compile(
-			'export unused = (x: Float64): Float64 { sin(x) }; main { }',
+			'export unused = (x: Float64): Float64 { @math.sin(x) }; main { }',
 		);
-		const used = Program().compile('main { sin(1.0) >> out }');
+		const used = Program().compile('main { @math.sin(1.0) >> out }');
 		a.equal(plain.errors.length, 0);
 		a.equal(dead.errors.length, 0);
 		a.equal(used.errors.length, 0);
 		a.assert(plain.bytes);
 		a.assert(dead.bytes);
 		a.assert(used.bytes);
-		if (!plain.bytes || !dead.bytes || !used.bytes) return;
 		a.equal(dead.bytes.length, plain.bytes.length);
 		a.assert(used.bytes.length > plain.bytes.length);
 	});

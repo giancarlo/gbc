@@ -1,10 +1,10 @@
 import {
-	Token,
-	MakeNodeMap,
+	type Token,
+	type MakeNodeMap,
 	ScannerApi,
 	ParserApi,
 	text,
-	MatchFn,
+	type MatchFn,
 } from '../sdk/index.js';
 
 type Children = Node[];
@@ -1124,7 +1124,7 @@ export function parserInline(
 		let i = 0;
 		while (i < nodes.length) {
 			const closer = nodes[i];
-			if (!closer || closer.kind !== 'delim' || !closer.canClose) {
+			if (closer?.kind !== 'delim' || !closer.canClose) {
 				i++;
 				continue;
 			}
@@ -1132,8 +1132,7 @@ export function parserInline(
 			for (let j = i - 1; j >= 0; j--) {
 				const opener = nodes[j];
 				if (
-					!opener ||
-					opener.kind !== 'delim' ||
+					opener?.kind !== 'delim' ||
 					!opener.canOpen ||
 					opener.ch !== closer.ch
 				)
@@ -1415,7 +1414,7 @@ function parserBlock(
 		}
 		const delimiter = next();
 		const alignments = tableAlignments(text(delimiter));
-		if (!alignments || header.length !== alignments.length) {
+		if (header.length !== alignments?.length) {
 			backtrack(token);
 			return;
 		}

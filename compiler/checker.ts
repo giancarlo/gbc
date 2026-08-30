@@ -1,4 +1,4 @@
-import { CompilerError, Position, text } from '../sdk/index.js';
+import { CompilerError, type Position, text } from '../sdk/index.js';
 
 import { childNodes } from './node.js';
 import type { InfixNode, Node, NodeMap } from './node.js';
@@ -71,7 +71,7 @@ function literalFits(
 	target: Type | undefined,
 ): boolean {
 	if (!node || node.kind !== 'number' || node.float) return false;
-	if (!target || target.kind !== 'type') return false;
+	if (target?.kind !== 'type') return false;
 	const r = intRange[target.family + target.size];
 	return !!r && node.value >= r[0] && node.value <= r[1];
 }
@@ -192,7 +192,7 @@ function callReturnType(node: NodeMap['call']): Type | undefined {
 	);
 	const effective = overload ?? fnSym;
 	const rt = functionElementReturn(overload) ?? declared ?? functionElementReturn(fnSym);
-	if (!rt || rt.kind !== 'type' || !effective) return rt;
+	if (rt?.kind !== 'type' || !effective) return rt;
 	return substituteFunctionReturn(rt, effective, argTypes);
 }
 
@@ -1097,7 +1097,7 @@ function resolveDispatchType(node: NodeMap['|']): Type {
 					: d?.kind === 'def' && d.value.kind === 'fn'
 						? resolveFnType(d.value)
 						: undefined;
-			if (fs && fs.kind === 'function') overloads.push(fs);
+			if (fs?.kind === 'function') overloads.push(fs);
 			continue;
 		}
 		if (a.kind !== 'fn') continue;
@@ -2084,7 +2084,7 @@ export function checker({
 		const calleeNode = node.children[0];
 		const fn = resolveType(calleeNode);
 		if (calleeNode.kind === 'typeident') {
-			if (fn && fn.kind === 'type' && fn.family !== 'fn') {
+			if (fn?.kind === 'type' && fn.family !== 'fn') {
 				checkRedundantCtor(fn, node);
 				if (calleeNode.symbol === BufferSymbol) {
 					error(
@@ -2100,7 +2100,7 @@ export function checker({
 			error(`This expression is not callable`, node);
 			return;
 		}
-		if (!fn || fn.kind !== 'function') {
+		if (fn?.kind !== 'function') {
 			error(`This expression is not callable`, node);
 			return;
 		}
@@ -3243,8 +3243,7 @@ export function checker({
 			const stage = kids[i];
 			if (!stage) continue;
 			if (
-				emit &&
-				emit.kind === 'type' &&
+				emit?.kind === 'type' &&
 				emit.family !== 'unknown' &&
 				emit.family !== 'void'
 			) {
@@ -3445,7 +3444,7 @@ export function checker({
 				const targetName = text(node.children[0]);
 				const rt =
 					armSym.kind === 'function' ? armSym.returnType : undefined;
-				if (rt && rt.kind === 'type' && rt.name !== targetName)
+				if (rt?.kind === 'type' && rt.name !== targetName)
 					error(
 						`constructor arm must return ${targetName}`,
 						node,
@@ -3568,8 +3567,7 @@ export function checker({
 		// A single slot binds the whole upstream value.
 		const declared = paramDeclaredType(stage, 0) ?? p.type;
 		if (
-			declared &&
-			declared.kind === 'type' &&
+			declared?.kind === 'type' &&
 			inputType.family === 'data' &&
 			declared.family !== 'data' &&
 			declared.family !== 'union' &&
@@ -3647,8 +3645,7 @@ export function checker({
 					: restSlotType(members, keys, headCount);
 			const declared = paramDeclaredType(stage, idx);
 			if (
-				declared &&
-				declared.kind === 'type' &&
+				declared?.kind === 'type' &&
 				declared.family !== 'unknown' &&
 				!canAssign(declared, bound)
 			)

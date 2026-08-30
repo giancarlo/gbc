@@ -176,6 +176,38 @@ function loadModule(
 	return module;
 }
 
+function createModuleNamespace(
+	name: string,
+	exports: Record<string, Symbol>,
+): SymbolMap['variable'] {
+	return {
+		kind: 'variable',
+		name,
+		flags: Flags.Module,
+		type: {
+			kind: 'type',
+			flags: 0,
+			name,
+			family: 'data',
+			size: 4,
+			members: Object.fromEntries(
+				Object.entries(exports).map(
+					([memberName, member]): [string, Symbol] => {
+						if (member.kind !== 'function') return [memberName, member];
+						const binding: SymbolMap['variable'] = {
+							kind: 'variable',
+							name: memberName,
+							flags: 0,
+							type: member,
+						};
+						return [memberName, binding];
+					},
+				),
+			),
+		},
+	};
+}
+
 function withoutStdlibTypes<T>(fn: () => T): T {
 	const intrinsicStates = [
 		OriginIntrinsic,
@@ -212,6 +244,7 @@ export function buildStdlibBundle(
 	entryPath: string,
 	testPath: string,
 	sys: System,
+	modulePaths: readonly string[] = [],
 ): Uint8Array {
 	const builtinNames = new Set<string>();
 	for (const table of [
@@ -231,6 +264,7 @@ export function buildStdlibBundle(
 				baseSymbols,
 				baseTypes,
 			);
+		for (const path of modulePaths) loadLibraryEntry(path);
 		const entry = loadLibraryEntry(entryPath);
 		Object.assign(baseSymbols, collectDefs(entry.module).symbols);
 		Object.assign(baseTypes, collectTypes(entry.module));
@@ -446,32 +480,7 @@ function createModuleLoader(
 			const types: Record<string, TypeSymbol> = {};
 			for (const [k, t] of Object.entries(collectTypes(mod)))
 				if (t.flags & Flags.Export) types[k] = t;
-			const symbol: SymbolMap['variable'] = {
-				kind: 'variable',
-				name: refName,
-				flags: Flags.Module,
-				type: {
-					kind: 'type',
-					flags: 0,
-					name: refName,
-					family: 'data',
-					size: 4,
-					members: Object.fromEntries(
-						Object.entries(exports).map(
-							([name, member]): [string, Symbol] => {
-								if (member.kind !== 'function') return [name, member];
-								const binding: SymbolMap['variable'] = {
-									kind: 'variable',
-									name,
-									flags: 0,
-									type: member,
-								};
-								return [name, binding];
-							},
-						),
-					),
-				},
-			};
+			const symbol = createModuleNamespace(refName, exports);
 			const loaded: Loaded = {
 				module: mod,
 				symbol,
@@ -797,6 +806,23 @@ function collectStdlibModules(
 	}
 }
 
+function collectModuleNamespaces(
+	modules: Map<string, Module>,
+	excludedPaths: ReadonlySet<string | undefined>,
+): Record<string, Symbol> {
+	const namespaces: Record<string, Symbol> = {};
+	for (const [path, module] of modules) {
+		if (excludedPaths.has(path)) continue;
+		const file = path.slice(path.lastIndexOf('/') + 1);
+		const name = file.endsWith('.gb') ? file.slice(0, -3) : file;
+		namespaces[`@${name}`] = createModuleNamespace(
+			`@${name}`,
+			collectExports(module).symbols,
+		);
+	}
+	return namespaces;
+}
+
 function initializeStdlib(bytes: Uint8Array): void {
 	const materialized = materializeModules(bytes);
 	const { entry, test: testEntry, modules } = materialized;
@@ -806,9 +832,14 @@ function initializeStdlib(bytes: Uint8Array): void {
 	const test = testEntry ? modules.get(testEntry) : undefined;
 	if (!test) throw new Error('stdlib bundle has no test entry');
 	const indexExports = collectExports(index);
+	const namespaces = collectModuleNamespaces(
+		modules,
+		new Set([entry, testEntry]),
+	);
 	stdlibEntrySymbols = {
 		...collectDefs(index).symbols,
 		...indexExports.symbols,
+		...namespaces,
 	};
 	stdlibEntryTypes = {
 		...collectTypes(index),
@@ -851,7 +882,7 @@ function initializeStdlib(bytes: Uint8Array): void {
 	for (const table of [builtinSymbols, builtinTypes])
 		for (const name of table.keys())
 			if (typeof name === 'string') externalNames.add(name);
-	for (const record of [stdlibSymbols, stdlibTypes])
+	for (const record of [stdlibEntrySymbols, stdlibSymbols, stdlibTypes])
 		for (const name of Object.keys(record)) externalNames.add(name);
 	initialized = true;
 }
