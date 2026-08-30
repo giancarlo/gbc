@@ -179,6 +179,7 @@ function loadModule(
 function createModuleNamespace(
 	name: string,
 	exports: Record<string, Symbol>,
+	types: Record<string, TypeSymbol>,
 ): SymbolMap['variable'] {
 	return {
 		kind: 'variable',
@@ -190,6 +191,7 @@ function createModuleNamespace(
 			name,
 			family: 'data',
 			size: 4,
+			moduleTypes: types,
 			members: Object.fromEntries(
 				Object.entries(exports).map(
 					([memberName, member]): [string, Symbol] => {
@@ -480,7 +482,7 @@ function createModuleLoader(
 			const types: Record<string, TypeSymbol> = {};
 			for (const [k, t] of Object.entries(collectTypes(mod)))
 				if (t.flags & Flags.Export) types[k] = t;
-			const symbol = createModuleNamespace(refName, exports);
+			const symbol = createModuleNamespace(refName, exports, types);
 			const loaded: Loaded = {
 				module: mod,
 				symbol,
@@ -815,9 +817,11 @@ function collectModuleNamespaces(
 		if (excludedPaths.has(path)) continue;
 		const file = path.slice(path.lastIndexOf('/') + 1);
 		const name = file.endsWith('.gb') ? file.slice(0, -3) : file;
+		const exports = collectExports(module);
 		namespaces[`@${name}`] = createModuleNamespace(
 			`@${name}`,
-			collectExports(module).symbols,
+			exports.symbols,
+			exports.types,
 		);
 	}
 	return namespaces;

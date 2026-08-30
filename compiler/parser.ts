@@ -55,7 +55,7 @@ export function parse(
 		next,
 		catchAndRecover,
 	} = api;
-	const typeParser = parseType(api, typesTable);
+	const typeParser = parseType(api, typesTable, symbolTable, options.loader);
 
 	/**
 	 * Statement separator: `;` separates statements and the trailing `;` is
@@ -325,8 +325,10 @@ export function parse(
 			expr.kind === 'def' &&
 			expr.value.kind === 'ident' &&
 			expr.value.symbol.flags & Flags.Module
-		)
+		) {
 			expr.symbol.flags |= Flags.Module;
+			expr.symbol.type = expr.value.symbol.type;
+		}
 
 		return expr;
 	}

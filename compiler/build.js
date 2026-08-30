@@ -16,6 +16,7 @@ function buildStdlib() {
 				},
 				[
 					new URL('math.gb', root).pathname,
+					new URL('matrix.gb', root).pathname,
 					new URL('time.gb', root).pathname,
 				],
 			),

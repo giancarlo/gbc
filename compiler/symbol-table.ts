@@ -58,6 +58,7 @@ type TypeShape =
 			size: number;
 			family: 'data';
 			members: Record<string, Symbol>;
+			moduleTypes?: Record<string, TypeSymbol>;
 	  }
 	| {
 			name: string;

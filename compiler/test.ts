@@ -629,7 +629,6 @@ main { recursive(2) >> out; generic(2) >> out }`);
 					definition.value.kind !== 'fn'
 				) {
 					a.assert(false, `Missing function ${name}`);
-					continue;
 				}
 				a.equal(definition.value.symbol.emissionType, undefined);
 				a.equal(definition.value.symbol.returnType?.kind, 'type');
@@ -1400,7 +1399,7 @@ main {
 				pre: `extend get (s: String, i: Int32): Int32 { length(s) + i };
 b = Buffer<Int32>(1)`,
 				src: "(set(b, 0, 7) ?? (get(b, 0) >> Int32 { get('abc', 2) + $ } | Error { $ }))",
-				ast: "(?? (call :set (, :b 0 7)) (>> (call :get (, :b 0)) (| (fn (parameter ? typeident ?) (next (+ (call :get (, 'abc' 2)) $))) (fn (parameter ? typeident ?) (next $)))))",
+				ast: "(?? (call :set @intrinsic (, :b 0 7)) (>> (call :get (, :b 0)) (| (fn (parameter ? typeident ?) (next (+ (call :get (, 'abc' 2)) $))) (fn (parameter ? typeident ?) (next $)))))",
 			out: ['12'],
 		});
 			expr({
@@ -1408,7 +1407,7 @@ b = Buffer<Int32>(1)`,
 				pre: `extend set (s: String, i: Int32, value: Int32): Void { value >> out };
 b = Buffer<Int32>(1)`,
 				src: "(set(b, 0, 3) ?? set('abc', 0, 9) ?? (get(b, 0) >> Int32 { $ } | Error { $ }))",
-				ast: "(?? (call :set (, :b 0 3)) (?? (call :set (, 'abc' 0 9)) (>> (call :get (, :b 0)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next $))))))",
+				ast: "(?? (call :set (, :b 0 3)) (?? (call :set (, 'abc' 0 9)) (>> (call :get @intrinsic (, :b 0)) (| (fn (parameter ? typeident ?) (next $)) (fn (parameter ? typeident ?) (next $))))))",
 			out: ['9', '3'],
 		});
 		compileError({
@@ -2591,13 +2590,13 @@ export target = (): Int32 { 0 }`,
 		rule({
 			p: 'Binding identities are immutable. An owning binding can be borrowed mutably without making the binding reassignable.',
 			src: `main { buffer = Buffer<Int32>(1); set(buffer, 0, 10); get(buffer, 0) >> out }`,
-			ast: `(root (main (def :buffer ? (call typeident 1)) (call :set (, :buffer 0 10)) (>> (call :get (, :buffer 0)) :out)))`,
+			ast: `(root (main (def :buffer ? (call typeident 1)) (call :set @intrinsic (, :buffer 0 10)) (>> (call :get @intrinsic (, :buffer 0)) :out)))`,
 			out: ['10'],
 		});
 		rule({
 			p: '`var T` parameters borrow an owner exclusively for the call without moving it; the caller can use the owner afterward.',
 			src: `write = (b: var Buffer<Int32>, n: Int32) { set(b, 0, n) }; main { b = Buffer<Int32>(1); write(b, 7); get(b, 0) >> out }`,
-			ast: `(root (def :write ? (fn (parameter :b typeident ?) (parameter :n typeident ?) (next (call :set (, :b 0 :n))))) (main (def :b ? (call typeident 1)) (call :write (, :b 7)) (>> (call :get (, :b 0)) :out)))`,
+			ast: `(root (def :write ? (fn (parameter :b typeident ?) (parameter :n typeident ?) (next (call :set @intrinsic (, :b 0 :n))))) (main (def :b ? (call typeident 1)) (call :write (, :b 7)) (>> (call :get @intrinsic (, :b 0)) :out)))`,
 			out: ['7'],
 		});
 		compileError({
@@ -3073,7 +3072,7 @@ main {
 		next get(b, 99) >> Int32 { count + $ } | IndexOutOfBounds { 0 - 1 } | OutOfMemory { 0 - 1 }
 	} | IndexOutOfBounds { 0 - 1 } | OutOfMemory { 0 - 1 } >> out
 }`,
-			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (next (?? (call :set (, :b :i :i)) (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1)))))))) (main (def :b ? (call typeident 100)) (>> (call :writeAll (, :b 0)) (| (| (fn (parameter ? typeident ?) (def :count ? $) (next (>> (call :get (, :b 99)) (| (| (fn (parameter ? typeident ?) (next (+ :count $))) (fn (parameter ? typeident ?) (next (- 0 1)))) (fn (parameter ? typeident ?) (next (- 0 1))))))) (fn (parameter ? typeident ?) (next (- 0 1)))) (fn (parameter ? typeident ?) (next (- 0 1)))) :out)))`,
+			ast: `(root (def :writeAll ? (fn (parameter :b typeident ?) (parameter :i typeident ?) typeident (next (?? (call :set @intrinsic (, :b :i :i)) (? (== :i 99) 100 (call :writeAll (, :b (+ :i 1)))))))) (main (def :b ? (call typeident 100)) (>> (call :writeAll (, :b 0)) (| (| (fn (parameter ? typeident ?) (def :count ? $) (next (>> (call :get @intrinsic (, :b 99)) (| (| (fn (parameter ? typeident ?) (next (+ :count $))) (fn (parameter ? typeident ?) (next (- 0 1)))) (fn (parameter ? typeident ?) (next (- 0 1))))))) (fn (parameter ? typeident ?) (next (- 0 1)))) (fn (parameter ? typeident ?) (next (- 0 1)))) :out)))`,
 			out: ['199'],
 			maxPages: 2,
 		});
@@ -3236,44 +3235,74 @@ main {
 		});
 	});
 
-	h('Matrix', ({ rule, runtimeTrap }) => {
+	h('Matrix', ({ compileError, rule, runtimeTrap, testBlock }) => {
 		rule({
-			p: 'Matrix `get` and `set` use column-major Float32 storage while the existing Buffer arms remain available.',
+			p: '`@matrix.Matrix` `get` and `set` use column-major Float32 storage while the existing Buffer arms remain available.',
 			src: `main {
 	cells = Buffer<Float32>(6);
 	set(cells, 2, Float32(9));
-	matrix: Matrix = [ rows = 2, columns = 3, values = cells ];
-	get(matrix, 0, 1) >> out;
-	set(matrix, 1, 2, Float32(4));
-	get(matrix, 1, 2) >> out;
+	matrix: @matrix.Matrix = [ rows = 2, columns = 3, values = cells ];
+	@matrix.get(matrix, 0, 1) >> out;
+	@matrix.set(matrix, 1, 2, Float32(4));
+	@matrix.get(matrix, 1, 2) >> out;
 	buffer = Buffer<Int32>(1);
 	set(buffer, 0, 7);
 	get(buffer, 0) >> out
 }`,
-			ast: `(root (main (def :cells ? (call typeident 6)) (call :set (, :cells 2 (call typeident 9))) (def :matrix typeident @export (data (, (propdef :rows ? 2) (propdef :columns ? 3) (propdef :values ? :cells)))) (>> (call :get (, :matrix 0 1)) :out) (call :set (, :matrix 1 2 (call typeident 4))) (>> (call :get (, :matrix 1 2)) :out) (def :buffer ? (call typeident 1)) (call :set (, :buffer 0 7)) (>> (call :get (, :buffer 0)) :out)))`,
+			ast: `(root (main (def :cells ? (call typeident 6)) (call :set @intrinsic (, :cells 2 (call typeident 9))) (def :matrix typeident @export (data (, (propdef :rows ? 2) (propdef :columns ? 3) (propdef :values ? :cells)))) (>> (call (. :@matrix @module :get) (, :matrix 0 1)) :out) (call (. :@matrix @module :set) (, :matrix 1 2 (call typeident 4))) (>> (call (. :@matrix @module :get) (, :matrix 1 2)) :out) (def :buffer ? (call typeident 1)) (call :set @intrinsic (, :buffer 0 7)) (>> (call :get @intrinsic (, :buffer 0)) :out)))`,
 			out: ['9', '4', '7'],
+		});
+		testBlock({
+			src: `#test {
+	matrix = @matrix.identity(3);
+	equal(matrix.rows, 3);
+	equal(matrix.columns, 3);
+	equal(length(matrix.values), 9);
+	get(matrix.values, 0) >> out;
+	get(matrix.values, 1) >> out;
+	get(matrix.values, 4) >> out;
+	get(matrix.values, 8) >> out;
+	empty = @matrix.identity(0);
+	equal(empty.rows, 0);
+	equal(length(empty.values), 0)
+}
+export target = (): Int32 { 0 }`,
+			out: ['1', '0', '1', '1'],
 		});
 		runtimeTrap({
 			p: 'Matrix coordinates are checked independently before column-major indexing.',
 			src: `main {
 	cells = Buffer<Float32>(4);
-	matrix: Matrix = [ rows = 2, columns = 2, values = cells ];
-	get(matrix, 0, 2) >> out
+	matrix: @matrix.Matrix = [ rows = 2, columns = 2, values = cells ];
+	@matrix.get(matrix, 0, 2) >> out
 }`,
 		});
 		runtimeTrap({
 			src: `main {
 	cells = Buffer<Float32>(4);
-	matrix: Matrix = [ rows = 2, columns = 2, values = cells ];
-	get(matrix, 0 - 1, 2) >> out
+	matrix: @matrix.Matrix = [ rows = 2, columns = 2, values = cells ];
+	@matrix.get(matrix, 0 - 1, 2) >> out
 }`,
 		});
 		runtimeTrap({
 			src: `main {
 	cells = Buffer<Float32>(4);
-	matrix: Matrix = [ rows = 2, columns = 2, values = cells ];
-	set(matrix, 0, 2, Float32(1))
+	matrix: @matrix.Matrix = [ rows = 2, columns = 2, values = cells ];
+	@matrix.set(matrix, 0, 2, Float32(1))
 }`,
+		});
+		runtimeTrap({
+			p: 'Matrix identity rejects negative dimensions.',
+			src: `main { matrix = @matrix.identity(0 - 1); matrix.rows >> out }`,
+		});
+		runtimeTrap({
+			p: 'Matrix identity rejects dimensions whose cell count overflows Int32.',
+			src: `main { matrix = @matrix.identity(46341); matrix.rows >> out }`,
+		});
+		compileError({
+			p: 'Matrix types remain namespaced.',
+			src: `main { cells = Buffer<Float32>(1); matrix: Matrix = [ rows = 1, columns = 1, values = cells ] }`,
+			expected: 'Type not defined',
 		});
 	});
 
@@ -5101,6 +5130,30 @@ export mk = (n: Int32): Item { [ id = n ] };`,
 				'/main.gb': `(Item, mk) = @.items;
 report = (i: Item): Int32 { i.id };
 main { report(mk(7)) >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['7'],
+		});
+		modules({
+			p: 'A bound module namespace qualifies its exported nominal types.',
+			files: {
+				'/items.gb': `export type Item = Error & [ id: Int32 ];
+export mk = (n: Int32): Item { [ id = n ] };`,
+				'/main.gb': `items = @.items;
+report = (i: items.Item): Int32 { i.id };
+main { report(items.mk(7)) >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['7'],
+		});
+		modules({
+			p: 'A mapped module reference qualifies its exported nominal types directly.',
+			files: {
+				'/items.gb': `export type Item = Error & [ id: Int32 ];
+export mk = (n: Int32): Item { [ id = n ] };`,
+				'/main.gb': `#importmap { @items = './items.gb'; }
+report = (i: @items.Item): Int32 { i.id };
+main { report(@items.mk(7)) >> out }`,
 			},
 			entry: '/main.gb',
 			out: ['7'],

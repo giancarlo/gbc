@@ -1,0 +1,30 @@
+export type Matrix = [ rows: Int32, columns: Int32, values: Buffer<Float32> ];
+
+matrixIndex = (matrix: Matrix, row: Int32, column: Int32): Int32 {
+	row < 0 || row >= matrix.rows || column < 0 || column >= matrix.columns
+		? 0 - 1
+		: column * matrix.rows + row
+};
+
+extend get (matrix: Matrix, row: Int32, column: Int32): Float32 {
+	get(matrix.values, matrixIndex(matrix, row, column))
+};
+
+extend set (matrix: var Matrix, row: Int32, column: Int32, value: Float32): Void {
+	index = matrixIndex(matrix, row, column);
+	set(matrix.values, index, value)
+};
+
+matrixCellCount = (size: Int32): Int32 {
+	size < 0 || size > 46340 ? 0 - 1 : size * size
+};
+
+export identity = (size: Int32): own Matrix {
+	values = Buffer<Float32>(matrixCellCount(size));
+	loop >> (index: Int32) {
+		index >= size
+			? break
+			: set(values, index * size + index, Float32(1))
+	};
+	next [ rows = size, columns = size, values = values ]
+};

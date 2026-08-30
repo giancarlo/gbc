@@ -19,12 +19,16 @@ import type {
 	Symbol,
 	SymbolMap,
 	Type,
+	SymbolTable,
 	TypesSymbolTable,
 } from './symbol-table.js';
+import type { ModuleLoader } from './parser.js';
 
 export function parseType(
 	api: ParserApi<ScannerToken>,
 	symbolTable: TypesSymbolTable,
+	valueSymbols: SymbolTable,
+	loader?: ModuleLoader,
 ) {
 	const { current, optional } = api;
 
@@ -32,6 +36,35 @@ export function parseType(
 		const symbol = symbolTable.get(name);
 		if (!symbol) throw api.error('Type not defined', tk);
 		const node: NodeMap['typeident'] = { ...tk, kind: 'typeident', symbol };
+		(symbol.references ||= []).push(node);
+		return node;
+	}
+
+	function expectModuleType(
+		namespace: Symbol | undefined,
+		moduleToken: Token<ScannerToken['kind']>,
+		memberToken: Token<'ident'>,
+	): NodeMap['typeident'] {
+		const type = namespace?.type;
+		if (
+			!namespace ||
+			!(namespace.flags & Flags.Module) ||
+			type?.kind !== 'type' ||
+			type.family !== 'data'
+		)
+			throw api.error('Type qualifier is not a module', moduleToken);
+		const symbol = type.moduleTypes?.[text(memberToken)];
+		if (!symbol)
+			throw api.error(
+				`Module does not export type "${text(memberToken)}"`,
+				memberToken,
+			);
+		const node: NodeMap['typeident'] = {
+			...memberToken,
+			start: moduleToken.start,
+			kind: 'typeident',
+			symbol,
+		};
 		(symbol.references ||= []).push(node);
 		return node;
 	}
@@ -486,6 +519,23 @@ export function parseType(
 			ident: {
 				prefix(n) {
 					const name = text(n);
+					if (current().kind === '.') {
+						const namespace = valueSymbols.get(name);
+						if ((namespace?.flags ?? 0) & Flags.Module) {
+							api.next();
+							const node = expectModuleType(
+								namespace,
+								n,
+								consume('ident'),
+							);
+							if (
+								node.symbol.typeParams?.length &&
+								current().kind === '<'
+							)
+								return applyTypeArgs(node, node.symbol, expression);
+							return node;
+						}
+					}
 					if (name === 'true' || name === 'false') {
 						return {
 							...n,
@@ -507,6 +557,27 @@ export function parseType(
 					}
 					const node = expectSymbol(name, n);
 					// Generic type application `Name<arg, ...>`.
+					if (
+						node.symbol.typeParams?.length &&
+						current().kind === '<'
+					)
+						return applyTypeArgs(node, node.symbol, expression);
+					return node;
+				},
+			},
+			'@': {
+				prefix(tk) {
+					const moduleToken = consume('ident');
+					const name = text(moduleToken);
+					const namespace =
+						valueSymbols.get(`@${name}`) ??
+						loader?.load({ dot: false, segs: [name] }).symbol;
+					consume('.');
+					const node = expectModuleType(
+						namespace,
+						tk,
+						consume('ident'),
+					);
 					if (
 						node.symbol.typeParams?.length &&
 						current().kind === '<'
