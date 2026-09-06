@@ -116,6 +116,7 @@ export type BaseNodeMap = {
 	'.': { children: [Node, Node] };
 	',': { children: Node[] };
 	'>>': { children: Node[] };
+	'->': { children: [Node, ...NodeMap['call'][]] };
 } & MakeInfix<
 	| '||'
 	| '&&'

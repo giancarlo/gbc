@@ -2,10 +2,10 @@
 	"compilerOptions": {
 		"incremental": true,
 		"strict": true,
-		"target": "esnext",
+		"target": "es2025",
 		"module": "nodenext",
 		"lib": [
-			"ESNext"
+			"ES2025"
 		],
 		"experimentalDecorators": true,
 		"sourceMap": false,

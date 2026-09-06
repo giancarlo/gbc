@@ -3269,6 +3269,31 @@ main {
 export target = (): Int32 { 0 }`,
 			out: ['1', '0', '1', '1'],
 		});
+		testBlock({
+			p: '`compose2d` lowers Float32 arithmetic without widening its Matrix storage.',
+			src: `#test {
+	parent = @matrix.identity(4);
+	outputMatrix = @matrix.identity(4);
+	@matrix.compose2d(
+		outputMatrix,
+		parent,
+		Float32(10),
+		Float32(20),
+		Float32(2),
+		Float32(3),
+		Float32(1),
+		Float32(0),
+		Float32(0),
+		Float32(0)
+	);
+	@matrix.get(outputMatrix, 0, 0) >> out;
+	@matrix.get(outputMatrix, 1, 1) >> out;
+	@matrix.get(outputMatrix, 0, 3) >> out;
+	@matrix.get(outputMatrix, 1, 3) >> out
+}
+export target = (): Int32 { 0 }`,
+			out: ['2', '3', '10', '20'],
+		});
 		runtimeTrap({
 			p: 'Matrix coordinates are checked independently before column-major indexing.',
 			src: `main {

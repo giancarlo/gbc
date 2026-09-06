@@ -1,7 +1,12 @@
 {
 	"extends": "../tsconfig.json",
 	"compilerOptions": {
-		"outDir": "../dist/compiler"
+		"outDir": "../dist/compiler",
+		"lib": [
+			"dom",
+			"es2025",
+			"dom.iterable"
+		]
 	},
 	"files": [
 		"bundle.ts",
@@ -21,5 +26,9 @@
 		"target-wasm.ts",
 		"node.ts"
 	],
-	"references": [{ "path": "../sdk" }]
+	"references": [
+		{
+			"path": "../sdk"
+		}
+	]
 }

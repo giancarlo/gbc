@@ -43,6 +43,28 @@ vector = (
 		: vector(index + 4, total + Vector<Float32>(samples, index))
 }`;
 
+const COMPOSE2D_SOURCE = `parent = @matrix.identity(4);
+outputMatrix = @matrix.identity(4);
+export run = (): Float32 {
+	loop >> (index: Int32) {
+		index >= 100
+			? break
+			: @matrix.compose2d(
+				outputMatrix,
+				parent,
+				Float32(10),
+				Float32(20),
+				Float32(2),
+				Float32(3),
+				Float32(1),
+				Float32(0),
+				Float32(0),
+				Float32(0)
+			)
+	};
+	next @matrix.get(outputMatrix, 0, 3)
+}`;
+
 function compileRun(source: string): () => number {
 	const entry = '/benchmark.gb';
 	const program = Program({
@@ -71,6 +93,7 @@ export default spec('Tail recursion benchmarks', s => {
 	const calls = compileRun(CALL_SOURCE);
 	const scalarFloat = compileRun(SCALAR_FLOAT_SOURCE);
 	const simdFloat = compileRun(SIMD_FLOAT_SOURCE);
+	const compose2d = compileRun(COMPOSE2D_SOURCE);
 	const expected = 49_995_000;
 
 	s.test('benchmark checksums', a => {
@@ -78,6 +101,7 @@ export default spec('Tail recursion benchmarks', s => {
 		a.equal(calls(), expected);
 		a.equal(scalarFloat(), 0);
 		a.equal(simdFloat(), 0);
+		a.equal(compose2d(), 10);
 	});
 
 	s.test('direct self-tail two-field accumulator', a =>
@@ -91,5 +115,8 @@ export default spec('Tail recursion benchmarks', s => {
 	);
 	s.test('contiguous Vector<Float32> accumulation', a =>
 		a.benchmark(simdFloat, { warmup: 250, sampleTime: 50, samples: 30 }),
+	);
+	s.test('Float32 compose2d', a =>
+		a.benchmark(compose2d, { warmup: 250, sampleTime: 50, samples: 30 }),
 	);
 });

@@ -7,6 +7,7 @@ import {
 	BufferSymbol,
 	Flags,
 	bufferTypeOf,
+	classifyEmission,
 	vectorTypeOf,
 	emissionElements,
 	fixedEmissionType,
@@ -194,6 +195,19 @@ function callReturnType(node: NodeMap['call']): Type | undefined {
 	const rt = functionElementReturn(overload) ?? declared ?? functionElementReturn(fnSym);
 	if (rt?.kind !== 'type' || !effective) return rt;
 	return substituteFunctionReturn(rt, effective, argTypes);
+}
+
+function effectiveCallFunction(
+	node: NodeMap['call'],
+): SymbolMap['function'] | undefined {
+	const fn = resolveFunctionType(node.children[0]);
+	if (!fn) return;
+	const raw = node.children[1];
+	const args = raw?.kind === ',' ? raw.children : raw ? [raw] : [];
+	const argTypes = args.map(resolver);
+	return [fn, ...(fn.overloads ?? [])].find(candidate =>
+		paramsMatch(candidate.parameters, argTypes),
+	) ?? fn;
 }
 
 function resolveFunctionType(node: Node): SymbolMap['function'] | undefined {
@@ -508,36 +522,66 @@ function mergeAlternativeEmissions(
 function callEmissionType(node: NodeMap['call']): EmissionShape | undefined {
 	const fn = resolveFunctionType(node.children[0]);
 	if (!fn) return undefined;
-	const scalarEmission = (): EmissionShape | undefined => {
-		const scalar = callReturnType(node);
-		if (!knownEmissionType(scalar)) return undefined;
-		return scalar.kind === 'type' && scalar.family === 'void'
-			? fixedEmissionShape([])
-			: fixedEmissionShape([scalar]);
-	};
 	const argsNode = node.children[1];
 	const args =
 		argsNode?.kind === ',' ? argsNode.children : argsNode ? [argsNode] : [];
 	const argTypes = args.map(resolver);
 	const effective =
 		fn.overloads?.find(overload => paramsMatch(overload.parameters, argTypes)) ?? fn;
-	if (effective.flags & Flags.Intrinsic)
-		return scalarEmission();
+	return specializedCallEmission(effective, argTypes);
+}
+
+function specializedCallEmission(
+	fn: SymbolMap['function'],
+	argTypes: Type[],
+): EmissionShape | undefined {
 	let emission = fn.emissionType;
 	if (!emission && fn.returnTypes && !fn.returnVariants)
 		emission = fixedEmissionType(fn.returnTypes, fn.returnOwnerships);
 	if (emission?.family !== 'emission') {
 		if (fn.returnVariants) return undefined;
-		return scalarEmission();
+		const scalar = fn.returnType ?? BT.Void;
+		const specialized = substituteFunctionReturn(scalar, fn, argTypes);
+		if (!knownEmissionType(specialized)) return undefined;
+		return specialized.kind === 'type' && specialized.family === 'void'
+			? fixedEmissionShape([])
+			: fixedEmissionShape([specialized]);
 	}
 	const specialized = substituteFunctionReturn(
 		emission,
-		effective,
+		fn,
 		argTypes,
 	);
 	if (specialized.kind !== 'type' || specialized.family !== 'emission')
 		return undefined;
 	return knownEmission(specialized) ? specialized : undefined;
+}
+
+function threadCall(
+	call: NodeMap['call'],
+	carrier: Node,
+	spreadCarrier: boolean,
+): NodeMap['call'] {
+	const raw = call.children[1];
+	const existing = raw?.kind === ',' ? raw.children : raw ? [raw] : [];
+	const leading =
+		spreadCarrier && carrier.kind === ',' ? carrier.children : [carrier];
+	const children = [...leading, ...existing];
+	const first = children[0];
+	const last = children[children.length - 1];
+	const args: Node | undefined =
+		children.length === 1
+			? first
+			: first
+				? {
+						...call,
+						kind: ',',
+						start: first.start,
+						end: last?.end ?? first.end,
+						children,
+					}
+				: undefined;
+	return { ...call, children: [call.children[0], args] };
 }
 
 function stageEmissionType(stage: Node): EmissionShape | undefined {
@@ -612,7 +656,7 @@ function pipeEmissionType(node: NodeMap['>>']): EmissionShape | undefined {
 			: valueEmissionType(source);
 	if (!emission) return undefined;
 	for (let i = 1; i < node.children.length; i++) {
-		const stage = node.children[i];
+		const stage = node.children[i] as NodeMap['call'] | undefined;
 		if (!stage) continue;
 		const output = stageEmissionType(stage);
 		if (!output) return undefined;
@@ -683,6 +727,12 @@ function valueEmissionType(
 	if (node.kind === '?') return conditionalEmissionType(node, contextual);
 	if (node.kind === 'call') return callEmissionType(node);
 	if (node.kind === '>>') return pipeEmissionType(node);
+	if (node.kind === '->') {
+		const type = resolveThreadType(node);
+		return type.kind === 'type' && type.family === 'void'
+			? fixedEmissionShape([])
+			: fixedEmissionShape([type]);
+	}
 	const type = contextual ? resolver(node) : resolveType(node);
 	if (!knownEmissionType(type)) return undefined;
 	if (type.kind === 'type' && type.family === 'void')
@@ -985,6 +1035,8 @@ function resolveType(node: CheckedNode): Type | undefined {
 			);
 		case '>>':
 			return resolvePipeType(node);
+		case '->':
+			return resolveThreadType(node);
 		case '&':
 		case '^':
 		case '<:':
@@ -1082,6 +1134,33 @@ function resolvePipeType(node: NodeMap['>>']): Type {
 		return unionOf(rets);
 	}
 	return resolver(last);
+}
+
+function resolveThreadType(node: NodeMap['->']): Type {
+	let carrier: Node = node.children[0];
+	let carrierType: Type | undefined =
+		carrier.kind === ',' ? undefined : resolver(carrier);
+	for (let i = 1; i < node.children.length; i++) {
+		const stage = node.children[i] as NodeMap['call'] | undefined;
+		if (!stage) continue;
+		const call = threadCall(stage, carrier, i === 1);
+		const emission = callEmissionType(call);
+		if (!emission) return BT.Unknown;
+		const classification = classifyEmission(emission);
+		if (classification.cardinality === 'many') return BT.Unknown;
+		if (classification.cardinality === 'zero') {
+			if (!carrierType) return BT.Unknown;
+			continue;
+		}
+		const output = callReturnType(call) ?? BT.Unknown;
+		carrierType =
+			classification.mayEmitVoid && carrierType
+				? fallbackResultType(output, carrierType)
+				: output;
+		carrier = call;
+		(carrier as CheckedNode)[typeSymbol] = carrierType;
+	}
+	return carrierType ?? BT.Unknown;
 }
 
 function resolveDispatchType(node: NodeMap['|']): Type {
@@ -2080,7 +2159,16 @@ export function checker({
 		);
 	}
 
-	function checkCall(node: NodeMap['call']) {
+	type CheckedCall = {
+		fn: SymbolMap['function'];
+		chosen: SymbolMap['function'];
+		argTypes: Type[];
+	};
+
+	function checkCall(
+		node: NodeMap['call'],
+		threadArgCount = 0,
+	): CheckedCall | undefined {
 		const calleeNode = node.children[0];
 		const fn = resolveType(calleeNode);
 		if (calleeNode.kind === 'typeident') {
@@ -2117,10 +2205,60 @@ export function checker({
 		if (argTypes.some(isTypeParam)) return;
 
 		const chosen = chooseOverload(fn, argTypes, node);
-		if (!chosen || !args) return;
-		checkTypeArgConstraints(chosen, argTypes, node);
-		checkCallArgs(chosen, argTypes, node);
-		checkMutableCallArgs(chosen, node);
+		if (!chosen) return;
+		if (args) {
+			checkTypeArgConstraints(chosen, argTypes, node);
+			checkCallArgs(chosen, argTypes, node);
+			checkMutableCallArgs(chosen, node, threadArgCount);
+		}
+		return { fn, chosen, argTypes };
+	}
+
+	function checkThread(node: NodeMap['->']): void {
+		let carrier: Node = node.children[0];
+		check(carrier);
+		let carrierType: Type | undefined =
+			carrier.kind === ',' ? undefined : resolver(carrier);
+		for (let i = 1; i < node.children.length; i++) {
+			const stage = node.children[i] as NodeMap['call'] | undefined;
+			if (!stage) continue;
+			const spreadCarrier = i === 1;
+			const call = threadCall(stage, carrier, spreadCarrier);
+			const threadArgCount =
+				spreadCarrier && carrier.kind === ',' ? carrier.children.length : 1;
+			const resolved = checkCall(call, threadArgCount);
+			if (!resolved) continue;
+			const emission = specializedCallEmission(
+				resolved.chosen,
+				resolved.argTypes,
+			);
+			if (!emission) continue;
+			const classification = classifyEmission(emission);
+			if (classification.cardinality === 'many') {
+				error('`->` stage emits many values; use `>>` for a stream', stage);
+				continue;
+			}
+			if (classification.cardinality === 'zero') {
+				if (!carrierType) {
+					error('`->` cannot retain a comma-separated argument pack', stage);
+					continue;
+				}
+				if (
+					(resolved.chosen.parameters ?? [])
+						.slice(0, threadArgCount)
+						.some(parameter => parameter.ownership === 'own')
+				)
+					error('an `own` thread stage cannot retain a consumed carrier', stage);
+				continue;
+			}
+			const output = emission.elements[0] ?? BT.Unknown;
+			carrierType =
+				classification.mayEmitVoid && carrierType
+					? fallbackResultType(output, carrierType)
+					: output;
+			carrier = call;
+			(carrier as CheckedNode)[typeSymbol] = carrierType;
+		}
 	}
 
 	function referencesSymbol(node: Node, symbol: Symbol): boolean {
@@ -2159,6 +2297,7 @@ export function checker({
 	function checkMutableCallArgs(
 		fn: SymbolMap['function'],
 		node: NodeMap['call'],
+		threadArgCount = 0,
 	): void {
 		const raw = node.children[1];
 		const args = raw?.kind === ',' ? raw.children : raw ? [raw] : [];
@@ -2166,6 +2305,12 @@ export function checker({
 		for (let i = 0; i < args.length; i++) {
 			if (fn.parameters?.[i]?.ownership !== 'var') continue;
 			const arg = args[i];
+			if (i < threadArgCount) {
+				const mode = arg ? expressionOwnership(arg) : undefined;
+				if (mode !== 'own' && mode !== 'var')
+					error('a `var` thread stage requires a mutable carrier', arg ?? node);
+				continue;
+			}
 			const root = mutableArgRoot(arg, node);
 			if (!root) continue;
 			const previous = roots.get(root);
@@ -2239,7 +2384,15 @@ export function checker({
 				canAssign(output, input)
 			);
 		});
-		if (!uniform && !widthPreserving) {
+		const hasVoidMutatorArm = ovs.some(arm => {
+			const result = arm.returnType;
+			return (
+				arm.parameters?.[0]?.ownership === 'var' &&
+				result?.kind === 'type' &&
+				result.family === 'void'
+			);
+		});
+		if (!uniform && !widthPreserving && !hasVoidMutatorArm) {
 			error('overload arms must return the same type', node);
 			return;
 		}
@@ -2917,14 +3070,30 @@ export function checker({
 			if (alternate) checkOwnedReturn(alternate, owned, fn);
 			return;
 		}
+		if (node.kind === '->') {
+			let carrier: Node = node.children[0];
+			for (let i = 1; i < node.children.length; i++) {
+				const stage = node.children[i] as NodeMap['call'] | undefined;
+				if (!stage) continue;
+				const call = threadCall(stage, carrier, i === 1);
+				const emission = callEmissionType(call);
+				if (!emission) continue;
+				const classification = classifyEmission(emission);
+				if (classification.cardinality === 'zero') continue;
+				if (classification.mayEmitVoid)
+					checkOwnedReturn(carrier, owned, fn);
+				carrier = call;
+			}
+			checkOwnedReturn(carrier, owned, fn);
+			return;
+		}
 		const type = resolver(node);
 		if (!isHeapType(type)) return;
 		if (node.kind === 'ident' && owned.has(node.symbol)) return;
 		if (node.kind === 'string' || node.kind === 'interp' || node.kind === 'data')
 			return;
 		if (node.kind === 'call') {
-			const callee = resolveFunctionType(node.children[0]);
-			if (callee?.returnOwnership === 'own') return;
+			if (effectiveCallFunction(node)?.returnOwnership === 'own') return;
 			if (node.children[0].kind === 'typeident') return;
 		}
 		error(
@@ -3298,9 +3467,29 @@ export function checker({
 				: 'borrow';
 		}
 		if (node.kind === 'call') {
-			const callee = resolveFunctionType(node.children[0]);
+			const callee = effectiveCallFunction(node);
 			if (callee?.returnOwnership) return callee.returnOwnership;
 			if (node.children[0].kind === 'typeident') return 'own';
+		}
+		if (node.kind === '->') {
+			let carrier: Node = node.children[0];
+			let mode = expressionOwnership(carrier);
+			for (let i = 1; i < node.children.length; i++) {
+				const stage = node.children[i] as NodeMap['call'] | undefined;
+				if (!stage) continue;
+				const call = threadCall(stage, carrier, i === 1);
+				const emission = callEmissionType(call);
+				if (!emission) return mode;
+				const classification = classifyEmission(emission);
+				if (classification.cardinality === 'zero') continue;
+				const output = expressionOwnership(call);
+				mode =
+					classification.mayEmitVoid && output !== mode
+						? 'borrow'
+						: output;
+				carrier = call;
+			}
+			return mode;
 		}
 		if (node.kind === 'string' || node.kind === 'interp' || node.kind === 'data')
 			return 'own';
@@ -3454,7 +3643,8 @@ export function checker({
 			case 'next':
 				return checkNext(node);
 			case 'call':
-				return checkCall(node);
+				checkCall(node);
+				return;
 			case 'def':
 				return checkDef(node);
 			case '=':
@@ -3500,6 +3690,8 @@ export function checker({
 			}
 			case '>>':
 				return checkPipe(node);
+			case '->':
+				return checkThread(node);
 			case '?':
 				return checkTernary(node);
 			case '|': {

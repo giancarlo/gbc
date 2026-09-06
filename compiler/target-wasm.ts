@@ -6,6 +6,8 @@ import {
 	BaseTypes,
 	BufferSymbol,
 	Flags,
+	classifyEmission,
+	fixedEmissionType,
 	isFloatType,
 	isHeapType,
 	isInt64Type,
@@ -187,6 +189,9 @@ const OP_F32_MIN = 0x96;
 const OP_F32_MAX = 0x97;
 const OP_F32_COPYSIGN = 0x98;
 const OP_F32_ADD = 0x92;
+const OP_F32_SUB = 0x93;
+const OP_F32_MUL = 0x94;
+const OP_F32_DIV = 0x95;
 const OP_F64_ABS = 0x99;
 const OP_F64_CEIL = 0x9b;
 const OP_F64_FLOOR = 0x9c;
@@ -1093,8 +1098,7 @@ export function compileWasm({
 
 	function hasNonScalarEmission(sym: SymbolMap['function']): boolean {
 		const emission = resolvedEmissionType(sym);
-		if (emission)
-			return emission.rest !== undefined || emission.elements.length > 1;
+		if (emission) return classifyEmission(emission).cardinality === 'many';
 		if (sym.returnVariants)
 			return (
 				sym.returnVariants.length !== 1 ||
@@ -1113,9 +1117,9 @@ export function compileWasm({
 	}
 
 	function templateHasNonScalarEmission(template: NodeMap['fn']): boolean {
-		if (hasNonScalarEmission(template.symbol)) return true;
 		const emission = resolvedEmissionType(template.symbol);
 		if (!emission) return true;
+		if (classifyEmission(emission).cardinality === 'many') return true;
 		return emission.elements.some(
 			type =>
 				type.kind === 'type' &&
@@ -1521,7 +1525,14 @@ export function compileWasm({
 		const callee = node.children[0];
 		if (callee.kind === '.') {
 			const sfn = resolveStaticMemberFn(callee);
-			return sfn ? sfn.returnType ?? BaseTypes.Void : BaseTypes.Unknown;
+			return sfn
+				? inferFunctionReturn(
+						sfn,
+						argListFromCall(node.children[1]).map(argument =>
+							inferType(argument),
+						),
+					)
+				: BaseTypes.Unknown;
 		}
 		if (callee.kind === 'typeident') return inferTypeConstructorCall(node);
 		if (callee.kind !== 'ident') return BaseTypes.Unknown;
@@ -1562,6 +1573,95 @@ export function compileWasm({
 			unifyTypeParam(p.type, args[i], names, bindings),
 		);
 		return reduceType(rt, bindings);
+	}
+
+	function makeThreadCall(
+		call: NodeMap['call'],
+		carrier: Node,
+		spreadCarrier: boolean,
+	): NodeMap['call'] {
+		const raw = call.children[1];
+		const existing = raw?.kind === ',' ? raw.children : raw ? [raw] : [];
+		const leading =
+			spreadCarrier && carrier.kind === ',' ? carrier.children : [carrier];
+		const children = [...leading, ...existing];
+		const first = children[0];
+		const last = children[children.length - 1];
+		const args: Node | undefined =
+			children.length === 1
+				? first
+				: first
+					? {
+							...call,
+							kind: ',',
+							start: first.start,
+							end: last?.end ?? first.end,
+							children,
+						}
+					: undefined;
+		return { ...call, children: [call.children[0], args] };
+	}
+
+	function threadCallResolution(call: NodeMap['call'], fn?: FuncBuilder) {
+		const callee = call.children[0];
+		const declared =
+			callee.kind === '.'
+				? resolveStaticMemberFn(callee)
+				: callee.kind === 'ident'
+					? (resolveFnArg(callee) ??
+						(callee.symbol.kind === 'function' ? callee.symbol : undefined))
+					: undefined;
+		if (!declared) return;
+		const argTypes = argListFromCall(call.children[1]).map(argument =>
+			inferType(argument, fn),
+		);
+		const target = findDispatchArm(declared.overloads ?? [], argTypes) ?? declared;
+		const typeParams = target.typeParams ?? [];
+		const names = new Set(
+			typeParams.map(type => type.name).filter((name): name is string => !!name),
+		);
+		const bindings = new Map<string, Type>();
+		(target.parameters ?? []).forEach((parameter, i) =>
+			unifyTypeParam(parameter.type, argTypes[i], names, bindings),
+		);
+		const specializedEmission = resolvedEmissionType(target, bindings);
+		const output = inferFunctionReturn(target, argTypes, typeParams);
+		const emission =
+			specializedEmission ??
+			(output.kind === 'type' && output.family === 'void'
+				? fixedEmissionType([])
+				: fixedEmissionType([output]));
+		return {
+			target,
+			emission,
+			classification: classifyEmission(emission),
+			output:
+				specializedEmission?.elements[0] ?? output,
+		};
+	}
+
+	function inferThreadType(node: NodeMap['->'], fn?: FuncBuilder): Type {
+		let carrier: Node = node.children[0];
+		let carrierType: Type | undefined =
+			carrier.kind === ',' ? undefined : inferType(carrier, fn);
+		for (let i = 1; i < node.children.length; i++) {
+			const stage = node.children[i] as NodeMap['call'] | undefined;
+			if (!stage) continue;
+			const call = makeThreadCall(stage, carrier, i === 1);
+			const resolved = threadCallResolution(call, fn);
+			if (!resolved || resolved.classification.cardinality === 'many')
+				return BaseTypes.Unknown;
+			if (resolved.classification.cardinality === 'zero') {
+				if (!carrierType) return BaseTypes.Unknown;
+				continue;
+			}
+			carrierType =
+				resolved.classification.mayEmitVoid && carrierType
+					? fallbackResultType(resolved.output, carrierType)
+					: resolved.output;
+			carrier = call;
+		}
+		return carrierType ?? BaseTypes.Unknown;
 	}
 
 	function inferStageArgumentTypes(
@@ -1750,6 +1850,8 @@ export function compileWasm({
 				);
 			case '>>':
 				return inferPipeType(node, fn);
+			case '->':
+				return inferThreadType(node, fn);
 			case 'call':
 				return inferCallType(node);
 			case '.':
@@ -2308,7 +2410,11 @@ export function compileWasm({
 			// `runtime.stack(e)` materializes a fresh collection; its members
 			// are static frame words, so a block free suffices.
 			const sfn = resolveStaticMemberFn(callee);
-			return !!sfn && sfn === StackIntrinsic;
+			if (sfn === StackIntrinsic) return true;
+			const target = threadCallResolution(node, fn)?.target;
+			return !!target &&
+				(directEmissionOwnership(target) === 'own' ||
+					target.returnOwnership === 'own');
 		}
 		if (callee.kind === 'typeident')
 			return typeidentOwnable(callee, args, fn);
@@ -2349,6 +2455,24 @@ export function compileWasm({
 				ownableExpr(node.children[1], fn) &&
 				ownableExpr(node.children[2], fn)
 			);
+		if (node.kind === '->') {
+			let carrier: Node = node.children[0];
+			for (let i = 1; i < node.children.length; i++) {
+				const stage = node.children[i] as NodeMap['call'] | undefined;
+				if (!stage) continue;
+				const call = makeThreadCall(stage, carrier, i === 1);
+				const resolved = threadCallResolution(call, fn);
+				if (!resolved) return false;
+				if (resolved.classification.cardinality === 'zero') continue;
+				if (
+					resolved.classification.mayEmitVoid &&
+					(!ownableExpr(carrier, fn) || !ownableCall(call, fn))
+				)
+					return false;
+				carrier = call;
+			}
+			return ownableExpr(carrier, fn);
+		}
 		if (node.kind === 'call') return ownableCall(node, fn);
 		return false;
 	}
@@ -3131,6 +3255,8 @@ export function compileWasm({
 				return compileFallbackValue(node, fn);
 			case '>>':
 				return compilePipe(node.children, fn);
+			case '->':
+				return compileThread(node, fn);
 			case 'data':
 				return compileData(node, fn);
 			case '.':
@@ -3160,15 +3286,9 @@ export function compileWasm({
 		useFloat: boolean,
 		useWide: boolean,
 		unsigned = false,
+		useFloat32 = false,
 	): number {
-		if (useFloat)
-			return kind === '+'
-				? OP_F64_ADD
-				: kind === '-'
-					? OP_F64_SUB
-					: kind === '*'
-						? OP_F64_MUL
-						: OP_F64_DIV;
+		if (useFloat) return floatArithOpcode(kind, useFloat32);
 		if (useWide)
 			return kind === '+'
 				? OP_I64_ADD
@@ -3196,6 +3316,32 @@ export function compileWasm({
 						: unsigned
 							? OP_I32_DIV_U
 							: OP_I32_DIV_S;
+	}
+
+	function floatArithOpcode(
+		kind: '+' | '-' | '*' | '/' | '%',
+		useFloat32: boolean,
+	): number {
+		if (useFloat32)
+			return kind === '+'
+				? OP_F32_ADD
+				: kind === '-'
+					? OP_F32_SUB
+					: kind === '*'
+						? OP_F32_MUL
+						: OP_F32_DIV;
+		return kind === '+'
+			? OP_F64_ADD
+			: kind === '-'
+				? OP_F64_SUB
+				: kind === '*'
+					? OP_F64_MUL
+					: OP_F64_DIV;
+	}
+
+	function floatArithmeticType(left: Type, right: Type): Type | undefined {
+		const result = numericResultType(left, right);
+		return isFloatType(result) ? result : undefined;
 	}
 
 	// Integer `/`/`%` by a divisor not known non-zero returns
@@ -3324,7 +3470,8 @@ export function compileWasm({
 		const rt = inferType(rhs, fn);
 		const vectorResult = compileVectorArith(node, lt, rt, fn);
 		if (vectorResult) return vectorResult;
-		const useFloat = isFloatType(lt) || isFloatType(rt);
+		const floatType = floatArithmeticType(lt, rt);
+		const useFloat = !!floatType;
 		const useWide = !useFloat && (isInt64Type(lt) || isInt64Type(rt));
 		const intType =
 			(!useFloat ? numericResultType(lt, rt) : undefined) ??
@@ -3347,15 +3494,23 @@ export function compileWasm({
 		}
 
 		const actualLt = compileExpr(lhs, fn);
-		if (useFloat && !isFloatType(actualLt)) coerceToFloat(actualLt, fn);
+		if (floatType) coerceToFloat(actualLt, fn, floatType);
 		else if (useWide) coerceToInt64(actualLt, fn);
 		const actualRt = compileExpr(rhs, fn);
-		if (useFloat && !isFloatType(actualRt)) coerceToFloat(actualRt, fn);
+		if (floatType) coerceToFloat(actualRt, fn, floatType);
 		else if (useWide) coerceToInt64(actualRt, fn);
 
-		if (useFloat) {
-			fn.body.push(arithOpcode(node.kind, true, false));
-			return BaseTypes.Float64;
+		if (floatType) {
+			fn.body.push(
+				arithOpcode(
+					node.kind,
+					true,
+					false,
+					false,
+					gbcToWasm(floatType) === F32,
+				),
+			);
+			return floatType;
 		}
 		if (!isIntType(actualLt) || !isIntType(actualRt))
 			throw new Error(
@@ -5366,6 +5521,84 @@ export function compileWasm({
 
 	function compileCall(node: NodeMap['call'], fn: FuncBuilder): Type {
 		return compileCallInner(node, fn);
+	}
+
+	function materializeThreadCarrier(
+		expression: Node,
+		carrierType: Type,
+		fn: FuncBuilder,
+	): NodeMap['ident'] {
+		const actual = compileExpr(expression, fn);
+		if (isUnionType(carrierType) && !isUnionType(actual))
+			coerceToUnion(actual, carrierType, fn);
+		const symbol: GbcSymbol = {
+			kind: 'variable',
+			name: '__thread_carrier',
+			flags: 0,
+			type: carrierType,
+			ownership: 'own',
+		};
+		if (isUnionType(carrierType)) {
+			const tagLocal = allocLocal(fn, I32);
+			const payloadLocal = allocLocal(fn, unionPayloadWasm(carrierType));
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(tagLocal, fn.body);
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(payloadLocal, fn.body);
+			fn.paramMap.set(symbol, payloadLocal);
+			(fn.tagMap ??= new Map()).set(symbol, tagLocal);
+		} else {
+			const local = allocLocal(fn, gbcToWasm(carrierType));
+			fn.body.push(OP_LOCAL_SET);
+			uleb128(local, fn.body);
+			fn.paramMap.set(symbol, local);
+		}
+		return { ...expression, kind: 'ident', symbol };
+	}
+
+	function compileThread(node: NodeMap['->'], fn: FuncBuilder): Type {
+		let carrier: Node = node.children[0];
+		let carrierType: Type | undefined =
+			carrier.kind === ',' ? undefined : inferType(carrier, fn);
+		let materialized = false;
+		for (let i = 1; i < node.children.length; i++) {
+			const stage = node.children[i] as NodeMap['call'] | undefined;
+			if (!stage) continue;
+			let call = makeThreadCall(stage, carrier, i === 1);
+			const resolved = threadCallResolution(call, fn);
+			if (!resolved) throw new Error('Unable to resolve `->` stage');
+			if (resolved.classification.cardinality === 'many')
+				throw new Error('`->` stage emits many values; use `>>` for a stream');
+			if (resolved.classification.cardinality === 'zero') {
+				if (!carrierType) throw new Error('`->` cannot retain an argument pack');
+				if (!materialized) {
+					carrier = materializeThreadCarrier(carrier, carrierType, fn);
+					materialized = true;
+					call = makeThreadCall(stage, carrier, false);
+				}
+				compileCall(call, fn);
+				continue;
+			}
+			if (resolved.classification.mayEmitVoid && carrierType) {
+				if (!materialized) {
+					carrier = materializeThreadCarrier(carrier, carrierType, fn);
+					materialized = true;
+					call = makeThreadCall(stage, carrier, false);
+				}
+				carrier = {
+					...stage,
+					kind: '??',
+					children: [call, carrier],
+				};
+				carrierType = fallbackResultType(resolved.output, carrierType);
+				materialized = false;
+				continue;
+			}
+			carrier = call;
+			carrierType = resolved.output;
+			materialized = false;
+		}
+		return compileExpr(carrier, fn);
 	}
 
 	function compileCallInner(node: NodeMap['call'], fn: FuncBuilder): Type {
@@ -8029,7 +8262,8 @@ export function compileWasm({
 		typeArgs?: Map<string, Type>,
 	): Type {
 		const emission = resolvedEmissionType(fnNode.symbol, typeArgs);
-		if (emission && hasNonScalarEmission(fnNode.symbol)) return BaseTypes.Void;
+		if (emission && classifyEmission(emission).cardinality === 'many')
+			return BaseTypes.Void;
 		const emitted = emission?.elements[0];
 		let returnType: Type =
 			emission?.elements.length === 1 && emitted?.kind === 'type'

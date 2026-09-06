@@ -6,25 +6,108 @@ matrixIndex = (matrix: Matrix, row: Int32, column: Int32): Int32 {
 		: column * matrix.rows + row
 };
 
+matrixGetValue = (values: Buffer<Float32>, index: Int32): Float32 {
+	get(values, index)
+};
+
+matrixSetValue = (values: var Buffer<Float32>, index: Int32, value: Float32): Void {
+	set(values, index, value)
+};
+
 extend get (matrix: Matrix, row: Int32, column: Int32): Float32 {
-	get(matrix.values, matrixIndex(matrix, row, column))
+	matrixGetValue(matrix.values, matrixIndex(matrix, row, column))
 };
 
 extend set (matrix: var Matrix, row: Int32, column: Int32, value: Float32): Void {
 	index = matrixIndex(matrix, row, column);
-	set(matrix.values, index, value)
+	matrixSetValue(matrix.values, index, value)
 };
 
-matrixCellCount = (size: Int32): Int32 {
-	size < 0 || size > 46340 ? 0 - 1 : size * size
+matrixCellCount = (rows: Int32, columns: Int32): Int32 {
+	rows < 0 || columns < 0 || (columns != 0 && rows > 2147483647 / columns)
+		? 0 - 1
+		: rows * columns
+};
+
+extend Matrix (rows: Int32, columns: Int32): own Matrix {
+	[ rows = rows, columns = columns, values = Buffer<Float32>(matrixCellCount(rows, columns)) ]
+};
+
+extend identity (matrix: var Matrix): Void {
+	count = matrixCellCount(matrix.rows, matrix.columns);
+	loop >> (index: Int32) {
+		index >= count
+			? break
+			: matrixSetValue(matrix.values, index, Float32(0))
+	};
+	loop >> (index: Int32) {
+		index >= matrix.rows || index >= matrix.columns
+			? break
+			: matrixSetValue(matrix.values, index * matrix.rows + index, Float32(1))
+	}
 };
 
 export identity = (size: Int32): own Matrix {
-	values = Buffer<Float32>(matrixCellCount(size));
+	values = Buffer<Float32>(matrixCellCount(size, size));
 	loop >> (index: Int32) {
 		index >= size
 			? break
-			: set(values, index * size + index, Float32(1))
+			: matrixSetValue(values, index * size + index, Float32(1))
 	};
 	next [ rows = size, columns = size, values = values ]
+};
+
+export multiply = (out: var Matrix, left: Matrix, right: Matrix): Void {
+	loop >> (index: Int32) {
+			index >= 16
+				? break
+				: matrixSetValue(out.values, index,
+					get(left.values, index % 4) * get(right.values, (index / 4) * 4)
+					+ get(left.values, 4 + index % 4) * get(right.values, (index / 4) * 4 + 1)
+					+ get(left.values, 8 + index % 4) * get(right.values, (index / 4) * 4 + 2)
+					+ get(left.values, 12 + index % 4) * get(right.values, (index / 4) * 4 + 3)
+				)
+		}
+};
+
+export compose2d = (
+	out: var Matrix,
+	parent: Matrix,
+	x: Float32,
+	y: Float32,
+	scaleX: Float32,
+	scaleY: Float32,
+	cosine: Float32,
+	sine: Float32,
+	centerX: Float32,
+	centerY: Float32,
+): Void {
+	loop >> (row: Int32) {
+		row >= 4
+			? break
+			: (
+					matrixSetValue(out.values, row,
+						matrixGetValue(parent.values, row) * (scaleX * cosine)
+						+ matrixGetValue(parent.values, 4 + row) * (scaleX * sine)
+					),
+					matrixSetValue(out.values, 4 + row,
+						matrixGetValue(parent.values, row) * ((Float32(0) - scaleY) * sine)
+						+ matrixGetValue(parent.values, 4 + row) * (scaleY * cosine)
+					),
+					matrixSetValue(out.values, 8 + row, matrixGetValue(parent.values, 8 + row)),
+					matrixSetValue(out.values, 12 + row,
+						matrixGetValue(parent.values, row) * (
+							scaleX * cosine * (Float32(0) - centerX)
+							+ (Float32(0) - scaleY) * sine * (Float32(0) - centerY)
+							+ x
+						)
+						+ matrixGetValue(parent.values, 4 + row) * (
+							scaleX * sine * (Float32(0) - centerX)
+							+ scaleY * cosine * (Float32(0) - centerY)
+							+ y
+						)
+						+ matrixGetValue(parent.values, 12 + row)
+					)
+				)
+		}
 };

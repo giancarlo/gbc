@@ -170,6 +170,35 @@ export function emissionElements(type: Type): Type[] {
 	return [type];
 }
 
+export type EmissionCardinality = 'zero' | 'one' | 'many';
+
+export type EmissionClassification = {
+	cardinality: EmissionCardinality;
+	mayEmitVoid: boolean;
+};
+
+function typeMayBeVoid(type: Type): boolean {
+	return (
+		type.kind === 'type' &&
+		(type.family === 'void' ||
+			(type.family === 'union' && type.members.some(typeMayBeVoid)))
+	);
+}
+
+/** Classify an already-specialized emission once for */
+export function classifyEmission(type: Type): EmissionClassification {
+	if (type.kind === 'type' && type.family === 'void')
+		return { cardinality: 'zero', mayEmitVoid: true };
+	if (type.kind !== 'type' || type.family !== 'emission')
+		return { cardinality: 'one', mayEmitVoid: typeMayBeVoid(type) };
+	if (type.rest || type.elements.length > 1)
+		return { cardinality: 'many', mayEmitVoid: false };
+	const element = type.elements[0];
+	if (!element || (element.kind === 'type' && element.family === 'void'))
+		return { cardinality: 'zero', mayEmitVoid: true };
+	return { cardinality: 'one', mayEmitVoid: typeMayBeVoid(element) };
+}
+
 // Shared numeric type predicates (used by both the checker and the WASM
 // backend — single source of truth so the two never disagree on what `Int`,
 // `Int64` or `Float` is).
@@ -206,12 +235,12 @@ export function isHeapType(t?: Type): boolean {
 	);
 }
 
-// Numeric promotion: the result type of an arithmetic op on `lt`/`rt` —
-// Float64 if either is float, else Int64 if either is 64-bit, else Int32.
-// `undefined` when the operands aren't a promotable numeric pair. (The checker
-// layers `DivByZero` onto the int result for `/`,`%`.)
 export function numericResultType(lt: Type, rt: Type): Type | undefined {
-	if (isFloatType(lt) || isFloatType(rt)) return BaseTypes.Float64;
+	if (isFloatType(lt) || isFloatType(rt))
+		return (lt.kind === 'type' && lt.family === 'float' && lt.size === 8) ||
+			(rt.kind === 'type' && rt.family === 'float' && rt.size === 8)
+			? BaseTypes.Float64
+			: BaseTypes.Float32;
 	if (isIntType(lt) && isIntType(rt)) {
 		const l64 = isInt64Type(lt);
 		const r64 = isInt64Type(rt);
