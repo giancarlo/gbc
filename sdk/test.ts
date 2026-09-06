@@ -8,6 +8,7 @@ import {
 	createTrie,
 	findNodeAtIndex,
 	Flags,
+	formatting,
 	type LeafNode,
 	matchers,
 	ParserApi,
@@ -39,6 +40,41 @@ const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => ch === undefined || !ident(ch);
 
 export default spec('sdk', s => {
+	s.test('formatter', it => {
+		const { concat, group, indent, line, render } = formatting;
+		const document = group(
+			concat(['condition ?', indent(concat([line, 'truthy'])), line, ': falsy']),
+		);
+
+		it.should('keep groups flat when they fit', a => {
+			a.equal(render(document, { lineWidth: 40 }), 'condition ? truthy : falsy');
+		});
+
+		it.should('break and indent groups that do not fit', a => {
+			a.equal(
+				render(document, { lineWidth: 15, initialIndent: '\t' }),
+				'condition ?\n\t\ttruthy\n\t: falsy',
+			);
+		});
+
+		it.should('account for the starting column', a => {
+			a.equal(
+				render(group(concat(['left', line, 'right'])), {
+					lineWidth: 12,
+					initialColumn: 8,
+				}),
+				'left\nright',
+			);
+		});
+
+		it.should('break a group that contains a hard line', a => {
+			a.equal(
+				render(group(concat(['left', line, 'middle', formatting.hardline, 'right']))),
+				'left\nmiddle\nright',
+			);
+		});
+	});
+
 	s.test('shared AST and scanner helpers', a => {
 		const source = 'ab';
 		const leaf: BaseNode = { start: 0, end: 1, line: 0, source };

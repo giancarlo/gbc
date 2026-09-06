@@ -65,6 +65,14 @@ export run = (): Float32 {
 	next @matrix.get(outputMatrix, 0, 3)
 }`;
 
+const FORMAT_SOURCE = `export choose = (
+	a: Bool,
+	b: Bool,
+	c: Bool
+): Int32 {
+	a?1:b?2:c?3:4
+}`;
+
 function compileRun(source: string): () => number {
 	const entry = '/benchmark.gb';
 	const program = Program({
@@ -94,6 +102,13 @@ export default spec('Tail recursion benchmarks', s => {
 	const scalarFloat = compileRun(SCALAR_FLOAT_SOURCE);
 	const simdFloat = compileRun(SIMD_FLOAT_SOURCE);
 	const compose2d = compileRun(COMPOSE2D_SOURCE);
+	const formatProgram = Program();
+	const format = () => {
+		const result = formatProgram.format(FORMAT_SOURCE);
+		if (result.errors.length)
+			throw new Error(result.errors.map(error => error.message).join('; '));
+		return result.source.length;
+	};
 	const expected = 49_995_000;
 
 	s.test('benchmark checksums', a => {
@@ -102,6 +117,7 @@ export default spec('Tail recursion benchmarks', s => {
 		a.equal(scalarFloat(), 0);
 		a.equal(simdFloat(), 0);
 		a.equal(compose2d(), 10);
+		a.equal(format(), 89);
 	});
 
 	s.test('direct self-tail two-field accumulator', a =>
@@ -118,5 +134,8 @@ export default spec('Tail recursion benchmarks', s => {
 	);
 	s.test('Float32 compose2d', a =>
 		a.benchmark(compose2d, { warmup: 250, sampleTime: 50, samples: 30 }),
+	);
+	s.test('conditional source formatting', a =>
+		a.benchmark(format, { warmup: 10, sampleTime: 100, samples: 20 }),
 	);
 });

@@ -6,7 +6,14 @@
 	"description": "GB Language CLI",
 	"license": "GPL-3.0",
 	"type": "module",
-	"files": ["*.js", "*.d.ts", "*.css", "LICENSE.md", "*.md", "*.gbm"],
+	"files": [
+		"*.js",
+		"*.d.ts",
+		"*.css",
+		"LICENSE.md",
+		"*.md",
+		"*.gbm"
+	],
 	"bin": {
 		"gbc": "index.js"
 	},
@@ -19,5 +26,8 @@
 		"type": "git",
 		"url": "https://github.com/giancarlo/gbc",
 		"directory": "cli"
+	},
+	"build": {
+		"platform": "node"
 	}
 }

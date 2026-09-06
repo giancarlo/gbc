@@ -23,6 +23,79 @@ Language design proposals must satisfy docs/feature-laws.md.
 export default spec('Language Reference', s => {
 	const { h } = s;
 
+	s.test('formats conditional expressions', it => {
+		it.should('use case-style layout for conditional chains', a => {
+			const source = `choose = (a: Bool, b: Bool): Int32 {
+	next a?1:b ? 2 : 3
+};`;
+			const expected = `choose = (a: Bool, b: Bool): Int32 {
+	next a ? 1
+	: b ? 2
+	: 3
+};`;
+			const formatted = Program().format(source);
+			a.equal(formatted.errors.length, 0);
+			a.equal(formatted.changed, true);
+			a.equal(formatted.source, expected);
+			const stable = Program().format(formatted.source);
+			a.equal(stable.changed, false);
+			a.equal(stable.source, expected);
+		});
+
+		it.should('break and indent a conditional that exceeds the line width', a => {
+			const source = `choose = (condition: Bool): Int32 {
+	next condition ? 1 : 2
+};`;
+			const expected = `choose = (condition: Bool): Int32 {
+	next condition ?
+		1
+	: 2
+};`;
+			a.equal(Program().format(source, { lineWidth: 16 }).source, expected);
+		});
+
+		it.should('preserve CRLF line endings', a => {
+			const source = 'value = true?1:false?2:3;\r\n';
+			const expected = 'value = true ? 1\r\n: false ? 2\r\n: 3;\r\n';
+			a.equal(Program().format(source).source, expected);
+		});
+
+		it.should('preserve grouped conditional branches', a => {
+			const source = `choose = (a: Bool, b: Bool): Int32 {
+	next a ? (b?1:2) : (b ? 3 : 4)
+};`;
+			const expected = `choose = (a: Bool, b: Bool): Int32 {
+	next a ? (b ? 1 : 2) : (b ? 3 : 4)
+};`;
+			a.equal(Program().format(source).source, expected);
+		});
+
+		it.should('preserve invalid source', (a: TestApi) => {
+			const source = 'value = true ?;';
+			const formatted = Program().format(source);
+			a.assert(formatted.errors.length > 0);
+			a.equal(formatted.source, source);
+		});
+
+		it.should('return errors that remain stable across format calls', a => {
+			const program = Program();
+			const formatted = program.format('value = (flag: Bool) { flag ? 1 : 2 };');
+			program.format('value = true ?;');
+			a.equal(formatted.errors.length, 0);
+		});
+
+		it.should('format prelude definitions but reject compiling them', (a: TestApi) => {
+			const source = 'out = 1;';
+			const program = Program();
+			a.equal(program.format(source).errors.length, 0);
+			a.assert(
+				program
+					.compile(source)
+					.errors.some(error => error.message.includes('"out" is a built-in')),
+			);
+		});
+	});
+
 	s.test('builds the stdlib from an ordinary index module closure', a => {
 		const files: Record<string, string> = {
 			'/stdlib/index.gb': `export utility = @.support;`,

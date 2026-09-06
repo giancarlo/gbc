@@ -1,4 +1,8 @@
-import { CompilerError, ParserApi } from '../sdk/index.js';
+import {
+	CompilerError,
+	type FormatOptions,
+	ParserApi,
+} from '../sdk/index.js';
 import {
 	BaseTypes,
 	Flags,
@@ -21,6 +25,7 @@ import {
 } from './target-wasm.js';
 import { checker, setDivByZero } from './checker.js';
 import { setRuntimeErrorTypes } from './runtime-errors.js';
+import { formatGb } from './format.js';
 import {
 	encodeBundle,
 	decodeBundle,
@@ -112,6 +117,12 @@ export interface CompileResult {
 	hasMain: boolean;
 }
 
+export interface FormatResult {
+	source: string;
+	changed: boolean;
+	errors: ProgramDiagnostic[];
+}
+
 interface Module {
 	root: NodeMap['root'];
 	scope: Scope;
@@ -135,6 +146,27 @@ function normalizeErrors(errors: CompilerError[]): void {
 			a.message.localeCompare(b.message),
 	);
 	errors.splice(0, errors.length, ...unique);
+}
+
+function rejectGlobalRedefinitions(
+	symbolTable: ReturnType<typeof ProgramSymbolTable>,
+	scope: Scope,
+	errors: CompilerError[],
+): void {
+	for (const [name, symbol] of scope) {
+		if (
+			typeof name !== 'string' ||
+			!symbolTable.globalScope.has(name) ||
+			symbol.definition?.kind !== 'def'
+		)
+			continue;
+		errors.push(
+			new CompilerError(
+				`"${name}" is a built-in; add an arm with \`extend ${name} (…) { … }\` or rename`,
+				symbol.definition.label,
+			),
+		);
+	}
 }
 
 function configureRuntimeErrorTypes(types: Record<string, TypeSymbol>): void {
@@ -168,6 +200,7 @@ function loadModule(
 	const typeScope = typesTable.push();
 	const root = parse(api, symbolTable, typesTable, parseOptions);
 	const module = { root, scope, errors: api.errors };
+	rejectGlobalRedefinitions(symbolTable, scope, api.errors);
 	if (!api.errors.length && !skipCheck)
 		checker({ root, errors: api.errors }).run();
 	normalizeErrors(api.errors);
@@ -986,6 +1019,7 @@ export function Program(options?: ProgramOptions) {
 	): CompileResult {
 		const requireMain = modeOptions.requireMain ?? true;
 		const parsed = parser(src, { loader: modeOptions.loader });
+		rejectGlobalRedefinitions(symbolTable, parsed.scope, parsed.errors);
 		checker(parsed).run();
 		const hasMain = parsed.root.children.some(c => c.kind === 'main');
 		if (!testMode && requireMain && !hasMain && parsed.errors.length === 0)
@@ -1036,6 +1070,38 @@ export function Program(options?: ProgramOptions) {
 
 	function compileTest(src: string) {
 		return compileMode(src, true);
+	}
+
+	function formatParsed(
+		src: string,
+		parsed: ReturnType<typeof parser>,
+		formatOptions?: FormatOptions,
+	): FormatResult {
+		normalizeErrors(parsed.errors);
+		const source =
+			parsed.errors.length === 0
+				? formatGb(src, parsed.root, formatOptions)
+				: src;
+		return {
+			source,
+			changed: source !== src,
+			errors: [...parsed.errors],
+		};
+	}
+
+	function format(src: string, formatOptions?: FormatOptions): FormatResult {
+		return formatParsed(src, parser(src), formatOptions);
+	}
+
+	function formatFile(
+		path: string,
+		formatOptions?: FormatOptions,
+	): FormatResult {
+		const sys = options?.sys;
+		if (!sys) throw new Error('formatFile requires ProgramOptions.sys');
+		const src = sys.readFile(path);
+		const { loader } = createModuleLoader(sys, dirName(path));
+		return formatParsed(src, parser(src, { loader }), formatOptions);
 	}
 
 	function buildLibrary(path: string) {
@@ -1146,6 +1212,8 @@ export function Program(options?: ProgramOptions) {
 	return {
 		compile,
 		compileTest,
+		format,
+		formatFile,
 		compileFile,
 		buildLibrary,
 		compileAst,

@@ -1,3 +1,5 @@
+export * from './format.js';
+
 export interface Position {
 	start: number;
 	end: number;

@@ -133,6 +133,26 @@ function testCommand(files: string[]): number {
 	return 0;
 }
 
+function formatCommand(files: string[], check: boolean): number {
+	const program = Program({ sys: fileSys });
+	let failed = false;
+	for (const srcFile of files) {
+		const resolved = resolve(srcFile);
+		const formatted = program.formatFile(resolved);
+		if (formatted.errors.length) {
+			for (const error of formatted.errors) console.error(formatError(error));
+			failed = true;
+			continue;
+		}
+		if (!formatted.changed) continue;
+		if (check) {
+			console.error(`${srcFile}: formatting differs`);
+			failed = true;
+		} else writeFileSync(resolved, formatted.source);
+	}
+	return failed ? 1 : 0;
+}
+
 const start = program('gbc', () => {
 	const options = parseParameters(
 		{
@@ -150,6 +170,10 @@ const start = program('gbc', () => {
 			},
 			debug: {
 				help: 'Debug build: errors capture full call chains',
+				type: 'boolean',
+			},
+			check: {
+				help: 'Check formatting without changing files',
 				type: 'boolean',
 			},
 		},
@@ -171,6 +195,15 @@ const start = program('gbc', () => {
 	}
 	if (cmd === 'test' && rest.length) {
 		process.exitCode = testCommand(rest);
+		return;
+	}
+	if (cmd === 'fmt') {
+		if (!rest.length) {
+			console.error('gbc fmt: expected at least one file');
+			process.exitCode = 1;
+			return;
+		}
+		process.exitCode = formatCommand(rest, !!options.check);
 		return;
 	}
 

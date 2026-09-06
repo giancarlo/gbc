@@ -570,9 +570,15 @@ export function parseExpression(
 	/**
 	 * Throws when a name is already defined in the current scope.
 	 */
+	function isDeclared(name: string): boolean {
+		const currentScope = symbolTable.stack[symbolTable.stack.length - 1];
+		return !!currentScope?.has(name) ||
+			(symbolTable.stack.length !== 2 && !!symbolTable.get(name));
+	}
+
 	function checkRedeclare(ident: Token<'ident'>) {
 		const name = text(ident);
-		if (symbolTable.get(name))
+		if (isDeclared(name))
 			throw error(
 				`Cannot redeclare block-scoped variable "${name}".`,
 				ident,
@@ -1230,9 +1236,7 @@ export function parseExpression(
 		}
 
 		// Symbol already declared in scope ⇒ this is an assignment, not a def.
-		// (Shadowing is impossible by construction: `=` always assigns the
-		// visible binding, and typed declarations reject any visible name.)
-		if (nextKind === '=' && symbolTable.get(text(tk))) {
+		if (nextKind === '=' && isDeclared(text(tk))) {
 			api.backtrack(tk);
 			return;
 		}
