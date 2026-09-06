@@ -10,8 +10,12 @@
 			}
 		}
 	},
+	"coaxial": {
+		"worktree": {
+			"setup": "ln -s ../../node_modules node_modules"
+		}
+	},
 	"ai": {
-		"patchApproval": "ask",
 		"instructions": ["To run tests: npm test --prefix gbc/dirName"]
 	}
 }
