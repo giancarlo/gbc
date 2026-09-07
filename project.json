@@ -13,6 +13,13 @@
 	"coaxial": {
 		"worktree": {
 			"setup": "ln -s ../../node_modules node_modules"
+		},
+		"tasks": {
+			"steps": {
+				"code_review": {
+					"refinement": "Identify features that can be reused by other packages that belong in sdk."
+				}
+			}
 		}
 	},
 	"ai": {
