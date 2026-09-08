@@ -34,6 +34,10 @@ import type {
 const typeSymbol = Symbol('type');
 type CheckedNode = Node & { [typeSymbol]?: Type };
 
+function setNodeType(node: CheckedNode, type: Type): void {
+	node[typeSymbol] = type;
+}
+
 // The stdlib `DivByZero` type, injected at program init so the free
 // type-resolution layer can build `Int32 | DivByZero` for runtime division.
 let divByZero: Type | undefined;
@@ -656,7 +660,7 @@ function pipeEmissionType(node: NodeMap['>>']): EmissionShape | undefined {
 			: valueEmissionType(source);
 	if (!emission) return undefined;
 	for (let i = 1; i < node.children.length; i++) {
-		const stage = node.children[i] as NodeMap['call'] | undefined;
+		const stage = node.children[i];
 		if (!stage) continue;
 		const output = stageEmissionType(stage);
 		if (!output) return undefined;
@@ -1141,8 +1145,8 @@ function resolveThreadType(node: NodeMap['->']): Type {
 	let carrierType: Type | undefined =
 		carrier.kind === ',' ? undefined : resolver(carrier);
 	for (let i = 1; i < node.children.length; i++) {
-		const stage = node.children[i] as NodeMap['call'] | undefined;
-		if (!stage) continue;
+		const stage = node.children[i];
+		if (!stage || stage.kind !== 'call') continue;
 		const call = threadCall(stage, carrier, i === 1);
 		const emission = callEmissionType(call);
 		if (!emission) return BT.Unknown;
@@ -1158,7 +1162,7 @@ function resolveThreadType(node: NodeMap['->']): Type {
 				? fallbackResultType(output, carrierType)
 				: output;
 		carrier = call;
-		(carrier as CheckedNode)[typeSymbol] = carrierType;
+		setNodeType(carrier, carrierType);
 	}
 	return carrierType ?? BT.Unknown;
 }
@@ -2220,8 +2224,8 @@ export function checker({
 		let carrierType: Type | undefined =
 			carrier.kind === ',' ? undefined : resolver(carrier);
 		for (let i = 1; i < node.children.length; i++) {
-			const stage = node.children[i] as NodeMap['call'] | undefined;
-			if (!stage) continue;
+			const stage = node.children[i];
+			if (!stage || stage.kind !== 'call') continue;
 			const spreadCarrier = i === 1;
 			const call = threadCall(stage, carrier, spreadCarrier);
 			const threadArgCount =
@@ -2257,7 +2261,7 @@ export function checker({
 					? fallbackResultType(output, carrierType)
 					: output;
 			carrier = call;
-			(carrier as CheckedNode)[typeSymbol] = carrierType;
+			setNodeType(carrier, carrierType);
 		}
 	}
 
@@ -2294,6 +2298,12 @@ export function checker({
 		error(`cannot mutably borrow shared binding "${arg.symbol.name}"`, arg);
 	}
 
+	function checkThreadMutableArg(arg: Node | undefined, node: Node): void {
+		const mode = arg ? expressionOwnership(arg) : undefined;
+		if (mode !== 'own' && mode !== 'var')
+			error('a `var` thread stage requires a mutable carrier', arg ?? node);
+	}
+
 	function checkMutableCallArgs(
 		fn: SymbolMap['function'],
 		node: NodeMap['call'],
@@ -2306,9 +2316,7 @@ export function checker({
 			if (fn.parameters?.[i]?.ownership !== 'var') continue;
 			const arg = args[i];
 			if (i < threadArgCount) {
-				const mode = arg ? expressionOwnership(arg) : undefined;
-				if (mode !== 'own' && mode !== 'var')
-					error('a `var` thread stage requires a mutable carrier', arg ?? node);
+				checkThreadMutableArg(arg, node);
 				continue;
 			}
 			const root = mutableArgRoot(arg, node);
@@ -2366,14 +2374,19 @@ export function checker({
 		const ovs = dt.overloads;
 		const rts = ovs.map(o => o.returnType ?? BT.Void);
 		const first = rts[0];
-		const uniform =
+		const uniformOrVoidMutator =
 			first &&
-			rts.every(
-				r =>
+			ovs.every((arm, i) => {
+				const result = rts[i];
+				return !!result && (
+					(arm.parameters?.[0]?.ownership === 'var' &&
+						result.kind === 'type' &&
+						result.family === 'void') ||
 					isTypeParam(first) ||
-					isTypeParam(r) ||
-					(canAssign(first, r) && canAssign(r, first)),
-			);
+					isTypeParam(result) ||
+					(canAssign(first, result) && canAssign(result, first))
+				);
+			});
 		const widthPreserving = ovs.every(arm => {
 			const input = arm.parameters?.[0]?.type;
 			const output = arm.returnType;
@@ -2384,15 +2397,7 @@ export function checker({
 				canAssign(output, input)
 			);
 		});
-		const hasVoidMutatorArm = ovs.some(arm => {
-			const result = arm.returnType;
-			return (
-				arm.parameters?.[0]?.ownership === 'var' &&
-				result?.kind === 'type' &&
-				result.family === 'void'
-			);
-		});
-		if (!uniform && !widthPreserving && !hasVoidMutatorArm) {
+		if (!uniformOrVoidMutator && !widthPreserving) {
 			error('overload arms must return the same type', node);
 			return;
 		}
@@ -2829,7 +2834,7 @@ export function checker({
 		owned: Set<Symbol>,
 		moved: Map<Symbol, Move>,
 	): void {
-		const fn = resolveFunctionType(node.children[0]);
+		const fn = effectiveCallFunction(node);
 		if (!fn) return;
 		const list = node.children[1];
 		const args = list?.kind === ',' ? list.children : list ? [list] : [];
@@ -2865,6 +2870,22 @@ export function checker({
 		moved: Map<Symbol, Move>,
 	): void {
 		if (n.kind === 'fn' || n.kind === 'main' || n.kind === 'test') return;
+		if (n.kind === '->') {
+			let carrier: Node = n.children[0];
+			markConsumingMoves(carrier, owned, moved);
+			for (let i = 1; i < n.children.length; i++) {
+				const stage = n.children[i];
+				if (!stage || stage.kind !== 'call') continue;
+				const call = threadCall(stage, carrier, i === 1);
+				markCallMoves(call, owned, moved);
+				const args = stage.children[1];
+				if (args) markConsumingMoves(args, owned, moved);
+				const emission = callEmissionType(call);
+				if (!emission || classifyEmission(emission).cardinality !== 'zero')
+					carrier = call;
+			}
+			return;
+		}
 		if (n.kind === 'call') markCallMoves(n, owned, moved);
 		for (const k of childNodes(n)) {
 				if (k) markConsumingMoves(k, owned, moved);
@@ -3054,6 +3075,27 @@ export function checker({
 		];
 	}
 
+	function checkOwnedThreadReturn(
+		node: NodeMap['->'],
+		owned: Set<Symbol>,
+		fn: SymbolMap['function'],
+	): void {
+		let carrier: Node = node.children[0];
+		for (let i = 1; i < node.children.length; i++) {
+			const stage = node.children[i];
+			if (!stage || stage.kind !== 'call') continue;
+			const call = threadCall(stage, carrier, i === 1);
+			const emission = callEmissionType(call);
+			if (!emission) continue;
+			const classification = classifyEmission(emission);
+			if (classification.cardinality === 'zero') continue;
+			if (classification.mayEmitVoid)
+				checkOwnedReturn(carrier, owned, fn);
+			carrier = call;
+		}
+		checkOwnedReturn(carrier, owned, fn);
+	}
+
 	function checkOwnedReturn(
 		node: Node,
 		owned: Set<Symbol>,
@@ -3071,20 +3113,7 @@ export function checker({
 			return;
 		}
 		if (node.kind === '->') {
-			let carrier: Node = node.children[0];
-			for (let i = 1; i < node.children.length; i++) {
-				const stage = node.children[i] as NodeMap['call'] | undefined;
-				if (!stage) continue;
-				const call = threadCall(stage, carrier, i === 1);
-				const emission = callEmissionType(call);
-				if (!emission) continue;
-				const classification = classifyEmission(emission);
-				if (classification.cardinality === 'zero') continue;
-				if (classification.mayEmitVoid)
-					checkOwnedReturn(carrier, owned, fn);
-				carrier = call;
-			}
-			checkOwnedReturn(carrier, owned, fn);
+			checkOwnedThreadReturn(node, owned, fn);
 			return;
 		}
 		const type = resolver(node);
@@ -3454,6 +3483,25 @@ export function checker({
 			return fnDefinition.value;
 	}
 
+	function threadOwnership(node: NodeMap['->']): OwnershipMode | undefined {
+		let carrier: Node = node.children[0];
+		let mode = expressionOwnership(carrier);
+		for (let i = 1; i < node.children.length; i++) {
+			const stage = node.children[i];
+			if (!stage || stage.kind !== 'call') continue;
+			const call = threadCall(stage, carrier, i === 1);
+			const emission = callEmissionType(call);
+			if (!emission) return mode;
+			const classification = classifyEmission(emission);
+			if (classification.cardinality === 'zero') continue;
+			const output = expressionOwnership(call);
+			mode =
+				classification.mayEmitVoid && output !== mode ? 'borrow' : output;
+			carrier = call;
+		}
+		return mode;
+	}
+
 	function expressionOwnership(node: Node): OwnershipMode | undefined {
 		if (node.kind === 'next')
 			return node.children?.[0]
@@ -3471,26 +3519,7 @@ export function checker({
 			if (callee?.returnOwnership) return callee.returnOwnership;
 			if (node.children[0].kind === 'typeident') return 'own';
 		}
-		if (node.kind === '->') {
-			let carrier: Node = node.children[0];
-			let mode = expressionOwnership(carrier);
-			for (let i = 1; i < node.children.length; i++) {
-				const stage = node.children[i] as NodeMap['call'] | undefined;
-				if (!stage) continue;
-				const call = threadCall(stage, carrier, i === 1);
-				const emission = callEmissionType(call);
-				if (!emission) return mode;
-				const classification = classifyEmission(emission);
-				if (classification.cardinality === 'zero') continue;
-				const output = expressionOwnership(call);
-				mode =
-					classification.mayEmitVoid && output !== mode
-						? 'borrow'
-						: output;
-				carrier = call;
-			}
-			return mode;
-		}
+		if (node.kind === '->') return threadOwnership(node);
 		if (node.kind === 'string' || node.kind === 'interp' || node.kind === 'data')
 			return 'own';
 	}

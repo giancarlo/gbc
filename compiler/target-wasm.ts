@@ -1645,8 +1645,8 @@ export function compileWasm({
 		let carrierType: Type | undefined =
 			carrier.kind === ',' ? undefined : inferType(carrier, fn);
 		for (let i = 1; i < node.children.length; i++) {
-			const stage = node.children[i] as NodeMap['call'] | undefined;
-			if (!stage) continue;
+			const stage = node.children[i];
+			if (!stage || stage.kind !== 'call') continue;
 			const call = makeThreadCall(stage, carrier, i === 1);
 			const resolved = threadCallResolution(call, fn);
 			if (!resolved || resolved.classification.cardinality === 'many')
@@ -2458,8 +2458,8 @@ export function compileWasm({
 		if (node.kind === '->') {
 			let carrier: Node = node.children[0];
 			for (let i = 1; i < node.children.length; i++) {
-				const stage = node.children[i] as NodeMap['call'] | undefined;
-				if (!stage) continue;
+				const stage = node.children[i];
+				if (!stage || stage.kind !== 'call') continue;
 				const call = makeThreadCall(stage, carrier, i === 1);
 				const resolved = threadCallResolution(call, fn);
 				if (!resolved) return false;
@@ -5562,8 +5562,8 @@ export function compileWasm({
 			carrier.kind === ',' ? undefined : inferType(carrier, fn);
 		let materialized = false;
 		for (let i = 1; i < node.children.length; i++) {
-			const stage = node.children[i] as NodeMap['call'] | undefined;
-			if (!stage) continue;
+			const stage = node.children[i];
+			if (!stage || stage.kind !== 'call') continue;
 			let call = makeThreadCall(stage, carrier, i === 1);
 			const resolved = threadCallResolution(call, fn);
 			if (!resolved) throw new Error('Unable to resolve `->` stage');
@@ -5582,7 +5582,6 @@ export function compileWasm({
 			if (resolved.classification.mayEmitVoid && carrierType) {
 				if (!materialized) {
 					carrier = materializeThreadCarrier(carrier, carrierType, fn);
-					materialized = true;
 					call = makeThreadCall(stage, carrier, false);
 				}
 				carrier = {

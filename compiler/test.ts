@@ -894,14 +894,14 @@ main { 1 >> inc >> out, 2 >> out }`,
 			src: `add = (a: Int32, b: Int32): Int32 { a + b };
 multiply = (a: Int32, b: Int32): Int32 { a * b };
 main { 2 -> add(3) -> multiply(4) >> out }`,
-			ast: `(root (def :add ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (+ :a :b)))) (def :multiply ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (* :a :b)))) (main (>> (call :multiply (, (call :add (, 2 3)) 4)) :out)))`,
+			ast: `(root (def :add ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (+ :a :b)))) (def :multiply ? (fn (parameter :a typeident ?) (parameter :b typeident ?) typeident (next (* :a :b)))) (main (>> (-> 2 (call :add 3) (call :multiply 4)) :out)))`,
 			out: ['20'],
 		});
 		rule({
 			p: 'A parenthesized comma list supplies multiple leading arguments in order; arithmetic binds before `->`, while comma remains looser.',
 			src: `sum3 = (a: Int32, b: Int32, c: Int32): Int32 { a + b + c };
 main { (1 + 1, 3) -> sum3(4) >> out }`,
-			ast: `(root (def :sum3 ? (fn (parameter :a typeident ?) (parameter :b typeident ?) (parameter :c typeident ?) typeident (next (+ (+ :a :b) :c)))) (main (>> (call :sum3 (, (+ 1 1) 3 4)) :out)))`,
+			ast: `(root (def :sum3 ? (fn (parameter :a typeident ?) (parameter :b typeident ?) (parameter :c typeident ?) typeident (next (+ (+ :a :b) :c)))) (main (>> (-> (, (+ 1 1) 3) (call :sum3 4)) :out)))`,
 			out: ['9'],
 		});
 		rule({
@@ -909,7 +909,7 @@ main { (1 + 1, 3) -> sum3(4) >> out }`,
 			src: `measure = <T>(value: T, extra: Int32): Int32 { length(value) + extra };
 choose = (n: Int32, offset: Int32): Int32 { n + offset } | (b: Bool, offset: Int32): Int32 { b ? offset : 0 };
 main { 7 -> measure(3) >> out; 5 -> choose(2) >> out; true -> choose(9) >> out }`,
-			ast: `(root (def :measure ? (fn (, (parameter :T ? ?)) (parameter :value typeident ?) (parameter :extra typeident ?) typeident (next (+ (call :length @intrinsic :value) :extra)))) (def :choose ? (| (fn (parameter :n typeident ?) (parameter :offset typeident ?) typeident (next (+ :n :offset))) (fn (parameter :b typeident ?) (parameter :offset typeident ?) typeident (next (? :b :offset 0))))) (main (>> (call :measure (, 7 3)) :out) (>> (call :choose (, 5 2)) :out) (>> (call :choose (, :true 9)) :out)))`,
+			ast: `(root (def :measure ? (fn (, (parameter :T ? ?)) (parameter :value typeident ?) (parameter :extra typeident ?) typeident (next (+ (call :length @intrinsic :value) :extra)))) (def :choose ? (| (fn (parameter :n typeident ?) (parameter :offset typeident ?) typeident (next (+ :n :offset))) (fn (parameter :b typeident ?) (parameter :offset typeident ?) typeident (next (? :b :offset 0))))) (main (>> (-> 7 (call :measure 3)) :out) (>> (-> 5 (call :choose 2)) :out) (>> (-> :true (call :choose 9)) :out)))`,
 			out: ['4', '7', '9'],
 		});
 		compileError({
@@ -3905,6 +3905,12 @@ export target = (): Int32 { 0 }`,
 			compileError({
 				p: 'Array capacity reservation consumes its input even when the current capacity is already sufficient.',
 				src: `main { a = Array<Int32>(4); b = a -> reserveCapacity(2); length(a) >> out; length(b) >> out }`,
+				expected: 'used after move',
+			});
+			compileError({
+				p: 'An overloaded thread stage applies the ownership contract of its selected arm.',
+				src: `consume = (a: own Array<Int32>): own Array<Int32> { a } | (n: Int32): Int32 { n };
+main { a = Array<Int32>(1); b = a -> consume(); length(a) >> out; length(b) >> out }`,
 				expected: 'used after move',
 			});
 			modules({

@@ -73,6 +73,9 @@ const FORMAT_SOURCE = `export choose = (
 	a?1:b?2:c?3:4
 }`;
 
+const THREAD_SOURCE = `increment = (value: Int32): Int32 { value + 1 };
+main { 0${' -> increment()'.repeat(100)} >> out }`;
+
 function compileRun(source: string): () => number {
 	const entry = '/benchmark.gb';
 	const program = Program({
@@ -109,6 +112,12 @@ export default spec('Tail recursion benchmarks', s => {
 			throw new Error(result.errors.map(error => error.message).join('; '));
 		return result.source.length;
 	};
+	const compileThreads = () => {
+		const result = Program().compile(THREAD_SOURCE);
+		if (result.errors.length || !result.bytes)
+			throw new Error(result.errors.map(error => error.message).join('; '));
+		return result.bytes.length;
+	};
 	const expected = 49_995_000;
 
 	s.test('benchmark checksums', a => {
@@ -118,6 +127,7 @@ export default spec('Tail recursion benchmarks', s => {
 		a.equal(simdFloat(), 0);
 		a.equal(compose2d(), 10);
 		a.equal(format(), 89);
+		a.ok(compileThreads() > 0);
 	});
 
 	s.test('direct self-tail two-field accumulator', a =>
@@ -137,5 +147,8 @@ export default spec('Tail recursion benchmarks', s => {
 	);
 	s.test('conditional source formatting', a =>
 		a.benchmark(format, { warmup: 10, sampleTime: 100, samples: 20 }),
+	);
+	s.test('thread-chain compilation', a =>
+		a.benchmark(compileThreads, { warmup: 10, sampleTime: 100, samples: 20 }),
 	);
 });
