@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "environments": {
+    "837b8abd7ce17819bc47de22ec6d23253fd9f43d64af7e539d59554f9f2dd041": {
+      "fingerprint": {
+        "browser": "Node/v24.13.0",
+        "platform": "linux",
+        "architecture": "arm64",
+        "cpu": "unknown",
+        "gpu": "",
+        "profile": ""
+      },
+      "benchmarks": {
+        "javascript > should tokenize editor-sized source": {
+          "type": "benchmark",
+          "iterations": 11,
+          "values": [
+            2.462761363636363,
+            2.408530272727272,
+            2.33845836363635,
+            2.370693181818193,
+            2.3679015454545564,
+            2.3528901818181938,
+            2.0296590909090977,
+            2.0281818181818134,
+            2.0250605454545454,
+            2.016647727272729
+          ],
+          "median": 2.3456742727272717,
+          "mad": 0.089971545454546,
+          "p75": 2.3699952727272837,
+          "p95": 2.438357372727272,
+          "operationsPerSecond": 426.31665087809426,
+          "options": {
+            "warmup": 50,
+            "sampleTime": 20,
+            "samples": 10
+          }
+        }
+      }
+    }
+  }
+}

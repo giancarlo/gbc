@@ -2,12 +2,13 @@ import { spec } from '@cxl/spec';
 import { text, tokenize } from '../sdk/index.js';
 import { scan } from './index.js';
 
-const benchmarkSource = `export interface Point<T extends number> {
-	readonly x: T;
-	readonly y: T;
+const benchmarkSource = `export class Point {
+	constructor(x, y) {
+		this.x = x;
+		this.y = y;
+	}
 }
-export const length = ({ x, y }: Point<number>) =>
-	Math.sqrt(x ** 2 + y ** 2);
+export const length = ({ x, y }) => Math.sqrt(x ** 2 + y ** 2);
 `.repeat(100);
 
 const tokens = (source: string) =>
@@ -19,23 +20,37 @@ const tokens = (source: string) =>
 		token.line,
 	]);
 
-export default spec('typescript', it => {
-	it.should('highlight TypeScript token categories and positions', a => {
-		a.equalValues(tokens('const value: number = 0x2a + 0b10 + 0o7 + 1.5e2;'), [
+export default spec('javascript', it => {
+	it.should('highlight JavaScript token categories and positions', a => {
+		a.equalValues(tokens('const value = 0x2a + 0b10 + 0o7 + 1.5e2;'), [
 			['keyword', 'const', 0, 5, 0],
 			['identifier', 'value', 6, 11, 0],
-			['punctuation', ':', 11, 12, 0],
-			['type', 'number', 13, 19, 0],
-			['operator', '=', 20, 21, 0],
-			['number', '0x2a', 22, 26, 0],
-			['operator', '+', 27, 28, 0],
-			['number', '0b10', 29, 33, 0],
-			['operator', '+', 34, 35, 0],
-			['number', '0o7', 36, 39, 0],
-			['operator', '+', 40, 41, 0],
-			['number', '1.5e2', 42, 47, 0],
-			['punctuation', ';', 47, 48, 0],
+			['operator', '=', 12, 13, 0],
+			['number', '0x2a', 14, 18, 0],
+			['operator', '+', 19, 20, 0],
+			['number', '0b10', 21, 25, 0],
+			['operator', '+', 26, 27, 0],
+			['number', '0o7', 28, 31, 0],
+			['operator', '+', 32, 33, 0],
+			['number', '1.5e2', 34, 39, 0],
+			['punctuation', ';', 39, 40, 0],
 		]);
+	});
+
+	it.should('treat TypeScript-only words as identifiers', a => {
+		a.equalValues(
+			tokens('type readonly number satisfies undefined').map(token => [
+				token[0],
+				token[1],
+			]),
+			[
+				['identifier', 'type'],
+				['identifier', 'readonly'],
+				['identifier', 'number'],
+				['identifier', 'satisfies'],
+				['identifier', 'undefined'],
+			],
+		);
 	});
 
 	it.should('highlight multiline strings, literals, and comments', a => {
@@ -47,16 +62,6 @@ export default spec('typescript', it => {
 			['template', '`hello ${name}`', 2],
 			['literal', 'true', 2],
 		]);
-	});
-
-	it.should('preserve TypeScript classification precedence', a => {
-		a.equalValues(
-			tokens('void undefined').map(token => [token[0], token[1]]),
-			[
-				['type', 'void'],
-				['literal', 'undefined'],
-			],
-		);
 	});
 
 	it.should('distinguish regular expressions from division', a => {
@@ -87,12 +92,6 @@ export default spec('typescript', it => {
 		a.equal(text(scanner.next()), '/');
 		scanner.backtrack(value);
 		a.equal(text(scanner.next()), '/');
-
-		const multiline = scan('`first\nsecond` value');
-		const template = multiline.next();
-		a.equal(multiline.next().line, 1);
-		multiline.backtrack(template);
-		a.equal(multiline.next().line, 1);
 
 		const commented = scan('/* note */ /x/');
 		const comment = commented.next();

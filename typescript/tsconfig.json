@@ -4,5 +4,5 @@
 		"outDir": "../dist/typescript"
 	},
 	"files": ["index.ts"],
-	"references": [{ "path": "../sdk" }]
+	"references": [{ "path": "../javascript" }, { "path": "../sdk" }]
 }
