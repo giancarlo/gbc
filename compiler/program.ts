@@ -651,19 +651,7 @@ function collectDefs(module: Module): {
 			if (name && target.kind === 'function') symbols[name] = target;
 			continue;
 		}
-		if (
-			child.kind === 'def' &&
-			(child.value.kind === 'fn' ||
-				child.value.kind === '|' ||
-				child.value.kind === 'data')
-		) {
-			if (child.symbol.name) symbols[child.symbol.name] = child.symbol;
-			defs.push(child);
-		} else if (
-			child.kind === 'def' &&
-			child.symbol.name &&
-			child.symbol.flags & Flags.Export
-		) {
+		if (child.kind === 'def' && child.symbol.name) {
 			symbols[child.symbol.name] = child.symbol;
 			if (!(child.symbol.flags & Flags.Module))
 				defs.push(child);

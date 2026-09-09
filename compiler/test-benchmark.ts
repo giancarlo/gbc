@@ -76,20 +76,32 @@ const FORMAT_SOURCE = `export choose = (
 const THREAD_SOURCE = `increment = (value: Int32): Int32 { value + 1 };
 main { 0${' -> increment()'.repeat(100)} >> out }`;
 
+const MODULE_ENTRY = '/main.gb';
+const MODULE_FILES: Record<string, string> = {
+	'/constants.gb': `privateValue = 42;
+export read = (): Int32 { privateValue };`,
+	[MODULE_ENTRY]: `#importmap { @fixture = './constants.gb'; }
+constantModule = @fixture;
+main { constantModule.read() >> out }`,
+};
+
+function sourceSystem(files: Record<string, string>) {
+	return {
+		readFile: (path: string) => {
+			const source = files[path];
+			if (source === undefined)
+				throw new Error(`unexpected benchmark source read: ${path}`);
+			return source;
+		},
+		readBytes: (path: string) => {
+			throw new Error(`unexpected benchmark byte read: ${path}`);
+		},
+	};
+}
+
 function compileRun(source: string): () => number {
 	const entry = '/benchmark.gb';
-	const program = Program({
-		sys: {
-			readFile: path => {
-				if (path !== entry)
-					throw new Error(`unexpected benchmark source read: ${path}`);
-				return source;
-			},
-			readBytes: path => {
-				throw new Error(`unexpected benchmark byte read: ${path}`);
-			},
-		},
-	});
+	const program = Program({ sys: sourceSystem({ [entry]: source }) });
 	const result = program.compileFile(entry, { requireMain: false });
 	if (result.errors.length || !result.bytes)
 		throw new Error(result.errors.map(e => e.message).join('; '));
@@ -118,6 +130,15 @@ export default spec('Tail recursion benchmarks', s => {
 			throw new Error(result.errors.map(error => error.message).join('; '));
 		return result.bytes.length;
 	};
+	const moduleProgram = Program({ sys: sourceSystem(MODULE_FILES) });
+	const compilePrivateModule = () => {
+		const result = moduleProgram.compileFile(MODULE_ENTRY, {
+			requireMain: true,
+		});
+		if (result.errors.length || !result.bytes)
+			throw new Error(result.errors.map(error => error.message).join('; '));
+		return result.bytes.length;
+	};
 	const expected = 49_995_000;
 
 	s.test('benchmark checksums', a => {
@@ -128,6 +149,7 @@ export default spec('Tail recursion benchmarks', s => {
 		a.equal(compose2d(), 10);
 		a.equal(format(), 89);
 		a.ok(compileThreads() > 0);
+		a.ok(compilePrivateModule() > 0);
 	});
 
 	s.test('direct self-tail two-field accumulator', a =>
@@ -150,5 +172,12 @@ export default spec('Tail recursion benchmarks', s => {
 	);
 	s.test('thread-chain compilation', a =>
 		a.benchmark(compileThreads, { warmup: 10, sampleTime: 100, samples: 20 }),
+	);
+	s.test('private module constant compilation', a =>
+		a.benchmark(compilePrivateModule, {
+			warmup: 10,
+			sampleTime: 100,
+			samples: 20,
+		}),
 	);
 });

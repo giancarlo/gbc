@@ -19,20 +19,6 @@ declare class TextDecoder {
 	decode(input: Uint8Array): string;
 }
 
-declare namespace WebAssembly {
-	class Module {
-		constructor(bytes: BufferSource);
-	}
-	class Instance {
-		constructor(module: Module, importObject?: object);
-		readonly exports: Record<string, unknown>;
-	}
-	class Memory {
-		readonly buffer: ArrayBuffer;
-	}
-}
-type BufferSource = ArrayBuffer | ArrayBufferView;
-
 export function spec(name: string, fn: TestFn<SpecApi>) {
 	const test = new Test(name, fn, SpecApi);
 	test.level = 1;

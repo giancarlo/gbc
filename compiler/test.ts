@@ -5122,6 +5122,62 @@ main { double(21) >> out; triple(7) >> out; 6 -> geo.area(7) >> out }`,
 			out: ['42', '21', '42'],
 		});
 		modules({
+			p: 'An imported function can read a private top-level constant.',
+			files: {
+				'/constants.gb': `privateValue = 42;
+export read = (): Int32 { privateValue };`,
+				'/main.gb': `#importmap { @fixture = './constants.gb'; }
+constantModule = @fixture;
+main { constantModule.read() >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['42'],
+		});
+		modules({
+			p: 'A bundled function can read a private top-level constant.',
+			bundles: {
+				'/vendor/constants.gbm': {
+					entry: '/dev/constants.gb',
+					files: {
+						'/dev/constants.gb': `privateValue = 42;
+export read = (): Int32 { privateValue };`,
+					},
+				},
+			},
+			files: {
+				'/main.gb': `#importmap { @fixture = './vendor/constants.gbm'; }
+constantModule = @fixture;
+main { constantModule.read() >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['42'],
+		});
+		modules({
+			p: 'Private top-level constants remain isolated between imported modules.',
+			files: {
+				'/left.gb': `privateValue = 11;
+export readLeft = (): Int32 { privateValue };`,
+				'/right.gb': `privateValue = 29;
+export readRight = (): Int32 { privateValue };`,
+				'/main.gb': `leftModule = @.left;
+rightModule = @.right;
+main { leftModule.readLeft() >> out; rightModule.readRight() >> out }`,
+			},
+			entry: '/main.gb',
+			out: ['11', '29'],
+		});
+		modules({
+			p: 'Private top-level constants are not exposed through module namespaces.',
+			files: {
+				'/constants.gb': `privateValue = 42;
+export read = (): Int32 { privateValue };`,
+				'/main.gb': `constantModule = @.constants;
+main { constantModule.privateValue >> out }`,
+			},
+			entry: '/main.gb',
+			errors: 'Property "privateValue" does not exist in "constantModule"',
+		});
+		modules({
 			p: 'Modules may export host functions without emitting a Wasm definition.',
 			files: {
 				'/clock.gb': `export external hostClock: (): Float64;
