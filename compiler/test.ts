@@ -606,6 +606,33 @@ export init = () {
 		);
 	});
 
+	s.test('should defer unresolved local binding inference', (a: TestApi) => {
+		const compiled = Program().compile(`type Buffers = [ source: Buffer<Float32>, target: Buffer<Float32> ];
+captured = (buffers: var Buffers, index: Int32): Void {
+	offset = index * 2;
+	value = get(buffers.source, offset);
+	loop >> { $ >= 1 ? break : set(buffers.target, $, value) }
+};
+direct = (buffers: var Buffers, index: Int32): Void {
+	offset = index * 2;
+	loop >> { $ >= 1 ? break : set(buffers.target, $, get(buffers.source, offset)) }
+};
+standalone = (source: Buffer<Float32>, target: var Buffer<Float32>): Void {
+	value = get(source, 0);
+	loop >> { $ >= 1 ? break : set(target, $, value) }
+};
+main {
+	buffers = [ source = Buffer<Float32>(2), target = Buffer<Float32>(1) ];
+	captured(buffers, 0);
+	direct(buffers, 0);
+	standaloneSource = Buffer<Float32>(1);
+	standaloneTarget = Buffer<Float32>(1);
+	standalone(standaloneSource, standaloneTarget)
+}`);
+		a.equal(compiled.errors.length, 0);
+		a.assert(compiled.bytes);
+	});
+
 	s.test(
 		'should infer fixed and conditional emission sequence types',
 		(a: TestApi) => {

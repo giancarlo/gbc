@@ -425,7 +425,7 @@ function resolveDefType(node: NodeMap['def']): Type | undefined {
 	let t = value ?? declared;
 	if (declared && t !== declared && literalFits(node.value, declared))
 		t = declared;
-	if (t) sym.type = t;
+	if (t && !hasUnresolvedType(t)) sym.type = t;
 	return t;
 }
 

@@ -76,6 +76,17 @@ const FORMAT_SOURCE = `export choose = (
 const THREAD_SOURCE = `increment = (value: Int32): Int32 { value + 1 };
 main { 0${' -> increment()'.repeat(100)} >> out }`;
 
+const DEFERRED_LOCAL_SOURCE = `type Buffers = [ source: Buffer<Float32>, target: Buffer<Float32> ];
+copy = (buffers: var Buffers, index: Int32): Void {
+	offset = index * 2;
+	value = get(buffers.source, offset);
+	loop >> { $ >= 1 ? break : set(buffers.target, $, value) }
+};
+main {
+	buffers = [ source = Buffer<Float32>(2), target = Buffer<Float32>(1) ];
+	copy(buffers, 0)
+}`;
+
 const MODULE_ENTRY = '/main.gb';
 const MODULE_FILES: Record<string, string> = {
 	'/constants.gb': `privateValue = 42;
@@ -124,12 +135,14 @@ export default spec('Tail recursion benchmarks', s => {
 			throw new Error(result.errors.map(error => error.message).join('; '));
 		return result.source.length;
 	};
-	const compileThreads = () => {
-		const result = Program().compile(THREAD_SOURCE);
+	const compileSource = (source: string) => {
+		const result = Program().compile(source);
 		if (result.errors.length || !result.bytes)
 			throw new Error(result.errors.map(error => error.message).join('; '));
 		return result.bytes.length;
 	};
+	const compileThreads = () => compileSource(THREAD_SOURCE);
+	const compileDeferredLocal = () => compileSource(DEFERRED_LOCAL_SOURCE);
 	const moduleProgram = Program({ sys: sourceSystem(MODULE_FILES) });
 	const compilePrivateModule = () => {
 		const result = moduleProgram.compileFile(MODULE_ENTRY, {
@@ -149,6 +162,7 @@ export default spec('Tail recursion benchmarks', s => {
 		a.equal(compose2d(), 10);
 		a.equal(format(), 89);
 		a.ok(compileThreads() > 0);
+		a.ok(compileDeferredLocal() > 0);
 		a.ok(compilePrivateModule() > 0);
 	});
 
@@ -172,6 +186,13 @@ export default spec('Tail recursion benchmarks', s => {
 	);
 	s.test('thread-chain compilation', a =>
 		a.benchmark(compileThreads, { warmup: 10, sampleTime: 100, samples: 20 }),
+	);
+	s.test('deferred local inference compilation', a =>
+		a.benchmark(compileDeferredLocal, {
+			warmup: 10,
+			sampleTime: 100,
+			samples: 20,
+		}),
 	);
 	s.test('private module constant compilation', a =>
 		a.benchmark(compilePrivateModule, {
