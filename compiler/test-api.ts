@@ -67,7 +67,7 @@ function unwrapOutPipe(stmt: NodeMap[keyof NodeMap]): NodeMap[keyof NodeMap] {
 	const isOutStage = last?.kind === 'ident' && last.symbol.name === 'out';
 	if (!isOutStage) return stmt;
 	const inner = stmt.children.slice(0, -1);
-	if (inner.length === 1) return inner[0]!;
+	if (inner.length === 1) return inner[0] ?? stmt;
 	return { ...stmt, children: inner };
 }
 
@@ -232,37 +232,6 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		test?.(rootAst);
 	};
 
-	private assertWasm(
-		src: string,
-		expected: NonNullable<RuleDef['wasm']>,
-	): void {
-		const { ast, errors } = this.parse(src);
-		if (errors.length) throw new Error('Cannot inspect invalid WASM source');
-		const objects: LibraryObject[] = [];
-		compileWasm({
-			root: {
-				...ast,
-				children: ast.children.filter(c => c.kind === 'def'),
-			},
-			objectSink: objects,
-		});
-		const object = objects.find(o => o.sym.name === expected.fn);
-		if (!object) throw new Error(`No WASM object for ${expected.fn}`);
-		this.equal(object.code[0] === 0x03, expected.loop);
-		const selfTailCalls = object.relocs.filter(
-			r =>
-				r.kind === 'call' &&
-				r.sym.name === expected.fn &&
-				object.code[r.offset - 1] === 0x12,
-		).length;
-		const tailCalls = object.relocs.filter(
-			r => r.kind === 'call' && object.code[r.offset - 1] === 0x12,
-		).length;
-		this.equal(tailCalls, expected.tailCalls);
-		this.equal(selfTailCalls, expected.selfTailCalls);
-		if (expected.locals) this.equalValues(object.locals, expected.locals);
-	}
-
 	/**
 	 * Runtime-verified expression test. Wraps `src` as
 	 * `${pre ?? ''} main { ${src} >> out }` so the spec stays focused on
@@ -311,7 +280,7 @@ export class SpecApi extends TestApiBase<SpecApi> {
 			(c): c is NodeMap['main'] => c?.kind === 'main',
 		);
 		this.assert(mainNode !== undefined);
-		const inners = mainNode.statements.map(s => unwrapOutPipe(s!));
+		const inners = mainNode.statements.map(unwrapOutPipe);
 		this.equal(inners.map(n => printAst(n)).join(' '), ast);
 		if (!needsRuntime) return;
 		const result = this.runWasm(rootAst);
@@ -438,6 +407,25 @@ export class SpecApi extends TestApiBase<SpecApi> {
 			);
 	};
 
+	ast = ({
+		src,
+		ast,
+		test,
+	}: {
+		p?: string;
+		src: string;
+		ast: string;
+		test?: (ast: NodeMap['root']) => void;
+	}) => {
+		const rootAst = this.parseAstOnly(src);
+		this.equal(rootAst.children?.map(printAst).join(' '), ast);
+		test?.(rootAst);
+	};
+
+	printErrors(errors: CompilerError[]) {
+		errors.forEach(e => this.log(formatError(e)));
+	}
+
 	protected runWasm(
 		root: NodeMap['root'],
 		testMode = false,
@@ -454,21 +442,6 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		);
 		return { out: captures, pages, exitCode };
 	}
-
-	ast = ({
-		src,
-		ast,
-		test,
-	}: {
-		p?: string;
-		src: string;
-		ast: string;
-		test?: (ast: NodeMap['root']) => void;
-	}) => {
-		const rootAst = this.parseAstOnly(src);
-		this.equal(rootAst.children?.map(printAst).join(' '), ast);
-		test?.(rootAst);
-	};
 
 	protected parseAstOnly(src: string): NodeMap['root'] {
 		const program = Program();
@@ -490,7 +463,34 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		return { ...result, program };
 	}
 
-	printErrors(errors: CompilerError[]) {
-		errors.forEach(e => this.log(formatError(e)));
+	private assertWasm(
+		src: string,
+		expected: NonNullable<RuleDef['wasm']>,
+	): void {
+		const { ast, errors } = this.parse(src);
+		if (errors.length) throw new Error('Cannot inspect invalid WASM source');
+		const objects: LibraryObject[] = [];
+		compileWasm({
+			root: {
+				...ast,
+				children: ast.children.filter(c => c.kind === 'def'),
+			},
+			objectSink: objects,
+		});
+		const object = objects.find(o => o.sym.name === expected.fn);
+		if (!object) throw new Error(`No WASM object for ${expected.fn}`);
+		this.equal(object.code[0] === 0x03, expected.loop);
+		const selfTailCalls = object.relocs.filter(
+			r =>
+				r.kind === 'call' &&
+				r.sym.name === expected.fn &&
+				object.code[r.offset - 1] === 0x12,
+		).length;
+		const tailCalls = object.relocs.filter(
+			r => r.kind === 'call' && object.code[r.offset - 1] === 0x12,
+		).length;
+		this.equal(tailCalls, expected.tailCalls);
+		this.equal(selfTailCalls, expected.selfTailCalls);
+		if (expected.locals) this.equalValues(object.locals, expected.locals);
 	}
 }

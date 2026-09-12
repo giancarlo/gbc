@@ -2709,9 +2709,25 @@ export target = (): Int32 { 0 }`,
 			src: `main { owner = Buffer<Int32>(1); alias: var Buffer<Int32> = owner; set(alias, 0, 7) }`,
 			expected: 'cannot mutably borrow shared binding',
 		});
+		testBlock({
+			p: 'A Copy-valued argument may be computed from the owner before it is borrowed mutably for the call.',
+			src: `type State = [ buffer: Buffer<Int32> ];
+write = (state: var State, index: Int32, condition: Bool, value: Int32): Void {
+	set(state.buffer, index, condition ? get(state.buffer, length(state.buffer) - 1) : value)
+};
+#test { equal(target(), 9) }
+export target = (): Int32 {
+	state: State = [ buffer = Buffer<Int32>(2) ];
+	set(state.buffer, 1, 9);
+	write(state, 0, true, 7);
+	next get(state.buffer, 0)
+}`,
+			out: [],
+		});
 		compileError({
-			p: 'A mutable borrow cannot overlap another argument derived from the same owner.',
-			src: `inspect = (b: var Buffer<Int32>, n: Int32) { n >> out }; main { b = Buffer<Int32>(1); inspect(b, length(b)) }`,
+			p: 'A mutable borrow cannot overlap another argument that remains borrowed from the same owner.',
+			src: `inspect = (b: var Buffer<String>, value: String) { value >> out };
+main { b = Buffer<String>(1); set(b, 0, 'value'); inspect(b, get(b, 0)) }`,
 			expected: 'overlaps argument',
 		});
 		testBlock({

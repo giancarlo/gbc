@@ -2332,7 +2332,12 @@ export function checker({
 		for (const [symbol, mutableIndex] of roots)
 			for (let i = 0; i < args.length; i++) {
 				const arg = args[i];
-				if (i !== mutableIndex && arg && referencesSymbol(arg, symbol))
+				if (
+					i !== mutableIndex &&
+					arg &&
+					!isCopyType(resolver(arg)) &&
+					referencesSymbol(arg, symbol)
+				)
 					error(
 						`mutable borrow of "${symbol.name ?? ''}" overlaps argument ${i + 1}`,
 						arg,
