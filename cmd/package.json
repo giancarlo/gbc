@@ -15,5 +15,8 @@
 		"url": "https://github.com/giancarlo/gbc",
 		"directory": "cmd"
 	},
-	"type": "module"
+	"type": "module",
+	"build": {
+		"platform": "neutral"
+	}
 }

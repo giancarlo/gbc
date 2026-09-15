@@ -14,7 +14,8 @@ export default spec('cmd', s => {
 			const { next } = scan(src);
 			let i = 0;
 			for (const tk of each(next)) {
-				const expected = expect[i++]!;
+				const expected = expect[i++];
+				a.assert(expected, 'Expected token');
 				a.equalValues(
 					{
 						kind: tk.kind,
@@ -631,10 +632,10 @@ export default spec('cmd', s => {
 
 		it.should('find the most specific node at an offset', (a: TestApi) => {
 			const root = program().parse('echo hi | cat').root;
-			const list = root.children[0]!;
-			a.assert(list.kind === 'list', 'Expected list');
-			const pipe = list.children[0]!;
-			a.assert(pipe.kind === '|', 'Expected pipe');
+			const list = root.children[0];
+			a.assert(list?.kind === 'list', 'Expected list');
+			const pipe = list.children[0];
+			a.assert(pipe?.kind === '|', 'Expected pipe');
 			const left = pipe.children[0];
 			const right = pipe.children[1];
 			a.assert(
@@ -652,11 +653,12 @@ export default spec('cmd', s => {
 
 		it.should('find canonical redirect, group, and list children', (a: TestApi) => {
 			const redirectRoot = program().parse('cat 2>out').root;
-			const redirectList = redirectRoot.children[0]!;
-			a.assert(redirectList.kind === 'list', 'Expected list');
-			const command = redirectList.children[0]!;
-			a.assert(command.kind === 'command', 'Expected command');
-			const redirect = command.redirects[0]!;
+			const redirectList = redirectRoot.children[0];
+			a.assert(redirectList?.kind === 'list', 'Expected list');
+			const command = redirectList.children[0];
+			a.assert(command?.kind === 'command', 'Expected command');
+			const redirect = command.redirects[0];
+			a.assert(redirect?.kind === 'redirect', 'Expected redirect');
 
 			a.equalValues(command.children, [command.parts[0], redirect]);
 			a.equalValues(redirect.children, [redirect.io, redirect.target]);
@@ -665,20 +667,20 @@ export default spec('cmd', s => {
 			a.equal(findNodeAtIndex(redirectRoot, 6), redirect.target);
 
 			const groupRoot = program().parse('(echo)').root;
-			const groupList = groupRoot.children[0]!;
-			a.assert(groupList.kind === 'list', 'Expected list');
-			const groupCommand = groupList.children[0]!;
-			a.assert(groupCommand.kind === 'command', 'Expected command');
-			const group = groupCommand.parts[0]!;
-			a.assert(group.kind === 'group', 'Expected group');
+			const groupList = groupRoot.children[0];
+			a.assert(groupList?.kind === 'list', 'Expected list');
+			const groupCommand = groupList.children[0];
+			a.assert(groupCommand?.kind === 'command', 'Expected command');
+			const group = groupCommand.parts[0];
+			a.assert(group?.kind === 'group', 'Expected group');
 
 			a.equal(findNodeAtIndex(groupRoot, 0), group);
 			a.equal(findNodeAtIndex(groupRoot, 1)?.kind, 'word');
 			a.equal(findNodeAtIndex(groupRoot, 5), group);
 
 			const listRoot = program().parse('echo;cat').root;
-			const list = listRoot.children[0]!;
-			a.assert(list.kind === 'list', 'Expected list');
+			const list = listRoot.children[0];
+			a.assert(list?.kind === 'list', 'Expected list');
 			a.equal(findNodeAtIndex(listRoot, 4), list);
 			a.equal(findNodeAtIndex(listRoot, 5)?.kind, 'word');
 		});
