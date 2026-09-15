@@ -1,7 +1,14 @@
 import { TestApi, spec } from '@cxl/spec';
 import { each, findNodeAtIndex, type Token, tokenize } from '../sdk/index.js';
 
-import { IrKind, IrSeparator, IrWordFlags, scan, program } from './index.js';
+import {
+	IrKind,
+	IrSeparator,
+	IrWordFlags,
+	keywords,
+	program,
+	scan,
+} from './index.js';
 //import { ast } from './debug.js';
 
 export default spec('cmd', s => {
@@ -125,6 +132,7 @@ export default spec('cmd', s => {
 		});
 
 		it.should('scan command operators', a => {
+			a.equalValues(keywords, ['for', 'in', 'do', 'done']);
 			a.equalValues(kinds('echo hello | cat && grep foo || (sed edit)'), [
 				'word',
 				'word',
@@ -242,6 +250,107 @@ export default spec('cmd', s => {
 				compiled.output,
 				'greet() { echo hi ; } 2> errors\nsubshell() (echo ok)',
 			);
+		});
+
+		it.should('parse POSIX for loops as loop nodes', (a: TestApi) => {
+			const source = 'for item in one two; do echo "$item"; done';
+			const cmd = program();
+			const parsed = cmd.parse(source);
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list', 'Expected command list');
+			const loop = list.children[0];
+			a.assert(loop?.kind === 'for', 'Expected for loop');
+			a.assert(loop.words, 'Expected explicit loop words');
+			a.equalValues(loop.variable.value, 'item');
+			a.equalValues(loop.words.map(word => word.value), ['one', 'two']);
+			a.equalValues(loop.body.children.length, 1);
+			a.equalValues(loop.children, [loop.variable, ...loop.words, loop.body]);
+			a.equalValues(
+				{ start: loop.start, end: loop.end },
+				{ start: 0, end: source.length },
+			);
+			a.equal(findNodeAtIndex(parsed.root, 4), loop.variable);
+			a.equal(findNodeAtIndex(parsed.root, 9), loop);
+			a.equal(findNodeAtIndex(parsed.root, 24)?.kind, 'word');
+			a.equalValues(parsed.errors, []);
+			a.equalValues(
+				program().compile('for outer; do echo; done').output,
+				'for outer; do echo ; done',
+			);
+			a.equalValues(
+				program().compile('for inner in; do echo; done').output,
+				'for inner in; do echo ; done',
+			);
+			a.equalValues(
+				program().compile('for job; do run & done').output,
+				'for job; do run & done',
+			);
+			a.equalValues(
+				cmd.compile(source).output,
+				'for item in one two; do echo "$item" ; done',
+			);
+			a.equalValues(cmd.ir(parsed.root), [
+				1,
+				[
+					IrKind.List,
+					[],
+					[
+						IrKind.For,
+						[IrKind.Word, 'item'],
+						[[IrKind.Word, 'one'], [IrKind.Word, 'two']],
+						[
+							IrKind.List,
+							[IrSeparator.Semicolon],
+							[
+								IrKind.Command,
+								[IrKind.Word, 'echo'],
+								[IrKind.Word, '"$item"', IrWordFlags.ParameterExpansion],
+							],
+						],
+					],
+				],
+			]);
+		});
+
+		it.should('parse omitted, empty, and nested POSIX for lists', (a: TestApi) => {
+			const parsed = program().parse(
+				'for outer\ndo for inner in; do echo ok; done; done',
+			);
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list', 'Expected command list');
+			const outer = list.children[0];
+			a.assert(outer?.kind === 'for', 'Expected outer for loop');
+			a.equalValues(outer.words, undefined);
+			const inner = outer.body.children[0];
+			a.assert(inner?.kind === 'for', 'Expected inner for loop');
+			a.equalValues(inner.words, []);
+			a.equalValues(parsed.errors, []);
+
+			const ide = program({ dialect: 'ide' }).parse(
+				'for item in one; do echo; done',
+			);
+			const ideList = ide.root.children[0];
+			a.assert(ideList?.kind === 'list', 'Expected IDE command list');
+			a.equalValues(ideList.children.map(node => node.kind), [
+				'command',
+				'command',
+				'command',
+			]);
+		});
+
+		it.should('report malformed POSIX for loops', a => {
+			const messages = (source: string) =>
+				program().parse(source).errors.map(error => error.message);
+			a.equalValues(messages('for; do echo; done'), ['Expected shell word']);
+			a.equalValues(messages('for bad-name; do echo; done'), [
+				'Expected portable loop variable',
+			]);
+			a.equalValues(messages('for item do echo; done'), [
+				'Expected ";" or newline before "do"',
+			]);
+			a.equalValues(messages('for item; echo; done'), ['Expected "do"']);
+			a.equalValues(messages('for item; do echo'), ['Expected "done"']);
+			a.equalValues(messages('for item; do done'), ['Expected loop body']);
 		});
 
 		it.should('traverse function definitions through shared AST children', (a: TestApi) => {

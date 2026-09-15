@@ -13,7 +13,7 @@ export interface ProgramOptions {
 export type ScannerToken = ReturnType<ReturnType<typeof createScanner>['next']>;
 export type Kind = ScannerToken['kind'];
 
-export const keywords: readonly string[] = [];
+export const keywords: readonly string[] = ['for', 'in', 'do', 'done'];
 
 type BaseNodeMap = {
 	word: {
@@ -59,6 +59,12 @@ type BaseNodeMap = {
 		redirects: RedirectNode[];
 		children: (WordNode | ParameterNode | TypeNode | GroupNode | RedirectNode)[];
 	};
+	for: {
+		variable: WordNode;
+		words?: WordNode[];
+		body: ListNode;
+		children: (WordNode | ListNode)[];
+	};
 	group: {
 		opener: '(' | '{';
 		closer: ')' | '}';
@@ -91,6 +97,7 @@ type TypeNode = NodeMap['type'];
 type ParameterNode = NodeMap['parameter'];
 type TypeAliasNode = NodeMap['typealias'];
 type FunctionNode = NodeMap['function'];
+type ForNode = NodeMap['for'];
 type GroupNode = NodeMap['group'];
 type ListNode = NodeMap['list'];
 type RootNode = NodeMap['root'];
@@ -110,6 +117,7 @@ export enum IrKind {
 	And,
 	Or,
 	List,
+	For,
 }
 
 export enum IrWordFlags {
@@ -195,6 +203,12 @@ export type IrListNode = [
 	separators: IrSeparator[],
 	...children: IrNode[],
 ];
+export type IrForNode = [
+	kind: IrKind.For,
+	variable: IrWordNode,
+	words: IrWordNode[] | null,
+	body: IrListNode,
+];
 export type IrNode =
 	| IrWordNode
 	| IrRedirectNode
@@ -205,6 +219,7 @@ export type IrNode =
 	| IrFunctionNode
 	| IrGroupNode
 	| IrBinaryNode
+	| IrForNode
 	| IrListNode;
 export type Ir = [version: 1, root?: IrListNode];
 
@@ -573,6 +588,31 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		return { ...token, kind: 'word', ...inspectWord(token) };
 	}
 
+	function isKeyword(value: string) {
+		const token = current();
+		return (
+			token.kind === 'word' &&
+			token.end - token.start === value.length &&
+			source.startsWith(value, token.start)
+		);
+	}
+
+	function consumeKeyword(value: string) {
+		const token = current();
+		if (!isKeyword(value)) throw error(`Expected "${value}"`, token);
+		next();
+		return token;
+	}
+
+	function consumeLinebreak() {
+		let newline = false;
+		while (current().kind === 'newline' || current().kind === 'comment') {
+			if (current().kind === 'newline') newline = true;
+			next();
+		}
+		return newline;
+	}
+
 	function parseGroup(): GroupNode {
 		const opener = current();
 		const openerKind = opener.kind;
@@ -756,7 +796,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		if (current().kind === '(' || current().kind === '{') return parseGroup();
 		if (current().kind === 'newline' || current().kind === 'comment') {
 			const boundary = current();
-			while (current().kind === 'newline' || current().kind === 'comment') next();
+			consumeLinebreak();
 			if (current().kind === '(' || current().kind === '{') return parseGroup();
 			if (dialect === 'ide') {
 				backtrack(boundary);
@@ -806,6 +846,48 @@ function createParser(source: string, options: ProgramOptions = {}) {
 				...redirects,
 			],
 			end: redirects.at(-1)?.end ?? body?.end ?? end,
+		};
+	}
+
+	function parseFor(): ForNode {
+		const keyword = consumeKeyword('for');
+		const variable = parseWord();
+		if (!isPortableName(variable))
+			throw error('Expected portable loop variable', variable);
+		const beforeIn = consumeLinebreak();
+		const hasIn = isKeyword('in');
+		const words: WordNode[] | undefined = hasIn ? [] : undefined;
+		if (words) {
+			next();
+			while (
+				current().kind !== 'eof' &&
+				current().kind !== ';' &&
+				current().kind !== 'newline' &&
+				current().kind !== 'comment'
+			)
+				words.push(parseWord());
+		}
+		let separated = !words && beforeIn;
+		if (current().kind === ';') {
+			next();
+			consumeLinebreak();
+			separated = true;
+		} else if (consumeLinebreak()) separated = true;
+		if (!separated)
+			throw error('Expected ";" or newline before "do"', current());
+		consumeKeyword('do');
+		const body = parseList('done');
+		if (!body.children.length)
+			pushError(error('Expected loop body', current()));
+		const done = consumeKeyword('done');
+		return {
+			...keyword,
+			kind: 'for',
+			variable,
+			words,
+			body,
+			children: [variable, ...words ?? [], body],
+			end: done.end,
 		};
 	}
 
@@ -866,7 +948,9 @@ function createParser(source: string, options: ProgramOptions = {}) {
 
 	function parsePipe(): Node {
 		const parsePipelineCommand = () =>
-			isTypeAlias()
+			dialect === 'posix' && isKeyword('for')
+				? parseFor()
+				: isTypeAlias()
 				? parseTypeAlias()
 				: isFunctionDefinition()
 					? parseFunction()
@@ -913,11 +997,16 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		return left;
 	}
 
-	function parseList(): ListNode {
+	function parseList(stopWord?: string): ListNode {
 		const first = current();
 		const children: Node[] = [];
 		const separators: ListNode['separators'] = [];
-		while (current().kind !== 'eof' && current().kind !== ')' && current().kind !== '}') {
+		while (
+			current().kind !== 'eof' &&
+			current().kind !== ')' &&
+			current().kind !== '}' &&
+			!(stopWord && isKeyword(stopWord))
+		) {
 			if (current().kind === 'comment') {
 				next();
 				continue;
@@ -1024,6 +1113,14 @@ function compileNode(node: Node): string {
 					? ` ${node.redirects.map(compileNode).join(' ')}`
 					: ''
 			}`;
+		case 'for': {
+			const words = node.words?.map(compileNode).join(' ');
+			const header = node.words
+				? `for ${compileNode(node.variable)} in${words ? ` ${words}` : ''}`
+				: `for ${compileNode(node.variable)}`;
+			const body = compileNode(node.body);
+			return `${header}; do ${body}${/[;&]$/.test(body) ? '' : ' ;'} done`;
+		}
 		case 'redirect':
 			return `${node.io ? compileNode(node.io) : ''}${node.operator} ${compileNode(node.target)}`;
 		case 'type':
@@ -1150,6 +1247,13 @@ function lowerNode(node: Node): IrNode {
 							throw new Error('Unexpected function name child');
 					}
 				}),
+			];
+		case 'for':
+			return [
+				IrKind.For,
+				lowerWord(node.variable),
+				node.words?.map(lowerWord) ?? null,
+				lowerList(node.body),
 			];
 		case 'group':
 			return lowerGroup(node);
