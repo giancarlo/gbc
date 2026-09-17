@@ -22,6 +22,7 @@ type BaseNodeMap = {
 		hasExpansion: boolean;
 		hasParameterExpansion: boolean;
 		hasCommandSubstitution: boolean;
+		commandSubstitutions?: RootNode[];
 		hasBackticks: boolean;
 		hasNonliteralConstruct: boolean;
 	};
@@ -252,7 +253,14 @@ const portableName = /^[A-Za-z_]\w*$/;
 const ideCommandName = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*!?$/;
 const isSpecialParameter = (ch: string) => '@*#?$!-0123456789'.includes(ch);
 
-type WordState = Omit<WordNode, 'start' | 'end' | 'line' | 'source' | 'kind'>;
+type WordState = Omit<
+	WordNode,
+	'start' | 'end' | 'line' | 'source' | 'kind' | 'commandSubstitutions'
+>;
+interface CommandSubstitutionRange {
+	start: number;
+	end: number;
+}
 
 function decodeAnsiEscape(source: string, index: number) {
 	const ch = source[index];
@@ -438,13 +446,27 @@ function createScanner(source: string) {
 	const { current, eof, tk, matchString, matchUntil, error, skip, backtrack } = ScannerApi({
 		source,
 	});
+	const commandSubstitutions = new WeakMap<object, CommandSubstitutionRange[]>();
+	let commandSubstitutionRanges: CommandSubstitutionRange[] | undefined;
 	let signature = false;
 
-	function scanQuoted(quote: string, consumed: number) {
+	function scanQuoted(
+		quote: string,
+		consumed: number,
+		captureCommandSubstitutions = false,
+	) {
 		for (;;) {
 			const ch = current(consumed);
 			if (!ch) throw error('Unterminated string', consumed);
 			if (ch === quote) return consumed + 1;
+			if (
+				quote === '"' &&
+				ch === '$' &&
+				current(consumed + 1) === '('
+			) {
+				consumed = scanCommandSubstitution(consumed, captureCommandSubstitutions);
+				continue;
+			}
 			if (ch === '\\' && current(consumed + 1)) {
 				consumed += 2;
 				continue;
@@ -453,7 +475,12 @@ function createScanner(source: string) {
 		}
 	}
 
-	function scanEnclosed(open: string, close: string, consumed: number) {
+	function scanEnclosed(
+		open: string,
+		close: string,
+		consumed: number,
+		captureCommandSubstitutions = false,
+	) {
 		const matches = (value: string, offset: number) =>
 			[...value].every((ch, index) => current(offset + index) === ch);
 		let depth = 1;
@@ -461,14 +488,16 @@ function createScanner(source: string) {
 			const ch = current(consumed);
 			if (!ch) throw error(`Unterminated ${open}${close} expansion`, consumed);
 			if (ch === "'" || ch === '"') {
-				consumed = scanQuoted(ch, consumed + 1);
+				consumed = scanQuoted(ch, consumed + 1, captureCommandSubstitutions);
 				continue;
 			}
 			if (ch === '\\' && current(consumed + 1)) {
 				consumed += 2;
 				continue;
 			}
-			if (matches(open, consumed)) {
+			if (ch === '$' && current(consumed + 1) === '(') {
+				consumed = scanCommandSubstitution(consumed, captureCommandSubstitutions);
+			} else if (matches(open, consumed)) {
 				depth++;
 				consumed += open.length;
 			} else if (matches(close, consumed)) {
@@ -479,15 +508,33 @@ function createScanner(source: string) {
 		return consumed;
 	}
 
+	function scanCommandSubstitution(
+		consumed: number,
+		captureCommandSubstitutions = false,
+	) {
+		const start = consumed + 2;
+		const arithmetic = current(start) === '(';
+		const end = scanEnclosed(
+			'(',
+			')',
+			start,
+			arithmetic && captureCommandSubstitutions,
+		);
+		if (captureCommandSubstitutions && !arithmetic)
+			(commandSubstitutionRanges ??= []).push({ start, end: end - 1 });
+		return end;
+	}
+
 	function scanWord() {
 		let consumed = 0;
+		commandSubstitutionRanges = undefined;
 		while (
 			!isControl(current(consumed)) &&
 			(!signature || !':,=?'.includes(current(consumed)))
 		) {
 			const ch = current(consumed);
 			if (ch === "'" || ch === '"') {
-				consumed = scanQuoted(ch, consumed + 1);
+				consumed = scanQuoted(ch, consumed + 1, true);
 				continue;
 			}
 			if (ch === '\\' && current(consumed + 1)) {
@@ -495,13 +542,25 @@ function createScanner(source: string) {
 				continue;
 			}
 			if (ch === '$' && current(consumed + 1) === '(')
-				consumed = scanEnclosed('(', ')', consumed + 2);
+				consumed = scanCommandSubstitution(consumed, true);
 			else if (ch === '$' && current(consumed + 1) === '{')
-				consumed = scanEnclosed('{', '}', consumed + 2);
+				consumed = scanEnclosed(
+					'{',
+					'}',
+					consumed + 2,
+					true,
+				);
 			else if (ch === '`') consumed = scanQuoted('`', consumed + 1);
 			else consumed++;
 		}
-		return tk('word', consumed);
+		const token = tk('word', consumed);
+		const ranges = getCommandSubstitutionRanges();
+		if (ranges) commandSubstitutions.set(token, ranges);
+		return token;
+	}
+
+	function getCommandSubstitutionRanges() {
+		return commandSubstitutionRanges;
 	}
 
 	function next() {
@@ -527,6 +586,9 @@ function createScanner(source: string) {
 	return {
 		next,
 		backtrack,
+		commandSubstitutions(token: object) {
+			return commandSubstitutions.get(token) ?? [];
+		},
 		setSignature(value: boolean) {
 			signature = value;
 		},
@@ -585,7 +647,36 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		const token = current();
 		if (token.kind !== 'word') throw error('Expected shell word', token);
 		next();
-		return { ...token, kind: 'word', ...inspectWord(token) };
+		const metadata = inspectWord(token);
+		const commandSubstitutions = scanner.commandSubstitutions(token).map(range => {
+			const offset = token.start + range.start;
+			const parser = createParser(
+				source.slice(offset, token.start + range.end),
+				options,
+			);
+			const root = parser.parse();
+			for (const diagnostic of parser.errors) {
+				const start = offset + diagnostic.position.start;
+				pushError(
+					error(diagnostic.message, {
+						start,
+						end: offset + diagnostic.position.end,
+						line:
+							source.slice(0, offset).split('\n').length -
+							1 +
+							diagnostic.position.line,
+						source,
+					}),
+				);
+			}
+			return root;
+		});
+		return {
+			...token,
+			kind: 'word',
+			...metadata,
+			commandSubstitutions,
+		};
 	}
 
 	function isKeyword(value: string) {

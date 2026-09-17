@@ -2,6 +2,7 @@ import { TestApi, spec } from '@cxl/spec';
 import { each, findNodeAtIndex, type Token, tokenize } from '../sdk/index.js';
 
 import {
+	compiler,
 	IrKind,
 	IrSeparator,
 	IrWordFlags,
@@ -689,6 +690,78 @@ export default spec('cmd', s => {
 			a.equalValues(metadata('*.ts').literal, false);
 		});
 
+		it.should('parse command substitutions in shell words', (a: TestApi) => {
+			const commands = (source: string) =>
+				(word(source).commandSubstitutions ?? []).map(root => compiler(root));
+
+			a.equalValues(commands('$(git status --short)'), ['git status --short']);
+			a.equalValues(commands('"$(git status --short)"'), [
+				'git status --short',
+			]);
+			a.equalValues(commands('prefix$(pwd)-$(git rev-parse HEAD)'), [
+				'pwd',
+				'git rev-parse HEAD',
+			]);
+			a.equalValues(commands('${value:-$(git status --short)}'), [
+				'git status --short',
+			]);
+			a.equalValues(commands('$((1 + $(wc -l < input)))'), [
+				'wc -l < input',
+			]);
+
+			const outer = word('"$(printf "%s" "$(git rev-parse HEAD)")"')
+				.commandSubstitutions?.[0];
+			a.assert(outer);
+			const list = outer.children[0];
+			a.assert(list?.kind === 'list');
+			const command = list.children[0];
+			a.assert(command?.kind === 'command');
+			const nested = command.parts[2];
+			a.assert(nested?.kind === 'word');
+			a.equalValues(
+				(nested.commandSubstitutions ?? []).map(root => compiler(root)),
+				['git rev-parse HEAD'],
+			);
+		});
+
+		it.should('preserve command substitution metadata and IR', (a: TestApi) => {
+			const cmd = program();
+			const parsed = cmd.parse('echo "$(git status --short)"');
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list');
+			const command = list.children[0];
+			a.assert(command?.kind === 'command');
+			const substitution = command.parts[1];
+			a.assert(substitution?.kind === 'word');
+			a.equalValues(metadata('"$(git status --short)"'), {
+				kind: 'word',
+				value: undefined,
+				literal: false,
+				hasExpansion: true,
+				hasParameterExpansion: false,
+				hasCommandSubstitution: true,
+				hasBackticks: false,
+				hasNonliteralConstruct: true,
+			});
+			a.equalValues(cmd.ir(parsed.root), [
+				1,
+				[
+					IrKind.List,
+					[],
+					[
+						IrKind.Command,
+						[IrKind.Word, 'echo'],
+						[
+							IrKind.Word,
+							'"$(git status --short)"',
+							IrWordFlags.CommandSubstitution,
+						],
+					],
+				],
+			]);
+			a.equalValues(word('`git status --short`').commandSubstitutions, []);
+		});
+
 		it.should('report malformed shell syntax with source spans', a => {
 			const diagnostics = (src: string) =>
 				program()
@@ -713,6 +786,16 @@ export default spec('cmd', s => {
 			]);
 			a.equalValues(diagnostics('echo )'), [
 				{ message: 'Unexpected ")"', start: 5, end: 6 },
+			]);
+			a.equalValues(diagnostics('echo $(git status'), [
+				{
+					message: 'Unterminated () expansion',
+					start: 5,
+					end: 17,
+				},
+			]);
+			a.equalValues(diagnostics('echo "$(git status &&)"'), [
+				{ message: 'Expected command', start: 21, end: 21 },
 			]);
 		});
 
