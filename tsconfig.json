@@ -10,6 +10,9 @@
 		"experimentalDecorators": true,
 		"sourceMap": false,
 		"moduleResolution": "nodenext",
+		"paths": {
+			"@cxl/gbc.sdk": ["./sdk/index.ts"]
+		},
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
 		"noUncheckedIndexedAccess": true,

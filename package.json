@@ -15,6 +15,9 @@
 	"scripts": {
 		"build": "cxl-build"
 	},
+	"importmap": {
+		"@cxl/gbc.sdk": "/dist/sdk/index.js"
+	},
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/giancarlo/gbc",

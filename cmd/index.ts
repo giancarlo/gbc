@@ -7,7 +7,7 @@ import {
 	text,
 	type Token,
 	tokenize,
-} from '../sdk/index.js';
+} from '@cxl/gbc.sdk';
 export { each, findNodeAtIndex, tokenize, type Token };
 
 export type Dialect = 'posix' | 'ide';
