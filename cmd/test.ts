@@ -1,14 +1,17 @@
 import { TestApi, spec } from '@cxl/spec';
-import { each, findNodeAtIndex, type Token, tokenize } from '../sdk/index.js';
-
 import {
 	compiler,
+	each,
+	findNodeAtIndex,
 	IrKind,
+	IrRedirectOperator,
 	IrSeparator,
 	IrWordFlags,
 	keywords,
 	program,
 	scan,
+	type Token,
+	tokenize,
 } from './index.js';
 //import { ast } from './debug.js';
 
@@ -208,6 +211,99 @@ export default spec('cmd', s => {
 				cmd.compile(`command 2>>errors.log 0<&3 1>&2 <>input`).output,
 				`command 2>> errors.log 0<& 3 1>& 2 <> input`,
 			);
+		});
+
+		it.should('parse a Python here document as one shell command', (a: TestApi) => {
+			const source = [
+				"python3 - <<'PY'",
+				'import json,subprocess,collections',
+				"old=json.loads(subprocess.check_output(['git','show','HEAD:package-lock.json']))['packages']",
+				"new=json.load(open('package-lock.json'))['packages']",
+				'removed=sorted(set(old)-set(new))',
+				'for k in removed:',
+				" if 'firebase' not in k and 'google' not in k and 'gcp' not in k and 'isomorphic' not in k and 'j5g3' not in k and '3doc' not in k:",
+				'  print(k)',
+				'PY',
+			].join('\n');
+			const parsed = program().parse(source);
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list', 'Expected command list');
+			a.equalValues(parsed.errors, []);
+			a.equal(list.children.length, 1);
+			a.equalValues(program().compile(source).errors, []);
+			a.equal(program().compile(source).output, source.replace("<<'PY'", "<< 'PY'"));
+		});
+
+		it.should('retain here document bodies and resume after their delimiters', (a: TestApi) => {
+			const source = "cat <<'FIRST' <<-SECOND\n$HOME\nFIRST\n\tsecond\n\tSECOND\necho done";
+			const cmd = program();
+			const parsed = cmd.parse(source);
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list', 'Expected command list');
+			const first = list.children[0];
+			a.assert(first?.kind === 'command', 'Expected command');
+			a.equalValues(parsed.errors, []);
+			a.equalValues(first.redirects.map(redirect => redirect.body?.kind), [
+				'heredoc',
+				'heredoc',
+			]);
+			a.equalValues(first.redirects.map(redirect => redirect.body?.value), [
+				'$HOME\n',
+				'\tsecond\n',
+			]);
+			a.equalValues(list.hereDocuments?.[0], first.redirects.map(redirect => redirect.body));
+			a.equal(list.children.length, 2);
+			a.equal(cmd.compile(source).output, source.replace("<<'FIRST' <<-SECOND", "<< 'FIRST' <<- SECOND"));
+			a.equal(findNodeAtIndex(parsed.root, source.indexOf('$HOME'))?.kind, 'heredoc');
+			a.equalValues(cmd.ir(parsed.root), [
+				1,
+				[
+					IrKind.List,
+					[IrSeparator.Newline],
+					[
+						IrKind.Command,
+						[IrKind.Word, 'cat'],
+						[IrKind.Redirect, IrRedirectOperator.HereDocument, [IrKind.Word, 'FIRST'], undefined, '$HOME\n'],
+						[IrKind.Redirect, IrRedirectOperator.HereDocumentStrip, [IrKind.Word, 'SECOND'], undefined, '\tsecond\n'],
+					],
+					[IrKind.Command, [IrKind.Word, 'echo'], [IrKind.Word, 'done']],
+				],
+			]);
+		});
+
+		it.should('diagnose a missing here document delimiter', a => {
+			for (const source of ['cat <<EOF', 'cat <<EOF\nbody']) {
+				const parsed = program().parse(source);
+				a.equalValues(parsed.errors.map(error => error.message), [
+					'Unterminated here document "EOF"',
+				]);
+			}
+		});
+
+		it.should('compile a here document from parsed shell nodes', (a: TestApi) => {
+			const source = 'cat <<EOF # note\nbody\nEOF\necho done';
+			a.equal(program().compile(source).output, 'cat << EOF\nbody\nEOF\necho done');
+			const parsed = program().parse('cat <<EOF\nold\nEOF');
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list', 'Expected command list');
+			const command = list.children[0];
+			a.assert(command?.kind === 'command', 'Expected command');
+			const body = command.redirects[0]?.body;
+			a.assert(body?.kind === 'heredoc', 'Expected here document');
+			body.value = 'new\n';
+			a.equal(compiler(parsed.root), 'cat << EOF\nnew\nEOF');
+			a.equal(
+				program().compile('(cat <<EOF)\nbody\nEOF\necho done').output,
+				'(cat << EOF)\nbody\nEOF\necho done',
+			);
+			a.equal(
+				program().compile('cat <<EOF | cat\nbody\nEOF\necho done').output,
+				'cat << EOF | cat\nbody\nEOF\necho done',
+		);
+			a.equal(
+				program().compile('cat <<EOF; echo before\nbody\nEOF\necho after').output,
+				'cat << EOF ; echo before\nbody\nEOF\necho after',
+		);
 		});
 
 		it.should('parse and compile POSIX function definitions', (a: TestApi) => {
@@ -431,7 +527,7 @@ export default spec('cmd', s => {
 						parameter.name.value,
 						parameter.type.name,
 					]),
-					returnType: fn.returnType?.name,
+					returnType: fn.returnType.name,
 					invocation: invocation.parts.map(part =>
 						part.kind === 'word' ? part.value : undefined,
 					),
@@ -851,6 +947,7 @@ export default spec('cmd', s => {
 			a.assert(command?.kind === 'command', 'Expected command');
 			const redirect = command.redirects[0];
 			a.assert(redirect?.kind === 'redirect', 'Expected redirect');
+			a.assert(redirect.io, 'Expected redirect file descriptor');
 
 			a.equalValues(command.children, [command.parts[0], redirect]);
 			a.equalValues(redirect.children, [redirect.io, redirect.target]);

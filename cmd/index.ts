@@ -1,9 +1,14 @@
 import {
+	each,
+	findNodeAtIndex,
 	type MakeNodeMap,
 	ParserApi,
 	ScannerApi,
 	text,
+	type Token,
+	tokenize,
 } from '../sdk/index.js';
+export { each, findNodeAtIndex, tokenize, type Token };
 
 export type Dialect = 'posix' | 'ide';
 export interface ProgramOptions {
@@ -30,7 +35,12 @@ type BaseNodeMap = {
 		operator: RedirectOperator;
 		io?: WordNode;
 		target: WordNode;
-		children: WordNode[];
+		body?: HereDocumentNode;
+		children: (WordNode | HereDocumentNode)[];
+	};
+	heredoc: {
+		value: string;
+		terminator: string;
 	};
 	command: {
 		parts: TermNode[];
@@ -77,6 +87,7 @@ type BaseNodeMap = {
 	list: {
 		children: Node[];
 		separators: (';' | '&' | 'newline')[];
+		hereDocuments?: HereDocumentNode[][];
 	};
 	root: { children: Node[] };
 };
@@ -93,6 +104,7 @@ type RedirectOperator =
 	| '<&'
 	| '>&';
 type RedirectNode = NodeMap['redirect'];
+type HereDocumentNode = NodeMap['heredoc'];
 type CommandNode = NodeMap['command'];
 type TypeNode = NodeMap['type'];
 type ParameterNode = NodeMap['parameter'];
@@ -162,6 +174,7 @@ export type IrRedirectNode = [
 	operator: IrRedirectOperator,
 	target: IrWordNode,
 	io?: IrWordNode,
+	body?: string,
 ];
 export type IrCommandNode = [
 	kind: IrKind.Command,
@@ -446,6 +459,7 @@ function createScanner(source: string) {
 	const { current, eof, tk, matchString, matchUntil, error, skip, backtrack } = ScannerApi({
 		source,
 	});
+	const hereDocuments: { redirect: RedirectNode; delimiter: string; stripTabs: boolean }[] = [];
 	const commandSubstitutions = new WeakMap<object, CommandSubstitutionRange[]>();
 	let commandSubstitutionRanges: CommandSubstitutionRange[] | undefined;
 	let signature = false;
@@ -586,6 +600,54 @@ function createScanner(source: string) {
 	return {
 		next,
 		backtrack,
+		queueHereDocument(redirect: RedirectNode) {
+			hereDocuments.push({
+				redirect,
+				delimiter: redirect.target.value ?? text(redirect.target),
+				stripTabs: redirect.operator === '<<-',
+			});
+		},
+		consumeHereDocuments(start: number, line: number) {
+			let cursor = start;
+			const missing: string[] = [];
+			const bodies: HereDocumentNode[] = [];
+			for (const document of hereDocuments.splice(0)) {
+				const bodyStart = cursor;
+				let terminator = '';
+				while (cursor < source.length) {
+					const end = source.indexOf('\n', cursor);
+					const lineEnd = end < 0 ? source.length : end;
+					const value = source.slice(cursor, lineEnd).replace(/\r$/, '');
+					if ((document.stripTabs ? value.replace(/^\t+/, '') : value) === document.delimiter) {
+						terminator = source.slice(cursor, end < 0 ? lineEnd : end + 1);
+						cursor = end < 0 ? lineEnd : end + 1;
+						break;
+					}
+					cursor = end < 0 ? lineEnd : end + 1;
+				}
+				if (!terminator)
+					missing.push(document.delimiter);
+				const body: HereDocumentNode = {
+					kind: 'heredoc',
+					value: source.slice(bodyStart, cursor - terminator.length),
+					terminator,
+					start: bodyStart,
+					end: cursor,
+					line: line + source.slice(start, bodyStart).split('\n').length,
+					source,
+				};
+				document.redirect.body = body;
+				document.redirect.children.push(body);
+				bodies.push(body);
+			}
+			backtrack({
+				start: cursor,
+				end: cursor,
+				line: line + source.slice(start, cursor).split('\n').length,
+				source,
+			});
+			return { missing, bodies };
+		},
 		commandSubstitutions(token: object) {
 			return commandSubstitutions.get(token) ?? [];
 		},
@@ -632,9 +694,10 @@ function createParser(source: string, options: ProgramOptions = {}) {
 	api.start(source);
 	const dialect = options.dialect ?? 'posix';
 	const aliases = new Set<string>();
+	let hasHereDocuments = false;
 	const {
 		current,
-		next,
+		next: readNext,
 		consume,
 		error,
 		errors,
@@ -642,6 +705,24 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		pushError,
 		backtrack,
 	} = api;
+	function next() {
+		const bodies = current().kind === 'newline'
+			? reportMissingHereDocuments(current().end, current().line)
+			: [];
+		readNext();
+		return bodies;
+	}
+	function reportMissingHereDocuments(start: number, line: number) {
+		const { missing, bodies } = scanner.consumeHereDocuments(start, line);
+		for (const delimiter of missing)
+			pushError(error(`Unterminated here document "${delimiter}"`, {
+				start: source.length,
+				end: source.length,
+				line: source.split('\n').length - 1,
+				source,
+			}));
+		return bodies;
+	}
 
 	function parseWord(): WordNode {
 		const token = current();
@@ -729,7 +810,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		if (!isRedirectKind(operator.kind)) throw error('Expected redirect', operator);
 		next();
 		const target = parseWord();
-		return {
+		const redirect: RedirectNode = {
 			...operator,
 			kind: 'redirect',
 			operator: operator.kind,
@@ -739,6 +820,11 @@ function createParser(source: string, options: ProgramOptions = {}) {
 			start: io?.start ?? operator.start,
 			end: target.end,
 		};
+		if (operator.kind === '<<' || operator.kind === '<<-') {
+			hasHereDocuments = true;
+			scanner.queueHereDocument(redirect);
+		}
+		return redirect;
 	}
 
 	function isPortableName(node: WordNode) {
@@ -1092,6 +1178,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		const first = current();
 		const children: Node[] = [];
 		const separators: ListNode['separators'] = [];
+		const hereDocuments: HereDocumentNode[][] = [];
 		while (
 			current().kind !== 'eof' &&
 			current().kind !== ')' &&
@@ -1121,8 +1208,13 @@ function createParser(source: string, options: ProgramOptions = {}) {
 					return undefined;
 				},
 			);
-			if (child) children.push(child);
+			if (child) {
+				children.push(child);
+				hereDocuments.push([]);
+			}
+			if (current().kind === 'comment') next();
 			if (current().kind === ';' || current().kind === '&' || current().kind === 'newline') {
+				const newline = current().kind === 'newline';
 				separators.push(
 					current().kind === ';'
 						? ';'
@@ -1130,7 +1222,9 @@ function createParser(source: string, options: ProgramOptions = {}) {
 							? '&'
 							: 'newline',
 				);
-				next();
+				const bodies = next();
+				if (newline && child && bodies.length)
+					hereDocuments[hereDocuments.length - 1] = bodies;
 			}
 		}
 		const last = children.at(-1) ?? first;
@@ -1139,6 +1233,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 			kind: 'list',
 			children,
 			separators,
+			hereDocuments,
 			start: children[0]?.start ?? first.start,
 			end: last.end,
 		};
@@ -1155,20 +1250,31 @@ function createParser(source: string, options: ProgramOptions = {}) {
 				if (list.children.length) list.separators.push('newline');
 				list.children.push(...recovered.children);
 				list.separators.push(...recovered.separators);
+				list.hereDocuments?.push(...(recovered.hereDocuments ?? []));
 				list.end = recovered.end;
 			}
 		}
 		const eof = current();
-		return {
+		reportMissingHereDocuments(eof.end, eof.line);
+		const root: RootNode = {
 			...eof,
 			kind: 'root',
 			children: list.children.length ? [list] : [],
 			start: 0,
 			end: source.length,
 		};
+		if (hasHereDocuments) extendHereDocumentSpans(root);
+		return root;
 	}
 
 	return { parse: parseRoot, errors };
+}
+function extendHereDocumentSpans(node: Node): number {
+	if (node.kind === 'word' || node.kind === 'type' || node.kind === 'heredoc')
+		return node.end;
+	for (const child of node.children)
+		node.end = Math.max(node.end, extendHereDocumentSpans(child));
+	return node.end;
 }
 function compileNode(node: Node): string {
 	switch (node.kind) {
@@ -1178,14 +1284,17 @@ function compileNode(node: Node): string {
 			return node.children
 				.map((child, index) => {
 					const separator = node.separators[index];
+					const documents = node.hereDocuments?.[index]?.map(compileNode).join('') ?? '';
 					return `${compileNode(child)}${
-						separator === 'newline' ? '\n' : separator ? ` ${separator} ` : ''
+						separator === 'newline' ? '\n' + documents : separator ? ` ${separator} ` : ''
 					}`;
 				})
 				.join('')
 				.trimEnd();
 		case 'word':
 			return text(node);
+		case 'heredoc':
+			return node.value + node.terminator;
 		case 'group': {
 			const body = compileNode(node.children[0]);
 			return node.opener === '('
@@ -1205,7 +1314,7 @@ function compileNode(node: Node): string {
 					: ''
 			}`;
 		case 'for': {
-			const words = node.words?.map(compileNode).join(' ');
+			const words = node.words?.map(word => compileNode(word)).join(' ');
 			const header = node.words
 				? `for ${compileNode(node.variable)} in${words ? ` ${words}` : ''}`
 				: `for ${compileNode(node.variable)}`;
@@ -1260,6 +1369,8 @@ function lowerWord(node: WordNode): IrWordNode {
 function lowerRedirect(node: RedirectNode): IrRedirectNode {
 	const operator = irRedirectOperators[node.operator];
 	const target = lowerWord(node.target);
+	if (node.body !== undefined)
+		return [IrKind.Redirect, operator, target, node.io && lowerWord(node.io), node.body.value];
 	return node.io
 		? [IrKind.Redirect, operator, target, lowerWord(node.io)]
 		: [IrKind.Redirect, operator, target];
@@ -1297,6 +1408,8 @@ function lowerNode(node: Node): IrNode {
 	switch (node.kind) {
 		case 'word':
 			return lowerWord(node);
+		case 'heredoc':
+			throw new Error('Cannot lower a standalone here document');
 		case 'redirect':
 			return lowerRedirect(node);
 		case 'command':
