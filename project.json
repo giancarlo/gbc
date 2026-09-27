@@ -17,7 +17,10 @@
 		"tasks": {
 			"steps": {
 				"code_review": {
-					"refinement": "Identify features that can be reused by other packages that belong in sdk."
+					"additionalInstructions": "Identify features that can be reused by other packages that belong in sdk."
+				},
+				"publish": {
+					"additionalInstructions": "GB Language website is in ../notes repo. Publish it from there."
 				}
 			}
 		}
