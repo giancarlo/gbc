@@ -768,6 +768,67 @@ export default spec('cmd', s => {
 			});
 		});
 
+		it.should('parse embedded braces as one expanded shell word', (a: TestApi) => {
+			const source = 'rg path/{a,b}';
+			const parsed = program().parse(source);
+			a.equalValues(parsed.errors, []);
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list');
+			const command = list.children[0];
+			a.assert(command?.kind === 'command');
+			a.equalValues(command.parts.map(part => part.kind), ['word', 'word']);
+			a.equalValues(command.children, command.parts);
+			const argument = command.parts[1];
+			a.assert(argument?.kind === 'word');
+			a.equalValues([argument.start, argument.end], [3, source.length]);
+			a.equalValues(source.slice(argument.start, argument.end), 'path/{a,b}');
+			a.equalValues(metadata('path/{a,b}'), {
+				kind: 'word',
+				value: undefined,
+				literal: false,
+				hasExpansion: true,
+				hasParameterExpansion: false,
+				hasCommandSubstitution: false,
+				hasBackticks: false,
+				hasNonliteralConstruct: true,
+			});
+		});
+
+		it.should('preserve standalone brace command groups', (a: TestApi) => {
+			const parsed = program().parse('{ echo hello; }');
+			a.equalValues(parsed.errors, []);
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list');
+			const command = list.children[0];
+			a.assert(command?.kind === 'command');
+			a.equalValues(command.parts.length, 1);
+			const group = command.parts[0];
+			a.assert(group?.kind === 'group');
+			a.equalValues([group.opener, group.closer], ['{', '}']);
+			a.equalValues(compiler(group), '{ echo hello ; }');
+		});
+
+		it.should('preserve quoted and escaped braces as literal words', a => {
+			for (const source of [
+				"'path/{a,b}'",
+				'"path/{a,b}"',
+				'path/\\{a,b\\}',
+				"path/'{a,b}'",
+				'path/"{a,b}"',
+			]) {
+				a.equalValues(metadata(source), {
+					kind: 'word',
+					value: 'path/{a,b}',
+					literal: true,
+					hasExpansion: false,
+					hasParameterExpansion: false,
+					hasCommandSubstitution: false,
+					hasBackticks: false,
+					hasNonliteralConstruct: false,
+				});
+			}
+		});
+
 		it.should('mark unsafe shell words in the AST', a => {
 			a.equalValues(metadata('${name}'), {
 				kind: 'word',

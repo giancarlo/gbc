@@ -260,7 +260,7 @@ const operators = [
 
 const isSpace = (ch: string) => ch === ' ' || ch === '\t' || ch === '\r';
 const isControl = (ch: string) =>
-	ch === '' || ch === '\n' || isSpace(ch) || '|&;(){}<>'.includes(ch);
+	ch === '' || ch === '\n' || isSpace(ch) || '|&;()<>'.includes(ch);
 const isNameStart = (ch: string) => /[A-Za-z_]/.test(ch);
 const portableName = /^[A-Za-z_]\w*$/;
 const ideCommandName = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*!?$/;
