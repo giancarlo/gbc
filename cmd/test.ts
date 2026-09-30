@@ -847,6 +847,92 @@ export default spec('cmd', s => {
 			a.equalValues(metadata('*.ts').literal, false);
 		});
 
+		it.should(
+			'parse process substitutions as nonliteral shell words',
+			(a: TestApi) => {
+				for (const source of [
+					"rg -n 'supported|200|rewrite' <(curl -s https://developers.cloudflare.com/workers/static-assets/redirects/index.md) | head -15",
+					'cat <(pwd) >(sort)',
+					'cat prefix<(pwd)suffix',
+					'cat < <(pwd)',
+					'cat <(cat <(pwd))',
+					'cat "$(cat <(pwd))"',
+					'cat <(echo "(quoted)")',
+				]) {
+					const parsed = program().parse(source);
+					a.equalValues(parsed.errors, [], source);
+					a.equal(program().compile(source).output, source);
+				}
+				for (const source of [
+					'<(pwd)',
+					'>(sort)',
+					'prefix<(pwd)suffix',
+				]) {
+					const substitution = word(source);
+					a.equal(substitution.literal, false);
+					a.equal(substitution.value, undefined);
+					a.equal(substitution.hasExpansion, true);
+				}
+				for (const source of ["'<(pwd)'", '"<(pwd)"', '\\<\\(pwd\\)']) {
+					a.equal(word(source).literal, true);
+				}
+			},
+		);
+
+		it.should(
+			'reject malformed process substitution bodies',
+			(a: TestApi) => {
+				for (const source of [
+					'cat <(pwd',
+					'cat >(sort',
+					'cat <(pwd &&)',
+					'cat >(sort &&)',
+				])
+					a.assert(program().parse(source).errors.length > 0, source);
+			},
+		);
+
+		it.should(
+			'retain process substitution bodies and unsafe IR flags',
+			(a: TestApi) => {
+				for (const operator of ['<', '>'] as const) {
+					const source = `${operator}(echo "$(pwd)")`;
+					const substitution = word(source);
+					a.equal(substitution.hasCommandSubstitution, false);
+					a.equalValues(substitution.commandSubstitutions, []);
+					a.equalValues(
+						substitution.processSubstitutions?.map(process => [
+							process.operator,
+							compiler(process.body),
+						]),
+						[[operator, 'echo "$(pwd)"']],
+					);
+					a.equalValues(program().ir(program().parse(source).root), [
+						1,
+						[
+							IrKind.List,
+							[],
+							[
+								IrKind.Command,
+								[IrKind.Word, source, IrWordFlags.Other],
+							],
+						],
+					]);
+				}
+				const diagnostics = program().parse('cat <(pwd &&)').errors;
+				a.equalValues(
+					diagnostics.map(error => [
+						error.message,
+						error.position.start,
+						error.position.end,
+					]),
+					[['Expected command', 12, 12]],
+				);
+				a.equalValues(word('"<(pwd)"').processSubstitutions, undefined);
+				a.equalValues(word('"$(cat <(pwd))"').processSubstitutions, undefined);
+			},
+		);
+
 		it.should('parse command substitutions in shell words', (a: TestApi) => {
 			const commands = (source: string) =>
 				(word(source).commandSubstitutions ?? []).map(root => compiler(root));

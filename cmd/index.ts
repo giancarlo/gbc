@@ -28,6 +28,7 @@ type BaseNodeMap = {
 		hasParameterExpansion: boolean;
 		hasCommandSubstitution: boolean;
 		commandSubstitutions?: RootNode[];
+		processSubstitutions?: { operator: '<' | '>'; body: RootNode }[];
 		hasBackticks: boolean;
 		hasNonliteralConstruct: boolean;
 	};
@@ -268,11 +269,18 @@ const isSpecialParameter = (ch: string) => '@*#?$!-0123456789'.includes(ch);
 
 type WordState = Omit<
 	WordNode,
-	'start' | 'end' | 'line' | 'source' | 'kind' | 'commandSubstitutions'
+	| 'start'
+	| 'end'
+	| 'line'
+	| 'source'
+	| 'kind'
+	| 'commandSubstitutions'
+	| 'processSubstitutions'
 >;
-interface CommandSubstitutionRange {
+interface SubstitutionRange {
 	start: number;
 	end: number;
+	operator?: '<' | '>';
 }
 
 function decodeAnsiEscape(source: string, index: number) {
@@ -313,9 +321,14 @@ function decodeAnsiEscape(source: string, index: number) {
 	return { value: `\\${ch}`, end: index + 1 };
 }
 
-function inspectWord({ source, start, end }: ScannerToken): WordState {
+function inspectWord(
+	{ source, start, end }: ScannerToken,
+	ranges: SubstitutionRange[],
+): WordState {
 	let value = '';
 	let index = start;
+	const processes = ranges.filter(range => range.operator);
+	let processIndex = 0;
 	const state = {
 		hasParameterExpansion: false,
 		hasCommandSubstitution: false,
@@ -401,6 +414,13 @@ function inspectWord({ source, start, end }: ScannerToken): WordState {
 	}
 
 	while (index < end) {
+		const process = processes[processIndex];
+		if (process && start + process.start - 2 === index) {
+			markOther();
+			index = start + process.end + 1;
+			processIndex++;
+			continue;
+		}
 		const ch = source.charAt(index);
 		if (ch === "'") {
 			readQuoted("'");
@@ -460,8 +480,8 @@ function createScanner(source: string) {
 		source,
 	});
 	const hereDocuments: { redirect: RedirectNode; delimiter: string; stripTabs: boolean }[] = [];
-	const commandSubstitutions = new WeakMap<object, CommandSubstitutionRange[]>();
-	let commandSubstitutionRanges: CommandSubstitutionRange[] | undefined;
+	const substitutions = new WeakMap<object, SubstitutionRange[]>();
+	let substitutionRanges: SubstitutionRange[] | undefined;
 	let signature = false;
 
 	function scanQuoted(
@@ -535,15 +555,15 @@ function createScanner(source: string) {
 			arithmetic && captureCommandSubstitutions,
 		);
 		if (captureCommandSubstitutions && !arithmetic)
-			(commandSubstitutionRanges ??= []).push({ start, end: end - 1 });
+			(substitutionRanges ??= []).push({ start, end: end - 1 });
 		return end;
 	}
 
 	function scanWord() {
 		let consumed = 0;
-		commandSubstitutionRanges = undefined;
+		substitutionRanges = undefined;
 		while (
-			!isControl(current(consumed)) &&
+			(!isControl(current(consumed)) || isProcessSubstitution(consumed)) &&
 			(!signature || !':,=?'.includes(current(consumed)))
 		) {
 			const ch = current(consumed);
@@ -555,7 +575,15 @@ function createScanner(source: string) {
 				consumed += 2;
 				continue;
 			}
-			if (ch === '$' && current(consumed + 1) === '(')
+			if ((ch === '<' || ch === '>') && isProcessSubstitution(consumed)) {
+				const start = consumed + 2;
+				consumed = scanEnclosed('(', ')', start);
+				(substitutionRanges ??= []).push({
+					start,
+					end: consumed - 1,
+					operator: ch,
+				});
+			} else if (ch === '$' && current(consumed + 1) === '(')
 				consumed = scanCommandSubstitution(consumed, true);
 			else if (ch === '$' && current(consumed + 1) === '{')
 				consumed = scanEnclosed(
@@ -568,13 +596,15 @@ function createScanner(source: string) {
 			else consumed++;
 		}
 		const token = tk('word', consumed);
-		const ranges = getCommandSubstitutionRanges();
-		if (ranges) commandSubstitutions.set(token, ranges);
+		if (substitutionRanges) substitutions.set(token, substitutionRanges);
 		return token;
 	}
 
-	function getCommandSubstitutionRanges() {
-		return commandSubstitutionRanges;
+	function isProcessSubstitution(offset = 0) {
+		return (
+			(current(offset) === '<' || current(offset) === '>') &&
+			current(offset + 1) === '('
+		);
 	}
 
 	function next() {
@@ -590,6 +620,7 @@ function createScanner(source: string) {
 			if (current() === '=') return tk('=', 1);
 			if (current() === '?') return tk('?', 1);
 		}
+		if (isProcessSubstitution()) return scanWord();
 		for (const operator of operators) {
 			const consumed = matchString(operator);
 			if (consumed) return tk(operator, consumed);
@@ -648,8 +679,8 @@ function createScanner(source: string) {
 			});
 			return { missing, bodies };
 		},
-		commandSubstitutions(token: object) {
-			return commandSubstitutions.get(token) ?? [];
+		substitutions(token: object) {
+			return substitutions.get(token) ?? [];
 		},
 		setSignature(value: boolean) {
 			signature = value;
@@ -728,8 +759,11 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		const token = current();
 		if (token.kind !== 'word') throw error('Expected shell word', token);
 		next();
-		const metadata = inspectWord(token);
-		const commandSubstitutions = scanner.commandSubstitutions(token).map(range => {
+		const ranges = scanner.substitutions(token);
+		const metadata = inspectWord(token, ranges);
+		const commandSubstitutions: RootNode[] = [];
+		const processSubstitutions: NonNullable<WordNode['processSubstitutions']> = [];
+		for (const range of ranges) {
 			const offset = token.start + range.start;
 			const parser = createParser(
 				source.slice(offset, token.start + range.end),
@@ -750,13 +784,15 @@ function createParser(source: string, options: ProgramOptions = {}) {
 					}),
 				);
 			}
-			return root;
-		});
+			if (range.operator) processSubstitutions.push({ operator: range.operator, body: root });
+			else commandSubstitutions.push(root);
+		}
 		return {
 			...token,
 			kind: 'word',
 			...metadata,
 			commandSubstitutions,
+			...(processSubstitutions.length ? { processSubstitutions } : {}),
 		};
 	}
 
