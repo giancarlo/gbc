@@ -18,7 +18,7 @@ export interface ProgramOptions {
 export type ScannerToken = ReturnType<ReturnType<typeof createScanner>['next']>;
 export type Kind = ScannerToken['kind'];
 
-export const keywords: readonly string[] = ['for', 'in', 'do', 'done'];
+export const keywords: readonly string[] = ['for', 'in', 'do', 'done', 'if', 'then', 'elif', 'else', 'fi'];
 
 type BaseNodeMap = {
 	word: {
@@ -77,6 +77,13 @@ type BaseNodeMap = {
 		body: ListNode;
 		children: (WordNode | ListNode)[];
 	};
+	if: {
+		condition: ListNode;
+		body: ListNode;
+		alternate?: ListNode | IfNode;
+		redirects: RedirectNode[];
+		children: (ListNode | IfNode | RedirectNode)[];
+	};
 	group: {
 		opener: '(' | '{';
 		closer: ')' | '}';
@@ -112,6 +119,7 @@ type ParameterNode = NodeMap['parameter'];
 type TypeAliasNode = NodeMap['typealias'];
 type FunctionNode = NodeMap['function'];
 type ForNode = NodeMap['for'];
+type IfNode = NodeMap['if'];
 type GroupNode = NodeMap['group'];
 type ListNode = NodeMap['list'];
 type RootNode = NodeMap['root'];
@@ -132,6 +140,7 @@ export enum IrKind {
 	Or,
 	List,
 	For,
+	If,
 }
 
 export enum IrWordFlags {
@@ -224,6 +233,13 @@ export type IrForNode = [
 	words: IrWordNode[] | null,
 	body: IrListNode,
 ];
+export type IrIfNode = [
+	kind: IrKind.If,
+	condition: IrListNode,
+	body: IrListNode,
+	alternate: IrListNode | IrIfNode | null,
+	...redirects: IrRedirectNode[],
+];
 export type IrNode =
 	| IrWordNode
 	| IrRedirectNode
@@ -235,6 +251,7 @@ export type IrNode =
 	| IrGroupNode
 	| IrBinaryNode
 	| IrForNode
+	| IrIfNode
 	| IrListNode;
 export type Ir = [version: 1, root?: IrListNode];
 
@@ -1024,12 +1041,9 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		throw error('Expected function body', current());
 	}
 
-	function parseFunction(): FunctionNode {
-		const name = parseFunctionName();
-		const { parameters, returnType, end } = parseFunctionSignature();
-		const body = parseFunctionBody();
+	function parseRedirects() {
 		const redirects: RedirectNode[] = [];
-		while (body) {
+		while (true) {
 			if (isRedirectKind(current().kind)) {
 				redirects.push(parseRedirect());
 				continue;
@@ -1043,6 +1057,14 @@ function createParser(source: string, options: ProgramOptions = {}) {
 			}
 			redirects.push(parseRedirect(io));
 		}
+		return redirects;
+	}
+
+	function parseFunction(): FunctionNode {
+		const name = parseFunctionName();
+		const { parameters, returnType, end } = parseFunctionSignature();
+		const body = parseFunctionBody();
+		const redirects = body ? parseRedirects() : [];
 		return {
 			...name,
 			kind: 'function',
@@ -1089,7 +1111,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		if (!separated)
 			throw error('Expected ";" or newline before "do"', current());
 		consumeKeyword('do');
-		const body = parseList('done');
+		const body = parseList(['done']);
 		if (!body.children.length)
 			pushError(error('Expected loop body', current()));
 		const done = consumeKeyword('done');
@@ -1101,6 +1123,42 @@ function createParser(source: string, options: ProgramOptions = {}) {
 			body,
 			children: [variable, ...words ?? [], body],
 			end: done.end,
+		};
+	}
+
+	function parseIf(keyword: 'if' | 'elif' = 'if'): IfNode {
+		const first = consumeKeyword(keyword);
+		const condition = parseList(['then']);
+		if (!condition.children.length)
+			pushError(error('Expected conditional condition', current()));
+		consumeKeyword('then');
+		const body = parseList(['elif', 'else', 'fi']);
+		if (!body.children.length)
+			pushError(error('Expected conditional body', current()));
+		let alternate: IfNode | ListNode | undefined;
+		let end: number;
+		if (isKeyword('elif')) {
+			alternate = parseIf('elif');
+			end = alternate.end;
+		} else {
+			if (isKeyword('else')) {
+				next();
+				alternate = parseList(['fi']);
+				if (!alternate.children.length)
+					pushError(error('Expected conditional body', current()));
+			}
+			end = consumeKeyword('fi').end;
+		}
+		const redirects = keyword === 'if' ? parseRedirects() : [];
+		return {
+			...first,
+			kind: 'if',
+			condition,
+			body,
+			alternate,
+			redirects,
+			children: [condition, body, ...alternate ? [alternate] : [], ...redirects],
+			end: redirects.at(-1)?.end ?? end,
 		};
 	}
 
@@ -1160,14 +1218,19 @@ function createParser(source: string, options: ProgramOptions = {}) {
 	}
 
 	function parsePipe(): Node {
-		const parsePipelineCommand = () =>
-			dialect === 'posix' && isKeyword('for')
-				? parseFor()
-				: isTypeAlias()
+		const parsePipelineCommand = () => {
+			if (dialect === 'posix') {
+				if (isKeyword('if')) return parseIf();
+				if (isKeyword('for')) return parseFor();
+				if (['then', 'elif', 'else', 'fi'].some(isKeyword))
+					throw error(`Unexpected "${text(current())}"`, current());
+			}
+			return isTypeAlias()
 				? parseTypeAlias()
 				: isFunctionDefinition()
 					? parseFunction()
 					: parseCommand();
+		};
 		let left: Node = parsePipelineCommand();
 		while (current().kind === '|') {
 			const operator = current();
@@ -1210,7 +1273,12 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		return left;
 	}
 
-	function parseList(stopWord?: string): ListNode {
+	function validateConditionalSeparator(node: Node) {
+		if (node.kind === 'if' && !commandEndKinds.has(current().kind))
+			pushError(error('Expected separator after conditional', current()));
+	}
+
+	function parseList(stopWords: readonly string[] = []): ListNode {
 		const first = current();
 		const children: Node[] = [];
 		const separators: ListNode['separators'] = [];
@@ -1219,7 +1287,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 			current().kind !== 'eof' &&
 			current().kind !== ')' &&
 			current().kind !== '}' &&
-			!(stopWord && isKeyword(stopWord))
+			!stopWords.some(isKeyword)
 		) {
 			if (current().kind === 'comment') {
 				next();
@@ -1247,6 +1315,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 			if (child) {
 				children.push(child);
 				hereDocuments.push([]);
+				validateConditionalSeparator(child);
 			}
 			if (current().kind === 'comment') next();
 			if (current().kind === ';' || current().kind === '&' || current().kind === 'newline') {
@@ -1357,6 +1426,19 @@ function compileNode(node: Node): string {
 			const body = compileNode(node.body);
 			return `${header}; do ${body}${/[;&]$/.test(body) ? '' : ' ;'} done`;
 		}
+		case 'if': {
+			const list = (body: ListNode) => {
+				const output = compileNode(body);
+				if (body.separators.at(-1) === 'newline') return `${output}\n`;
+				return `${output}${/[;&\n]$/.test(output) ? '' : ' ;'}`;
+			};
+			const alternate = node.alternate?.kind === 'if'
+				? ` el${compileNode(node.alternate)}`
+				: `${node.alternate ? ` else ${list(node.alternate)}` : ''} fi`;
+			return `if ${list(node.condition)} then ${list(node.body)}${alternate}${
+				node.redirects.length ? ` ${node.redirects.map(compileNode).join(' ')}` : ''
+			}`;
+		}
 		case 'redirect':
 			return `${node.io ? compileNode(node.io) : ''}${node.operator} ${compileNode(node.target)}`;
 		case 'type':
@@ -1440,6 +1522,18 @@ function lowerParameter(node: ParameterNode): IrParameterNode {
 		: [IrKind.Parameter, value, node.type.name];
 }
 
+function lowerIf(node: IfNode): IrIfNode {
+	return [
+		IrKind.If,
+		lowerList(node.condition),
+		lowerList(node.body),
+		node.alternate?.kind === 'if'
+			? lowerIf(node.alternate)
+			: node.alternate ? lowerList(node.alternate) : null,
+		...node.redirects.map(lowerRedirect),
+	];
+}
+
 function lowerNode(node: Node): IrNode {
 	switch (node.kind) {
 		case 'word':
@@ -1495,6 +1589,8 @@ function lowerNode(node: Node): IrNode {
 				node.words?.map(lowerWord) ?? null,
 				lowerList(node.body),
 			];
+		case 'if':
+			return lowerIf(node);
 		case 'group':
 			return lowerGroup(node);
 		case '|':

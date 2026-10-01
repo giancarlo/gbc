@@ -136,7 +136,7 @@ export default spec('cmd', s => {
 		});
 
 		it.should('scan command operators', a => {
-			a.equalValues(keywords, ['for', 'in', 'do', 'done']);
+			a.equalValues(keywords, ['for', 'in', 'do', 'done', 'if', 'then', 'elif', 'else', 'fi']);
 			a.equalValues(kinds('echo hello | cat && grep foo || (sed edit)'), [
 				'word',
 				'word',
@@ -347,6 +347,64 @@ export default spec('cmd', s => {
 				compiled.output,
 				'greet() { echo hi ; } 2> errors\nsubshell() (echo ok)',
 			);
+		});
+
+		it.should('parse POSIX conditionals as syntax', (a: TestApi) => {
+			const parsed = program().parse('if test -f file; then cat file; fi');
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list', 'Expected command list');
+			a.equalValues(parsed.errors, []);
+			a.equalValues(list.children.map(node => node.kind), ['if']);
+			const conditional = list.children[0];
+			a.assert(conditional?.kind === 'if', 'Expected conditional');
+			a.equalValues(conditional.children, [conditional.condition, conditional.body]);
+			a.equalValues({ start: conditional.start, end: conditional.end }, { start: 0, end: 34 });
+			a.equal(findNodeAtIndex(parsed.root, 3)?.kind, 'word');
+			a.equal(findNodeAtIndex(parsed.root, 19), conditional);
+			a.equalValues(program().ir(parsed.root), [1, [IrKind.List, [], [
+				IrKind.If,
+				[IrKind.List, [IrSeparator.Semicolon], [IrKind.Command, [IrKind.Word, 'test'], [IrKind.Word, '-f'], [IrKind.Word, 'file']]],
+				[IrKind.List, [IrSeparator.Semicolon], [IrKind.Command, [IrKind.Word, 'cat'], [IrKind.Word, 'file']]],
+				null,
+			]]]);
+		});
+
+		it.should('compile nested conditionals and every alternate branch', (a: TestApi) => {
+			for (const source of [
+				'if test -f file; then cat file; fi',
+				'if test -f file; then cat file; elif test -f other; then cat other; elif true; then echo fallback; else echo missing; fi',
+				'if true\nthen\nif false; then echo no; else echo yes; fi\nfi',
+				'for p in one two; do if test -f "$p"; then cat "$p"; fi; done',
+				'if true; then echo yes & else echo no; fi 2>errors',
+				'if true; then echo "$(if false; then echo no; else echo yes; fi)"; fi',
+				'if true; then cat <<EOF\nhello\nEOF\nfi',
+			]) {
+				const compiled = program().compile(source);
+				a.equalValues(compiled.errors, []);
+				const reparsed = program().parse(compiled.output);
+				a.equalValues(reparsed.errors, []);
+				a.equalValues(program().ir(reparsed.root), program().ir(compiled.ast));
+			}
+		});
+
+		it.should('keep quoted keywords and keyword arguments as words', (a: TestApi) => {
+			for (const source of ['"if" true; \'then\' echo; \\fi', 'echo if then elif else fi', 'if true; then echo if then elif else fi; fi']) {
+				a.equalValues(program().parse(source).errors, []);
+			}
+			const parsed = program({ dialect: 'ide' }).parse('if true; then echo; fi');
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list', 'Expected list');
+			a.equalValues(list.children.map(node => node.kind), ['command', 'command', 'command']);
+		});
+
+		it.should('report malformed conditional syntax', a => {
+			for (const source of [
+				'if then echo; fi', 'if true; echo yes; fi', 'if true; then fi',
+				'if true; then echo yes', 'if true; then echo yes; else fi',
+				'if true; then echo yes; elif then echo no; fi',
+				'then echo yes', 'else echo no', 'fi', 'if true; then echo; fi echo after',
+				'if true; then if true; then echo; fi else echo; fi',
+			]) a.ok(program().parse(source).errors.length, source);
 		});
 
 		it.should('parse POSIX for loops as loop nodes', (a: TestApi) => {
