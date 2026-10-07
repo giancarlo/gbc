@@ -25,7 +25,8 @@
 		"runtime-errors.ts",
 		"symbol-table.ts",
 		"target-wasm.ts",
-		"node.ts"
+		"node.ts",
+		"highlight.ts"
 	],
 	"references": [
 		{

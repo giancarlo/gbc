@@ -38,6 +38,71 @@
           }
         }
       }
+    },
+    "f608f1e0e5ad1f8253750e19a0921220b05db2d6ff7a41df7b3585faa787f847": {
+      "fingerprint": {
+        "browser": "Node/v24.13.0",
+        "platform": "linux",
+        "architecture": "arm64",
+        "cpu": "unknown",
+        "gpu": "",
+        "profile": "--input-type=module"
+      },
+      "benchmarks": {
+        "javascript > should tokenize editor-sized source": {
+          "type": "benchmark",
+          "iterations": 10,
+          "values": [
+            2.335283300000003,
+            2.1296333000000005,
+            2.0954291000000014,
+            2.0338209000000007,
+            2.045779200000004,
+            2.039145899999994,
+            2.032837500000005,
+            2.048804199999995,
+            2.0647832999999993,
+            2.064983300000006
+          ],
+          "median": 2.056793749999997,
+          "mad": 0.0203103499999997,
+          "p75": 2.0878176500000025,
+          "p95": 2.2427408000000018,
+          "operationsPerSecond": 486.19362053195727,
+          "options": {
+            "warmup": 50,
+            "sampleTime": 20,
+            "samples": 10
+          }
+        },
+        "javascript > should highlight editor-sized source": {
+          "type": "benchmark",
+          "iterations": 11,
+          "values": [
+            2.4525947272727224,
+            2.4564470000000047,
+            2.450541636363637,
+            2.4575719999999963,
+            2.5628977272727256,
+            2.448886363636358,
+            2.3916249999999972,
+            2.399795454545442,
+            2.4186059999999956,
+            2.468969727272741
+          ],
+          "median": 2.45156818181818,
+          "mad": 0.011702681818188676,
+          "p75": 2.4572907499999985,
+          "p95": 2.5206301272727325,
+          "operationsPerSecond": 407.9021776413987,
+          "options": {
+            "warmup": 50,
+            "sampleTime": 20,
+            "samples": 10,
+            "maxRegression": 15
+          }
+        }
+      }
     }
   }
 }

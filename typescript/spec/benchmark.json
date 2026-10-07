@@ -38,6 +38,71 @@
           }
         }
       }
+    },
+    "f608f1e0e5ad1f8253750e19a0921220b05db2d6ff7a41df7b3585faa787f847": {
+      "fingerprint": {
+        "browser": "Node/v24.13.0",
+        "platform": "linux",
+        "architecture": "arm64",
+        "cpu": "unknown",
+        "gpu": "",
+        "profile": "--input-type=module"
+      },
+      "benchmarks": {
+        "typescript > should tokenize editor-sized source": {
+          "type": "benchmark",
+          "iterations": 10,
+          "values": [
+            2.359579199999996,
+            2.3623166999999965,
+            2.3316832999999972,
+            2.278016600000001,
+            2.2769708000000035,
+            2.2730500000000005,
+            2.2662666999999943,
+            2.2843374999999924,
+            2.2883332999999992,
+            2.285516700000005
+          ],
+          "median": 2.2849270999999987,
+          "mad": 0.00991669999999667,
+          "p75": 2.3208457999999976,
+          "p95": 2.3610848249999963,
+          "operationsPerSecond": 437.6507241740888,
+          "options": {
+            "warmup": 50,
+            "sampleTime": 20,
+            "samples": 10
+          }
+        },
+        "typescript > should highlight editor-sized source": {
+          "type": "benchmark",
+          "iterations": 10,
+          "values": [
+            2.9523291000000085,
+            2.7926375000000005,
+            2.7946041000000035,
+            2.8022542000000046,
+            2.8110000000000013,
+            2.801941599999998,
+            2.778037500000005,
+            2.7675457999999935,
+            2.7855999999999996,
+            2.820575000000008
+          ],
+          "median": 2.798272850000001,
+          "mad": 0.012700000000000822,
+          "p75": 2.808813550000002,
+          "p95": 2.893039755000008,
+          "operationsPerSecond": 357.36329286116603,
+          "options": {
+            "warmup": 50,
+            "sampleTime": 20,
+            "samples": 10,
+            "maxRegression": 15
+          }
+        }
+      }
     }
   }
 }

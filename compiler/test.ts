@@ -1,3 +1,4 @@
+import { highlight } from './highlight.js';
 import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
 import { tokenize } from '../sdk/index.js';
@@ -21,6 +22,28 @@ declare const WebAssembly: {
 Language design proposals must satisfy docs/feature-laws.md.
 */
 export default spec('Language Reference', s => {
+	s.test('public highlighting contract', it => {
+		it.test('normalizes categories and omits EOF', a => {
+			a.equalValues(
+				[...highlight('var value = 42')].map(token => token.kind),
+				['keyword', 'identifier', 'operator', 'number'],
+			);
+			a.equalValues([...highlight('')], []);
+		});
+		it.test('preserves original source positions and independent calls', a => {
+			const source = 'first\nsecond';
+			const tokens = [...highlight(source)];
+			a.equalValues(
+				tokens
+					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.map(token => [source.slice(token.start, token.end), token.line]),
+				 [['first', 0], ['second', 1]],
+			);
+			a.equal(tokens.every(token => token.source === source), true);
+			a.equalValues([...highlight(source)], tokens);
+		});
+	});
+
 	const { h } = s;
 
 	s.test('formats conditional expressions', it => {

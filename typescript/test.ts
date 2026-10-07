@@ -1,3 +1,4 @@
+import { highlight } from './highlight.js';
 import { spec } from '@cxl/spec';
 import { text, tokenize } from '../sdk/index.js';
 import { scan } from './index.js';
@@ -20,6 +21,28 @@ const tokens = (source: string) =>
 	]);
 
 export default spec('typescript', it => {
+	it.test('public highlighting contract', it => {
+		it.test('normalizes categories and omits EOF', a => {
+			a.equalValues(
+				[...highlight('const value: number = 42;')].map(token => token.kind),
+				['keyword', 'identifier', 'punctuation', 'type', 'operator', 'number', 'punctuation'],
+			);
+			a.equalValues([...highlight('')], []);
+		});
+		it.test('preserves original source positions and independent calls', a => {
+			const source = 'first\nsecond';
+			const tokens = [...highlight(source)];
+			a.equalValues(
+				tokens
+					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.map(token => [source.slice(token.start, token.end), token.line]),
+				 [['first', 0], ['second', 1]],
+			);
+			a.equal(tokens.every(token => token.source === source), true);
+			a.equalValues([...highlight(source)], tokens);
+		});
+	});
+
 	it.should('highlight TypeScript token categories and positions', a => {
 		a.equalValues(tokens('const value: number = 0x2a + 0b10 + 0o7 + 1.5e2;'), [
 			['keyword', 'const', 0, 5, 0],
@@ -106,6 +129,14 @@ export default spec('typescript', it => {
 			warmup: 50,
 			sampleTime: 20,
 			samples: 10,
+		}),
+	);
+	it.should('highlight editor-sized source', a =>
+		a.benchmark(() => [...highlight(benchmarkSource)].length, {
+			warmup: 50,
+			sampleTime: 20,
+			samples: 10,
+			maxRegression: 15,
 		}),
 	);
 });

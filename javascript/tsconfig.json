@@ -1,6 +1,6 @@
 {
 	"extends": "../tsconfig.json",
 	"compilerOptions": { "outDir": "../dist/javascript" },
-	"files": ["index.ts"],
+	"files": ["index.ts", "highlight.ts"],
 	"references": [{ "path": "../sdk" }]
 }

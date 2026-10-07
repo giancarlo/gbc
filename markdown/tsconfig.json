@@ -3,6 +3,6 @@
 	"compilerOptions": {
 		"outDir": "../dist/markdown"
 	},
-	"files": ["index.ts"],
+	"files": ["index.ts", "highlight.ts"],
 	"references": [{ "path": "../sdk" }]
 }

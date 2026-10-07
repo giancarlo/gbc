@@ -1,3 +1,4 @@
+import { highlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import {
 	Flags,
@@ -27,6 +28,34 @@ declare global {
 }
 
 export default spec('basic', (a: TestApi) => {
+	a.test('public highlighting contract', it => {
+		it.test('preserves named and numeric labels', a => {
+			a.equalValues(
+				[...highlight('start:\n10 PRINT 1')].map(token => token.kind),
+				['label', 'text', 'label', 'keyword', 'number'],
+			);
+		});
+		it.test('normalizes categories and omits EOF', a => {
+			a.equalValues(
+				[...highlight('PRINT "hi", 42')].map(token => token.kind),
+				['keyword', 'string', 'punctuation', 'number'],
+			);
+			a.equalValues([...highlight('')], []);
+		});
+		it.test('preserves original source positions and independent calls', a => {
+			const source = 'first\nsecond';
+			const tokens = [...highlight(source)];
+			a.equalValues(
+				tokens
+					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.map(token => [source.slice(token.start, token.end), token.line]),
+				 [['first', 0], ['\n', 0], ['second', 1]],
+			);
+			a.equal(tokens.every(token => token.source === source), true);
+			a.equalValues([...highlight(source)], tokens);
+		});
+	});
+
 	a.test('scanner', it => {
 		it.should('scan canonical keywords, suffixes, operators, and positions', a => {
 			const source = 'pRiNt Value$ >= .5\nNEXT';

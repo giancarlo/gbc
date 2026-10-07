@@ -1,7 +1,30 @@
+import { highlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import { scanner } from './index.js';
 
 export default spec('html', (a: TestApi) => {
+	a.test('public highlighting contract', it => {
+		it.test('normalizes categories and omits EOF', a => {
+			a.equalValues(
+				[...highlight('<div id="x">hi</div>')].map(token => token.kind),
+				['punctuation', 'tag', 'attribute', 'operator', 'string', 'punctuation', 'text', 'punctuation', 'punctuation', 'tag', 'punctuation'],
+			);
+			a.equalValues([...highlight('')], []);
+		});
+		it.test('preserves original source positions and independent calls', a => {
+			const source = 'first\nsecond';
+			const tokens = [...highlight(source)];
+			a.equalValues(
+				tokens
+					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.map(token => [source.slice(token.start, token.end), token.line]),
+				 [['first\nsecond', 0]],
+			);
+			a.equal(tokens.every(token => token.source === source), true);
+			a.equalValues([...highlight(source)], tokens);
+		});
+	});
+
 	a.test('scanner.next() basic token.kinds', it => {
 		it.test('should return eof on empty input', a => {
 			const s = scanner('');

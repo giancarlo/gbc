@@ -1,3 +1,4 @@
+import { highlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import {
 	compiler,
@@ -16,6 +17,28 @@ import {
 //import { ast } from './debug.js';
 
 export default spec('cmd', s => {
+	s.test('public highlighting contract', it => {
+		it.test('normalizes categories and omits EOF', a => {
+			a.equalValues(
+				[...highlight('if echo "hi"; then echo 42; fi')].map(token => token.kind),
+				['keyword', 'identifier', 'string', 'punctuation', 'keyword', 'identifier', 'number', 'punctuation', 'keyword'],
+			);
+			a.equalValues([...highlight('')], []);
+		});
+		it.test('preserves original source positions and independent calls', a => {
+			const source = 'first\nsecond';
+			const tokens = [...highlight(source)];
+			a.equalValues(
+				tokens
+					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.map(token => [source.slice(token.start, token.end), token.line]),
+				 [['first', 0], ['\n', 0], ['second', 1]],
+			);
+			a.equal(tokens.every(token => token.source === source), true);
+			a.equalValues([...highlight(source)], tokens);
+		});
+	});
+
 	s.test('Scanner', (it: TestApi) => {
 		function match(
 			a: TestApi,

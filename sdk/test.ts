@@ -5,6 +5,7 @@ import {
 	childNodes,
 	CompilerError,
 	createCaseInsensitiveTrie,
+	createHighlighter,
 	createTrie,
 	findNodeAtIndex,
 	Flags,
@@ -40,6 +41,22 @@ const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => ch === undefined || !ident(ch);
 
 export default spec('sdk', s => {
+	s.test('highlighter recovery', a => {
+		const highlight = createHighlighter(source => {
+			const api = ScannerApi({ source });
+			return {
+				next: () => {
+					if (api.current() === '?') throw api.error('Unexpected input', 1);
+					return api.eof() ? api.tk('eof', 0) : api.tk('word', 1);
+				},
+				backtrack: api.backtrack,
+			};
+		}, () => 'identifier');
+		a.equalValues([...highlight('a?b')].map(token => [token.kind, token.start, token.end]), [
+			['identifier', 0, 1], ['error', 1, 2], ['identifier', 2, 3],
+		]);
+	});
+
 	s.test('formatter', it => {
 		const { concat, group, indent, line, render } = formatting;
 		const document = group(

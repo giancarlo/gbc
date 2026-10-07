@@ -1,8 +1,22 @@
 {
 	"extends": "../tsconfig.json",
 	"compilerOptions": {
-		"outDir": "../dist/basic"
+		"outDir": "../dist/basic",
+		"lib": [
+			"dom",
+			"es2025",
+			"dom.iterable"
+		]
 	},
-	"files": ["index.ts", "parser.ts", "scanner.ts"],
-	"references": [{ "path": "../sdk" }]
+	"files": [
+		"index.ts",
+		"parser.ts",
+		"scanner.ts",
+		"highlight.ts"
+	],
+	"references": [
+		{
+			"path": "../sdk"
+		}
+	]
 }

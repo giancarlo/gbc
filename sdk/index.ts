@@ -22,6 +22,57 @@ export interface TokenizerError extends Token<'tokenizer-error'> {
 	error: CompilerError;
 }
 
+export type HighlightKind =
+	| 'attribute'
+	| 'blockquote'
+	| 'code'
+	| 'comment'
+	| 'directive'
+	| 'emphasis'
+	| 'error'
+	| 'heading'
+	| 'identifier'
+	| 'keyword'
+	| 'label'
+	| 'link'
+	| 'list'
+	| 'literal'
+	| 'number'
+	| 'operator'
+	| 'punctuation'
+	| 'regex'
+	| 'separator'
+	| 'string'
+	| 'strong'
+	| 'tag'
+	| 'template'
+	| 'text'
+	| 'type';
+
+export type HighlightToken = Token<HighlightKind>;
+export type Highlighter = (source: string) => Generator<HighlightToken, void>;
+
+export function createHighlighter<Node extends Token<string>>(
+	scanner: Scanner<Node>,
+	classify: (token: Node) => HighlightKind,
+): Highlighter {
+	const isScannedToken = (token: Node | TokenizerError): token is Node =>
+		token.kind !== 'tokenizer-error';
+	return function* (source) {
+		let offset = 0;
+		let line = 0;
+		for (const token of tokenize(scanner, source)) {
+			for (; offset < token.start; offset++)
+				if (source.charAt(offset) === '\n') line++;
+			yield {
+				...token,
+				kind: isScannedToken(token) ? classify(token) : 'error',
+				line,
+			};
+		}
+	};
+}
+
 export function* tokenize<Node extends Token<string>>(
 	scanner: Scanner<Node>,
 	source: string,

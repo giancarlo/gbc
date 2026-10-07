@@ -18,5 +18,10 @@
 	},
 	"build": {
 		"platform": "neutral"
+	},
+	"exports": {
+		".": "./index.js",
+		"./highlight": "./highlight.js",
+		"./*.js": "./*.js"
 	}
 }

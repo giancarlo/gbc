@@ -3,6 +3,6 @@
 	"compilerOptions": {
 		"outDir": "../dist/typescript"
 	},
-	"files": ["index.ts"],
+	"files": ["index.ts", "highlight.ts"],
 	"references": [{ "path": "../javascript" }, { "path": "../sdk" }]
 }

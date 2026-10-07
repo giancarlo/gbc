@@ -26,5 +26,10 @@
 	},
 	"build": {
 		"platform": "browser"
+	},
+	"exports": {
+		".": "./index.js",
+		"./highlight": "./highlight.js",
+		"./*.js": "./*.js"
 	}
 }
