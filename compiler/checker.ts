@@ -2847,10 +2847,16 @@ export function checker({
 		for (let i = 0; i < args.length; i++) {
 			const arg = args[i];
 			const mode = fn.parameters?.[i]?.ownership;
-			if (!arg || arg.kind !== 'ident') continue;
+			if (!arg || (arg.kind !== 'ident' && mode !== 'own')) continue;
 			const type = resolver(arg);
 			const heap = isHeapType(type);
 			if (!heap) continue;
+			if (arg.kind !== 'ident') {
+				const ownership = expressionOwnership(arg);
+				if (ownership === 'borrow' || ownership === 'var')
+					error('cannot move borrowed result into an `own` parameter', arg);
+				continue;
+			}
 			if (mode === 'own') {
 				if (seenExclusive.has(arg.symbol))
 					error(

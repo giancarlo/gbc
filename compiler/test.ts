@@ -2803,6 +2803,37 @@ forward = (a: Array<Int32>) { a };
 main { a = Array<Int32>(1); a >> forward >> consume }`,
 			expected: 'cannot move shared borrow',
 		});
+		testBlock({
+			p: 'Thread-first stages preserve ownership through explicit own input and own output contracts.',
+			src: `write = (a: own Buffer<Int32>, n: Int32): own Buffer<Int32> { set(a, 0, n); next a };
+consume = (a: own Buffer<Int32>): Int32 { get(a, 0) };
+#test { equal(target(), 9) }
+export target = (): Int32 {
+	Buffer<Int32>(1) -> write(7) -> write(9) -> consume()
+}`,
+			out: [],
+		});
+		compileError({
+			p: 'An immediate thread-first chain cannot recover ownership from an identical shared result.',
+			src: `forward = (a: Buffer<Int32>): Buffer<Int32> { a };
+consume = (a: own Buffer<Int32>): Int32 { length(a) };
+main { Buffer<Int32>(1) -> forward() -> consume() >> out }`,
+			expected: 'cannot move borrowed',
+		});
+		compileError({
+			p: 'An immediate thread-first chain cannot recover ownership from an identical mutable result.',
+			src: `forward = (a: var Buffer<Int32>): var Buffer<Int32> { a };
+consume = (a: own Buffer<Int32>): Int32 { length(a) };
+main { a = Buffer<Int32>(1); a -> forward() -> consume() >> out }`,
+			expected: 'cannot move borrowed',
+		});
+		compileError({
+			p: 'Repeated mutable emissions cannot supply ownership to consuming pipeline stages.',
+			src: `forward = (a: var Array<Int32>) { next a; next a };
+consume = (a: own Array<Int32>): Int32 { length(a) };
+main { a = Array<Int32>(1); a >> forward >> consume >> out }`,
+			expected: 'cannot move mutable borrow',
+		});
 		compileError({
 			src: `main { count = 1; count = 2 >> out; }`,
 			expected: 'Cannot reassign binding',
