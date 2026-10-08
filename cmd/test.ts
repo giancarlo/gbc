@@ -1146,6 +1146,68 @@ export default spec('cmd', s => {
 			);
 		});
 
+		it.should(
+			'preserve recoverable commands and diagnostics after malformed arguments',
+			(a: TestApi) => {
+				for (const dialect of ['posix', 'ide'] as const) {
+					const cmd = program({ dialect });
+					for (const [source, values] of [
+						['git "unfinished', ['git']],
+						['ex.close "', ['ex.close']],
+						['git status "unfinished', ['git', 'status']],
+						['  git\tstatus "unfinished\ntext', ['git', 'status']],
+						['git |', ['git']],
+						['git &&', ['git']],
+						['git ||', ['git']],
+						['git >', ['git']],
+						['git > "', ['git']],
+						['git status >out "', ['git', 'status']],
+					] as const) {
+						const parsed = cmd.parse(source);
+						const list = parsed.root.children[0];
+						a.assert(list?.kind === 'list', source);
+						const command = list.children[0];
+						a.assert(command?.kind === 'command', source);
+						a.equalValues(
+							command.parts.map(
+								part => part.kind === 'word' && part.value,
+							),
+							[...values],
+						);
+						a.equal(parsed.root.source, source);
+						a.equal(parsed.root.end, source.length);
+						a.equalValues(
+							command.parts.map(part => source.slice(part.start, part.end)),
+							[...values],
+						);
+						if (source === 'git status >out "') {
+							a.equalValues(command.redirects.map(redirect => redirect.target.value), ['out']);
+							a.equalValues(command.children, [...command.parts, ...command.redirects]);
+						}
+						a.assert(parsed.errors.length > 0, source);
+					}
+					const source = "what's wrong with this?";
+					const parsed = cmd.parse(source);
+					a.equalValues(parsed.root.children, []);
+					a.equal(parsed.root.source, source);
+					a.equalValues(
+						parsed.errors.map(error => error.message),
+						['Unterminated string'],
+					);
+					const pipeline = cmd.parse('git | cat "');
+					const list = pipeline.root.children[0];
+					a.assert(list?.kind === 'list');
+					const pipe = list.children[0];
+					a.assert(pipe?.kind === '|');
+					a.equalValues(pipe.children.map(child =>
+						child.kind === 'command' && child.parts[0]?.kind === 'word'
+							? child.parts[0].value : undefined), ['git', 'cat']);
+					a.equalValues(pipeline.errors.map(error => [error.message, error.position.start, error.position.end]),
+						[['Unterminated string', 10, 11]]);
+				}
+			},
+		);
+
 		it.should('find the most specific node at an offset', (a: TestApi) => {
 			const root = program().parse('echo hi | cat').root;
 			const list = root.children[0];
