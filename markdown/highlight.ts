@@ -1,18 +1,24 @@
 import {
-	createHighlighter,
 	tokenize,
 	type HighlightKind,
 	type HighlightToken,
-	type Token,
 } from '@cxl/gbc.sdk';
 import { scannerBlock, scannerInline } from './index.js';
 
 export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
 
-function* tokens(source: string): Generator<HighlightToken, void> {
+export function* highlight(source: string): Generator<HighlightToken, void> {
+	let offset = 0;
+	let line = 0;
+	function lineAt(start: number) {
+		for (; offset < start; offset++)
+			if (source.charAt(offset) === '\n') line++;
+		return line;
+	}
+
 	for (const token of tokenize(scannerBlock, source)) {
 		if (token.kind === 'tokenizer-error') {
-			yield { ...token, kind: 'error' };
+			yield { ...token, kind: 'error', line: lineAt(token.start) };
 			continue;
 		}
 		let kind: HighlightKind = 'text';
@@ -49,14 +55,15 @@ function* tokens(source: string): Generator<HighlightToken, void> {
 			token.kind !== 'setext' && token.kind !== 'li' &&
 			token.kind !== 'ol' && token.kind !== 'blockquote'
 		) {
-			yield { ...token, kind };
+			yield { ...token, kind, line: lineAt(token.start) };
 			continue;
 		}
 		const start = token.start + token.textStart;
 		const end = token.kind === 'heading' || token.kind === 'setext'
 			? token.start + token.textEnd
 			: token.end;
-		if (start > token.start) yield { ...token, kind, end: start };
+		if (start > token.start)
+			yield { ...token, kind, end: start, line: lineAt(token.start) };
 		for (const inline of tokenize(scannerInline, source.slice(start, end))) {
 			let inlineKind: HighlightKind = kind === 'heading' ? kind : 'text';
 			switch (inline.kind) {
@@ -85,27 +92,11 @@ function* tokens(source: string): Generator<HighlightToken, void> {
 				kind: inlineKind,
 				start: start + inline.start,
 				end: start + inline.end,
-				line: token.line,
+				line: lineAt(start + inline.start),
 				source,
 			};
 		}
-		if (end < token.end) yield { ...token, kind, start: end };
+		if (end < token.end)
+			yield { ...token, kind, start: end, line: lineAt(end) };
 	}
 }
-
-export const highlight = createHighlighter<HighlightToken | Token<'eof'>>(source => {
-	const iterator = tokens(source);
-	return {
-		next() {
-			const result = iterator.next();
-			return result.done ? {
-				kind: 'eof',
-				start: source.length,
-				end: source.length,
-				line: 0,
-				source,
-			} : result.value;
-		},
-		backtrack: () => undefined,
-	};
-}, token => token.kind === 'eof' ? 'text' : token.kind);
