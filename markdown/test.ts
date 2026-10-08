@@ -11,6 +11,29 @@ type MdTest = {
 
 export default spec('markdown', (a: TestApi) => {
 	a.test('public highlighting contract', it => {
+		it.test('highlights an empty heading and a lone backtick within the source', a => {
+			for (const [source, kind] of [['# ', 'heading'], ['`', 'text']] as const) {
+				const tokens = [...highlight(source)];
+				a.equalValues(
+					tokens.map(({ kind, start, end }) => ({ kind, start, end })),
+					[{ kind, start: 0, end: source.length }],
+				);
+			}
+		});
+		it.test('keeps incomplete Markdown spans ordered and within the source', a => {
+			for (const source of ['## ', '#\t', '# ###', '  # ', '``', 'text `', '# `']) {
+				const tokens = [...highlight(source)];
+				a.equal(tokens.length > 0, true);
+				let end = 0;
+				for (const token of tokens) {
+					a.equal(token.start >= end, true);
+					a.equal(token.end > token.start, true);
+					a.equal(token.end <= source.length, true);
+					end = token.end;
+				}
+				a.equal(end, source.length);
+			}
+		});
 		it.test('highlights Markdown syntax and leaves fenced code plain', a => {
 			const source = '# Heading\n\n**bold** and `code`\n\n```ts\nconst value = 42;\n```\n';
 			const tokens = [...highlight(source)];

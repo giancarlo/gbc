@@ -83,6 +83,11 @@ try {
 		if (pkg === 'markdown') {
 			assert.equal(tokens.filter(token => token.kind === 'code').length, 2);
 			assert(!tokens.some(token => token.kind === 'keyword'));
+			for (const [source, kind] of [['# ', 'heading'], ['`', 'text']])
+				assert.deepEqual(
+					[...highlight(source)].map(({ kind, start, end }) => ({ kind, start, end })),
+					[{ kind, start: 0, end: source.length }],
+				);
 		}
 		declarations.push(`import { highlight as ${pkg}, type Highlighter as ${pkg}Highlighter, type HighlightToken as ${pkg}Token } from '${metadata.name}/highlight';
 const ${pkg}Fn: ${pkg}Highlighter = ${pkg};

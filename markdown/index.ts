@@ -511,7 +511,7 @@ export function scannerInline(src: string) {
 		);
 		return blockEnd
 			? { ...tk('code', consumed), blockEnd, blockStart }
-			: tk('text', start * 2);
+			: tk('text', start);
 	}
 
 	function scanAngle() {
@@ -833,7 +833,7 @@ export function scannerBlock(src: string) {
 			...tk('heading', headingEnd),
 			level,
 			textStart: start,
-			textEnd,
+			textEnd: Math.max(start, textEnd),
 			textIndent: 0,
 		};
 	}
