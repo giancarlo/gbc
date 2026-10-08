@@ -1,4 +1,4 @@
-import type { MakeNodeMap } from '../sdk/index.js';
+import type { MakeNodeMap } from '@cxl/gbc.sdk';
 
 import type {
 	OwnershipMode,

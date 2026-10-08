@@ -1,4 +1,4 @@
-import { CompilerError, sleb128, sleb128big, text, uleb128 } from '../sdk/index.js';
+import { CompilerError, sleb128, sleb128big, text, uleb128 } from '@cxl/gbc.sdk';
 
 import { isKnownNonZeroNumber, reduceType } from './checker.js';
 import {

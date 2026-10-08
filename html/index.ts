@@ -1,4 +1,4 @@
-import { ScannerApi } from '../sdk/index.js';
+import { ScannerApi } from '@cxl/gbc.sdk';
 
 export function scanner(src: string) {
 	const {

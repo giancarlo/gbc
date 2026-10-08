@@ -5,7 +5,7 @@ import {
 	line,
 	text,
 	parserTable,
-} from '../sdk/index.js';
+} from '@cxl/gbc.sdk';
 import {
 	EmptyFunction,
 	type OwnershipMode,

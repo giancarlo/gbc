@@ -11,7 +11,8 @@
 		"sourceMap": false,
 		"moduleResolution": "nodenext",
 		"paths": {
-			"@cxl/gbc.sdk": ["./sdk/index.ts"]
+			"@cxl/gbc.sdk": ["./sdk/index.ts"],
+			"@cxl/gbc.javascript": ["./javascript/index.ts"]
 		},
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,

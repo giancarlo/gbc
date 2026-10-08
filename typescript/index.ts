@@ -1,10 +1,10 @@
-import { type Scanner, type Token } from '../sdk/index.js';
+import { type Scanner, type Token } from '@cxl/gbc.sdk';
 import {
 	createScanner,
 	type HighlightKind as JavaScriptHighlightKind,
 	keywords as javaScriptKeywords,
 	literals as javaScriptLiterals,
-} from '../javascript/index.js';
+} from '@cxl/gbc.javascript';
 
 export type HighlightKind = JavaScriptHighlightKind | 'type';
 export type HighlightToken = Token<HighlightKind | 'eof'>;

@@ -1,7 +1,7 @@
 import {
 	type Position,
 	SymbolTable as BaseSymbolTable,
-} from '../sdk/index.js';
+} from '@cxl/gbc.sdk';
 import type { Node } from './node.js';
 
 export enum Flags {
@@ -317,9 +317,8 @@ function unifyElementTypeParam(
 	if (!(
 		paramType.kind === 'type' &&
 		argType.kind === 'type' &&
-		'elem' in paramType &&
-		'elem' in argType &&
-		paramType.family === argType.family
+		((paramType.family === 'buffer' && argType.family === 'buffer') ||
+			(paramType.family === 'vector' && argType.family === 'vector'))
 	))
 		return false;
 	unifyTypeParam(paramType.elem, argType.elem, names, out);

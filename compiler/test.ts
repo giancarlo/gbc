@@ -1,7 +1,7 @@
 import { highlight } from './highlight.js';
 import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
-import { tokenize } from '../sdk/index.js';
+import { tokenize } from '@cxl/gbc.sdk';
 import {
 	decodeBundle,
 	encodeBundle,
@@ -268,7 +268,7 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 		const definitions = new Map<string, NodeMap['def']>(
 			materialized.children
 				.filter((node): node is NodeMap['def'] => node.kind === 'def')
-				.map(definition => [definition.symbol.name ?? '', definition]),
+				.map(definition => [definition.symbol.name, definition]),
 		);
 		const stored = definitions.get('stored')?.value;
 		const inline = definitions.get('inline')?.value;
@@ -280,13 +280,13 @@ export inline = (value: Int32): Int32 { value + 1 };`;
 		a.equal(stored.statements, undefined);
 		a.equal(stored.children.length, 0);
 		a.equal(inline.objectBacked, undefined);
-		a.equal((inline.statements?.length ?? 0) > 0, true);
+		a.assert(inline.statements);
+		a.equal(inline.statements.length > 0, true);
 
 		const objectMap = new Map<Symbol, (typeof decoded.objects)[number]>();
 		for (const object of decoded.objects) {
 			const symbol = definitions.get(object.name)?.symbol;
 			a.assert(symbol, `Missing object symbol ${object.name}`);
-			if (!symbol) continue;
 			objectMap.set(symbol, object);
 		}
 		const spliced = compileWasm({
@@ -679,7 +679,7 @@ main { scalar() >> out; pair() >> out; forward() >> out; conditional(true) >> ou
 					throw new Error(`Missing function ${name}`);
 				const type = definition.value.symbol.emissionType;
 				a.equal(type?.family, 'emission');
-				if (!type || type.family !== 'emission')
+				if (type?.family !== 'emission')
 					throw new Error(`Missing emission type for ${name}`);
 				return type;
 			};
@@ -722,7 +722,7 @@ main { forward() >> String { out($) }; choose(true) >> Int32 { out($) } | Bool {
 				)
 					throw new Error(`Missing function ${name}`);
 				const type = definition.value.symbol.emissionType;
-				if (!type || type.family !== 'emission')
+				if (type?.family !== 'emission')
 					throw new Error(`Missing emission type for ${name}`);
 				return type;
 			};

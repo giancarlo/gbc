@@ -38,7 +38,7 @@ type TestArgumentParent = NodeWithChildren<TestNodeMap, TestArgument[]>;
 
 const _ident = /\w/;
 const ident = (ch: string) => ch === '_' || _ident.test(ch);
-const notIdent = (ch: string) => ch === undefined || !ident(ch);
+const notIdent = (ch: string) => !ident(ch);
 
 export default spec('sdk', s => {
 	s.test('highlighter recovery', a => {

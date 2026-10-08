@@ -2,7 +2,7 @@ import {
 	formatting,
 	type FormatDocument,
 	type FormatOptions,
-} from '../sdk/index.js';
+} from '@cxl/gbc.sdk';
 
 import { childNodes, type Node, type NodeMap } from './node.js';
 

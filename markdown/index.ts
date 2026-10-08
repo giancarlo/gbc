@@ -5,7 +5,7 @@ import {
 	ParserApi,
 	text,
 	type MatchFn,
-} from '../sdk/index.js';
+} from '@cxl/gbc.sdk';
 
 type Children = Node[];
 type TableAlignment = 'center' | 'left' | 'right';

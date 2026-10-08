@@ -1,5 +1,19 @@
 import { readFileSync } from 'node:fs';
+import { registerHooks } from 'node:module';
 import { buildLibrary, file, rx, tsconfig } from '@cxl/build';
+
+const { importmap } = JSON.parse(
+	readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+);
+registerHooks({
+	resolve(specifier, context, nextResolve) {
+		const target = importmap[specifier];
+		return nextResolve(
+			target ? new URL(`..${target}`, import.meta.url).href : specifier,
+			context,
+		);
+	},
+});
 
 let stdlibPromise;
 function buildStdlib() {

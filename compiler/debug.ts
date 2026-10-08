@@ -1,4 +1,4 @@
-import { text, type Token } from '../sdk/index.js';
+import { text, type Token } from '@cxl/gbc.sdk';
 import { Flags } from './symbol-table.js';
 
 import type { Node } from './node.js';

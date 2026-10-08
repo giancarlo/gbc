@@ -1,4 +1,4 @@
-import { CompilerError, type Position, text } from '../sdk/index.js';
+import { CompilerError, type Position, text } from '@cxl/gbc.sdk';
 
 import { childNodes } from './node.js';
 import type { InfixNode, Node, NodeMap } from './node.js';

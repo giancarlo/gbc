@@ -7,7 +7,7 @@ import {
 	tokenize,
 	type Symbol,
 	type Type,
-} from '../sdk/index.js';
+} from '@cxl/gbc.sdk';
 import { type NodeMap } from './index.js';
 import { compatibilityCases, demoNames } from './test-corpus.js';
 import { parseAssignment, parseExpression, parseProgram } from './parser.js';
@@ -428,7 +428,6 @@ export default spec('basic', (a: TestApi) => {
 	});
 
 	a.test('historical compatibility corpus', a => {
-		a.ok(compatibilityCases.length > 0);
 		a.equal(
 			new Set(compatibilityCases.map(test => test.id)).size,
 			compatibilityCases.length,

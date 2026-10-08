@@ -1,5 +1,5 @@
-import type { MakeNodeMap } from '../sdk/index.js';
-import type { Symbol } from '../sdk/index.js';
+import type { MakeNodeMap } from '@cxl/gbc.sdk';
+import type { Symbol } from '@cxl/gbc.sdk';
 
 type Infix = { children: [Node, Node] };
 type MakeInfix<T extends string> = { [K in T]: Infix };

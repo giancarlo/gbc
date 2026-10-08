@@ -4,7 +4,7 @@ import {
 	type Token,
 	each,
 	formatError,
-} from '../sdk/index.js';
+} from '@cxl/gbc.sdk';
 
 import { scan } from './scanner.js';
 import { Program } from './program.js';
@@ -277,7 +277,7 @@ export class SpecApi extends TestApiBase<SpecApi> {
 			? this.parse(wrapped).ast
 			: this.parseAstOnly(wrapped);
 		const mainNode = rootAst.children.find(
-			(c): c is NodeMap['main'] => c?.kind === 'main',
+			(c): c is NodeMap['main'] => c.kind === 'main',
 		);
 		this.assert(mainNode !== undefined);
 		const inners = mainNode.statements.map(unwrapOutPipe);
@@ -418,7 +418,7 @@ export class SpecApi extends TestApiBase<SpecApi> {
 		test?: (ast: NodeMap['root']) => void;
 	}) => {
 		const rootAst = this.parseAstOnly(src);
-		this.equal(rootAst.children?.map(printAst).join(' '), ast);
+		this.equal(rootAst.children.map(printAst).join(' '), ast);
 		test?.(rootAst);
 	};
 

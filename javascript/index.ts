@@ -4,7 +4,7 @@ import {
 	type Position,
 	type Scanner,
 	type Token,
-} from '../sdk/index.js';
+} from '@cxl/gbc.sdk';
 
 type LexicalHighlightKind =
 	| 'comment'

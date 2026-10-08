@@ -1,4 +1,4 @@
-import { createTrie, ScannerApi, matchers, stringEscape } from '../sdk/index.js';
+import { createTrie, ScannerApi, matchers, stringEscape } from '@cxl/gbc.sdk';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];

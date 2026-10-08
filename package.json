@@ -16,7 +16,8 @@
 		"build": "cxl-build"
 	},
 	"importmap": {
-		"@cxl/gbc.sdk": "/dist/sdk/index.js"
+		"@cxl/gbc.sdk": "/dist/sdk/index.js",
+		"@cxl/gbc.javascript": "/dist/javascript/index.js"
 	},
 	"repository": {
 		"type": "git",

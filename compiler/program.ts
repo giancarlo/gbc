@@ -2,7 +2,7 @@ import {
 	CompilerError,
 	type FormatOptions,
 	ParserApi,
-} from '../sdk/index.js';
+} from '@cxl/gbc.sdk';
 import {
 	BaseTypes,
 	Flags,

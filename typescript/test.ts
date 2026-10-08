@@ -1,6 +1,6 @@
 import { highlight } from './highlight.js';
 import { spec } from '@cxl/spec';
-import { text, tokenize } from '../sdk/index.js';
+import { text, tokenize } from '@cxl/gbc.sdk';
 import { scan } from './index.js';
 
 const benchmarkSource = `export interface Point<T extends number> {
