@@ -505,6 +505,7 @@ function createScanner(source: string) {
 		quote: string,
 		consumed: number,
 		captureCommandSubstitutions = false,
+		ansi = false,
 	) {
 		for (;;) {
 			const ch = current(consumed);
@@ -518,7 +519,7 @@ function createScanner(source: string) {
 				consumed = scanCommandSubstitution(consumed, captureCommandSubstitutions);
 				continue;
 			}
-			if (ch === '\\' && current(consumed + 1)) {
+			if (ch === '\\' && (quote !== "'" || ansi) && current(consumed + 1)) {
 				consumed += 2;
 				continue;
 			}
@@ -538,6 +539,10 @@ function createScanner(source: string) {
 		while (depth) {
 			const ch = current(consumed);
 			if (!ch) throw error(`Unterminated ${open}${close} expansion`, consumed);
+			if (ch === '$' && current(consumed + 1) === "'") {
+				consumed = scanQuoted("'", consumed + 2, false, true);
+				continue;
+			}
 			if (ch === "'" || ch === '"') {
 				consumed = scanQuoted(ch, consumed + 1, captureCommandSubstitutions);
 				continue;
@@ -584,6 +589,10 @@ function createScanner(source: string) {
 			(!signature || !':,=?'.includes(current(consumed)))
 		) {
 			const ch = current(consumed);
+			if (ch === '$' && current(consumed + 1) === "'") {
+				consumed = scanQuoted("'", consumed + 2, false, true);
+				continue;
+			}
 			if (ch === "'" || ch === '"') {
 				consumed = scanQuoted(ch, consumed + 1, true);
 				continue;

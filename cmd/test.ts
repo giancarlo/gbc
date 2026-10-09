@@ -122,10 +122,11 @@ export default spec('cmd', s => {
 				start: 0,
 				end: 22,
 			});
-			match(a, `'escaped \\'quote\\''`, {
+			a.equal(program().parse(`'escaped \\'quote\\''`).errors.length > 0, true);
+			match(a, `$'escaped \\'quote\\''`, {
 				kind: 'word',
 				start: 0,
-				end: 19,
+				end: 20,
 			});
 			match(a, `'template with \${expr}'`, {
 				kind: 'word',
@@ -824,6 +825,60 @@ export default spec('cmd', s => {
 			const irSize = JSON.stringify(cmd.ir(parsed.root)).length;
 
 			a.equal(irSize < astSize / 4, true);
+		});
+
+		it.should('decode nested single-quote escaping as literal arguments', (a: TestApi) => {
+			const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+			const js = `console.log('<script type="importmap">{"imports":{"@cxl/ui":"/node_modules/@cxl/ui/index.js"}}</script>');`;
+			const inner = 'node --input-type=module -e ' + quote(js);
+			const outer = 'coaxial exec --unsafe --cwd /tmp/worktree ' + quote(inner);
+
+			for (const dialect of ['posix', 'ide'] as const) {
+				for (const [source, values] of [
+					[outer, ['coaxial', 'exec', '--unsafe', '--cwd', '/tmp/worktree', inner]],
+					[inner, ['node', '--input-type=module', '-e', js]],
+				] as const) {
+					const parsed = program({ dialect }).parse(source);
+					a.equalValues(parsed.errors, []);
+					const list = parsed.root.children[0];
+					a.assert(list?.kind === 'list');
+					a.equal(list.children.length, 1);
+					const command = list.children[0];
+					a.assert(command?.kind === 'command');
+					a.equal(command.parts.length, values.length);
+					a.equalValues(command.parts.map(part => {
+						a.assert(part.kind === 'word');
+						a.equal(part.literal, true);
+						a.equal(part.hasExpansion, false);
+						return part.value;
+					}), [...values]);
+				}
+			}
+		});
+
+		it.should('preserve adjacent quoted and escaped word segments', (a: TestApi) => {
+			for (const [source, value] of [
+				["'left'\\''right'", "left'right"],
+				["'left\\'\"right\"", 'left\\right'],
+				["'\\'\\''{\"key\":\"$HOME $(pwd) `date` *\"}'", '\\' + "'" + '{"key":"$HOME $(pwd) `date` *"}'],
+				["$'left\\'right'\"end\"", "left'rightend"],
+			] as const) {
+				a.equalValues(program().parse(source).errors, [], source);
+				const literal = word(source);
+				a.equal(literal.value, value, source);
+				a.equal(literal.literal, true, source);
+				a.equal(literal.hasExpansion, false, source);
+			}
+			const parameter = word("'left'\\''right'\"$HOME\"");
+			a.equal(parameter.hasParameterExpansion, true);
+			a.equal(parameter.literal, false);
+			const substitution = word("'left'\\''right'\"$(pwd)\"");
+			a.equal(substitution.hasCommandSubstitution, true);
+			a.equalValues(substitution.commandSubstitutions?.map(root => compiler(root)), ['pwd']);
+			for (const source of ["$(printf %s '\\')", "$(printf %s $'left\\'right')"]) {
+				a.equalValues(program().parse(source).errors, [], source);
+				a.equal(word(source).hasCommandSubstitution, true);
+			}
 		});
 
 		it.should('expose literal word values in the AST', a => {
