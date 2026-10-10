@@ -445,10 +445,14 @@ function matchLink(
 
 	const { consumed, eol } = matchWhileSpaceOrOneLineEnding(
 		matchWhile,
-		(closing ? 1 : 0) + linkEnd,
+		linkEnd,
 	);
 	// Title must be separated by spaces
-	if (consumed === linkEnd && !isEol(current(consumed))) return;
+	if (
+		consumed === linkEnd &&
+		!isEol(current(consumed)) &&
+		!(closing && current(consumed) === ')')
+	) return;
 
 	const afterLink = current(consumed);
 	let titleEnd: number | undefined, titleStart: number | undefined;
@@ -2174,6 +2178,10 @@ function renderTable(node: NodeMap['table']) {
 	return `<table><thead><tr>${header}</tr></thead>${body}</table>`;
 }
 
+function encodeUrl(href: string) {
+	return encodeURI(href).replace(/%25([\da-f]{2})/gi, '%$1');
+}
+
 export function compiler(node: Node): string {
 	switch (node.kind) {
 		case 'root': {
@@ -2193,7 +2201,7 @@ export function compiler(node: Node): string {
 				: '';
 			const alt = plainText(node.children);
 			return `<img src="${escapeHtml(
-				encodeURI(node.href),
+				encodeUrl(node.href),
 			)}" alt="${escapeHtml(alt)}"${title} />`;
 		}
 		case 'a': {
@@ -2201,7 +2209,7 @@ export function compiler(node: Node): string {
 				? ` title="${escapeHtml(node.title)}"`
 				: '';
 			return `<a href="${escapeHtml(
-				encodeURI(node.href),
+				encodeUrl(node.href),
 			)}"${title}>${renderChildren(node.children)}</a>`;
 		}
 		case 'ol': {

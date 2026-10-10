@@ -96,6 +96,35 @@ export default spec('markdown', (a: TestApi) => {
 
 	const sections: Record<string, MdTest[]> = {};
 	const testProgram = program();
+	a.test('link destinations', it => {
+		const cases: [string, string][] = [
+			[
+				'[CAROLS.BAS](https://debuggerjs.com/basic/?tab=0&e=s:/.www/public/demo/carols.bas) (by Greg Rismoen).',
+				'<p><a href="https://debuggerjs.com/basic/?tab=0&amp;e=s:/.www/public/demo/carols.bas">CAROLS.BAS</a> (by Greg Rismoen).</p>\n',
+			],
+			[
+				'[GORILLA.BAS](https://basic.bellido.us/?e=/.www%2Fdemo%2Fgorilla.bas&a=0).',
+				'<p><a href="https://basic.bellido.us/?e=/.www%2Fdemo%2Fgorilla.bas&amp;a=0">GORILLA.BAS</a>.</p>\n',
+			],
+			['[link](/url "title") (after)', '<p><a href="/url" title="title">link</a> (after)</p>\n'],
+			['[link](</url> (title))', '<p><a href="/url" title="title">link</a></p>\n'],
+			['[link](/url) "after"', '<p><a href="/url">link</a> &quot;after&quot;</p>\n'],
+			['[link](/url) (after)', '<p><a href="/url">link</a> (after)</p>\n'],
+			['[link](/url "unclosed)', '<p>[link](/url &quot;unclosed)</p>\n'],
+			['[link](/%2f%252F%20?q=%26&x=%zz%)', '<p><a href="/%2f%252F%20?q=%26&amp;x=%25zz%25">link</a></p>\n'],
+			['[link][ref]\n\n[ref]: /%2F?q=%26&x=0\n', '<p><a href="/%2F?q=%26&amp;x=0">link</a></p>\n'],
+			['<https://example.com/%2F?q=%26&x=0>', '<p><a href="https://example.com/%2F?q=%26&amp;x=0">https://example.com/%2F?q=%26&amp;x=0</a></p>\n'],
+			['![image](/%2F?q=%26&x=0)', '<p><img src="/%2F?q=%26&amp;x=0" alt="image" /></p>\n'],
+			['[link](</φ%2F space?q="&x=0>)', '<p><a href="/%CF%86%2F%20space?q=%22&amp;x=0">link</a></p>\n'],
+			['<a href="/%2F?q=%26&x=0">link</a>', '<p><a href="/%2F?q=%26&x=0">link</a></p>\n'],
+		];
+		for (const [source, expected] of cases)
+			it.test(source, a => {
+				const { output, errors } = testProgram.compile(source);
+				a.equal(output, expected);
+				a.equal(errors.length, 0);
+			});
+	});
 
 	for (const test of tests) {
 		const testApi = (sections[test.section] ??= []);
