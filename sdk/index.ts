@@ -50,13 +50,35 @@ export type HighlightKind =
 	| 'text'
 	| 'type';
 
-export type HighlightToken = Token<HighlightKind>;
-export type Highlighter = (source: string) => Generator<HighlightToken, void>;
+export interface HighlightToken<Kind extends string = string> extends Token<Kind> {
+	highlight: HighlightKind;
+	foldStart: number;
+	foldEnd: number;
+}
+
+const highlightDefaults: Pick<HighlightToken, 'highlight' | 'foldStart' | 'foldEnd'> = {
+	highlight: 'text',
+	foldStart: 0,
+	foldEnd: 0,
+};
+
+export function enrichHighlightToken<Node extends Token<string>>(
+	token: Node,
+	highlight: HighlightKind,
+): Node & HighlightToken {
+	const result = Object.assign(token, highlightDefaults);
+	result.highlight = highlight;
+	return result;
+}
+
+export type Highlighter<Node extends Token<string> = Token<string>> = (
+	source: string,
+) => Generator<Node & HighlightToken, void>;
 
 export function createHighlighter<Node extends Token<string>>(
 	scanner: Scanner<Node>,
 	classify: (token: Node) => HighlightKind,
-): Highlighter {
+): Highlighter<Node | TokenizerError> {
 	const isScannedToken = (token: Node | TokenizerError): token is Node =>
 		token.kind !== 'tokenizer-error';
 	return function* (source) {
@@ -65,11 +87,8 @@ export function createHighlighter<Node extends Token<string>>(
 		for (const token of tokenize(scanner, source)) {
 			for (; offset < token.start; offset++)
 				if (source.charAt(offset) === '\n') line++;
-			yield {
-				...token,
-				kind: isScannedToken(token) ? classify(token) : 'error',
-				line,
-			};
+			token.line = line;
+			yield enrichHighlightToken(token, isScannedToken(token) ? classify(token) : 'error');
 		}
 	};
 }

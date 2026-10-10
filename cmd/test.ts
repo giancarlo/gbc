@@ -20,7 +20,7 @@ export default spec('cmd', s => {
 	s.test('public highlighting contract', it => {
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
-				[...highlight('if echo "hi"; then echo 42; fi')].map(token => token.kind),
+				[...highlight('if echo "hi"; then echo 42; fi')].map(token => token.highlight),
 				['keyword', 'identifier', 'string', 'punctuation', 'keyword', 'identifier', 'number', 'punctuation', 'keyword'],
 			);
 			a.equalValues([...highlight('')], []);
@@ -30,7 +30,7 @@ export default spec('cmd', s => {
 			const tokens = [...highlight(source)];
 			a.equalValues(
 				tokens
-					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.filter(token => token.highlight === 'identifier' || token.highlight === 'text')
 					.map(token => [source.slice(token.start, token.end), token.line]),
 				 [['first', 0], ['\n', 0], ['second', 1]],
 			);

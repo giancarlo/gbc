@@ -59,33 +59,37 @@ try {
 			}],
 		});
 		await copyFile(join(root, 'dist', pkg, 'highlight.d.ts'), join(dir, 'highlight.d.ts'));
+		if (pkg === 'javascript' || pkg === 'typescript')
+			await copyFile(join(root, 'dist', pkg, 'index.d.ts'), join(dir, 'index.d.ts'));
 		await symlink(dir, join(fixture, 'node_modules', metadata.name));
 		const { highlight } = await import(pathToFileURL(require.resolve(metadata.name + '/highlight')).href);
 		const tokens = [...highlight(source)];
 		assert(tokens.length > 0);
 		assert.deepEqual([...highlight('')], []);
-		if (kinds) assert.deepEqual(tokens.map(token => token.kind), kinds);
+		if (kinds) assert.deepEqual(tokens.map(token => token.highlight), kinds);
 		let end = 0;
 		for (const token of tokens) {
 			assert.equal(token.source, source);
 			assert(token.start >= end && token.end > token.start && token.end <= source.length);
 			assert.equal(token.line, source.slice(0, token.start).split('\n').length - 1);
 			assert.notEqual(token.kind, 'eof');
-			assert.notEqual(token.kind, 'tokenizer-error');
+			assert.equal(typeof token.highlight, 'string');
+			assert.equal(token.foldStart, 0);
+			assert.equal(token.foldEnd, 0);
 			end = token.end;
 		}
 		const iterator = highlight(source);
-		assert.equal(iterator.next().value.kind, tokens[0].kind);
+		assert.equal(iterator.next().value.highlight, tokens[0].highlight);
 		assert.deepEqual([...highlight(source)], tokens);
 		assert([...highlight(incomplete)].length > 0);
 		if (['compiler', 'basic', 'cmd'].includes(pkg))
-			assert([...highlight(incomplete)].some(token => token.kind === 'error'));
+			assert([...highlight(incomplete)].some(token => token.highlight === 'error'));
 		if (pkg === 'markdown') {
-			assert.equal(tokens.filter(token => token.kind === 'code').length, 2);
-			assert(!tokens.some(token => token.kind === 'keyword'));
+			assert.equal(tokens.filter(token => token.highlight === 'code').length, 2);
+			assert(!tokens.some(token => token.highlight === 'keyword'));
 			for (const [source, kind] of [['# ', 'heading'], ['`', 'text']])
 				assert.deepEqual(
-					[...highlight(source)].map(({ kind, start, end }) => ({ kind, start, end })),
+					[...highlight(source)].map(({ highlight: kind, start, end }) => ({ kind, start, end })),
 					[{ kind, start: 0, end: source.length }],
 				);
 		}

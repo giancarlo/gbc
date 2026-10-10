@@ -24,7 +24,7 @@ export default spec('typescript', it => {
 	it.test('public highlighting contract', it => {
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
-				[...highlight('const value: number = 42;')].map(token => token.kind),
+				[...highlight('const value: number = 42;')].map(token => token.highlight),
 				['keyword', 'identifier', 'punctuation', 'type', 'operator', 'number', 'punctuation'],
 			);
 			a.equalValues([...highlight('')], []);
@@ -34,7 +34,7 @@ export default spec('typescript', it => {
 			const tokens = [...highlight(source)];
 			a.equalValues(
 				tokens
-					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.filter(token => token.highlight === 'identifier' || token.highlight === 'text')
 					.map(token => [source.slice(token.start, token.end), token.line]),
 				 [['first', 0], ['second', 1]],
 			);

@@ -25,7 +25,7 @@ export default spec('javascript', it => {
 	it.test('public highlighting contract', it => {
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
-				[...highlight('const value = 42; // note')].map(token => token.kind),
+				[...highlight('const value = 42; // note')].map(token => token.highlight),
 				['keyword', 'identifier', 'operator', 'number', 'punctuation', 'comment'],
 			);
 			a.equalValues([...highlight('')], []);
@@ -35,7 +35,7 @@ export default spec('javascript', it => {
 			const tokens = [...highlight(source)];
 			a.equalValues(
 				tokens
-					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.filter(token => token.highlight === 'identifier' || token.highlight === 'text')
 					.map(token => [source.slice(token.start, token.end), token.line]),
 				 [['first', 0], ['second', 1]],
 			);

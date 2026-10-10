@@ -6,7 +6,7 @@ export default spec('html', (a: TestApi) => {
 	a.test('public highlighting contract', it => {
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
-				[...highlight('<div id="x">hi</div>')].map(token => token.kind),
+				[...highlight('<div id="x">hi</div>')].map(token => token.highlight),
 				['punctuation', 'tag', 'attribute', 'operator', 'string', 'punctuation', 'text', 'punctuation', 'punctuation', 'tag', 'punctuation'],
 			);
 			a.equalValues([...highlight('')], []);
@@ -16,7 +16,7 @@ export default spec('html', (a: TestApi) => {
 			const tokens = [...highlight(source)];
 			a.equalValues(
 				tokens
-					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.filter(token => token.highlight === 'identifier' || token.highlight === 'text')
 					.map(token => [source.slice(token.start, token.end), token.line]),
 				 [['first\nsecond', 0]],
 			);

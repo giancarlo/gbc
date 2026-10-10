@@ -1,5 +1,6 @@
 import {
 	tokenize,
+	enrichHighlightToken,
 	type HighlightKind,
 	type HighlightToken,
 } from '@cxl/gbc.sdk';
@@ -18,7 +19,8 @@ export function* highlight(source: string): Generator<HighlightToken, void> {
 
 	for (const token of tokenize(scannerBlock, source)) {
 		if (token.kind === 'tokenizer-error') {
-			yield { ...token, kind: 'error', line: lineAt(token.start) };
+			token.line = lineAt(token.start);
+			yield enrichHighlightToken(token, 'error');
 			continue;
 		}
 		let kind: HighlightKind = 'text';
@@ -55,7 +57,8 @@ export function* highlight(source: string): Generator<HighlightToken, void> {
 			token.kind !== 'setext' && token.kind !== 'li' &&
 			token.kind !== 'ol' && token.kind !== 'blockquote'
 		) {
-			yield { ...token, kind, line: lineAt(token.start) };
+			token.line = lineAt(token.start);
+			yield enrichHighlightToken(token, kind);
 			continue;
 		}
 		const start = token.start + token.textStart;
@@ -63,7 +66,7 @@ export function* highlight(source: string): Generator<HighlightToken, void> {
 			? token.start + token.textEnd
 			: token.end;
 		if (start > token.start)
-			yield { ...token, kind, end: start, line: lineAt(token.start) };
+			yield { ...token, highlight: kind, foldStart: 0, foldEnd: 0, end: start, line: lineAt(token.start) };
 		for (const inline of tokenize(scannerInline, source.slice(start, end))) {
 			let inlineKind: HighlightKind = kind === 'heading' ? kind : 'text';
 			switch (inline.kind) {
@@ -89,7 +92,10 @@ export function* highlight(source: string): Generator<HighlightToken, void> {
 					break;
 			}
 			yield {
-				kind: inlineKind,
+				kind: inline.kind,
+				highlight: inlineKind,
+				foldStart: 0,
+				foldEnd: 0,
 				start: start + inline.start,
 				end: start + inline.end,
 				line: lineAt(start + inline.start),
@@ -97,6 +103,6 @@ export function* highlight(source: string): Generator<HighlightToken, void> {
 			};
 		}
 		if (end < token.end)
-			yield { ...token, kind, start: end, line: lineAt(end) };
+			yield { ...token, highlight: kind, foldStart: 0, foldEnd: 0, start: end, line: lineAt(end) };
 	}
 }

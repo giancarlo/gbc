@@ -47,6 +47,44 @@ const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => !ident(ch);
 
 export default spec('sdk', s => {
+	s.test('enriched highlighting stream', a => {
+		const source = 'a\nb';
+		const scanned: Token<'word'>[] = [];
+		const highlight = createHighlighter(value => {
+			const api = ScannerApi({ source: value });
+			return {
+				backtrack: api.backtrack,
+				next() {
+					api.skipWhitespace();
+					if (api.eof()) return api.tk('eof', 0);
+					const token = Object.assign(api.tk('word', 1), { value: api.current(-1) });
+					scanned.push(token);
+					return token;
+				},
+			};
+		}, () => 'identifier');
+		const stream = highlight(source);
+		a.equal(scanned.length, 0);
+		const first = stream.next();
+		a.equal(first.done, false);
+		if (!first.done) {
+			a.equal(first.value === scanned[0], true);
+			a.equal(scanned.length, 1);
+			a.equal(first.value.kind, 'word');
+			a.equal(first.value.highlight, 'identifier');
+			if (first.value.kind === 'word') a.equal(first.value.value, 'a');
+			a.equal(first.value.foldStart, 0);
+			a.equal(first.value.foldEnd, 0);
+			a.equal(first.value.source, source);
+			const rest = [...stream];
+			a.equal(rest.length, 1);
+			a.equal(rest[0] === scanned[1], true);
+			a.equal(rest[0]?.line, 1);
+			a.equal(first.value.highlight, 'identifier');
+		}
+		a.equalValues([...highlight('')], []);
+	});
+
 	s.test('highlighter recovery', a => {
 		const highlight = createHighlighter(source => {
 			const api = ScannerApi({ source });
@@ -58,9 +96,15 @@ export default spec('sdk', s => {
 				backtrack: api.backtrack,
 			};
 		}, () => 'identifier');
-		a.equalValues([...highlight('a?b')].map(token => [token.kind, token.start, token.end]), [
+		const tokens = [...highlight('a?b')];
+		a.equalValues(tokens.map(token => [token.highlight, token.start, token.end]), [
 			['identifier', 0, 1], ['error', 1, 2], ['identifier', 2, 3],
 		]);
+		a.equal(tokens[1]?.kind, 'tokenizer-error');
+		a.equal(tokens[1]?.foldStart, 0);
+		a.equal(tokens[1]?.foldEnd, 0);
+		if (tokens[1]?.kind === 'tokenizer-error')
+			a.ok(tokens[1].error instanceof CompilerError);
 	});
 
 	s.test('runtime contracts', it => {

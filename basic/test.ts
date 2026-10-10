@@ -31,13 +31,13 @@ export default spec('basic', (a: TestApi) => {
 	a.test('public highlighting contract', it => {
 		it.test('preserves named and numeric labels', a => {
 			a.equalValues(
-				[...highlight('start:\n10 PRINT 1')].map(token => token.kind),
+				[...highlight('start:\n10 PRINT 1')].map(token => token.highlight),
 				['label', 'text', 'label', 'keyword', 'number'],
 			);
 		});
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
-				[...highlight('PRINT "hi", 42')].map(token => token.kind),
+				[...highlight('PRINT "hi", 42')].map(token => token.highlight),
 				['keyword', 'string', 'punctuation', 'number'],
 			);
 			a.equalValues([...highlight('')], []);
@@ -47,7 +47,7 @@ export default spec('basic', (a: TestApi) => {
 			const tokens = [...highlight(source)];
 			a.equalValues(
 				tokens
-					.filter(token => token.kind === 'identifier' || token.kind === 'text')
+					.filter(token => token.highlight === 'identifier' || token.highlight === 'text')
 					.map(token => [source.slice(token.start, token.end), token.line]),
 				 [['first', 0], ['\n', 0], ['second', 1]],
 			);

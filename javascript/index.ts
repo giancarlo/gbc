@@ -17,9 +17,10 @@ type LexicalHighlightKind =
 
 type IdentifierHighlightKind = 'identifier' | 'keyword' | 'literal';
 
-export type HighlightKind = LexicalHighlightKind | IdentifierHighlightKind;
+export type ScannerKind = LexicalHighlightKind | IdentifierHighlightKind;
 
-export type HighlightToken = Token<HighlightKind | 'eof'>;
+export type ScannerToken = Token<ScannerKind | 'eof'>;
+export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
 
 export const keywords: ReadonlySet<string> = new Set(
 	'async await break case catch class const continue debugger default delete do else export extends finally for from function get if import in instanceof let new of return set static super switch this throw try typeof using var void while with yield'.split(

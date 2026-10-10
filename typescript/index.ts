@@ -1,13 +1,14 @@
 import { type Scanner, type Token } from '@cxl/gbc.sdk';
 import {
 	createScanner,
-	type HighlightKind as JavaScriptHighlightKind,
+	type ScannerKind as JavaScriptScannerKind,
 	keywords as javaScriptKeywords,
 	literals as javaScriptLiterals,
 } from '@cxl/gbc.javascript';
 
-export type HighlightKind = JavaScriptHighlightKind | 'type';
-export type HighlightToken = Token<HighlightKind | 'eof'>;
+export type ScannerKind = JavaScriptScannerKind | 'type';
+export type ScannerToken = Token<ScannerKind | 'eof'>;
+export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
 
 const keywords = new Set([
 	...javaScriptKeywords,
@@ -20,7 +21,7 @@ const typeKeywords = new Set(
 );
 const literals = new Set([...javaScriptLiterals, 'undefined']);
 
-export const scan: Scanner<HighlightToken> = createScanner(word =>
+export const scan: Scanner<ScannerToken> = createScanner(word =>
 	literals.has(word)
 		? 'literal'
 		: typeKeywords.has(word)
