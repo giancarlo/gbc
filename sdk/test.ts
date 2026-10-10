@@ -21,6 +21,12 @@ import {
 	type UnaryNodeBase,
 } from './index.js';
 import type { NodeWithChildren, Symbol, Token, Type } from './index.js';
+import type {
+	RuntimeEvent,
+	RuntimeExports,
+	RuntimeInputResponse,
+	RuntimeRunRecord,
+} from './index.js';
 
 type TestLeaf = LeafNode<'leaf'>;
 type TestRoot = RootNodeBase<TestLeaf>;
@@ -55,6 +61,64 @@ export default spec('sdk', s => {
 		a.equalValues([...highlight('a?b')].map(token => [token.kind, token.start, token.end]), [
 			['identifier', 0, 1], ['error', 1, 2], ['identifier', 2, 3],
 		]);
+	});
+
+	s.test('runtime contracts', it => {
+		it.should('describe direct numeric Wasm calls and reject invalid record shapes', a => {
+			type Assignable<From, To> = [From] extends [To] ? true : false;
+			const checks: [
+				Assignable<Parameters<RuntimeExports['input']>, [number, number, number]>,
+				Assignable<Parameters<RuntimeExports['advance']>, [number]>,
+				Assignable<ReturnType<RuntimeExports['advance']>, void>,
+				Assignable<ReturnType<RuntimeExports['init']>, number>,
+				Assignable<ReturnType<RuntimeExports['start']>, number>,
+				Assignable<ReturnType<RuntimeExports['pause']>, number>,
+				Assignable<ReturnType<RuntimeExports['resume']>, number>,
+				Assignable<ReturnType<RuntimeExports['stop']>, number>,
+				Assignable<ReturnType<RuntimeExports['dispose']>, number>,
+				Assignable<ReturnType<RuntimeExports['cancel']>, number>,
+				Assignable<ReturnType<RuntimeExports['commandBuffer']>, number>,
+				Assignable<ReturnType<RuntimeExports['read']>, number>,
+				Assignable<{ inputId: number; type: 'number'; value: string }, RuntimeInputResponse>,
+				Assignable<{ kind: 'commandResult'; commandId: number; status: 99 }, RuntimeEvent>,
+				Assignable<{ kind: 'completed'; reason: 'disposed'; exitCode: number }, RuntimeEvent>,
+				Assignable<{ kind: 'state'; state: 'completed' }, RuntimeEvent>,
+				Assignable<{ kind: 'failed'; error: { message: string } }, RuntimeEvent>,
+				Assignable<{ record: RuntimeEvent }, RuntimeRunRecord>,
+			] = [true, true, true, true, true, true, true, true, true, true, true, true,
+				false, false, false, false, false, false];
+			a.equal(checks.length, 18);
+		});
+
+		it.should('preserve input, lifecycle, diagnostic, and error data through serialization', a => {
+			const position = { start: 0, end: 2, line: 0, source: '😀\n' };
+			const events: readonly RuntimeEvent[] = [
+				{ kind: 'state', state: 'ready' },
+				{ kind: 'state', state: 'running' },
+				{ kind: 'state', state: 'paused' },
+				{ kind: 'state', state: 'stopping' },
+				{ kind: 'commandResult', commandId: 1, status: 0 },
+				{ kind: 'commandResult', commandId: 2, status: -4 },
+				{ kind: 'commandResult', commandId: 3, status: -9 },
+				{ kind: 'input', request: { inputId: 1, type: 'string', prompt: 'Name?' } },
+				{ kind: 'input', request: { inputId: 2, type: 'number', prompt: 'Count?' } },
+				{ kind: 'input', request: { inputId: 3, type: 'boolean', prompt: 'Continue?' } },
+				{ kind: 'inputCancelled', inputId: 3 },
+				{ kind: 'diagnostic', diagnostic: { severity: 'warning', message: 'A warning', code: 'W1', position } },
+				{ kind: 'completed', reason: 'returned', exitCode: 7 },
+				{ kind: 'completed', reason: 'stopped', exitCode: 0 },
+				{ kind: 'failed', error: { name: 'NumericOverflow', message: 'Overflow', code: 'E1', position, stack: 'program:1' } },
+				{ kind: 'disposed' },
+			];
+			const records: RuntimeRunRecord[] = events.map(record => ({ runId: 'run-1', record }));
+			const responses: RuntimeRunRecord<RuntimeInputResponse>[] = [
+				{ runId: 'run-1', record: { inputId: 1, type: 'string', value: '😀' } },
+				{ runId: 'run-1', record: { inputId: 2, type: 'number', value: 42.5 } },
+				{ runId: 'run-1', record: { inputId: 3, type: 'boolean', value: false } },
+			];
+			a.equalValues(JSON.parse(JSON.stringify(records)), records);
+			a.equalValues(JSON.parse(JSON.stringify(responses)), responses);
+		});
 	});
 
 	s.test('formatter', it => {
