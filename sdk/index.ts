@@ -75,9 +75,29 @@ export type Highlighter<Node extends Token<string> = Token<string>> = (
 	source: string,
 ) => Generator<Node & HighlightToken, void>;
 
+const noFold = [0, 0] as const;
+const openFold = [1, 0] as const;
+const closeFold = [0, 1] as const;
+const spanFold = [1, 1] as const;
+
+export function foldToken(token: HighlightToken): readonly [number, number] {
+	if (token.highlight === 'punctuation') {
+		const value = text(token);
+		if (value === '{' || value === '[' || value === '(') return openFold;
+		if (value === '}' || value === ']' || value === ')') return closeFold;
+	}
+	if (
+		(token.highlight === 'comment' || token.highlight === 'string' ||
+			token.highlight === 'template' || token.highlight === 'code') &&
+		text(token).includes('\n')
+	) return spanFold;
+	return noFold;
+}
+
 export function createHighlighter<Node extends Token<string>>(
 	scanner: Scanner<Node>,
 	classify: (token: Node) => HighlightKind,
+	fold?: (token: Node & HighlightToken) => readonly [number, number],
 ): Highlighter<Node | TokenizerError> {
 	const isScannedToken = (token: Node | TokenizerError): token is Node =>
 		token.kind !== 'tokenizer-error';
@@ -88,7 +108,11 @@ export function createHighlighter<Node extends Token<string>>(
 			for (; offset < token.start; offset++)
 				if (source.charAt(offset) === '\n') line++;
 			token.line = line;
-			yield enrichHighlightToken(token, isScannedToken(token) ? classify(token) : 'error');
+			if (isScannedToken(token)) {
+				const result = enrichHighlightToken(token, classify(token));
+				if (fold) [result.foldStart, result.foldEnd] = fold(result);
+				yield result;
+			} else yield enrichHighlightToken(token, 'error');
 		}
 	};
 }

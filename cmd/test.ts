@@ -18,6 +18,43 @@ import {
 
 export default spec('cmd', s => {
 	s.test('public highlighting contract', it => {
+		it.test('marks fold boundaries without folding literal delimiters', a => {
+			const cases: [string, [string, number, number][]][] = [
+				[
+					'if echo x; then for x in a; do (echo x); done; fi',
+					[
+						['if', 1, 0],
+						['for', 1, 0],
+						['(', 1, 0],
+						[')', 0, 1],
+						['done', 0, 1],
+						['fi', 0, 1],
+					],
+				],
+				['echo if for do done fi; echo "{ }"; # if\n{ echo x; }', [['{', 1, 0], ['}', 0, 1]]],
+				['if echo x; then\necho "a\nb"', [['if', 1, 0], ['"a\nb"', 1, 1]]],
+				['2>fi if true; then true; fi', [['if', 1, 0], ['fi', 0, 1]]],
+			];
+			for (const [source, expected] of cases) {
+				const tokens = [...highlight(source)];
+				a.equalValues(
+					tokens.filter(token => token.foldStart || token.foldEnd)
+						.map(token => [source.slice(token.start, token.end), token.foldStart, token.foldEnd]),
+					expected,
+				);
+				const iterator = highlight(source);
+				const first = iterator.next();
+				if (!first.done) {
+					const snapshot = { ...first.value };
+					const other = highlight(source);
+					other.next();
+					a.equalValues([first.value, ...iterator], tokens);
+					a.equalValues(first.value, snapshot);
+					a.equalValues([...other], tokens.slice(1));
+				}
+				a.equalValues([...highlight(source)], tokens);
+			}
+		});
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
 				[...highlight('if echo "hi"; then echo 42; fi')].map(token => token.highlight),

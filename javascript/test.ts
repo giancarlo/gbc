@@ -23,6 +23,38 @@ const tokens = (source: string) =>
 
 export default spec('javascript', it => {
 	it.test('public highlighting contract', it => {
+		it.test('marks fold boundaries without folding literal delimiters', a => {
+			const cases: [string, [string, number, number][]][] = [
+				['({x: [1]})', [['(', 1, 0], ['{', 1, 0], ['[', 1, 0], [']', 0, 1], ['}', 0, 1], [')', 0, 1]]],
+				[
+					'"{[()]}"; /[{}]/; // {\n`line\n{value}`; /* a\nb */',
+					[
+						['`line\n{value}`', 1, 1],
+						['/* a\nb */', 1, 1],
+					],
+				],
+				['{ [', [['{', 1, 0], ['[', 1, 0]]],
+			];
+			for (const [source, expected] of cases) {
+				const tokens = [...highlight(source)];
+				a.equalValues(
+					tokens.filter(token => token.foldStart || token.foldEnd)
+						.map(token => [source.slice(token.start, token.end), token.foldStart, token.foldEnd]),
+					expected,
+				);
+				const iterator = highlight(source);
+				const first = iterator.next();
+				if (!first.done) {
+					const snapshot = { ...first.value };
+					const other = highlight(source);
+					other.next();
+					a.equalValues([first.value, ...iterator], tokens);
+					a.equalValues(first.value, snapshot);
+					a.equalValues([...other], tokens.slice(1));
+				}
+				a.equalValues([...highlight(source)], tokens);
+			}
+		});
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
 				[...highlight('const value = 42; // note')].map(token => token.highlight),

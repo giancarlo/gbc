@@ -16,6 +16,15 @@ const cases = {
 	markdown: ['# Heading\n\n**bold** and `code`\n\n```ts\nconst value = 42;\n```\n', '```ts\nconst value ='],
 	cmd: ['if echo "hi"; then echo 42; fi', 'echo "unterminated', ['keyword', 'identifier', 'string', 'punctuation', 'keyword', 'identifier', 'number', 'punctuation', 'keyword']],
 };
+const foldSources = {
+	javascript: '{\n}',
+	typescript: '{\n}',
+	compiler: '{\n}',
+	html: '<div>\n</div>',
+	basic: 'DO\nLOOP',
+	cmd: 'if true; then\ntrue; fi',
+	markdown: '# Heading\nbody',
+};
 
 function compile(args) {
 	const result = spawnSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), ...args], {
@@ -74,14 +83,17 @@ try {
 			assert.equal(token.line, source.slice(0, token.start).split('\n').length - 1);
 			assert.notEqual(token.kind, 'eof');
 			assert.equal(typeof token.highlight, 'string');
-			assert.equal(token.foldStart, 0);
-			assert.equal(token.foldEnd, 0);
+			assert(Number.isInteger(token.foldStart) && token.foldStart >= 0);
+			assert(Number.isInteger(token.foldEnd) && token.foldEnd >= 0);
 			end = token.end;
 		}
 		const iterator = highlight(source);
 		assert.equal(iterator.next().value.highlight, tokens[0].highlight);
 		assert.deepEqual([...highlight(source)], tokens);
 		assert([...highlight(incomplete)].length > 0);
+		const folded = [...highlight(foldSources[pkg])];
+		assert.equal(folded.reduce((sum, token) => sum + token.foldStart, 0), 1);
+		assert.equal(folded.reduce((sum, token) => sum + token.foldEnd, 0), 1);
 		if (['compiler', 'basic', 'cmd'].includes(pkg))
 			assert([...highlight(incomplete)].some(token => token.highlight === 'error'));
 		if (pkg === 'markdown') {

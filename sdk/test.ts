@@ -9,6 +9,7 @@ import {
 	createTrie,
 	findNodeAtIndex,
 	Flags,
+	foldToken,
 	formatting,
 	type LeafNode,
 	matchers,
@@ -16,6 +17,7 @@ import {
 	type RootNodeBase,
 	ScannerApi,
 	stringEscape,
+	text,
 	type TernaryNodeBase,
 	tokenize,
 	type UnaryNodeBase,
@@ -47,6 +49,33 @@ const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => !ident(ch);
 
 export default spec('sdk', s => {
+	s.test('fold classifiers receive highlighted tokens and skip errors', a => {
+		const calls: string[] = [];
+		const highlight = createHighlighter(source => {
+			const api = ScannerApi({ source });
+			return {
+				backtrack: api.backtrack,
+				next() {
+					if (api.current() === '?') throw api.error('Unexpected input', 1);
+					return api.eof() ? api.tk('eof', 0) : api.tk('symbol', 1);
+				},
+			};
+		}, () => 'punctuation', token => {
+			a.equal(token.highlight, 'punctuation');
+			calls.push(text(token));
+			return foldToken(token);
+		});
+		const iterator = highlight('(?[])');
+		a.equal(calls.length, 0);
+		const first = iterator.next();
+		a.equal(calls.length, 1);
+		a.equalValues(
+			[first.value, ...iterator].map(token => token && [token.foldStart, token.foldEnd]),
+			[[1, 0], [0, 0], [1, 0], [0, 1], [0, 1]],
+		);
+		a.equalValues(calls, ['(', '[', ']', ')']);
+	});
+
 	s.test('enriched highlighting stream', a => {
 		const source = 'a\nb';
 		const scanned: Token<'word'>[] = [];
@@ -95,7 +124,7 @@ export default spec('sdk', s => {
 				},
 				backtrack: api.backtrack,
 			};
-		}, () => 'identifier');
+		}, () => 'identifier', () => [2, 1]);
 		const tokens = [...highlight('a?b')];
 		a.equalValues(tokens.map(token => [token.highlight, token.start, token.end]), [
 			['identifier', 0, 1], ['error', 1, 2], ['identifier', 2, 3],
@@ -103,6 +132,8 @@ export default spec('sdk', s => {
 		a.equal(tokens[1]?.kind, 'tokenizer-error');
 		a.equal(tokens[1]?.foldStart, 0);
 		a.equal(tokens[1]?.foldEnd, 0);
+		a.equalValues(tokens.filter(token => token.kind === 'word')
+			.map(token => [token.foldStart, token.foldEnd]), [[2, 1], [2, 1]]);
 		if (tokens[1]?.kind === 'tokenizer-error')
 			a.ok(tokens[1].error instanceof CompilerError);
 	});

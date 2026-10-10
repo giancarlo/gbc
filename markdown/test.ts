@@ -11,6 +11,44 @@ type MdTest = {
 
 export default spec('markdown', (a: TestApi) => {
 	a.test('public highlighting contract', it => {
+		it.test('marks fold boundaries without folding literal delimiters', a => {
+			const cases: [string, [string, number, number][]][] = [
+				[
+					'# One\ntext\n## Two\nbody\n# Three\nlast',
+					[
+						['# ', 1, 0],
+						['## ', 1, 0],
+						['\n', 0, 2],
+						['# ', 1, 0],
+						['last', 0, 1],
+					],
+				],
+				['```js\nconst x = {};\n```\n', [['```js\nconst x = {};\n```', 1, 1]]],
+				['Title\n=====\ntext', [['Title', 1, 0], ['text', 0, 1]]],
+				['# `code`', [['# ', 1, 0], ['`code`', 0, 1]]],
+				['    one\n    two\n\ntext', [['    one', 1, 0], ['\n\n', 0, 1]]],
+				['    one\n    two', [['    one', 1, 0], ['    two', 0, 1]]],
+			];
+			for (const [source, expected] of cases) {
+				const tokens = [...highlight(source)];
+				a.equalValues(
+					tokens.filter(token => token.foldStart || token.foldEnd)
+						.map(token => [source.slice(token.start, token.end), token.foldStart, token.foldEnd]),
+					expected,
+				);
+				const iterator = highlight(source);
+				const first = iterator.next();
+				if (!first.done) {
+					const snapshot = { ...first.value };
+					const other = highlight(source);
+					other.next();
+					a.equalValues([first.value, ...iterator], tokens);
+					a.equalValues(first.value, snapshot);
+					a.equalValues([...other], tokens.slice(1));
+				}
+				a.equalValues([...highlight(source)], tokens);
+			}
+		});
 		it.test('highlights an empty heading and a lone backtick within the source', a => {
 			for (const [source, kind] of [['# ', 'heading'], ['`', 'text']] as const) {
 				const tokens = [...highlight(source)];

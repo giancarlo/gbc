@@ -4,6 +4,42 @@ import { scanner } from './index.js';
 
 export default spec('html', (a: TestApi) => {
 	a.test('public highlighting contract', it => {
+		it.test('marks fold boundaries without folding literal delimiters', a => {
+			const cases: [string, [string, number, number][]][] = [
+				[
+					'<DIV title=">">\n<span>text</span><br><img/><custom />\n</DIV>',
+					[
+						['>', 1, 0],
+						['>', 1, 0],
+						['>', 0, 1],
+						['>', 0, 1],
+					],
+				],
+				['<!-- a\nb -->', [['<!-- a\nb -->', 1, 1]]],
+				['<div', []],
+				['<!DOCTYPE html><?xml version="1.0"?><br><hr/><input></br>', []],
+				['<div>\n<br>\n</div>', [['>', 1, 0], ['>', 0, 1]]],
+			];
+			for (const [source, expected] of cases) {
+				const tokens = [...highlight(source)];
+				a.equalValues(
+					tokens.filter(token => token.foldStart || token.foldEnd)
+						.map(token => [source.slice(token.start, token.end), token.foldStart, token.foldEnd]),
+					expected,
+				);
+				const iterator = highlight(source);
+				const first = iterator.next();
+				if (!first.done) {
+					const snapshot = { ...first.value };
+					const other = highlight(source);
+					other.next();
+					a.equalValues([first.value, ...iterator], tokens);
+					a.equalValues(first.value, snapshot);
+					a.equalValues([...other], tokens.slice(1));
+				}
+				a.equalValues([...highlight(source)], tokens);
+			}
+		});
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
 				[...highlight('<div id="x">hi</div>')].map(token => token.highlight),

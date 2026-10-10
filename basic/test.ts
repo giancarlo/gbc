@@ -29,6 +29,62 @@ declare global {
 
 export default spec('basic', (a: TestApi) => {
 	a.test('public highlighting contract', it => {
+		it.test('marks fold boundaries without folding literal delimiters', a => {
+			const cases: [string, [string, number, number][]][] = [
+				[
+					'IF x THEN\nFOR i = 1 TO 2\nPRINT i\nNEXT i\nEND IF',
+					[
+						['THEN', 1, 0],
+						['FOR', 1, 0],
+						['NEXT', 0, 1],
+						['END', 0, 1],
+					],
+				],
+				[
+					'DECLARE SUB demo()\nSUB demo()\nDO WHILE x\nEXIT DO\nLOOP WHILE y\nEND SUB\nEND',
+					[
+						['(', 1, 0],
+						[')', 0, 1],
+						['SUB', 1, 0],
+						['(', 1, 0],
+						[')', 0, 1],
+						['DO', 1, 0],
+						['LOOP', 0, 1],
+						['END', 0, 1],
+					],
+				],
+				[
+					'IF x THEN PRINT "END IF"\nELSEIF y THEN\nWHILE x\nWEND\nSELECT CASE x\nEND SELECT',
+					[
+						['WHILE', 1, 0],
+						['WEND', 0, 1],
+						['SELECT', 1, 0],
+						['END', 0, 1],
+					],
+				],
+				['FOR i = 1 TO 2\nFOR j = 1 TO 2\nNEXT j, i', [['FOR', 1, 0], ['FOR', 1, 0], ['NEXT', 0, 2]]],
+				['FOR i = 1 TO 2\nNEXT i REM , ,', [['FOR', 1, 0], ['NEXT', 0, 1]]],
+			];
+			for (const [source, expected] of cases) {
+				const tokens = [...highlight(source)];
+				a.equalValues(
+					tokens.filter(token => token.foldStart || token.foldEnd)
+						.map(token => [source.slice(token.start, token.end), token.foldStart, token.foldEnd]),
+					expected,
+				);
+				const iterator = highlight(source);
+				const first = iterator.next();
+				if (!first.done) {
+					const snapshot = { ...first.value };
+					const other = highlight(source);
+					other.next();
+					a.equalValues([first.value, ...iterator], tokens);
+					a.equalValues(first.value, snapshot);
+					a.equalValues([...other], tokens.slice(1));
+				}
+				a.equalValues([...highlight(source)], tokens);
+			}
+		});
 		it.test('preserves named and numeric labels', a => {
 			a.equalValues(
 				[...highlight('start:\n10 PRINT 1')].map(token => token.highlight),
