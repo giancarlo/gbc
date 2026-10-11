@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "environments": {
+    "837b8abd7ce17819bc47de22ec6d23253fd9f43d64af7e539d59554f9f2dd041": {
+      "fingerprint": {
+        "browser": "Node/v24.13.0",
+        "platform": "linux",
+        "architecture": "arm64",
+        "cpu": "unknown",
+        "gpu": "",
+        "profile": ""
+      },
+      "benchmarks": {
+        "json > should parse editor-sized JSON": {
+          "type": "benchmark",
+          "iterations": 30,
+          "values": [
+            0.7707555666666698,
+            0.7148680333333307,
+            0.6960402666666672,
+            0.6929500000000037,
+            0.8553944666666666,
+            0.6926430333333277,
+            0.8941375000000031,
+            0.6901555333333362,
+            0.6874444666666705,
+            0.8706194666666761
+          ],
+          "median": 0.7054541499999989,
+          "mad": 0.016654149999995538,
+          "p75": 0.8342347416666674,
+          "p95": 0.8835543850000059,
+          "operationsPerSecond": 1417.5265678145088,
+          "options": {
+            "warmup": 50,
+            "sampleTime": 20,
+            "samples": 10,
+            "maxRegression": 15
+          }
+        },
+        "json > should highlight editor-sized JSON": {
+          "type": "benchmark",
+          "iterations": 20,
+          "values": [
+            1.13839375,
+            1.1417708500000117,
+            1.1363812499999995,
+            1.1286083500000132,
+            1.1704770999999936,
+            1.1195479500000147,
+            1.1181145499999956,
+            1.1126208000000133,
+            1.1105604000000084,
+            1.1307603999999856
+          ],
+          "median": 1.1296843749999994,
+          "mad": 0.010853124999994246,
+          "p75": 1.1378906249999998,
+          "p95": 1.1575592875000018,
+          "operationsPerSecond": 885.2030019446809,
+          "options": {
+            "warmup": 50,
+            "sampleTime": 20,
+            "samples": 10,
+            "maxRegression": 15
+          }
+        }
+      }
+    }
+  }
+}

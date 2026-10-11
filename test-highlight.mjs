@@ -8,6 +8,7 @@ import { build } from 'esbuild-wasm';
 
 const root = import.meta.dirname;
 const cases = {
+	json: ['{"value": [true, null, 42]}', '{"value": "unfinished', ['punctuation', 'attribute', 'punctuation', 'punctuation', 'literal', 'punctuation', 'literal', 'punctuation', 'number', 'punctuation', 'punctuation']],
 	javascript: ['const value = 42;', "'unfinished", ['keyword', 'identifier', 'operator', 'number', 'punctuation']],
 	typescript: ['const value: number = 42;', '/* unfinished', ['keyword', 'identifier', 'punctuation', 'type', 'operator', 'number', 'punctuation']],
 	html: ['<div id="x">hi</div>', '<div id="', ['punctuation', 'tag', 'attribute', 'operator', 'string', 'punctuation', 'text', 'punctuation', 'punctuation', 'tag', 'punctuation']],
@@ -17,6 +18,7 @@ const cases = {
 	cmd: ['if echo "hi"; then echo 42; fi', 'echo "unterminated', ['keyword', 'identifier', 'string', 'punctuation', 'keyword', 'identifier', 'number', 'punctuation', 'keyword']],
 };
 const foldSources = {
+	json: '{\n}',
 	javascript: '{\n}',
 	typescript: '{\n}',
 	compiler: '{\n}',
@@ -68,7 +70,7 @@ try {
 			}],
 		});
 		await copyFile(join(root, 'dist', pkg, 'highlight.d.ts'), join(dir, 'highlight.d.ts'));
-		if (pkg === 'javascript' || pkg === 'typescript')
+		if (pkg === 'javascript' || pkg === 'typescript' || pkg === 'json')
 			await copyFile(join(root, 'dist', pkg, 'index.d.ts'), join(dir, 'index.d.ts'));
 		await symlink(dir, join(fixture, 'node_modules', metadata.name));
 		const { highlight } = await import(pathToFileURL(require.resolve(metadata.name + '/highlight')).href);
