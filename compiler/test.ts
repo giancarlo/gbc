@@ -13,6 +13,7 @@ import { bufferView, instantiateWasm } from './host.js';
 import type { NodeMap } from './node.js';
 import type { Symbol, Type } from './symbol-table.js';
 import { compileWasm, type LibraryObject } from './target-wasm.js';
+import lifecycle from './test-lifecycle.js';
 
 declare const WebAssembly: {
 	Module: new (bytes: Uint8Array) => unknown;
@@ -22,6 +23,7 @@ declare const WebAssembly: {
 Language design proposals must satisfy docs/feature-laws.md.
 */
 export default spec('Language Reference', s => {
+	s.addSpec(lifecycle);
 	s.test('public highlighting contract', it => {
 		it.test('marks fold boundaries without folding literal delimiters', a => {
 			const cases: [string, [string, number, number][]][] = [
