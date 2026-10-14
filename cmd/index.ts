@@ -341,6 +341,7 @@ function decodeAnsiEscape(source: string, index: number) {
 function inspectWord(
 	{ source, start, end }: ScannerToken,
 	ranges: SubstitutionRange[],
+	expansions = true,
 ): WordState {
 	let value = '';
 	let index = start;
@@ -391,16 +392,7 @@ function inspectWord(
 				index += 2;
 				continue;
 			}
-			if (quote === '"' && ch === '$') {
-				readDollar();
-				continue;
-			}
-			if (quote === '"' && ch === '`') {
-				state.hasBackticks = true;
-				markCommand();
-				index++;
-				continue;
-			}
+			if (quote === '"' && expansions && readSpecial(ch)) continue;
 			value += ch;
 			index++;
 		}
@@ -412,6 +404,11 @@ function inspectWord(
 		if (next === "'") {
 			index++;
 			readQuoted("'", true);
+			return;
+		}
+		if (!expansions) {
+			value += '$';
+			index++;
 			return;
 		}
 		if (next === '(') {
@@ -428,6 +425,18 @@ function inspectWord(
 		}
 		value += '$';
 		index++;
+	}
+
+	function readSpecial(ch: string) {
+		if (ch === '$') {
+			readDollar();
+			return true;
+		}
+		if (!expansions || ch !== '`') return false;
+		state.hasBackticks = true;
+		markCommand();
+		index++;
+		return true;
 	}
 
 	while (index < end) {
@@ -447,16 +456,7 @@ function inspectWord(
 			readQuoted('"');
 			continue;
 		}
-		if (ch === '$') {
-			readDollar();
-			continue;
-		}
-		if (ch === '`') {
-			state.hasBackticks = true;
-			markCommand();
-			index++;
-			continue;
-		}
+		if (readSpecial(ch)) continue;
 		if (ch === '\\') {
 			const next = source[index + 1];
 			if (next === '\n') index += 2;
@@ -482,7 +482,7 @@ function inspectWord(
 
 	const hasExpansion = state.hasNonliteralConstruct;
 	return {
-		value: state.hasNonliteralConstruct ? undefined : value,
+		value: expansions && state.hasNonliteralConstruct ? undefined : value,
 		literal: !state.hasNonliteralConstruct,
 		hasExpansion,
 		hasParameterExpansion: state.hasParameterExpansion,
@@ -496,7 +496,7 @@ function createScanner(source: string) {
 	const { current, eof, tk, matchString, matchUntil, error, skip, backtrack } = ScannerApi({
 		source,
 	});
-	const hereDocuments: { redirect: RedirectNode; delimiter: string; stripTabs: boolean }[] = [];
+	const hereDocuments: { redirect?: RedirectNode; delimiter: string; stripTabs: boolean }[] = [];
 	const substitutions = new WeakMap<object, SubstitutionRange[]>();
 	let substitutionRanges: SubstitutionRange[] | undefined;
 	let signature = false;
@@ -657,12 +657,8 @@ function createScanner(source: string) {
 	return {
 		next,
 		backtrack,
-		queueHereDocument(redirect: RedirectNode) {
-			hereDocuments.push({
-				redirect,
-				delimiter: redirect.target.value ?? text(redirect.target),
-				stripTabs: redirect.operator === '<<-',
-			});
+		queueHereDocument(document: { delimiter: string; stripTabs: boolean; redirect?: RedirectNode }) {
+			hereDocuments.push(document);
 		},
 		consumeHereDocuments(start: number, line: number) {
 			let cursor = start;
@@ -693,8 +689,10 @@ function createScanner(source: string) {
 					line: line + source.slice(start, bodyStart).split('\n').length,
 					source,
 				};
-				document.redirect.body = body;
-				document.redirect.children.push(body);
+				if (document.redirect) {
+					document.redirect.body = body;
+					document.redirect.children.push(body);
+				}
 				bodies.push(body);
 			}
 			backtrack({
@@ -717,6 +715,38 @@ function createScanner(source: string) {
 export function scan(source: string) {
 	const { next, backtrack } = createScanner(source);
 	return { next, backtrack };
+}
+
+export function scanHighlight(source: string) {
+	const scanner = createScanner(source);
+	let pending: boolean | undefined;
+	let queued = false;
+	let bodies: HereDocumentNode[] = [];
+	let bodyIndex = 0;
+	function next() {
+		const body = bodies[bodyIndex];
+		if (body) {
+			bodyIndex++;
+			return body;
+		}
+		const token = scanner.next();
+		if (token.kind === 'word' && pending !== undefined) {
+			scanner.queueHereDocument({
+				delimiter: inspectWord(token, [], false).value ?? text(token),
+				stripTabs: pending,
+			});
+			queued = true;
+			pending = undefined;
+		} else if (token.kind === '<<' || token.kind === '<<-') pending = token.kind === '<<-';
+		else if (token.kind !== 'comment') pending = undefined;
+		if (queued && token.kind === 'newline') {
+			bodies = scanner.consumeHereDocuments(token.end, token.line).bodies;
+			bodyIndex = 0;
+			queued = false;
+		}
+		return token;
+	}
+	return { next, backtrack: scanner.backtrack };
 }
 
 function isRedirectKind(kind: Kind): kind is RedirectOperator {
@@ -884,7 +914,11 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		};
 		if (operator.kind === '<<' || operator.kind === '<<-') {
 			hasHereDocuments = true;
-			scanner.queueHereDocument(redirect);
+			scanner.queueHereDocument({
+				redirect,
+				delimiter: target.value ?? text(target),
+				stripTabs: operator.kind === '<<-',
+			});
 		}
 		return redirect;
 	}

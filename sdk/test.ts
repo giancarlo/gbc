@@ -49,6 +49,21 @@ const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => !ident(ch);
 
 export default spec('sdk', s => {
+	s.test('parentheses do not mark fold boundaries', a => {
+		const highlight = createHighlighter(source => {
+			const api = ScannerApi({ source });
+			return {
+				backtrack: api.backtrack,
+				next() {
+					api.skipWhitespace();
+					return api.eof() ? api.tk('eof', 0) : api.tk('symbol', 1);
+				},
+			};
+		}, () => 'punctuation', foldToken);
+		for (const source of ['()', '(\n)'])
+			a.equalValues([...highlight(source)].map(token => [token.foldStart, token.foldEnd]), [[0, 0], [0, 0]]);
+	});
+
 	s.test('fold classifiers receive highlighted tokens and skip errors', a => {
 		const calls: string[] = [];
 		const highlight = createHighlighter(source => {
@@ -71,7 +86,7 @@ export default spec('sdk', s => {
 		a.equal(calls.length, 1);
 		a.equalValues(
 			[first.value, ...iterator].map(token => token && [token.foldStart, token.foldEnd]),
-			[[1, 0], [0, 0], [1, 0], [0, 1], [0, 1]],
+			[[0, 0], [0, 0], [1, 0], [0, 1], [0, 0]],
 		);
 		a.equalValues(calls, ['(', '[', ']', ')']);
 	});

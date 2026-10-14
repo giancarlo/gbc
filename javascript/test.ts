@@ -25,7 +25,8 @@ export default spec('javascript', it => {
 	it.test('public highlighting contract', it => {
 		it.test('marks fold boundaries without folding literal delimiters', a => {
 			const cases: [string, [string, number, number][]][] = [
-				['({x: [1]})', [['(', 1, 0], ['{', 1, 0], ['[', 1, 0], [']', 0, 1], ['}', 0, 1], [')', 0, 1]]],
+				['({x: [1]})', [['{', 1, 0], ['[', 1, 0], [']', 0, 1], ['}', 0, 1]]],
+				['function f(\nvalue\n) { return f(\nvalue\n); }', [['{', 1, 0], ['}', 0, 1]]],
 				[
 					'"{[()]}"; /[{}]/; // {\n`line\n{value}`; /* a\nb */',
 					[

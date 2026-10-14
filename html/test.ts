@@ -2,8 +2,26 @@ import { highlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import { scanner } from './index.js';
 
+const benchmarkSource = (`<ul><li>${'<div>'.repeat(100)}${'</div>'.repeat(100)}</ul>`).repeat(5);
+
 export default spec('html', (a: TestApi) => {
+	a.should('highlight deeply nested markup', a => a.benchmark(() => [...highlight(benchmarkSource)].length, {
+		warmup: 50,
+		sampleTime: 20,
+		samples: 10,
+		maxRegression: 15,
+	}));
 	a.test('public highlighting contract', it => {
+		it.test('closes each list item before opening its sibling', a => {
+			const starts: number[] = [];
+			const regions: [number, number][] = [];
+			for (const token of highlight('<ul>\n<li>a\n<li>b\n</ul>')) {
+				for (let i = 0; i < token.foldStart; i++) starts.push(token.line);
+				for (let i = 0; i < token.foldEnd; i++) regions.push([starts.pop() ?? -1, token.line]);
+			}
+			a.equalValues(regions, [[1, 2], [2, 3], [0, 3]]);
+			a.equalValues(starts, []);
+		});
 		it.test('marks fold boundaries without folding literal delimiters', a => {
 			const cases: [string, [string, number, number][]][] = [
 				[
@@ -19,6 +37,20 @@ export default spec('html', (a: TestApi) => {
 				['<div', []],
 				['<!DOCTYPE html><?xml version="1.0"?><br><hr/><input></br>', []],
 				['<div>\n<br>\n</div>', [['>', 1, 0], ['>', 0, 1]]],
+				['<ul>\n<li>a\n<li>b\n</ul>', [['>', 1, 0], ['>', 1, 0], ['li', 0, 1], ['>', 1, 0], ['>', 0, 2]]],
+				['<ul><li>outer<ul><li>inner</ul><li>next</ul>', [['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['>', 0, 2], ['li', 0, 1], ['>', 1, 0], ['>', 0, 2]]],
+				['<dl><dt>term<dd>definition<dt>next</dl>', [['>', 1, 0], ['>', 1, 0], ['dd', 0, 1], ['>', 1, 0], ['dt', 0, 1], ['>', 1, 0], ['>', 0, 2]]],
+				['<div><p>first<p>second<hr></div>', [['>', 1, 0], ['>', 1, 0], ['p', 0, 1], ['>', 1, 0], ['hr', 0, 1], ['>', 0, 1]]],
+				['<select><optgroup><option>a<option>b<optgroup><option>c</select>', [['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['option', 0, 1], ['>', 1, 0], ['optgroup', 0, 2], ['>', 1, 0], ['>', 1, 0], ['>', 0, 3]]],
+				['<table><tbody><tr><td>a<td>b<tr><th>c</table>', [['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['td', 0, 1], ['>', 1, 0], ['tr', 0, 2], ['>', 1, 0], ['>', 1, 0], ['>', 0, 4]]],
+				['<html><body><p>text', [['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['text', 0, 3]]],
+				['<div><p>text', [['>', 1, 0], ['>', 1, 0], ['text', 0, 1]]],
+				['<div></span></div></div>', [['>', 1, 0], ['>', 0, 1]]],
+				['<div><constructor><p>text</p></constructor></div>', [['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['>', 0, 1], ['>', 0, 1], ['>', 0, 1]]],
+				['<ruby>text<rt>a<rp>b<rt>c</ruby>', [['>', 1, 0], ['>', 1, 0], ['rp', 0, 1], ['>', 1, 0], ['rt', 0, 1], ['>', 1, 0], ['>', 0, 2]]],
+				['<table><thead><tr><th>a<tbody><tr><td>b<tfoot><tr><td>c</table>', [['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['tbody', 0, 3], ['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['tfoot', 0, 3], ['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['>', 0, 4]]],
+				['<html><head><title>title</title><body><p>text', [['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['>', 0, 1], ['body', 0, 1], ['>', 1, 0], ['>', 1, 0], ['text', 0, 3]]],
+				['<html><head><title>title</title><p>text', [['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['>', 0, 1], ['p', 0, 1], ['>', 1, 0], ['text', 0, 2]]],
 			];
 			for (const [source, expected] of cases) {
 				const tokens = [...highlight(source)];

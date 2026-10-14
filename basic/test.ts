@@ -43,11 +43,7 @@ export default spec('basic', (a: TestApi) => {
 				[
 					'DECLARE SUB demo()\nSUB demo()\nDO WHILE x\nEXIT DO\nLOOP WHILE y\nEND SUB\nEND',
 					[
-						['(', 1, 0],
-						[')', 0, 1],
 						['SUB', 1, 0],
-						['(', 1, 0],
-						[')', 0, 1],
 						['DO', 1, 0],
 						['LOOP', 0, 1],
 						['END', 0, 1],
@@ -64,6 +60,7 @@ export default spec('basic', (a: TestApi) => {
 				],
 				['FOR i = 1 TO 2\nFOR j = 1 TO 2\nNEXT j, i', [['FOR', 1, 0], ['FOR', 1, 0], ['NEXT', 0, 2]]],
 				['FOR i = 1 TO 2\nNEXT i REM , ,', [['FOR', 1, 0], ['NEXT', 0, 1]]],
+				['DIM a(10)\nCALL demo(1)\nPRINT (1 + 2)', []],
 			];
 			for (const [source, expected] of cases) {
 				const tokens = [...highlight(source)];

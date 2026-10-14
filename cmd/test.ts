@@ -1,4 +1,4 @@
-import { highlight } from './highlight.js';
+import { highlight, type HighlightToken } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import {
 	compiler,
@@ -34,6 +34,20 @@ export default spec('cmd', s => {
 				['echo if for do done fi; echo "{ }"; # if\n{ echo x; }', [['{', 1, 0], ['}', 0, 1]]],
 				['if echo x; then\necho "a\nb"', [['if', 1, 0], ['"a\nb"', 1, 1]]],
 				['2>fi if true; then true; fi', [['if', 1, 0], ['fi', 0, 1]]],
+				['demo() {\necho x\n}', [['{', 1, 0], ['}', 0, 1]]],
+				['(\necho first\necho second\n)', [['(', 1, 0], [')', 0, 1]]],
+				['demo() (\n(echo inner)\n)', [['(', 1, 0], ['(', 1, 0], [')', 0, 1], [')', 0, 1]]],
+				['demo(value: string) { (echo inner); }', [['{', 1, 0], ['(', 1, 0], [')', 0, 1], ['}', 0, 1]]],
+				['demo(\nvalue: string\n) (echo inner)', [['(', 1, 0], [')', 0, 1]]],
+				['demo(... values: string) (echo inner)', [['(', 1, 0], [')', 0, 1]]],
+				['demo(value?: string) (echo inner)', [['(', 1, 0], [')', 0, 1]]],
+				['echo (echo value: text)', [['(', 1, 0], [')', 0, 1]]],
+				['echo value (echo inner)', [['(', 1, 0], [')', 0, 1]]],
+				['(echo inner', [['(', 1, 0]]],
+				['demo(', []],
+				['cat <<EOF\nif for fi done\nEOF\n(echo after)', [['if for fi done\nEOF\n', 1, 1], ['(', 1, 0], [')', 0, 1]]],
+				["cat <<'FIRST' <<-SECOND\nif for\nFIRST\n\tfi done\n\tSECOND\n{ echo after; }", [['if for\nFIRST\n', 1, 1], ['\tfi done\n\tSECOND\n', 1, 1], ['{', 1, 0], ['}', 0, 1]]],
+				['cat <<EOF\nif for\n', [['if for\n', 1, 1]]],
 			];
 			for (const [source, expected] of cases) {
 				const tokens = [...highlight(source)];
@@ -53,6 +67,29 @@ export default spec('cmd', s => {
 					a.equalValues([...other], tokens.slice(1));
 				}
 				a.equalValues([...highlight(source)], tokens);
+			}
+		});
+		it.test('preserves heredoc literals, positions, and resumes commands', (a: TestApi) => {
+			for (const [delimiter, end] of [
+				['EOF', 'EOF'],
+				["'EOF'", 'EOF'],
+				['"EOF"', 'EOF'],
+				['E"O"F', 'EOF'],
+				['\\EOF', 'EOF'],
+				["$'EOF'", 'EOF'],
+				['E*OF', 'E*OF'],
+				['$EOF', '$EOF'],
+				['"$\'EOF\'"', "$'EOF'"],
+			] as const) {
+				const source = `cat <<${delimiter}\nif (for) { done; }\n${end}\nif true; then true; fi`;
+				const tokens: HighlightToken[] = [...highlight(source)];
+				const body = tokens.find(token => token.kind === 'heredoc');
+				a.assert(body, 'Expected heredoc token');
+				a.equal(body.highlight, 'string');
+				a.equal(source.slice(body.start, body.end), `if (for) { done; }\n${end}\n`);
+				a.equal(body.line, 1);
+				a.equal(body.source, source);
+				a.equalValues(tokens.filter(token => token.highlight === 'keyword').map(token => [source.slice(token.start, token.end), token.line]), [['if', 3], ['then', 3], ['fi', 3]]);
 			}
 		});
 		it.test('normalizes categories and omits EOF', a => {

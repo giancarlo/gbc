@@ -83,8 +83,8 @@ const spanFold = [1, 1] as const;
 export function foldToken(token: HighlightToken): readonly [number, number] {
 	if (token.highlight === 'punctuation') {
 		const value = text(token);
-		if (value === '{' || value === '[' || value === '(') return openFold;
-		if (value === '}' || value === ']' || value === ')') return closeFold;
+		if (value === '{' || value === '[') return openFold;
+		if (value === '}' || value === ']') return closeFold;
 	}
 	if (
 		(token.highlight === 'comment' || token.highlight === 'string' ||

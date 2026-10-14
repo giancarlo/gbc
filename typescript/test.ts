@@ -26,7 +26,8 @@ export default spec('typescript', it => {
 			const cases: [string, [string, number, number][]][] = [
 				['interface X { value: [number, string] }', [['{', 1, 0], ['[', 1, 0], [']', 0, 1], ['}', 0, 1]]],
 				['type X = "{}"; // {\n/* a\nb */', [['/* a\nb */', 1, 1]]],
-				['({', [['(', 1, 0], ['{', 1, 0]]],
+				['({', [['{', 1, 0]]],
+				['function f(\nvalue: number\n) { return f(\nvalue\n); }', [['{', 1, 0], ['}', 0, 1]]],
 			];
 			for (const [source, expected] of cases) {
 				const tokens = [...highlight(source)];

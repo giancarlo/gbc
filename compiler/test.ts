@@ -32,14 +32,13 @@ export default spec('Language Reference', s => {
 					[
 						['[', 1, 0],
 						['{', 1, 0],
-						['(', 1, 0],
-						[')', 0, 1],
 						['}', 0, 1],
 						[']', 0, 1],
 					],
 				],
 				['\'hello ${value} again ${other}\'', [['\'hello ${', 1, 0], ['} again ${', 1, 1], ['}\'', 0, 1]]],
 				['\'{}\'', []],
+				['var f = (x: Int32) { x }; f(1)', [['{', 1, 0], ['}', 0, 1]]],
 				['{ 0xg }', [['{', 1, 0], ['}', 0, 1]]],
 			];
 			for (const [source, expected] of cases) {
