@@ -1,11 +1,7 @@
 # Product Direction
 
-GB is a concise, type-safe functional language targeting WebAssembly. The current goal is technical value: a coherent, safe, readable, and performant language with minimal compiler machinery.
+GB aims for memory-safe, fast, resource-efficient programs on WebAssembly and native targets.
 
-## Priorities
-
-1. Correctness, memory safety, and regressions in implemented behavior.
-2. Foundational language and standard-library work that removes compiler special cases or unlocks multiple features.
-3. Diagnostics and test tooling that shorten development and debugging.
+Prioritize correctness and safety, then measured performance. Make resource tradeoffs explicit. Keep compiler machinery minimal and semantics consistent across targets.
 
 [`compiler/test.ts`](compiler/test.ts) is the normative executable language specification.
