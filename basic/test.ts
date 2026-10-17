@@ -1,3 +1,4 @@
+import analysis from './test-analysis.js';
 import { highlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import {
@@ -28,6 +29,7 @@ declare global {
 }
 
 export default spec('basic', (a: TestApi) => {
+	a.addSpec(analysis);
 	a.test('public highlighting contract', it => {
 		it.test('marks fold boundaries without folding literal delimiters', a => {
 			const cases: [string, [string, number, number][]][] = [

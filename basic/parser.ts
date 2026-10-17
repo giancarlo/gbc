@@ -6,7 +6,7 @@ import {
 	type NodeWithChildren,
 	type Token,
 } from '@cxl/gbc.sdk';
-import type { ComparisonOperator, Node, NodeMap } from './index.js';
+import type { ComparisonOperator, Node, NodeMap, TypeAnnotation } from './index.js';
 import { scan, type ScannerToken } from './scanner.js';
 
 export interface ParseResult {
@@ -302,6 +302,14 @@ export function parseProgram(source: string): ParseResult {
 		return { ...token, kind: 'ident', name: text(token).replace(/:$/, '') };
 	}
 
+	function labelTarget(): NodeMap['ident'] {
+		const token = current();
+		const name = text(token).replace(/:$/, '');
+		if (!/^(?:[a-z_][a-z\d_]*|\d+)$/i.test(name)) throw api.error('Expected label', token);
+		next();
+		return { ...token, kind: 'ident', name };
+	}
+
 	function statementValue(): Node | undefined {
 		if (current().kind !== '(') return expression();
 		const open = consume('(');
@@ -551,30 +559,69 @@ export function parseProgram(source: string): ParseResult {
 		};
 	}
 
+	function annotation(): TypeAnnotation | undefined {
+		if (!optional('as')) return undefined;
+		const name = current().kind === 'any' ? consume('any') : ident();
+		let length: number | undefined;
+		if (optional('*')) length = numberValue(consume('number'));
+		return { name: text(name), ...(length === undefined ? {} : { length }) };
+	}
+
+	function typeDeclaration(): NodeMap['type'] {
+		const token = consume('type');
+		const name = ident();
+		const children: NodeMap['field'][] = [];
+		skipSeparators();
+		while (current().kind !== 'end' && current().kind !== 'eof') {
+			const field = ident();
+			children.push({ ...field, kind: 'field', annotation: annotation() });
+			skipSeparators();
+		}
+		consume('end');
+		const end = consume('type');
+		return { ...token, kind: 'type', name: name.name, children, end: end.end };
+	}
+
+	function defaultType(): NodeMap['defaulttype'] {
+		const token = current();
+		next();
+		const ranges: [string, string][] = [];
+		do {
+			const first = ident();
+			const last = optional('-') ? ident() : first;
+			ranges.push([first.name, last.name]);
+		} while (optional(','));
+		return { ...token, kind: 'defaulttype', name: text(token).slice(3).toLowerCase(), ranges, end: current().start };
+	}
+
 	function variableDeclaration(): Node {
 		const token = current();
 		const redim = token.kind === 'redim';
 		next();
-		let shared = false;
+		let shared = token.kind === 'shared';
 		let staticVariable = token.kind === 'static';
 		while (current().kind === 'shared' || current().kind === 'static') {
 			shared ||= current().kind === 'shared';
 			staticVariable ||= current().kind === 'static';
 			next();
 		}
-		if (optional('as')) next();
+		const prefixType = annotation();
 		const declarations: Node[] = [];
 		while (!boundary()) {
 			const name = ident();
+			const array = current().kind === '(';
 			const dimensionNodes = dimensions();
-			if (optional('as')) next();
+			const type = annotation() ?? prefixType;
 			skipInitializer();
 			declarations.push({
 				...name,
 				kind: 'variable',
+				annotation: type,
 				children: dimensionNodes,
 				name: name.name,
 				dimensionCount: dimensionNodes.length,
+				array,
+				sharedOnly: token.kind === 'shared',
 				shared,
 				static: staticVariable,
 				redim,
@@ -616,8 +663,8 @@ export function parseProgram(source: string): ParseResult {
 				consume(')');
 				array = true;
 			}
-			if (optional('as')) next();
-			result.push({ ...name, kind: 'parameter', name: name.name, array });
+			const type = annotation();
+			result.push({ ...name, kind: 'parameter', name: name.name, array, annotation: type });
 			if (!optional(',')) break;
 		}
 		consume(')');
@@ -632,12 +679,14 @@ export function parseProgram(source: string): ParseResult {
 		next();
 		const name = ident();
 		const params = parameters();
+		const type = annotation();
 		if (declaration)
 			return {
 				...token,
 				kind: 'declare',
 				children: params,
 				procedureKind: procedureToken.kind,
+				annotation: type,
 				name: name.name,
 				end: params.at(-1)?.end ?? name.end,
 			};
@@ -653,6 +702,7 @@ export function parseProgram(source: string): ParseResult {
 			kind: 'procedure',
 			children: [...params, body],
 			procedureKind: procedureToken.kind,
+			annotation: type,
 			name: name.name,
 			parameterCount: params.length,
 			expression: false,
@@ -909,7 +959,7 @@ export function parseProgram(source: string): ParseResult {
 		token: Token<'goto'> | Token<'gosub'>,
 	): NodeMap['goto'] | NodeMap['gosub'] {
 		next();
-		const target = ident();
+		const target = labelTarget();
 		if (token.kind === 'goto')
 			return { ...token, children: [target], end: target.end };
 		return { ...token, children: [target], end: target.end };
@@ -958,6 +1008,14 @@ export function parseProgram(source: string): ParseResult {
 					name: text(token).replace(/:$/, ''),
 				};
 			}
+			case 'type':
+				return typeDeclaration();
+			case 'defint':
+			case 'deflng':
+			case 'defsng':
+			case 'defdbl':
+			case 'defstr':
+				return defaultType();
 			case 'if':
 				return ifStatement();
 			case 'for':
@@ -973,6 +1031,7 @@ export function parseProgram(source: string): ParseResult {
 				return procedure(false);
 			case 'declare':
 				return procedure(true);
+			case 'shared':
 			case 'dim':
 			case 'redim':
 			case 'static':
@@ -980,12 +1039,37 @@ export function parseProgram(source: string): ParseResult {
 				return variableDeclaration();
 			case 'const':
 				return constantDeclaration();
+			case 'on': {
+				if (!api.peekKind('error')) return genericCallStatement(token);
+				next();
+				consume('error');
+				if (optional('resume')) {
+					const end = consume('next');
+					return { ...token, kind: 'onerror', children: [undefined], resumeNext: true, end: end.end };
+				}
+				consume('goto');
+				const target = labelTarget();
+				return {
+					...token, kind: 'onerror',
+					children: [target.name === '0' ? undefined : target],
+					resumeNext: false, end: target.end,
+				};
+			}
+			case 'resume': {
+				next();
+				const nextToken = optional('next');
+				const target = nextToken || boundary() ? undefined : labelTarget();
+				return {
+					...token, kind: 'resume', children: [target],
+					next: !!nextToken, end: target?.end ?? nextToken?.end ?? token.end,
+				};
+			}
 			case 'goto':
 			case 'gosub':
 				return jump(token);
 			case 'return': {
 				next();
-				const target = boundary() ? undefined : ident();
+				const target = boundary() ? undefined : labelTarget();
 				return {
 					...token,
 					kind: 'return',

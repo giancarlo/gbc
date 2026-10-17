@@ -10,6 +10,7 @@
 	},
 	"files": [
 		"index.ts",
+		"analyze.ts",
 		"parser.ts",
 		"scanner.ts",
 		"highlight.ts"

@@ -1,5 +1,5 @@
 {
 	"extends": "./tsconfig.json",
-	"files": ["test.ts", "test-corpus.ts"],
+	"files": ["test.ts", "test-analysis.ts", "test-corpus.ts"],
 	"references": [{ "path": "." }]
 }

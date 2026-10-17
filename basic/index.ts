@@ -1,6 +1,15 @@
 import type { MakeNodeMap } from '@cxl/gbc.sdk';
 import type { Symbol } from '@cxl/gbc.sdk';
 
+export { analyze } from './analyze.js';
+export type { Analysis, BasicSymbol, Scope, BasicType } from './analyze.js';
+
+export interface TypeAnnotation {
+	name: string;
+	length?: number;
+	symbol?: Symbol<Node>;
+}
+
 type Infix = { children: [Node, Node] };
 type MakeInfix<T extends string> = { [K in T]: Infix };
 type MakeArguments<T extends string> = {
@@ -61,10 +70,14 @@ export type BaseNodeMap = {
 	return: { children: [NodeMap['ident'] | undefined] };
 	exit: { target: 'do' | 'for' | 'function' | 'sub' };
 	data: { children: Node[] };
+	defaulttype: { name: string; ranges: [string, string][] };
 	variable: {
+		annotation?: TypeAnnotation;
 		children: Node[];
 		name: string;
 		dimensionCount: number;
+		array?: boolean;
+		sharedOnly?: boolean;
 		shared: boolean;
 		static: boolean;
 		redim: boolean;
@@ -76,17 +89,20 @@ export type BaseNodeMap = {
 		symbol?: Symbol<Node>;
 	};
 	parameter: {
+		annotation?: TypeAnnotation;
 		name: string;
 		array: boolean;
 		symbol?: Symbol<Node>;
 	};
 	declare: {
+		annotation?: TypeAnnotation;
 		children: NodeMap['parameter'][];
 		procedureKind: 'sub' | 'function';
 		name: string;
 		symbol?: Symbol<Node>;
 	};
 	procedure: {
+		annotation?: TypeAnnotation;
 		children: [...NodeMap['parameter'][], Node];
 		procedureKind: 'sub' | 'function';
 		name: string;
@@ -100,6 +116,7 @@ export type BaseNodeMap = {
 		symbol?: Symbol<Node>;
 	};
 	field: {
+		annotation?: TypeAnnotation;
 		name: string;
 		symbol?: Symbol<Node>;
 	};
@@ -191,7 +208,13 @@ export type BaseNodeMap = {
 		| 'wait'
 	>;
 
-export type NodeMap = MakeNodeMap<BaseNodeMap>;
+export type NodeMap = MakeNodeMap<{
+	[K in keyof BaseNodeMap]: BaseNodeMap[K] & {
+		scopeId?: number;
+		resolved?: import('./analyze.js').BasicSymbol;
+		dataOffset?: number;
+	};
+}>;
 export type Node = NodeMap[keyof NodeMap];
 export type NodeKind = keyof NodeMap;
 export type InfixNode = Extract<Node, Infix>;
