@@ -1,7 +1,11 @@
 import { highlight } from './highlight.js';
 import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
-import { tokenize } from '@cxl/gbc.sdk';
+import {
+	Flags as SdkFlags,
+	tokenize,
+	type Symbol as SdkSymbol,
+} from '@cxl/gbc.sdk';
 import {
 	decodeBundle,
 	encodeBundle,
@@ -10,8 +14,14 @@ import {
 import { Program, scan } from './index.js';
 import { buildStdlibBundle } from './program.js';
 import { bufferView, instantiateWasm } from './host.js';
-import type { NodeMap } from './node.js';
-import type { Symbol, Type } from './symbol-table.js';
+import type { Node, NodeMap } from './node.js';
+import {
+	BaseTypes,
+	Flags,
+	SymbolTable,
+	type Symbol,
+	type Type,
+} from './symbol-table.js';
 import { compileWasm, type LibraryObject } from './target-wasm.js';
 import lifecycle from './test-lifecycle.js';
 
@@ -24,6 +34,36 @@ Language design proposals must satisfy docs/feature-laws.md.
 */
 export default spec('Language Reference', s => {
 	s.addSpec(lifecycle);
+	s.test('shared semantic infrastructure compatibility', a => {
+		const definition: NodeMap['label'] = {
+			kind: 'label',
+			start: 0,
+			end: 5,
+			line: 0,
+			source: 'value',
+		};
+		const value: Symbol = {
+			kind: 'variable',
+			name: 'value',
+			definition,
+			flags: SdkFlags.Variable,
+			type: BaseTypes.Int32,
+			ownership: 'own',
+			typeParams: [BaseTypes.Int32],
+		};
+		const shared: SdkSymbol<Node, Type> = value;
+		const table = SymbolTable({ value });
+		const empty = SymbolTable();
+		empty.set('value', value);
+		const inferred: Symbol | undefined = empty.get('value');
+		a.equal(inferred?.kind, 'variable');
+		a.equal(Flags, SdkFlags);
+		a.equal(table.getWithReference('value', definition) === shared, true);
+		a.equal(value.references?.[0], definition);
+		a.equal(table.get('value')?.ownership, 'own');
+		a.equal(table.get('value')?.type, BaseTypes.Int32);
+	});
+
 	s.test('public highlighting contract', it => {
 		it.test('marks fold boundaries without folding literal delimiters', a => {
 			const cases: [string, [string, number, number][]][] = [

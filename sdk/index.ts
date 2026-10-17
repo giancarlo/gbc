@@ -493,6 +493,45 @@ export function SymbolTable<S>(
 	};
 }
 
+export function ReferenceSymbolTable<T extends { references?: Position[] }>(
+	globals?: Record<string, T>,
+	ignoreReferences = false,
+) {
+	const st = SymbolTable<T>();
+	let localReferenceDepth: number | undefined;
+	function isLocalReference(id: string, symbol: T): boolean {
+		if (localReferenceDepth === undefined) return false;
+		for (let i = localReferenceDepth; i < st.stack.length; i++)
+			if (st.stack[i]?.get(id) === symbol) return true;
+		return false;
+	}
+
+	if (globals) st.setSymbols(globals);
+
+	const table = {
+		...st,
+		ignoreReferences,
+		get localReferenceDepth() {
+			return localReferenceDepth;
+		},
+		set localReferenceDepth(value: number | undefined) {
+			localReferenceDepth = value;
+		},
+		getWithReference(id: string, node: Position) {
+			const symbol = st.get(id);
+			if (
+				symbol &&
+				(!table.ignoreReferences || isLocalReference(id, symbol))
+			) {
+				(symbol.references ||= []).push(node);
+			}
+			return symbol;
+		},
+	};
+
+	return table;
+}
+
 export type MakeNodeMap<Base> = {
 	[K in keyof Base]: Token<K> & Base[K];
 };

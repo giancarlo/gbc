@@ -1,26 +1,15 @@
 import {
-	type Position,
-	SymbolTable as BaseSymbolTable,
+	Flags,
+	ReferenceSymbolTable,
+	type Symbol as SdkSymbol,
 } from '@cxl/gbc.sdk';
 import type { Node } from './node.js';
 
-export enum Flags {
-	None = 0,
-	Variable = 1,
-	Export = 2,
-	External = 16,
-	Intrinsic = 32,
-	Module = 64,
-}
+export { Flags };
 
 export type OwnershipMode = 'borrow' | 'var' | 'own';
 
-type BaseSymbol = {
-	name?: string;
-	definition?: Node;
-	references?: Position[];
-	type?: Type;
-	flags: Flags;
+type BaseSymbol = SdkSymbol<Node, Type> & {
 	typeParams?: Type[];
 	components?: Type[];
 	application?: { fn: TypeSymbol; argNodes: Node[] };
@@ -375,41 +364,11 @@ export const EmptyFunction: SymbolMap['function'] = {
 	flags: Flags.None,
 };
 
-export function SymbolTable<T extends Symbol>(globals?: Record<string, T>, ignoreReferences = false) {
-	const st = BaseSymbolTable<T>();
-	let localReferenceDepth: number | undefined;
-	function isLocalReference(id: string, symbol: T): boolean {
-		if (localReferenceDepth === undefined) return false;
-		for (let i = localReferenceDepth; i < st.stack.length; i++)
-			if (st.stack[i]?.get(id) === symbol) return true;
-		return false;
-	}
-
-	if (globals) st.setSymbols(globals);
-
-	const table = {
-		...st,
-		ignoreReferences,
-		get localReferenceDepth() {
-			return localReferenceDepth;
-		},
-		set localReferenceDepth(value: number | undefined) {
-			localReferenceDepth = value;
-		},
-		/** Retrieves a symbol by id and logs a reference at the specified node position. */
-		getWithReference(id: string, node: Position) {
-			const symbol = st.get(id);
-			if (
-				symbol &&
-				(!table.ignoreReferences || isLocalReference(id, symbol))
-			) {
-				(symbol.references ||= []).push(node);
-			}
-			return symbol;
-		},
-	};
-
-	return table;
+export function SymbolTable<T extends Symbol>(
+	globals?: Record<string, T>,
+	ignoreReferences = false,
+) {
+	return ReferenceSymbolTable<T>(globals, ignoreReferences);
 }
 
 function literal(value: number | boolean | undefined, type: ResolvedType) {

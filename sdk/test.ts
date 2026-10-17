@@ -14,6 +14,7 @@ import {
 	type LeafNode,
 	matchers,
 	ParserApi,
+	ReferenceSymbolTable,
 	type RootNodeBase,
 	ScannerApi,
 	stringEscape,
@@ -305,6 +306,108 @@ export default spec('sdk', s => {
 			a.equal(parser.errors.length, 0);
 			a.equal(parser.next().kind, 'b');
 			a.equal(parser.errors.length, 1);
+		});
+	});
+
+	s.test('reference-aware symbol table', it => {
+		const position = { start: 2, end: 7, line: 1, source: '\n value' };
+		const variable = (): Symbol => ({ kind: 'variable', flags: Flags.Variable });
+
+		it.should('resolve globals and misses without recording plain lookups', a => {
+			const value = variable();
+			const table = ReferenceSymbolTable({ value });
+			a.equal(table.get('value'), value);
+			a.equal(value.references, undefined);
+			a.equal(table.getWithReference('missing', position), undefined);
+			a.equal(table.getWithReference('value', position), value);
+			a.equal(value.references?.[0], position);
+			a.equalValues(value.references, [position]);
+			const next = { ...position, start: 3 };
+			table.getWithReference('value', next);
+			a.equalValues(value.references, [position, next]);
+		});
+
+		it.should('record only the nearest shadow and restore the outer scope', a => {
+			const outer = variable();
+			const inner = variable();
+			const table = ReferenceSymbolTable({ value: outer });
+			const result = table.withScope(() => {
+				a.equal(table.set('value', inner), inner);
+				a.equal(table.getWithReference('value', position), inner);
+				a.equal(outer.references, undefined);
+				return 42;
+			});
+			a.equal(result, 42);
+			a.equal(table.getWithReference('value', position), outer);
+			a.equalValues(inner.references, [position]);
+			a.equalValues(outer.references, [position]);
+		});
+
+		it.should('suppress references and allow local exceptions from the selected depth', a => {
+			const outer = variable();
+			const local = variable();
+			const nested = variable();
+			const table = ReferenceSymbolTable({ value: outer }, true);
+			table.getWithReference('value', position);
+			a.equal(outer.references, undefined);
+			table.localReferenceDepth = 1;
+			table.withScope(() => {
+				table.setSymbols({ value: local });
+				table.withScope(() => {
+					a.equal(table.getWithReference('value', position), local);
+					table.set('value', nested);
+					a.equal(table.getWithReference('value', position), nested);
+				});
+				table.localReferenceDepth = undefined;
+				table.getWithReference('value', position);
+			});
+			a.equalValues(local.references, [position]);
+			a.equalValues(nested.references, [position]);
+			a.equal(outer.references, undefined);
+			table.ignoreReferences = false;
+			table.getWithReference('value', position);
+			a.equalValues(outer.references, [position]);
+		});
+
+		it.should('include depth zero and exclude symbols below the selected depth', a => {
+			const outer = variable();
+			const table = ReferenceSymbolTable({ value: outer }, true);
+			table.localReferenceDepth = 1;
+			table.withScope(() => table.getWithReference('value', position));
+			a.equal(outer.references, undefined);
+			table.localReferenceDepth = 0;
+			table.getWithReference('value', position);
+			a.equalValues(outer.references, [position]);
+		});
+
+		it.should('isolate tables and remove nested scopes after throws', a => {
+			const outer = variable();
+			const table = ReferenceSymbolTable({ value: outer });
+			const other = ReferenceSymbolTable<Symbol>(undefined, true);
+			const error = new Error('scope failed');
+			let caught: unknown;
+			try {
+				table.withScope(() => {
+					table.set('value', variable());
+					table.withScope(() => {
+						table.set('temporary', variable());
+						throw error;
+					});
+				});
+			} catch (value) {
+				caught = value;
+			}
+			a.equal(caught, error);
+			a.equal(table.get('temporary'), undefined);
+			a.equal(table.getWithReference('value', position), outer);
+			a.equal(other.get('value'), undefined);
+			other.set('value', variable());
+			other.localReferenceDepth = 0;
+			a.equal(table.ignoreReferences, false);
+			a.equal(table.localReferenceDepth, undefined);
+			a.equalValues(outer.references, [position]);
+			table.set('after', variable());
+			a.ok(table.get('after'));
 		});
 	});
 
