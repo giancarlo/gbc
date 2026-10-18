@@ -1,7 +1,11 @@
 import { CompilerError } from '@cxl/gbc.sdk';
-import type { Node, NodeMap } from './node.js';
+import { prepareProgram } from './preparation.js';
+import type { BackendNode as Node, BackendNodeMap as NodeMap, PreparedProgram } from './preparation.js';
 
-export function compileLlvm(root: NodeMap['root']): string {
+export function compileLlvm(input: NodeMap['root'] | PreparedProgram): string {
+	const prepared = 'kind' in input ? prepareProgram(input) : input;
+	const root = prepared.root;
+	if (root.kind !== 'root') throw new CompilerError('LLVM target requires a main block', root);
 	const calls: string[] = [];
 	let hasMain = false;
 	function unsupported(node: Node): never {

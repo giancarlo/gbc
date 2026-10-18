@@ -2,7 +2,6 @@ import { CompilerError, sleb128, sleb128big, text, uleb128 } from '@cxl/gbc.sdk'
 
 import {
 	argumentNodes as argListFromCall,
-	createSemanticContext,
 	constantNumericValue,
 	dispatchArgType,
 	floatFitsInteger,
@@ -16,7 +15,6 @@ import {
 	BufferSymbol,
 	Flags,
 	classifyEmission,
-	fixedEmissionType,
 	isFloatType,
 	isHeapType,
 	isInt64Type,
@@ -32,7 +30,6 @@ import {
 import { childNodes } from './node.js';
 import {
 	bindTypeArguments,
-	createSpecializationEnvironment,
 	createSpecializationKey,
 	specializeType,
 } from './specialization.js';
@@ -43,16 +40,22 @@ import {
 	type RuntimeErrorName,
 } from './runtime-errors.js';
 
-import type { Node, NodeMap } from './node.js';
+import { preparedInput } from './preparation.js';
+import type { BackendNode as Node, BackendNodeMap as NodeMap, ProgramInput } from './preparation.js';
 import type {
-	Symbol as GbcSymbol,
-	SymbolMap,
+	Symbol as FrontendSymbol,
+	SymbolMap as FrontendSymbolMap,
 	OwnershipMode,
-	ResolvedType,
-	Type,
+	ResolvedType as FrontendResolvedType,
+	Type as FrontendType,
 	TypeFamily,
 } from './symbol-table.js';
 import type { SerialObject, SerialRef } from './bundle.js';
+
+type GbcSymbol = Readonly<FrontendSymbol>;
+type SymbolMap = { [K in keyof FrontendSymbolMap]: Readonly<FrontendSymbolMap[K]> };
+type ResolvedType = Readonly<FrontendResolvedType>;
+type Type = Readonly<FrontendType>;
 
 type ArithmeticNode = NodeMap['+' | '-' | '*' | '/' | '%'];
 
@@ -804,8 +807,7 @@ interface FuncBuilder {
 	relocTainted?: boolean;
 }
 
-export interface CompileWasmOptions {
-	root: Node;
+export type CompileWasmOptions = ProgramInput & {
 	testMode?: boolean;
 	debugBuild?: boolean;
 	hostExports?: NodeMap['def'][];
@@ -825,20 +827,23 @@ function validateMemoryMaxPages(maxMemoryPages: number | undefined): void {
 		throw new Error('maxMemoryPages must be an integer between 1 and 65536');
 }
 
-export function compileWasm({
-	root,
-	testMode = false,
-	debugBuild = false,
-	hostExports,
-	sourcePaths,
-	objectSink,
-	splice,
-	maxMemoryPages,
-}: CompileWasmOptions): Uint8Array {
+export function compileWasm(options: CompileWasmOptions): Uint8Array {
+	const {
+		testMode = false,
+		debugBuild = false,
+		hostExports,
+		sourcePaths,
+		objectSink,
+		splice,
+		maxMemoryPages,
+	} = options;
+	const prepared = preparedInput(options);
+	const root = prepared.linkedRoot;
+	const preparation = prepared.createContext();
+	const { returnType: preparedReturnType } = preparation;
 	const {
 		reduceType,
 		isKnownNonZeroNumber,
-		callTypeBindings,
 		selectOverload,
 		scalarCtorType,
 		bufferCtorType,
@@ -847,7 +852,7 @@ export function compileWasm({
 		resolveCallReturn,
 		callArgumentTypes,
 		pipeArgumentTypes: inferStageArgumentTypes,
-	} = createSemanticContext();
+	} = preparation.semantic;
 	validateMemoryMaxPages(maxMemoryPages);
 	const recordObjects = !!objectSink;
 	const datas: ModuleData[] = [];
@@ -1103,22 +1108,8 @@ export function compileWasm({
 	const ownedInParams = new Map<GbcSymbol, boolean[]>();
 	type EmissionType = Extract<ResolvedType, { family: 'emission' }>;
 
-	function resolvedEmissionType(
-		sym: SymbolMap['function'],
-		typeArgs?: Map<string, Type>,
-	): EmissionType | undefined {
-		typeArgs ??= environment.typeArguments;
-		const emission = sym.emissionType;
-		if (emission?.kind !== 'type' || emission.family !== 'emission')
-			return undefined;
-		if (!typeArgs.size) return emission;
-		return {
-			...emission,
-			elements: emission.elements.map(type => specializeType(type, typeArgs, reduceType)),
-			rest: emission.rest
-				? specializeType(emission.rest, typeArgs, reduceType)
-				: undefined,
-		};
+	function resolvedEmissionType(sym: SymbolMap['function'], typeArgs = environment.typeArguments): EmissionType | undefined {
+		return preparation.emissionType(sym, typeArgs);
 	}
 
 	function hasNonScalarEmission(sym: SymbolMap['function']): boolean {
@@ -1474,17 +1465,23 @@ export function compileWasm({
 	const specReturn = new Map<number, Type>();
 	// Function-typed params are bound to a concrete function at each call
 	// site (monomorphized, never a runtime funcref). Active during a spec body.
-	let environment = createSpecializationEnvironment();
+	let environment = preparation.createEnvironment();
 	const specKey = createSpecializationKey();
 
+	function nominalOf(node: NodeMap['data']): ResolvedType | undefined {
+		return preparation.nominalOf(node, environment);
+	}
+
+	function originOf(node: NodeMap['call' | 'data']): string | undefined {
+		return preparation.originOf(node, environment);
+	}
+
+	function stampErrorData(node: Node | undefined, expected: Type | undefined, originFn?: string): void {
+		preparation.stampErrorData(node, expected, environment, originFn);
+	}
+
 	function typeOf(symbol: GbcSymbol): Type {
-		if (!environment.parent)
-			return environment.types.get(symbol) ?? symbol.type ?? BaseTypes.Unknown;
-		for (let scope: SpecializationEnvironment | undefined = environment; scope; scope = scope.parent) {
-			const type = scope.types.get(symbol);
-			if (type) return type;
-		}
-		return specializeType(symbol.type ?? BaseTypes.Unknown, environment.typeArguments, reduceType);
+		return preparation.typeOf(symbol, environment);
 	}
 
 	function functionTypeOf(symbol: GbcSymbol): SymbolMap['function'] | undefined {
@@ -1559,11 +1556,11 @@ export function compileWasm({
 		if (callee.kind !== 'ident') return BaseTypes.Unknown;
 		const sym = callee.symbol;
 		const bound = boundFunction(sym);
-		if (bound) return bound.returnType ?? BaseTypes.Void;
+		if (bound) return preparedReturnType(bound) ?? BaseTypes.Void;
 		const fnSym = functionTypeOf(sym);
 		if (!fnSym) return BaseTypes.Unknown;
 		const template = fnTemplates.get(sym);
-		if (!template && !fnSym.typeParams?.length && !fnSym.overloads?.length && fnSym.returnType)
+		if (!template && !fnSym.typeParams?.length && !fnSym.overloads?.length && preparedReturnType(fnSym))
 			return inferFunctionReturn(fnSym, []);
 		return inferFunctionReturn(
 			fnSym,
@@ -1583,87 +1580,18 @@ export function compileWasm({
 		return isUnknownType(result) ? reduceType(result, environment.typeArguments) : result;
 	}
 
-	function makeThreadCall(
-		call: NodeMap['call'],
-		carrier: Node,
-		spreadCarrier: boolean,
-	): NodeMap['call'] {
-		const raw = call.children[1];
-		const existing = raw?.kind === ',' ? raw.children : raw ? [raw] : [];
-		const leading =
-			spreadCarrier && carrier.kind === ',' ? carrier.children : [carrier];
-		const children = [...leading, ...existing];
-		const first = children[0];
-		const last = children[children.length - 1];
-		const args: Node | undefined =
-			children.length === 1
-				? first
-				: first
-					? {
-							...call,
-							kind: ',',
-							start: first.start,
-							end: last?.end ?? first.end,
-							children,
-						}
-					: undefined;
-		return { ...call, children: [call.children[0], args] };
-	}
+	const makeThreadCall = preparation.threadCall;
 
 	function threadCallResolution(call: NodeMap['call'], fn?: FuncBuilder) {
-		const callee = call.children[0];
-		const declared =
-			callee.kind === '.'
-				? resolveStaticMemberFn(callee)
-				: callee.kind === 'ident'
-					? (resolveFnArg(callee) ??
-						(callee.symbol.kind === 'function' ? callee.symbol : undefined))
-					: undefined;
-		if (!declared) return;
-		const argTypes = argListFromCall(call.children[1]).map(argument =>
-			inferType(argument, fn),
-		);
-		const target = findDispatchArm(declared.overloads ?? [], argTypes) ?? declared;
-		const typeParams = target.typeParams ?? [];
-		const bindings = callTypeBindings(target, argTypes);
-		const specializedEmission = resolvedEmissionType(target, bindings);
-		const output = inferFunctionReturn(target, argTypes, typeParams);
-		const emission =
-			specializedEmission ??
-			(output.kind === 'type' && output.family === 'void'
-				? fixedEmissionType([])
-				: fixedEmissionType([output]));
-		return {
-			target,
-			emission,
-			classification: classifyEmission(emission),
-			output:
-				specializedEmission?.elements[0] ?? output,
-		};
+		return preparation.resolveThreadCall(call, callee =>
+			callee.kind === '.' ? resolveStaticMemberFn(callee) :
+			callee.kind === 'ident' ? resolveFnArg(callee) ??
+				(callee.symbol.kind === 'function' ? callee.symbol : undefined) : undefined,
+			argument => inferType(argument, fn), findDispatchArm, environment);
 	}
 
 	function inferThreadType(node: NodeMap['->'], fn?: FuncBuilder): Type {
-		let carrier: Node = node.children[0];
-		let carrierType: Type | undefined =
-			carrier.kind === ',' ? undefined : inferType(carrier, fn);
-		for (let i = 1; i < node.children.length; i++) {
-			const stage = node.children[i];
-			if (!stage || stage.kind !== 'call') continue;
-			const call = makeThreadCall(stage, carrier, i === 1);
-			const resolved = threadCallResolution(call, fn);
-			if (!resolved || resolved.classification.cardinality === 'many')
-				return BaseTypes.Unknown;
-			if (resolved.classification.cardinality === 'zero') {
-				if (!carrierType) return BaseTypes.Unknown;
-				continue;
-			}
-			carrierType =
-				resolved.classification.mayEmitVoid && carrierType
-					? fallbackResultType(resolved.output, carrierType)
-					: resolved.output;
-			carrier = call;
-		}
-		return carrierType ?? BaseTypes.Unknown;
+		return preparation.prepareThread(node, child => inferType(child, fn), call => threadCallResolution(call, fn)).type;
 	}
 
 	function inferStageReturn(stage: Node, input: Type): Type {
@@ -1689,7 +1617,7 @@ export function compileWasm({
 						.filter((t): t is Type => !!t),
 				);
 		}
-		if (stage.kind === 'fn') return stage.symbol.returnType ?? BaseTypes.Unknown;
+		if (stage.kind === 'fn') return preparedReturnType(stage.symbol) ?? BaseTypes.Unknown;
 		return BaseTypes.Unknown;
 	}
 
@@ -1795,7 +1723,8 @@ export function compileWasm({
 				return type === BaseTypes.Unknown ? BaseTypes.Int32 : type;
 			}
 			case 'data': {
-				if (isTraceComposed(node.nominal)) return node.nominal;
+				const nominal = nominalOf(node);
+				if (isTraceComposed(nominal)) return nominal;
 				const items = dataItems(node)
 			.flatMap(flattenDataItem)
 			.filter(it => {
@@ -2146,7 +2075,7 @@ export function compileWasm({
 		)
 			return true; // base case: nothing to emit
 		const valueParams = template.parameters ?? [];
-		const scope = createSpecializationEnvironment(environment);
+		const scope = preparation.createEnvironment(environment);
 		valueParams.forEach((p, i) => {
 			const at = argTypes[i];
 			// Leave function-typed params alone — they bind by symbol.
@@ -2179,46 +2108,7 @@ export function compileWasm({
 		}
 	}
 
-	/** Mark a data literal flowing into an Error-composed slot so compileData
-	 * lays out and fills the hidden `__trace` origin frame. */
-	function stampErrorData(
-		node: Node | undefined,
-		expected: Type | undefined,
-		originFn?: string,
-	) {
-		if (!node || !expected) return;
-		if (expected.kind === 'type' && expected.family === 'union') {
-			const member = expected.members.find(m => isTraceComposed(m));
-			if (member) stampErrorData(node, member, originFn);
-			return;
-		}
-		if (node.kind === 'data') {
-			if (isTraceComposed(expected)) {
-				node.nominal = expected;
-				if (originFn) node.originFn = originFn;
-			}
-			return;
-		}
-		if (node.kind === 'call') {
-			const callee = node.children[0];
-			if (
-				callee.kind === 'typeident' &&
-				isTraceComposed(typeOf(callee.symbol)) &&
-				originFn
-			)
-				node.originFn = originFn;
-			return;
-		}
-		if (node.kind === 'next' && node.children?.[0])
-			return stampErrorData(node.children[0], expected, originFn);
-		if (node.kind === '?') {
-			stampErrorData(node.children[1], expected, originFn);
-			if (node.children[2])
-				stampErrorData(node.children[2], expected, originFn);
-		}
-	}
 
-	/** A `next`-ed (moved-out) owned local must not be freed at body exit. */
 	function releaseOwned(fn: FuncBuilder, node: Node | undefined) {
 		if (node?.kind === 'ident' && fn.owned)
 			fn.owned = fn.owned.filter(o => o.sym !== node.symbol);
@@ -2362,7 +2252,7 @@ export function compileWasm({
 				it => it.kind === 'propdef' && it.label,
 			);
 			const first = items[0];
-			if (items.length === 1 && !hasLabels && first && !node.nominal)
+			if (items.length === 1 && !hasLabels && first && !nominalOf(node))
 				return ownableExpr(itemValue(first), fn); // collapse = alias
 			return true; // labeled/multi/nominal blocks allocate fresh
 		}
@@ -4633,7 +4523,7 @@ export function compileWasm({
 			return compileErrorCtor(target, fn, node);
 		}
 		if (args.kind === 'data') {
-			stampErrorData(args, target, node.originFn);
+			stampErrorData(args, target, originOf(node));
 			compileExpr(args, fn);
 			return target;
 		}
@@ -5276,7 +5166,7 @@ export function compileWasm({
 		sleb128(
 			staticFramePtr(
 				target.name,
-				node.originFn ?? fn.name ?? 'main',
+				originOf(node) ?? fn.name ?? 'main',
 				node.line + 1,
 				sourceFileOf(node),
 			),
@@ -5397,7 +5287,7 @@ export function compileWasm({
 		const builderIdx = getOrCreateSpec(templateNode, argTypes, bindings);
 		compileCallArgs(args, fnSym, fn, bindings);
 		emitFixedCall(fn, builderIdx);
-		return specReturn.get(builderIdx) ?? fnSym.returnType ?? BaseTypes.Void;
+		return specReturn.get(builderIdx) ?? preparedReturnType(fnSym) ?? BaseTypes.Void;
 	}
 
 	function compileDirectCall(
@@ -5415,7 +5305,7 @@ export function compileWasm({
 			);
 		compileCallArgs(args, fnSym, fn);
 		emitFixedCall(fn, builderIdx);
-		return fnSym.returnType ?? BaseTypes.Void;
+		return preparedReturnType(fnSym) ?? BaseTypes.Void;
 	}
 
 	function resolveStaticMemberFn(callee: Node): SymbolMap['function'] | undefined {
@@ -5438,18 +5328,13 @@ export function compileWasm({
 	function materializeThreadCarrier(
 		expression: Node,
 		carrierType: Type,
+		reference: NodeMap['ident'],
 		fn: FuncBuilder,
-	): NodeMap['ident'] {
+	): void {
 		const actual = compileExpr(expression, fn);
 		if (isUnionType(carrierType) && !isUnionType(actual))
 			coerceToUnion(actual, carrierType, fn);
-		const symbol: GbcSymbol = {
-			kind: 'variable',
-			name: '__thread_carrier',
-			flags: 0,
-			type: carrierType,
-			ownership: 'own',
-		};
+		const symbol = reference.symbol;
 		if (isUnionType(carrierType)) {
 			const tagLocal = allocLocal(fn, I32);
 			const payloadLocal = allocLocal(fn, unionPayloadWasm(carrierType));
@@ -5465,51 +5350,16 @@ export function compileWasm({
 			uleb128(local, fn.body);
 			fn.paramMap.set(symbol, local);
 		}
-		return { ...expression, kind: 'ident', symbol };
 	}
 
 	function compileThread(node: NodeMap['->'], fn: FuncBuilder): Type {
-		let carrier: Node = node.children[0];
-		let carrierType: Type | undefined =
-			carrier.kind === ',' ? undefined : inferType(carrier, fn);
-		let materialized = false;
-		for (let i = 1; i < node.children.length; i++) {
-			const stage = node.children[i];
-			if (!stage || stage.kind !== 'call') continue;
-			let call = makeThreadCall(stage, carrier, i === 1);
-			const resolved = threadCallResolution(call, fn);
-			if (!resolved) throw new Error('Unable to resolve `->` stage');
-			if (resolved.classification.cardinality === 'many')
-				throw new Error('`->` stage emits many values; use `>>` for a stream');
-			if (resolved.classification.cardinality === 'zero') {
-				if (!carrierType) throw new Error('`->` cannot retain an argument pack');
-				if (!materialized) {
-					carrier = materializeThreadCarrier(carrier, carrierType, fn);
-					materialized = true;
-					call = makeThreadCall(stage, carrier, false);
-				}
-				compileCall(call, fn);
-				continue;
-			}
-			if (resolved.classification.mayEmitVoid && carrierType) {
-				if (!materialized) {
-					carrier = materializeThreadCarrier(carrier, carrierType, fn);
-					call = makeThreadCall(stage, carrier, false);
-				}
-				carrier = {
-					...stage,
-					kind: '??',
-					children: [call, carrier],
-				};
-				carrierType = fallbackResultType(resolved.output, carrierType);
-				materialized = false;
-				continue;
-			}
-			carrier = call;
-			carrierType = resolved.output;
-			materialized = false;
+		const plan = preparation.prepareThread(node, child => inferType(child, fn), call => threadCallResolution(call, fn));
+		for (const operation of plan.operations) {
+			if (operation.kind === 'bind')
+				materializeThreadCarrier(operation.expression, operation.type, operation.reference, fn);
+			else compileCall(operation.call, fn);
 		}
-		return compileExpr(carrier, fn);
+		return compileExpr(plan.result, fn);
 	}
 
 	function compileCallInner(node: NodeMap['call'], fn: FuncBuilder): Type {
@@ -5546,7 +5396,7 @@ export function compileWasm({
 			const idx = getOrCreateSpec(innerFn, argTypes);
 			compileCallArgs(args, innerFn.symbol, fn);
 			emitFixedCall(fn, idx);
-			return specReturn.get(idx) ?? innerFn.symbol.returnType ?? BaseTypes.Void;
+			return specReturn.get(idx) ?? preparedReturnType(innerFn.symbol) ?? BaseTypes.Void;
 		}
 		if (callee.kind === '.') return compileMemberCall(callee, args, fn);
 		if (callee.kind !== 'ident')
@@ -5566,7 +5416,7 @@ export function compileWasm({
 			const idx = importHost(sfn.name ?? '', sig.params, sig.results);
 			fn.body.push(OP_CALL);
 			uleb128(idx, fn.body);
-			return sfn.returnType ?? BaseTypes.Void;
+			return preparedReturnType(sfn) ?? BaseTypes.Void;
 		}
 		if (sfn && sfn.flags & Flags.Intrinsic)
 			return compileIntrinsic(sfn.name ?? '', args, fn);
@@ -5597,7 +5447,7 @@ export function compileWasm({
 			const idx = importHost(calleeSym.name ?? '', sig.params, sig.results);
 			fn.body.push(OP_CALL);
 			uleb128(idx, fn.body);
-			return calleeSym.returnType ?? BaseTypes.Void;
+			return preparedReturnType(calleeSym) ?? BaseTypes.Void;
 		}
 		return compileDirectCall(calleeSym, args, fn);
 	}
@@ -5668,7 +5518,7 @@ export function compileWasm({
 			return compileIntrinsic(arm.name ?? '', args, fn);
 		compileCallArgs(args, arm, fn);
 		emitArmCall(arm, calleeSym.name, fn);
-		return arm.returnType ?? BaseTypes.Void;
+		return preparedReturnType(arm) ?? BaseTypes.Void;
 	}
 
 	function slotSizeOf(nominal: Type | undefined, itemTypes: Type[]): number {
@@ -5698,7 +5548,7 @@ export function compileWasm({
 		sleb128(
 			staticFramePtr(
 				nominal.name ?? '',
-				node.originFn ?? fn.name ?? 'main',
+				originOf(node) ?? fn.name ?? 'main',
 				node.line + 1,
 				sourceFileOf(node),
 			),
@@ -5782,9 +5632,8 @@ export function compileWasm({
 
 	function compileData(node: NodeMap['data'], fn: FuncBuilder): Type {
 		const items = dataItems(node).flatMap(flattenDataItem);
-		const nominal = isTraceComposed(node.nominal)
-			? node.nominal
-			: undefined;
+		const preparedNominal = nominalOf(node);
+		const nominal = isTraceComposed(preparedNominal) ? preparedNominal : undefined;
 		if (items.length === 0) {
 			fn.body.push(OP_I32_CONST);
 			sleb128(0, fn.body);
@@ -6186,11 +6035,8 @@ export function compileWasm({
 	): ResolvedType | undefined {
 		const callee = callNode.children[0];
 		if (callee.kind !== 'ident') return undefined;
-		const sym = callee.symbol;
-		const rt =
-			sym.kind === 'function'
-				? sym.returnType
-				: functionTypeOf(sym)?.returnType;
+		const signature = functionTypeOf(callee.symbol);
+		const rt = signature ? preparedReturnType(signature) : undefined;
 		if (rt?.kind === 'type' && rt.family === 'union') return rt;
 		return undefined;
 	}
@@ -6269,7 +6115,7 @@ export function compileWasm({
 	function compilePipe(children: Node[], fn: FuncBuilder): Type {
 		const flat = flattenPipe(children);
 		return flat[0]?.kind === 'call'
-			? inlineEnvironment(fn, createSpecializationEnvironment(environment), () => compilePipeSource(flat, fn))
+			? inlineEnvironment(fn, preparation.createEnvironment(environment), () => compilePipeSource(flat, fn))
 			: compilePipeSource(flat, fn);
 	}
 
@@ -6380,9 +6226,9 @@ export function compileWasm({
 	) {
 		const stmts = source.statements ?? [];
 		for (const s of stmts)
-			stampErrorData(s, source.symbol.returnType, originFn);
+			stampErrorData(s, preparedReturnType(source.symbol), originFn);
 		const savedFusion = fn.fusion;
-		const declaredReturn = source.symbol.returnType;
+		const declaredReturn = preparedReturnType(source.symbol);
 		const broadenForDispatch = (t: Type): Type =>
 			declaredReturn?.kind === 'type' &&
 			declaredReturn.family === 'union'
@@ -6670,7 +6516,7 @@ export function compileWasm({
 		stages: Node[],
 		fn: FuncBuilder,
 	): boolean {
-		return inlineEnvironment(fn, createSpecializationEnvironment(environment), () => {
+		return inlineEnvironment(fn, preparation.createEnvironment(environment), () => {
 			const fnNode = getCallableFn(callNode);
 			if (!fnNode) return false;
 			const params = fnNode.parameters ?? [];
@@ -6715,7 +6561,7 @@ export function compileWasm({
 					: undefined;
 			try {
 				for (const stmt of stmts) {
-					stampErrorData(stmt, fnNode.symbol.returnType, inlineName);
+					stampErrorData(stmt, preparedReturnType(fnNode.symbol), inlineName);
 					emitOne(stmt, fn);
 				}
 			} finally {
@@ -6782,7 +6628,7 @@ export function compileWasm({
 			const s = stmts[i];
 			if (s) compileExpr(s, fn);
 		}
-		stampErrorData(body, fnNode.symbol.returnType, callee.symbol.name);
+		stampErrorData(body, preparedReturnType(fnNode.symbol), callee.symbol.name);
 		return body;
 	}
 
@@ -7157,7 +7003,7 @@ export function compileWasm({
 		rest: Node[],
 		fn: FuncBuilder,
 	): Type {
-		return inlineEnvironment(fn, createSpecializationEnvironment(environment), () => {
+		return inlineEnvironment(fn, preparation.createEnvironment(environment), () => {
 			const params = stage.parameters ?? [];
 			const savedDollarLocal = fn.dollarLocal;
 			const savedDollarTagLocal = fn.dollarTagLocal;
@@ -7202,7 +7048,7 @@ export function compileWasm({
 		rest: Node[],
 		fn: FuncBuilder,
 	): Type {
-		return inlineEnvironment(fn, createSpecializationEnvironment(environment), () => {
+		return inlineEnvironment(fn, preparation.createEnvironment(environment), () => {
 			const vparams = template.parameters ?? [];
 			const p0 = vparams[0];
 			if (!p0) return BaseTypes.Void;
@@ -7289,7 +7135,7 @@ export function compileWasm({
 		)
 			spreadDataToStack(inputType, callParams, fn);
 		emitFixedCall(fn, builderIdx);
-		const retType = fnSym?.returnType ?? BaseTypes.Unknown;
+		const retType = (fnSym ? preparedReturnType(fnSym) : undefined) ?? BaseTypes.Unknown;
 		return driveStages(rest, retType, fn);
 	}
 
@@ -7320,7 +7166,7 @@ export function compileWasm({
 		const idx = importHost(sym.name ?? '', sig.params, sig.results);
 		fn.body.push(OP_CALL);
 		uleb128(idx, fn.body);
-		return driveStages(rest, sym.returnType ?? BaseTypes.Void, fn);
+		return driveStages(rest, preparedReturnType(sym) ?? BaseTypes.Void, fn);
 	}
 
 	function driveIntrinsicStage(
@@ -7488,13 +7334,13 @@ export function compileWasm({
 				spreadDataToStack(inputType, arm.parameters ?? [], fn);
 			const idx = getOrCreateSpec(tmpl, argTypes);
 			emitFixedCall(fn, idx);
-			const r = specReturn.get(idx) ?? armReturnOrVoid(arm.returnType);
+			const r = specReturn.get(idx) ?? armReturnOrVoid(preparedReturnType(arm));
 			return driveStages(rest, r, fn);
 		}
 		if (argTypes.length > 1)
 			spreadDataToStack(inputType, arm.parameters ?? [], fn);
 		emitArmCall(arm, sym.name, fn);
-		return driveStages(rest, armReturnOrVoid(arm.returnType), fn);
+		return driveStages(rest, armReturnOrVoid(preparedReturnType(arm)), fn);
 	}
 
 	function stageDispatchType(
@@ -7850,7 +7696,7 @@ export function compileWasm({
 		const idx = importHost(fname, sig.params, sig.results);
 		fn.body.push(OP_CALL);
 		uleb128(idx, fn.body);
-		return field.symbol.returnType ?? BaseTypes.Void;
+		return preparedReturnType(field.symbol) ?? BaseTypes.Void;
 	}
 
 	function allocLocal(fn: FuncBuilder, type: number): number {
@@ -7903,7 +7749,7 @@ export function compileWasm({
 	}
 
 	function calleeCannotRetain(calleeSym: SymbolMap['function']): boolean {
-		if (noValueReturn(calleeSym.returnType)) return true;
+		if (noValueReturn(preparedReturnType(calleeSym))) return true;
 		const node = fnTemplates.get(calleeSym) ?? fnNodeBySym.get(calleeSym);
 		return node ? fnReturnsOwned(node) : false;
 	}
@@ -8026,13 +7872,14 @@ export function compileWasm({
 		if (emission && classifyEmission(emission).cardinality === 'many')
 			return BaseTypes.Void;
 		const emitted = emission?.elements[0];
+		const declared = preparedReturnType(fnNode.symbol);
 		let returnType: Type =
 			emission?.elements.length === 1 && emitted?.kind === 'type'
 				? emitted
 				: emission
 					? BaseTypes.Void
-					: fnNode.symbol.returnType?.kind === 'type'
-						? fnNode.symbol.returnType
+					: declared?.kind === 'type'
+						? declared
 						: BaseTypes.Unknown;
 		returnType = specializeType(returnType, typeArgs ?? environment.typeArguments, reduceType);
 		returnType = reduceAppliedReturn(returnType);
@@ -8091,7 +7938,6 @@ export function compileWasm({
 	function declareFn(defSym: GbcSymbol, fnNode: NodeMap['fn']) {
 		const paramSyms = fnNode.parameters ?? [];
 		const fnSym = fnNode.symbol;
-		fnSym.parameters = paramSyms.map(p => p.symbol);
 		const needsSpec =
 			(fnNode.typeParameters?.length ?? 0) > 0 ||
 			paramSyms.some(p => {
@@ -8112,7 +7958,7 @@ export function compileWasm({
 		if (recordObjects) builder.relocs = [];
 		const obj = splice?.objects.get(defSym);
 		if (obj) spliceByBuilder.set(builder, obj);
-		fnSym.returnType = returnType;
+		preparation.setReturnType(fnSym, returnType);
 		fnDefBuilderIdx.set(defSym, builderIdx);
 		fnDefBuilderIdx.set(fnSym, builderIdx);
 		builderSym.set(builderIdx, defSym);
@@ -8136,7 +7982,7 @@ export function compileWasm({
 		const cached = specCache.get(key);
 		if (cached !== undefined) return cached;
 		const params = template.parameters ?? [];
-		const scope = createSpecializationEnvironment(environment, new Map());
+		const scope = preparation.createEnvironment(environment, new Map());
 		bindTypeArguments(template, params, argTypes, scope.typeArguments, bindings);
 		for (const [symbol, bound] of bindings) scope.bindings.set(symbol, bound);
 		params.forEach((p, i) => {
@@ -8226,7 +8072,7 @@ export function compileWasm({
 		if (!target) return false;
 		const { builderIdx, fnSym } = target;
 		if (!tailCallOwnedOk(fn, fnSym)) return false;
-		if (!sameWasmShape(fnSym.returnType ?? BaseTypes.Void, fn.returnType))
+		if (!sameWasmShape(preparedReturnType(fnSym) ?? BaseTypes.Void, fn.returnType))
 			return false;
 		if (
 			funcBuilders[builderIdx] === fn &&
@@ -8333,14 +8179,14 @@ export function compileWasm({
 		if (flat.length !== 2) return false;
 		const source = flat[0];
 		const last = flat[1];
-		if (!source || !last || last.kind !== 'ident') return false;
+		if (!source || last?.kind !== 'ident') return false;
 		const target = tailFnTarget(last.symbol);
 		if (!target) return false;
 		const { builderIdx, fnSym } = target;
 		if (!tailCallOwnedOk(fn, fnSym)) return false;
 		const params = fnSym.parameters ?? [];
 		if (params.length !== 1) return false;
-		if (!sameWasmShape(fnSym.returnType ?? BaseTypes.Void, fn.returnType))
+		if (!sameWasmShape(preparedReturnType(fnSym) ?? BaseTypes.Void, fn.returnType))
 			return false;
 		if (
 			funcBuilders[builderIdx] === fn &&

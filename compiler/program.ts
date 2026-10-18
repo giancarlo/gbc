@@ -17,6 +17,7 @@ import { parse } from './parser.js';
 import { scan } from './scanner.js';
 import { compileTypes } from './compiler-types.js';
 import { compileLlvm } from './target-llvm.js';
+import { prepareProgram } from './preparation.js';
 import {
 	compileWasm,
 	setDivByZeroType,
@@ -952,19 +953,16 @@ function resolveExternalType(name: string): Type {
 	return type;
 }
 
-function withStdlib(
+function prepareAst(
 	root: Node,
 	testMode = false,
 	moduleDefs: (NodeMap['def'] | NodeMap['extend'])[] = [],
-): Node {
-	if (root.kind !== 'root') return root;
-	const head = [
+) {
+	return prepareProgram(root, root.kind === 'root' ? [
 		...stdlibDefs,
 		...moduleDefs,
 		...(testMode ? testDefs : []),
-	];
-	if (head.length === 0) return root;
-	return { ...root, children: [...head, ...root.children] };
+	] : []);
 }
 
 function withStdlibSplice(splice: SpliceInput | undefined): SpliceInput | undefined {
@@ -1032,12 +1030,13 @@ export function Program(options?: ProgramOptions) {
 		let ir: string | undefined;
 		if (parsed.errors.length === 0) {
 			try {
+				const prepared = prepareAst(parsed.root, testMode, modeOptions.moduleDefs);
 				if (modeOptions.target === 'llvm') {
 					if (testMode || options?.debug)
 						throw new CompilerError('LLVM target does not support test or debug builds', parsed.root);
-					ir = compileLlvm(parsed.root);
+					ir = compileLlvm(prepared);
 				} else bytes = compileWasm({
-					root: withStdlib(parsed.root, testMode, modeOptions.moduleDefs),
+					prepared,
 					testMode,
 					debugBuild: !!options?.debug,
 					hostExports,
@@ -1130,9 +1129,9 @@ export function Program(options?: ProgramOptions) {
 			...root,
 			children: root.children.filter(c => c.kind !== 'test'),
 		});
-		const collectObjects = (root: Node): void => {
+		const collectObjects = (prepared: ReturnType<typeof prepareAst>): void => {
 			compileWasm({
-				root,
+				prepared,
 				sourcePaths,
 				objectSink: objects,
 			});
@@ -1146,18 +1145,18 @@ export function Program(options?: ProgramOptions) {
 				line: 0,
 				source: '',
 			};
-			collectObjects(withStdlib(emptyRoot, false, moduleDefs));
+			collectObjects(prepareAst(emptyRoot, false, moduleDefs));
 		} catch {
 			objects.length = 0;
 			try {
-				collectObjects({
+				collectObjects(prepareProgram({
 					kind: 'root',
 					children: moduleDefs,
 					start: 0,
 					end: 0,
 					line: 0,
 					source: '',
-				});
+				}));
 			} catch {
 				objects.length = 0;
 			}
@@ -1202,7 +1201,7 @@ export function Program(options?: ProgramOptions) {
 
 	function compileAst(root: Node, testMode = false): Uint8Array {
 		return compileWasm({
-			root: withStdlib(root, testMode),
+			prepared: prepareAst(root, testMode),
 			testMode,
 			debugBuild: !!options?.debug,
 			splice: withStdlibSplice(undefined),
@@ -1218,6 +1217,7 @@ export function Program(options?: ProgramOptions) {
 		compileFile,
 		buildLibrary,
 		compileAst,
+		prepareAst,
 		compileTypes,
 		options,
 		parse: parser,

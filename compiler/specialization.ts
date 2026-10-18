@@ -1,6 +1,6 @@
-import type { NodeMap } from './node.js';
+import type { Node, NodeMap } from './node.js';
 import { BaseTypes, unifyTypeParam } from './symbol-table.js';
-import type { Symbol as GbcSymbol, SymbolMap, Type } from './symbol-table.js';
+import type { ResolvedType, Symbol as GbcSymbol, SymbolMap, Type } from './symbol-table.js';
 
 export interface SpecializationEnvironment {
 	parent?: SpecializationEnvironment;
@@ -8,6 +8,7 @@ export interface SpecializationEnvironment {
 	bindings: Map<GbcSymbol, SymbolMap['function']>;
 	typeArguments: Map<string, Type>;
 	returnsOwned: Map<NodeMap['fn'], boolean>;
+	annotations?: WeakMap<Node, { nominal?: ResolvedType; originFn?: string }>;
 }
 
 export function createSpecializationEnvironment(

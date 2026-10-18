@@ -950,7 +950,7 @@ function containsApp(t: Type, seen = new Set<Type>()): boolean {
 	return false;
 }
 
-export function createSemanticContext() {
+export function createSemanticContext(readOnly = false) {
 	const nodeTypes = new WeakMap<Node, Type>();
 
 	function setNodeType(node: Node, type: Type): void {
@@ -1040,7 +1040,7 @@ export function createSemanticContext() {
 		if (definition?.kind !== 'parameter' || !definition.type) return;
 		const declared = resolver(definition.type);
 		if (declared.kind === 'function') {
-			definition.symbol.type = declared;
+			if (!readOnly) definition.symbol.type = declared;
 			return declared;
 		}
 	}
@@ -1171,7 +1171,7 @@ export function createSemanticContext() {
 		let t = value ?? declared;
 		if (declared && t !== declared && literalFits(node.value, declared))
 			t = declared;
-		if (t && !hasUnresolvedType(t)) sym.type = t;
+		if (!readOnly && t && !hasUnresolvedType(t)) sym.type = t;
 		return t;
 	}
 
@@ -1405,6 +1405,7 @@ export function createSemanticContext() {
 
 	function resolveFnType(node: NodeMap['fn']): Type {
 		const sym = node.symbol;
+		if (readOnly) return sym;
 		resolveDeclaredFnOutputs(node);
 		if (node.parameters?.length) node.parameters.forEach(resolver);
 		if (
@@ -1438,7 +1439,7 @@ export function createSemanticContext() {
 		if (node.symbol.type) return node.symbol.type;
 		if (node.type) {
 			const t = resolver(node.type);
-			node.symbol.type = t;
+			if (!readOnly) node.symbol.type = t;
 			return t;
 		}
 	}
@@ -1446,7 +1447,7 @@ export function createSemanticContext() {
 	function resolvePropdefType(node: NodeMap['propdef']): Type {
 		if (node.symbol.type) return node.symbol.type;
 		const t = node.value ? resolver(node.value) : BT.Unknown;
-		if (t.kind === 'function' || t.family !== 'unknown') node.symbol.type = t;
+		if (!readOnly && (t.kind === 'function' || t.family !== 'unknown')) node.symbol.type = t;
 		return t;
 	}
 
@@ -1460,7 +1461,7 @@ export function createSemanticContext() {
 				const sym = node.symbol;
 				if (sym.kind === 'function') return sym;
 				if (!sym.type && sym.definition?.kind === 'def')
-					resolveType(sym.definition);
+					return resolveType(sym.definition);
 				return sym.type;
 			}
 			case 'typeident':

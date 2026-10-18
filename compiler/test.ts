@@ -24,7 +24,39 @@ import {
 	type Type,
 } from './symbol-table.js';
 import { compileWasm, type LibraryObject } from './target-wasm.js';
+import { checker } from './checker.js';
+import { compileLlvm } from './target-llvm.js';
 import lifecycle from './test-lifecycle.js';
+
+function snapshotGraph(root: object): () => string[] {
+	const objects = new Map<object, { path: string; properties: Record<PropertyKey, PropertyDescriptor>; entries?: unknown[] }>();
+	function visit(value: unknown, path: string): void {
+		if (!value || typeof value !== 'object' || objects.has(value)) return;
+		const properties = Object.getOwnPropertyDescriptors(value) as Record<PropertyKey, PropertyDescriptor>;
+		const entries = value instanceof Map ? [...value].flat() : value instanceof Set ? [...value] : undefined;
+		objects.set(value, { path, properties, entries });
+		for (const key of Reflect.ownKeys(properties)) visit(properties[key]?.value, `${path}.${String(key)}`);
+		entries?.forEach((entry, index) => visit(entry, `${path}[${index}]`));
+	}
+	visit(root, 'ast');
+	return () => {
+		const changed: string[] = [];
+		for (const [value, saved] of objects) {
+			const current = Object.getOwnPropertyDescriptors(value) as Record<PropertyKey, PropertyDescriptor>;
+			const keys = Reflect.ownKeys(saved.properties);
+			if (Reflect.ownKeys(current).length !== keys.length) changed.push(saved.path);
+			for (const key of keys) {
+				const before = saved.properties[key];
+				const after = current[key];
+				if (!after || !before || !Object.is(before.value, after.value) || before.get !== after.get || before.set !== after.set || before.writable !== after.writable || before.configurable !== after.configurable || before.enumerable !== after.enumerable)
+					changed.push(`${saved.path}.${String(key)}`);
+			}
+			const entries = value instanceof Map ? [...value].flat() : value instanceof Set ? [...value] : undefined;
+			if (entries?.length !== saved.entries?.length || entries?.some((entry, index) => entry !== saved.entries?.[index])) changed.push(`${saved.path}.entries`);
+		}
+		return changed;
+	};
+}
 
 declare const WebAssembly: {
 	Module: new (bytes: Uint8Array) => unknown;
@@ -35,6 +67,113 @@ Language design proposals must satisfy docs/feature-laws.md.
 */
 export default spec('Language Reference', s => {
 	s.addSpec(lifecycle);
+	s.test('backend emission preserves the checked frontend graph on success and failure', (a: TestApi) => {
+		const program = Program();
+		const parsed = program.parse(`identity = <T>(value: T): T { value };
+add = (value: Int32): Int32 { value + 1 };
+main { identity(7) -> add() >> out }`);
+		checker(parsed).run();
+		a.equalValues(parsed.errors, []);
+		const unchanged = snapshotGraph(parsed.root);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const output: string[] = [];
+			runWasm(program.compileAst(parsed.root), value => output.push(value));
+			a.equalValues(output, ['8']);
+			a.equalValues(unchanged(), []);
+		}
+		const main = parsed.root.children.find(node => node.kind === 'main');
+		a.assert(main?.kind === 'main');
+		const statements = main.statements;
+		main.statements = [{ ...main, kind: '@' }];
+		const failedUnchanged = snapshotGraph(parsed.root);
+		a.throws(() => program.compileAst(parsed.root));
+		a.equalValues(failedUnchanged(), []);
+		main.statements = statements;
+		const output: string[] = [];
+		runWasm(program.compileAst(parsed.root), value => output.push(value));
+		a.equalValues(output, ['8']);
+		a.equalValues(unchanged(), []);
+	});
+	s.test('prepared inputs support target alternation and independent interleaved emission', (a: TestApi) => {
+		const program = Program();
+		const independent = Program();
+		const other = independent.compile('main { 9 >> out }');
+		a.equalValues(other.errors, []);
+		for (const source of ['main {}', 'main { 42 >> out; 7 >> out }']) {
+			const parsed = program.parse(source);
+			checker(parsed).run();
+			a.equalValues(parsed.errors, []);
+			const prepared = program.prepareAst(parsed.root);
+			const unchanged = snapshotGraph(prepared);
+			const native = compileLlvm(prepared);
+			const wasm = compileWasm({ prepared });
+			for (let attempt = 0; attempt < 2; attempt++) {
+				a.equal(compileLlvm(prepared), native);
+				independent.compileAst(other.ast);
+				a.equalValues(compileWasm({ prepared }), wasm);
+				a.equalValues(unchanged(), []);
+			}
+		}
+		const parsed = program.parse('main { 1 + 2 >> out }');
+		checker(parsed).run();
+		const unchanged = snapshotGraph(parsed.root);
+		const prepared = program.prepareAst(parsed.root);
+		a.throws(() => compileLlvm(prepared));
+		const output: string[] = [];
+		runWasm(compileWasm({ prepared }), value => output.push(value));
+		a.equalValues(output, ['3']);
+		a.equalValues(unchanged(), []);
+	});
+
+	s.test('thread preparation preserves effect ordering and evaluates retained carriers once', (a: TestApi) => {
+		const source = `mark = (n: Int32): Int32 { n >> out; next n };
+touch = (n: Int32, extra: Int32): Void { (n + extra) >> out };
+maybe = (n: Int32, choose: Bool): Int32 | Void { choose ? n + 1 : n };
+maybeBool = (flag: Bool): Int32 | Void { flag ? 23 : 22 };
+main {
+	mark(3) -> touch(mark(4)) -> touch(mark(5)) >> out;
+	mark(7) -> maybe(false) -> touch(mark(8)) >> out;
+	mark(9) -> maybe(true) -> touch(mark(10)) >> out;
+	false -> maybeBool() >> out; true -> maybeBool() >> out
+}`;
+		for (const debug of [false, true]) {
+			const program = Program({ debug });
+			const parsed = program.parse(source);
+			checker(parsed).run();
+			a.equalValues(parsed.errors, []);
+			const unchanged = snapshotGraph(parsed.root);
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const output: string[] = [];
+				runWasm(program.compileAst(parsed.root), value => output.push(value));
+				a.equalValues(output, ['3', '4', '7', '5', '8', '3', '7', '8', '15', '7', '9', '10', '20', '10', '22', '23']);
+				a.equalValues(unchanged(), []);
+			}
+		}
+	});
+
+	s.test('trace construction and recursive owned specializations leave frontend cycles unchanged', (a: TestApi) => {
+		const source = `type Boom = Error & [ id: Int32 ];
+boom = (): Boom { [ id = 7 ] };
+repeat = <T>(value: own T, n: Int32): own T { n <= 0 ? value : repeat(value, n - 1) };
+main {
+	b = boom(); b.id >> out;
+	repeat('text', 3) >> out;
+	buffer = repeat(Buffer<Int32>(1), 2); length(buffer) >> out
+}`;
+		for (const debug of [false, true]) {
+			const program = Program({ debug });
+			const parsed = program.parse(source);
+			checker(parsed).run();
+			a.equalValues(parsed.errors, []);
+			const unchanged = snapshotGraph(parsed.root);
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const output: string[] = [];
+				runWasm(program.compileAst(parsed.root), value => output.push(value));
+				a.equalValues(output, ['7', 'text', '1']);
+				a.equalValues(unchanged(), []);
+			}
+		}
+	});
 	s.test('LLVM target validates its bounded native subset', (a: TestApi) => {
 		const program = Program();
 		const source = 'main { 42 >> out; -2147483648 >> out; 2147483647 >> out; 0 >> out }';
@@ -921,9 +1060,11 @@ main {
 				const output: string[] = [];
 				runWasm(compiled.bytes, value => output.push(value));
 				a.equalValues(output, ['1', '2', '-1', '3', '9', '-6', '4', '5', '-1']);
+				const unchanged = snapshotGraph(compiled.ast);
 				const astOutput: string[] = [];
 				runWasm(program.compileAst(compiled.ast), value => astOutput.push(value));
 				a.equalValues(astOutput, output);
+				a.equalValues(unchanged(), []);
 			}
 		}
 	});
