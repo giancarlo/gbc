@@ -3,5 +3,5 @@
 	"compilerOptions": {
 		"outDir": "../dist/sdk"
 	},
-	"files": ["format.ts", "index.ts", "runtime.ts"]
+	"files": ["format.ts", "highlight.ts", "index.ts", "runtime.ts"]
 }

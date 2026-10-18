@@ -1,5 +1,8 @@
+import type { HighlightCheckpoint, HighlightInput } from './highlight.js';
+
 export * from './format.js';
 export * from './runtime.js';
+export * from './highlight.js';
 
 export interface Position {
 	start: number;
@@ -71,9 +74,10 @@ export function enrichHighlightToken<Node extends Token<string>>(
 	return result;
 }
 
-export type Highlighter<Node extends Token<string> = Token<string>> = (
-	source: string,
-) => Generator<Node & HighlightToken, void>;
+export interface Highlighter<Node extends Token<string> = Token<string>> {
+	(source: string): Generator<Node & HighlightToken, void>;
+	resume?(input: HighlightInput, checkpoint?: HighlightCheckpoint<unknown>): Generator<Node & HighlightToken, HighlightCheckpoint<unknown>>;
+}
 
 const noFold = [0, 0] as const;
 const openFold = [1, 0] as const;

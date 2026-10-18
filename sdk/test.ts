@@ -1,4 +1,4 @@
-import { spec } from '@cxl/spec';
+import { spec, type TestApi } from '@cxl/spec';
 import {
 	type BaseNode,
 	type BinaryNodeBase,
@@ -6,11 +6,15 @@ import {
 	CompilerError,
 	createCaseInsensitiveTrie,
 	createHighlighter,
+	createResumableHighlighter,
 	createTrie,
 	findNodeAtIndex,
 	Flags,
+	enrichHighlightToken,
 	foldToken,
 	formatting,
+	isResumableHighlighter,
+	type Highlighter,
 	type LeafNode,
 	matchers,
 	ParserApi,
@@ -49,7 +53,153 @@ const _ident = /\w/;
 const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => !ident(ch);
 
+function drain<Node, Result>(iterator: Generator<Node, Result>) {
+	const tokens: Node[] = [];
+	for (;;) {
+		const next = iterator.next();
+		if (next.done) return { tokens, checkpoint: next.value };
+		tokens.push(next.value);
+	}
+}
+
+function resumable() {
+	return createResumableHighlighter(function* (source) {
+		for (let index = 0; index < source.length; index++)
+			yield Object.assign(enrichHighlightToken({ kind: 'char', start: index, end: index + 1, line: 0, source }, 'text'), { ordinal: index });
+	}, () => 0, function* (window, count) {
+		let line = window.line;
+		for (let index = 0; index < window.text.length; index++) {
+			const start = window.start + index;
+			yield Object.assign(enrichHighlightToken(Object.assign(window.position(start, start + 1, line), { kind: 'char' }), 'text'), { ordinal: count++ });
+			if (window.text.charAt(index) === '\n') line++;
+		}
+		return { state: count, committed: window.start + window.text.length };
+	});
+}
+
+function highlightSource(value: string) {
+	return { id: {}, version: 1, length: value.length, read: (start: number, end: number) => value.slice(start, end), text: () => value };
+}
+
 export default spec('sdk', s => {
+	s.test('look up resumable and legacy highlighters through the public contract', (a: TestApi) => {
+		const registered: Record<string, Highlighter> = {
+			native: resumable(), legacy: createHighlighter(source => {
+				const api = ScannerApi({ source });
+				return { next: () => api.eof() ? api.tk('eof', 0) : api.tk('char', 1), backtrack: api.backtrack };
+			}, () => 'text'),
+		};
+		const native = registered.native;
+		const legacy = registered.legacy;
+		a.assert(native && isResumableHighlighter(native));
+		a.assert(legacy && !isResumableHighlighter(legacy));
+		a.equalValues(drain(native.resume({ source: highlightSource('ab') })).tokens.map(text), ['a', 'b']);
+		a.equalValues([...legacy('ab')].map(text), ['a', 'b']);
+	});
+	s.test('bounded highlighting validates public input before reading', (a: TestApi) => {
+		const highlight = resumable();
+		let reads = 0;
+		const source = { ...highlightSource('abc'), read(start: number, end: number) { reads++; return 'abc'.slice(start, end); } };
+		for (const end of [-1, 0.5, 4, NaN, Infinity])
+			a.throws(() => drain(highlight.resume({ source, end })));
+		for (const length of [-1, 1.5, NaN, Infinity])
+			a.throws(() => drain(highlight.resume({ source: { ...source, length } })));
+		a.equal(reads, 0);
+		const prefix = drain(highlight.resume({ source, end: 1 }));
+		a.throws(() => drain(highlight.resume({ source, end: 0 }, prefix.checkpoint)));
+		a.throws(() => drain(highlight.resume({ source: { ...source, read: () => '' } }, prefix.checkpoint)));
+		a.throws(() => drain(highlight.resume({ source: { ...source, read: () => 'toolong' } }, prefix.checkpoint)));
+		a.equalValues(drain(highlight.resume({ source }, prefix.checkpoint)).tokens.map(token => token.ordinal), [1, 2]);
+	});
+	s.test('checkpoints reject foreign, forged, stale and final input', (a: TestApi) => {
+		const highlight = resumable();
+		const source = highlightSource('abc');
+		const prefix = drain(highlight.resume({ source, end: 1 }));
+		a.throws(() => drain(resumable().resume({ source }, prefix.checkpoint)));
+		a.throws(() => drain(highlight.resume({ source }, { ...prefix.checkpoint })));
+		a.throws(() => drain(highlight.resume({ source: highlightSource('abc') }, prefix.checkpoint)));
+		a.throws(() => drain(highlight.resume({ source: { ...source, version: 2 } }, prefix.checkpoint)));
+		for (const edit of [
+			{ previousVersion: 0, start: 1 }, { previousVersion: 1, start: 0 },
+			{ previousVersion: 1, start: NaN }, { previousVersion: 1, start: 1.5 },
+			{ previousVersion: 1, start: 4 },
+		]) a.throws(() => drain(highlight.resume({ source: { ...source, version: 2 }, edit }, prefix.checkpoint)));
+		const changed = { ...source, version: 2, length: 2, read: (start: number, end: number) => 'az'.slice(start, end), text: () => 'az' };
+		const final = drain(highlight.resume({ source: changed, edit: { previousVersion: 1, start: 1 } }, prefix.checkpoint));
+		a.equalValues(final.tokens.map(text), ['z']);
+		a.throws(() => drain(highlight.resume({ source: changed }, final.checkpoint)));
+		a.throws(() => drain(highlight.resume({ source: { ...changed, version: 3 }, edit: { previousVersion: 2, start: 2 } }, final.checkpoint)));
+	});
+	s.test('bounded highlighting isolates interleaved sessions and cancelled retries', (a: TestApi) => {
+		const highlight = resumable();
+		const source = highlightSource('a\nb');
+		const other = highlightSource('xy');
+		const first = drain(highlight.resume({ source, end: 1 }));
+		const second = drain(highlight.resume({ source: other, end: 1 }));
+		const cancelled = highlight.resume({ source }, first.checkpoint);
+		a.equal(cancelled.next().done, false);
+		cancelled.return(first.checkpoint);
+		a.equalValues(drain(highlight.resume({ source: other }, second.checkpoint)).tokens.map(token => [text(token), token.ordinal]), [['y', 1]]);
+		const result = drain(highlight.resume({ source }, first.checkpoint));
+		a.equalValues(result.tokens.map(token => [text(token), token.start, token.line, token.ordinal]), [['\n', 1, 0, 1], ['b', 2, 1, 2]]);
+		a.equal(result.checkpoint.line, 1);
+		a.equal(result.checkpoint.offset, 3);
+		a.equal(result.checkpoint.committed, 3);
+		a.equalValues([...highlight('ab')].map(text), ['a', 'b']);
+		const empty = drain(highlight.resume({ source: highlightSource('') }));
+		a.equalValues(empty.tokens, []);
+		a.equal(empty.checkpoint.done, true);
+	});
+	s.test('bounded highlighting rolls back read and scanner failures', (a: TestApi) => {
+		const source = highlightSource('abc');
+		let fail = false;
+		const highlight = createResumableHighlighter(resumable(), () => 0, function* (window, count) {
+			yield Object.assign(enrichHighlightToken(Object.assign(window.position(window.start, window.start + 1, window.line), { kind: 'char' }), 'text'), { ordinal: count });
+			if (fail) throw new Error('Scanner failed');
+			return { state: count + 1, committed: window.start + window.text.length };
+		});
+		const prefix = drain(highlight.resume({ source, end: 1 }));
+		const readError = new Error('Read failed');
+		a.throws(() => drain(highlight.resume({ source: { ...source, read() { throw readError; } } }, prefix.checkpoint)), readError);
+		fail = true;
+		a.throws(() => drain(highlight.resume({ source }, prefix.checkpoint)));
+		fail = false;
+		a.equalValues(drain(highlight.resume({ source }, prefix.checkpoint)).tokens.map(token => token.ordinal), [1]);
+	});
+	s.test('bounded highlighting rejects invalid mode commitment', (a: TestApi) => {
+		const source = highlightSource('ab');
+		for (const committed of [-1, 0.5, 3, NaN, 0]) {
+			const highlight = createResumableHighlighter(resumable(), () => 0, function* (window) {
+				yield Object.assign(enrichHighlightToken(Object.assign(window.position(0, 1, 0), { kind: 'char' }), 'text'), { ordinal: 0 });
+				return { state: 0, committed };
+			});
+			a.throws(() => drain(highlight.resume({ source })));
+		}
+	});
+	s.test('resume preserves undefined state without initializing another session', (a: TestApi) => {
+		let sessions = 0;
+		const highlight = createResumableHighlighter(resumable(), () => { sessions++; }, function* (window) {
+			yield Object.assign(enrichHighlightToken(Object.assign(window.position(window.start, window.start + 1, 0), { kind: 'char' }), 'text'), { ordinal: 0 });
+			return { state: undefined, committed: window.start + window.text.length };
+		});
+		const source = highlightSource('ab');
+		const prefix = drain(highlight.resume({ source, end: 1 }));
+		drain(highlight.resume({ source }, prefix.checkpoint));
+		a.equal(sessions, 1);
+	});
+	s.test('resume rejects source revisions changed during a read or suspended scan', (a: TestApi) => {
+		const highlight = resumable();
+		const source = highlightSource('abc');
+		const prefix = drain(highlight.resume({ source, end: 1 }));
+		const iterator = highlight.resume({ source }, prefix.checkpoint);
+		a.equal(iterator.next().done, false);
+		source.version = 2;
+		a.throws(() => drain(iterator));
+		source.version = 1;
+		const changed = { ...source, read(start: number, end: number) { changed.version++; return 'abc'.slice(start, end); } };
+		a.throws(() => highlight.resume({ source: changed }, prefix.checkpoint).next());
+		a.equalValues(drain(highlight.resume({ source }, prefix.checkpoint)).tokens.map(text), ['b', 'c']);
+	});
 	s.test('parentheses do not mark fold boundaries', a => {
 		const highlight = createHighlighter(source => {
 			const api = ScannerApi({ source });
