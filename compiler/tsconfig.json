@@ -11,6 +11,7 @@
 	"files": [
 		"bundle.ts",
 		"checker.ts",
+		"semantic.ts",
 		"compiler-types.ts",
 		"debug.ts",
 		"error.ts",

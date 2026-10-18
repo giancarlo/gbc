@@ -1,6 +1,15 @@
 import { CompilerError, sleb128, sleb128big, text, uleb128 } from '@cxl/gbc.sdk';
 
-import { isKnownNonZeroNumber, reduceType } from './checker.js';
+import {
+	argumentNodes as argListFromCall,
+	createSemanticContext,
+	constantNumericValue,
+	dispatchArgType,
+	floatFitsInteger,
+	dataItems,
+	literalType,
+	resolveArgNodes,
+} from './semantic.js';
 import {
 	bufferTypeOf,
 	BaseTypes,
@@ -824,6 +833,19 @@ export function compileWasm({
 	splice,
 	maxMemoryPages,
 }: CompileWasmOptions): Uint8Array {
+	const {
+		reduceType,
+		isKnownNonZeroNumber,
+		callTypeBindings,
+		selectOverload,
+		scalarCtorType,
+		bufferCtorType,
+		resolveMemberType,
+		numericValueType,
+		resolveCallReturn,
+		callArgumentTypes,
+		pipeArgumentTypes: inferStageArgumentTypes,
+	} = createSemanticContext();
 	validateMemoryMaxPages(maxMemoryPages);
 	const recordObjects = !!objectSink;
 	const datas: ModuleData[] = [];
@@ -1469,56 +1491,11 @@ export function compileWasm({
 		return BaseTypes.Unknown;
 	}
 
-	function inferArithType(
-		node: ArithmeticNode,
-		fn?: FuncBuilder,
-	): Type {
-		const lt = inferType(node.children[0], fn);
-		const rt = inferType(node.children[1], fn);
-		if (isVectorType(lt) && isVectorType(rt)) return lt;
-		return numericResultType(lt, rt) ?? BaseTypes.Unknown;
-	}
-
-	function constantNumericValue(node: Node): number | undefined {
-		if (node.kind === 'number' && typeof node.value === 'number') return node.value;
-		if (node.kind !== 'call') return;
-		const callee = node.children[0];
-		const argument = node.children[1];
-		if (callee.kind !== 'typeident' || !argument || argument.kind === ',') return;
-		return constantNumericValue(argument);
-	}
-
-	function floatFitsInteger(value: number, target: ResolvedType): boolean {
-		if (!Number.isFinite(value)) return false;
-		const bits = target.size * 8;
-		const unsigned = target.family === 'uint';
-		const minimum = unsigned ? 0 : -(2 ** (bits - 1));
-		const maximum = unsigned ? 2 ** bits : 2 ** (bits - 1);
-		return value >= minimum && value < maximum;
-	}
 
 	function inferTypeConstructorCall(node: NodeMap['call']): Type {
 		const callee = node.children[0];
 		if (callee.kind !== 'typeident') return BaseTypes.Unknown;
-		const target = callee.symbol.type;
-		if (callee.symbol === BufferSymbol) return bufferTypeOf(BaseTypes.Unknown);
-		if (isCollection(target)) return target;
-		const argument = node.children[1];
-		if (
-			target.kind === 'type' &&
-			(target.family === 'int' || target.family === 'uint') &&
-			argument && argument.kind !== ',' && isFloatType(inferType(argument))
-		) {
-			const value = constantNumericValue(argument);
-			if (value !== undefined && Number.isFinite(value)) {
-				const bits = target.size * 8;
-				const minimum = target.family === 'uint' ? 0 : -(2 ** (bits - 1));
-				const maximum = target.family === 'uint' ? 2 ** bits : 2 ** (bits - 1);
-				if (value >= minimum && value < maximum) return target;
-			}
-			return runtimeResultType(target, 'NumericOverflow');
-		}
-		return target;
+		return bufferCtorType(node) ?? scalarCtorType(node, inferType) ?? callee.symbol.type;
 	}
 
 	function inferCallType(node: NodeMap['call']): Type {
@@ -1528,9 +1505,7 @@ export function compileWasm({
 			return sfn
 				? inferFunctionReturn(
 						sfn,
-						argListFromCall(node.children[1]).map(argument =>
-							inferType(argument),
-						),
+						callArgumentTypes(sfn, node.children[1], inferType),
 					)
 				: BaseTypes.Unknown;
 		}
@@ -1549,7 +1524,7 @@ export function compileWasm({
 		const template = fnTemplates.get(sym);
 		return inferFunctionReturn(
 			fnSym,
-			argListFromCall(node.children[1]).map(arg => inferType(arg)),
+			callArgumentTypes(fnSym, node.children[1], inferType),
 			template?.typeParameters
 				?.map(p => p.symbol.type)
 				.filter((t): t is Type => !!t),
@@ -1561,18 +1536,7 @@ export function compileWasm({
 		args: Type[],
 		templateTypeParams?: Type[],
 	): Type {
-		const effective = findDispatchArm(fnSym.overloads ?? [], args) ?? fnSym;
-		const rt = effective.returnType ?? BaseTypes.Void;
-		const typeParams = effective.typeParams ?? templateTypeParams ?? [];
-		if (typeParams.length === 0) return rt;
-		const names = new Set(
-			typeParams.map(t => t.name).filter((n): n is string => !!n),
-		);
-		const bindings = new Map<string, Type>();
-		(effective.parameters ?? []).forEach((p, i) =>
-			unifyTypeParam(p.type, args[i], names, bindings),
-		);
-		return reduceType(rt, bindings);
+		return resolveCallReturn(fnSym, args, findDispatchArm, templateTypeParams) ?? BaseTypes.Void;
 	}
 
 	function makeThreadCall(
@@ -1617,13 +1581,7 @@ export function compileWasm({
 		);
 		const target = findDispatchArm(declared.overloads ?? [], argTypes) ?? declared;
 		const typeParams = target.typeParams ?? [];
-		const names = new Set(
-			typeParams.map(type => type.name).filter((name): name is string => !!name),
-		);
-		const bindings = new Map<string, Type>();
-		(target.parameters ?? []).forEach((parameter, i) =>
-			unifyTypeParam(parameter.type, argTypes[i], names, bindings),
-		);
+		const bindings = callTypeBindings(target, argTypes);
 		const specializedEmission = resolvedEmissionType(target, bindings);
 		const output = inferFunctionReturn(target, argTypes, typeParams);
 		const emission =
@@ -1662,24 +1620,6 @@ export function compileWasm({
 			carrier = call;
 		}
 		return carrierType ?? BaseTypes.Unknown;
-	}
-
-	function inferStageArgumentTypes(
-		input: Type,
-		fnSym: SymbolMap['function'],
-	): Type[] {
-		const params = fnSym.parameters ?? [];
-		if (params.length <= 1) return params.length === 0 ? [] : [input];
-		if (input.kind !== 'type' || input.family !== 'data')
-			return [input];
-		const keys = Object.keys(input.members);
-		return params.map((p, i) => {
-			const named = p.name ? keys.indexOf(p.name) : -1;
-			const key = keys[named >= 0 ? named : i];
-			return key === undefined
-				? BaseTypes.Unknown
-				: (input.members[key]?.type ?? BaseTypes.Unknown);
-		});
 	}
 
 	function inferStageReturn(stage: Node, input: Type): Type {
@@ -1754,54 +1694,12 @@ export function compileWasm({
 		return result;
 	}
 
-	function inferMemberType(node: NodeMap['.'], fn?: FuncBuilder): Type {
-		const recv = node.children[0];
-		const field = node.children[1];
-		const recvType = inferType(recv, fn);
-		if (recvType.kind === 'type' && recvType.family === 'data') {
-			const members = recvType.members;
-			if (field.kind === 'ident') {
-				const m = members[field.symbol.name ?? ''];
-				if (m?.kind === 'variable' && m.type) return m.type;
-			}
-			if (field.kind === 'number') {
-				// Positional access on a typed receiver: index the member
-				// record like `compileMemberLoad` does — `dataItems` only
-				// works when the receiver is a literal in hand.
-				const key = Object.keys(members)[Number(field.value)];
-				const m = key === undefined ? undefined : members[key];
-				if (m?.kind === 'variable' && m.type) return m.type;
-				const items = dataItems(recv);
-				const item = items[Number(field.value)];
-				if (item) return inferType(itemValue(item), fn);
-			}
-			if (field.kind === 'ident') {
-				const items = dataItems(recv);
-				for (const item of items) {
-					if (
-						item.kind === 'propdef' &&
-						item.symbol.name === field.symbol.name
-					) {
-						return inferType(itemValue(item), fn);
-					}
-				}
-			}
-		}
-		return BaseTypes.Int32;
-	}
 
 	/** Infer a node's resulting type (best-effort, no codegen). */
 	function inferType(node: Node, fn?: FuncBuilder): Type {
+		const literal = literalType(node);
+		if (literal) return dispatchArgType(literal);
 		switch (node.kind) {
-			case 'number':
-				return node.float
-					? BaseTypes.Float64
-					: node.value >= -0x80000000 && node.value <= 0x7fffffff
-						? BaseTypes.Int32
-						: BaseTypes.Int64;
-			case 'string':
-			case 'interp':
-				return BaseTypes.String;
 			case '$':
 				return fn?.dollarType ?? BaseTypes.Int32;
 			case 'ident':
@@ -1811,7 +1709,7 @@ export function compileWasm({
 			case '*':
 			case '/':
 			case '%':
-				return inferArithType(node, fn);
+				return numericValueType(inferType(node.children[0], fn), inferType(node.children[1], fn));
 			case '|':
 			case '&':
 			case '^':
@@ -1854,8 +1752,10 @@ export function compileWasm({
 				return inferThreadType(node, fn);
 			case 'call':
 				return inferCallType(node);
-			case '.':
-				return inferMemberType(node, fn);
+			case '.': {
+				const type = resolveMemberType(node, child => inferType(child, fn), false);
+				return type === BaseTypes.Unknown ? BaseTypes.Int32 : type;
+			}
 			case 'data': {
 				if (isTraceComposed(node.nominal)) return node.nominal;
 				const items = dataItems(node)
@@ -1901,14 +1801,6 @@ export function compileWasm({
 			default:
 				return BaseTypes.Unknown;
 		}
-	}
-
-	function dataItems(node: Node): Node[] {
-		if (node.kind !== 'data') return [];
-		const inner = node.children[0];
-		if (!inner) return [];
-		if (inner.kind === ',') return inner.children;
-		return [inner];
 	}
 
 	function itemValue(item: Node): Node {
@@ -5700,76 +5592,13 @@ export function compileWasm({
 		return !p || (p.kind === 'type' && p.family === 'unknown');
 	}
 
-	function dispatchArgType(t: Type): Type {
-		if (t.kind === 'type' && t.family === 'union') {
-			const m = t.members.find(
-				x => !(x.kind === 'type' && namedData(x)),
-			);
-			if (m) return dispatchArgType(m);
-		}
-		if (t.kind === 'type' && t.family === 'literal') {
-			const v = t.value;
-			if (typeof v === 'string') return BaseTypes.String;
-			if (typeof v === 'boolean') return BaseTypes.Bool;
-			if (typeof v === 'number')
-				return Number.isInteger(v) ? BaseTypes.Int32 : BaseTypes.Float64;
-		}
-		return t;
-	}
 
 	function findDispatchArm(
 		overloads: SymbolMap['function'][],
 		argTypes: Type[],
 	): SymbolMap['function'] | undefined {
-		const ats = argTypes.map(dispatchArgType);
-		const armMatches = (o: SymbolMap['function'], widen: boolean) => {
-			if (isCatchAllArm(o)) return false;
-			const ps = o.parameters;
-			if (ps?.length !== ats.length) return false;
-			const typeParamNames = new Set(
-				(o.typeParams ?? [])
-					.map(type => type.name)
-					.filter((name): name is string => !!name),
-			);
-			const bindings = new Map<string, Type>();
-			ps.forEach((p, i) =>
-				unifyTypeParam(p.type, ats[i], typeParamNames, bindings),
-			);
-			return ps.every((p, i) => {
-				const pt = p.type ? reduceType(p.type, bindings) : undefined;
-				const at = ats[i];
-				if (
-					pt?.kind !== 'type' ||
-					at?.kind !== 'type'
-				)
-					return false;
-				if (
-					pt.family === 'unknown' &&
-					pt.name &&
-					typeParamNames.has(pt.name)
-				)
-					return true;
-				if (pt.family === 'unknown') return false;
-				if (pt.family === at.family && pt.name === at.name) return true;
-				if (pt.family === 'buffer' && at.family === 'buffer') return true;
-				if (
-					o.flags & Flags.Intrinsic &&
-					pt.family === 'data' &&
-					at.family === 'data' &&
-					at.name === '__data'
-				)
-					return true;
-				if (composes(at, pt)) return true;
-				return (
-					widen && isIntType(pt) && isIntType(at) && pt.size >= at.size
-				);
-			});
-		};
-		return (
-			overloads.find(o => armMatches(o, false)) ??
-			overloads.find(o => armMatches(o, true)) ??
-			overloads.find(isCatchAllArm)
-		);
+		if (!overloads.length) return undefined;
+		return selectOverload(overloads, argTypes.map(dispatchArgType), isCatchAllArm);
 	}
 
 	// Emit a call to a resolved dispatch arm: a builder call for an inline-fn or
@@ -6649,14 +6478,6 @@ export function compileWasm({
 	 * inlined body in a WASM block so `done` can branch to its end without
 	 * returning from the enclosing function.
 	 */
-	function isVoidLiteralNode(n: Node | undefined): boolean {
-		return (
-			n?.kind === 'ident' &&
-			n.symbol.kind === 'literal' &&
-			n.symbol.type?.kind === 'type' &&
-			n.symbol.type.family === 'void'
-		);
-	}
 
 	function bindInlineParams(
 		params: NodeMap['parameter'][],
@@ -6801,11 +6622,6 @@ export function compileWasm({
 			(!!typed && hasNonScalarEmission(typed)) ||
 			(!!fnNode && hasNonScalarEmission(fnNode.symbol))
 		);
-	}
-
-	function argListFromCall(args: Node | undefined): Node[] {
-		if (!args) return [];
-		return args.kind === ',' ? args.children : [args];
 	}
 
 	function makeFusion(stages: Node[], savedFusion: Fusion | undefined, fn: FuncBuilder): Fusion {
@@ -8068,51 +7884,6 @@ export function compileWasm({
 		}
 	}
 
-	function paramDefault(sym: GbcSymbol | undefined): Node | undefined {
-		const def = sym?.definition;
-		return def?.kind === 'parameter' ? def.value : undefined;
-	}
-
-	// The single argument-resolution rule shared by every call path (real call,
-	// inline, stream, pipe-stage). Given a fn's params and the raw argument list,
-	// returns the arg node to bind for each param, in param order — applying:
-	// data-block spread (a lone `[…]` into a multi-param fn), named reorder,
-	// `void`→default, and positional order. Throws on mixed positional+named.
-	function resolveArgNodes(
-		paramSyms: GbcSymbol[],
-		argList: Node[],
-	): (Node | undefined)[] {
-		let list = argList;
-		if (
-			list.length === 1 &&
-			list[0]?.kind === 'data' &&
-			paramSyms.length !== 1
-		)
-			list = dataItems(list[0]).flatMap(flattenDataItem);
-		const hasNamed = list.some(a => a.kind === 'propdef' && !!a.label);
-		const hasPositional = list.some(a => a.kind !== 'propdef');
-		if (hasNamed && hasPositional)
-			throw new Error('cannot mix positional and named arguments');
-		if (hasNamed) {
-			const byName = new Map<string, Node>();
-			for (const a of list)
-				if (
-					a.kind === 'propdef' &&
-					a.label &&
-					a.value &&
-					!isVoidLiteralNode(a.value)
-				)
-					byName.set(a.symbol.name, a.value);
-			return paramSyms.map(
-				s => byName.get(s.name ?? '') ?? paramDefault(s),
-			);
-		}
-		return paramSyms.map((s, i) => {
-			const a = list[i];
-			if (isVoidLiteralNode(a)) return paramDefault(s);
-			return a ?? paramDefault(s);
-		});
-	}
 
 	/** The callee's output cannot alias an argument — a scalar/void return
 	 * carries no pointer, and an owned return is fresh on every path. Fresh

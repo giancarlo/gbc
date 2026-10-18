@@ -13,7 +13,7 @@ import {
 } from './bundle.js';
 import { Program, scan } from './index.js';
 import { buildStdlibBundle } from './program.js';
-import { bufferView, instantiateWasm } from './host.js';
+import { bufferView, instantiateWasm, runWasm } from './host.js';
 import type { Node, NodeMap } from './node.js';
 import {
 	BaseTypes,
@@ -902,6 +902,92 @@ main { recursive(2) >> out; generic(2) >> out }`);
 		if (typeof main === 'function') main();
 		return out;
 	};
+
+	s.test('shared call binding preserves effectful argument evaluation', (a: TestApi) => {
+		const source = `mark = (n: Int32): Int32 { n >> out; next n };
+sub = (a: Int32, b: Int32 = mark(9)): Int32 { a - b };
+main {
+	sub(b = mark(2), a = mark(1)) >> out;
+	sub(mark(3), void) >> out;
+	[mark(4), mark(5)] >> sub >> out
+}`;
+		for (const debug of [false, true]) {
+			const program = Program({ debug });
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const compiled = program.compile(source);
+				a.equalValues(compiled.errors, []);
+				a.assert(compiled.bytes);
+				const output: string[] = [];
+				runWasm(compiled.bytes, value => output.push(value));
+				a.equalValues(output, ['1', '2', '-1', '3', '9', '-6', '4', '5', '-1']);
+				const astOutput: string[] = [];
+				runWasm(program.compileAst(compiled.ast), value => astOutput.push(value));
+				a.equalValues(astOutput, output);
+			}
+		}
+	});
+
+	s.test('semantic contexts recover after diagnostics without retaining types', (a: TestApi) => {
+		const program = Program();
+		const invalid = `f = (n: Int32): Int32 { n }; main { f('bad') >> out }`;
+		const valid = `f = <T>(n: T): T { n }; main { f(1.5) >> out; f('ok') >> out; f(7) >> out }`;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const failed = program.compile(invalid);
+			a.equal(failed.bytes, undefined);
+			const diagnostic = failed.errors.find(error => error.message.includes('not assignable'));
+			a.assert(diagnostic);
+			a.equal(diagnostic.position.source, invalid);
+			a.equal(diagnostic.position.start, invalid.indexOf("f('bad')"));
+			a.equal(diagnostic.position.end, invalid.indexOf("f('bad')") + "f('bad')".length);
+			for (const current of [program, Program()]) {
+				const compiled = current.compile(valid);
+				a.equalValues(compiled.errors, []);
+				a.assert(compiled.bytes);
+				const output: string[] = [];
+				runWasm(compiled.bytes, value => output.push(value));
+				a.equalValues(output, ['1.5', 'ok', '7']);
+			}
+		}
+	});
+
+	s.test('shared semantic resolution supports file exports and test retries', (a: TestApi) => {
+		let source = `export target = (a: Float64, b: Float64 = 0.5): Float64 { a + b }`;
+		const program = Program({ sys: {
+			readFile: () => source,
+			readBytes: () => new Uint8Array(),
+		} });
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const compiled = program.compileFile('/entry.gb');
+			a.equalValues(compiled.errors, []);
+			a.assert(compiled.bytes);
+			const target = instantiateWasm(compiled.bytes).exports.target;
+			a.assert(typeof target === 'function');
+			a.equal(target(1.5, 2.5), 4);
+		}
+		source = `export target = (n: Int32): Int32 { 'bad' }`;
+		a.ok(program.compileFile('/entry.gb').errors.length > 0);
+		source = `export target = (n: Int32): Int32 { n + 1 }`;
+		a.equalValues(program.compileFile('/entry.gb').errors, []);
+		a.ok(program.compileTest(`#test { equal(target(), 0) } export target = (): Int32 { 'bad' }`).errors.length > 0);
+		const tested = program.compileTest(`#test { equal(target(void), 42) } export target = (n: Int32 = 41): Int32 { n + 1 }`);
+		a.equalValues(tested.errors, []);
+		a.assert(tested.bytes);
+		a.equal(runWasm(tested.bytes, () => undefined).exitCode, 0);
+	});
+
+	s.test('shared call resolution survives library sealing and consumption', (a: TestApi) => {
+		a.modules({
+			bundles: { '/vendor/calls.gbm': {
+				entry: '/lib/index.gb',
+				files: { '/lib/index.gb': `export sub = (a: Int32, b: Int32 = 2): Int32 { a - b }` },
+			} },
+			files: { '/main.gb': `#importmap { @calls = './vendor/calls.gbm'; }
+callModule = @calls;
+main { callModule.sub(b = 1, a = 4) >> out; callModule.sub(5, void) >> out }` },
+			entry: '/main.gb',
+			out: ['3', '3'],
+		});
+	});
 
 	s.test(
 		'lowers fixed emission types to direct or fused Wasm calls',
