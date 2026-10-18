@@ -12,6 +12,7 @@
 		"bundle.ts",
 		"checker.ts",
 		"semantic.ts",
+		"specialization.ts",
 		"compiler-types.ts",
 		"debug.ts",
 		"error.ts",

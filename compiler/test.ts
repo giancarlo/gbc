@@ -14,6 +14,7 @@ import {
 import { Program, scan } from './index.js';
 import { buildStdlibBundle } from './program.js';
 import { bufferView, instantiateWasm, runWasm } from './host.js';
+import { childNodes } from './node.js';
 import type { Node, NodeMap } from './node.js';
 import {
 	BaseTypes,
@@ -927,6 +928,139 @@ main {
 		}
 	});
 
+	s.test('specializations accept read-only generic parameter types', (a: TestApi) => {
+		const program = Program();
+		const compiled = program.compile(`identity = <T>(value: T): T { value };
+main { integer = identity(7); integer >> out; identity(1.5) >> out; identity('ok') >> out }`);
+		a.equalValues(compiled.errors, []);
+		const definition = compiled.ast.children.find(node => node.kind === 'def' && node.symbol.name === 'identity');
+		a.assert(definition?.kind === 'def' && definition.value.kind === 'fn');
+		const template = definition.value;
+		for (const parameter of [...(template.parameters ?? []), ...(template.typeParameters ?? [])]) {
+			Object.defineProperty(parameter.symbol, 'type', { writable: false });
+			if (parameter.symbol.type?.kind === 'type' && parameter.symbol.type.family === 'unknown')
+				Object.freeze(parameter.symbol.type);
+		}
+		const tail = template.statements?.[0];
+		a.assert(tail?.kind === 'next' && tail.children?.[0]);
+		const original = tail.children[0];
+		tail.children[0] = { ...original, kind: '@' };
+		a.throws(() => program.compileAst(compiled.ast));
+		tail.children[0] = original;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const output: string[] = [];
+			runWasm(program.compileAst(compiled.ast), value => output.push(value));
+			a.equalValues(output, ['7', '1.5', 'ok']);
+		}
+	});
+
+	s.test('nested recursive specializations retain concrete owned results', (a: TestApi) => {
+		const source = `type Item = [ id: Int32, text: String ];
+repeat = <T>(value: own T, n: Int32): own T { n <= 0 ? value : repeat(value, n - 1) };
+wrap = <T>(value: own T): own T { repeat(value, 3) };
+main {
+	i = wrap(7); i >> out;
+	d = wrap(1.5); d >> out;
+	s = wrap('value\${7}'); s >> out;
+	b = Buffer<Float64>(1); set(b, 0, 2.5);
+	r = wrap(b); get(r, 0) >> out;
+	item: Item = [ id = 9, text = 'record\${9}' ];
+	result = wrap(item); result.id >> out; result.text >> out;
+	wrap(11) >> out
+}`;
+		for (const debug of [false, true]) {
+			const programs = [Program({ debug }), Program({ debug })];
+			for (let attempt = 0; attempt < 2; attempt++)
+				for (const program of programs) {
+					const compiled = program.compile(source);
+					a.equalValues(compiled.errors, []);
+					a.assert(compiled.bytes);
+					for (const bytes of [compiled.bytes, program.compileAst(compiled.ast)]) {
+						const output: string[] = [];
+						runWasm(bytes, value => output.push(value));
+						a.equalValues(output, ['7', '1.5', 'value7', '2.5', '9', 'record9', '11']);
+					}
+				}
+		}
+	});
+
+	s.test('specialization caches distinguish record field identities', (a: TestApi) => {
+		const compiled = Program().compile(`identity = <T>(value: own T): own T { value };
+main {
+	first = identity([ id = 7, text = 'first\${7}' ]);
+	second = identity([ code = 9, text = 'second\${9}' ]);
+	first.id >> out; second.code >> out; first.text >> out; second.text >> out
+}`);
+		a.equalValues(compiled.errors, []);
+		a.assert(compiled.bytes);
+		const output: string[] = [];
+		runWasm(compiled.bytes, value => output.push(value));
+		a.equalValues(output, ['7', '9', 'first7', 'second9']);
+	});
+
+	s.test('higher-order specialization preserves emissions and cleanup', (a: TestApi) => {
+		const source = `apply = <T, U>(value: T, f: (T): U): U { f(value) };
+twice = <T>(value: T) { value, value };
+main {
+	apply(3, (n: Int32): Float64 { Float64(n) + 0.5 }) >> out;
+	apply(1.5, (n: Float64): String { 'float\${n}' }) >> out;
+	apply('text', (s: String): Int32 { length(s) }) >> out;
+	twice(2) >> out; twice(2.5) >> out;
+	loop >> (i: Int32) {
+		i >= 20000 ? break;
+		b = map(push(Array<String>(1), 'item\${i}'), (s: String): own Int32 { length(s) });
+		get(b, 0) == 0 ? break
+	};
+	'done' >> out
+}`;
+		for (const debug of [false, true]) {
+			const compiled = Program({ debug }).compile(source);
+			a.equalValues(compiled.errors, []);
+			a.assert(compiled.bytes);
+			const output: string[] = [];
+			const result = runWasm(compiled.bytes, value => output.push(value));
+			a.equalValues(output, ['3.5', 'float1.5', '4', '2', '2', '2.5', '2.5', 'done']);
+			a.ok(result.pages <= 4);
+		}
+	});
+
+	s.test('aliased String constructors keep temporary cleanup', (a: TestApi) => {
+		const compiled = Program().compile(`type Text = String;
+size = (value: String): Int32 { length(value) };
+main {
+	loop >> (i: Int32) { i >= 30000 ? break; size(Text(i)) > 10 ? break };
+	Text(42) >> out
+}`);
+		a.equalValues(compiled.errors, []);
+		a.assert(compiled.bytes);
+		const output: string[] = [];
+		const result = runWasm(compiled.bytes, value => output.push(value));
+		a.equalValues(output, ['42']);
+		a.ok(result.pages <= 4);
+	});
+
+	s.test('specialization supports file and test retries with concrete exports', (a: TestApi) => {
+		let source = `identity = <T>(value: T): T { value }; export target = (): Float64 { identity(2.5) }`;
+		const program = Program({ sys: { readFile: () => source, readBytes: () => new Uint8Array() } });
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const compiled = program.compileFile('/entry.gb');
+			a.equalValues(compiled.errors, []);
+			a.assert(compiled.bytes);
+			const target = instantiateWasm(compiled.bytes).exports.target;
+			a.assert(typeof target === 'function');
+			a.equal(target(), 2.5);
+			source = `identity = <T>(value: T): T { value }; export target = (): Int32 { identity('bad') }`;
+			a.ok(program.compileFile('/entry.gb').errors.length > 0);
+			source = `identity = <T>(value: T): T { value }; export target = (): Float64 { identity(2.5) }`;
+		}
+		const tested = program.compileTest(`export identity = <T>(value: T): T { value };
+#test { equal(identity(7), 7); equal(identity(1.5), 1.5); equal(identity('ok'), 'ok') }
+export target = (): Int32 { 0 }`);
+		a.equalValues(tested.errors, []);
+		a.assert(tested.bytes);
+		a.equal(runWasm(tested.bytes, () => undefined).exitCode, 0);
+	});
+
 	s.test('semantic contexts recover after diagnostics without retaining types', (a: TestApi) => {
 		const program = Program();
 		const invalid = `f = (n: Int32): Int32 { n }; main { f('bad') >> out }`;
@@ -973,6 +1107,57 @@ main {
 		a.equalValues(tested.errors, []);
 		a.assert(tested.bytes);
 		a.equal(runWasm(tested.bytes, () => undefined).exitCode, 0);
+	});
+
+	s.test('generic specialization survives library sealing and consumption', (a: TestApi) => {
+		a.modules({
+			bundles: { '/vendor/generic.gbm': {
+				entry: '/lib/index.gb',
+				files: { '/lib/index.gb': `export identity = <T>(value: own T): own T { value };
+export apply = <T, U>(value: T, f: (T): U): U { f(value) }` },
+			} },
+			files: { '/main.gb': `#importmap { @generic = './vendor/generic.gbm'; }
+(identity, apply) = @generic;
+main {
+	integer = identity(7); integer >> out;
+	decimal = identity(1.5); decimal >> out;
+	text = identity('text\${7}'); text >> out;
+	apply(3, (n: Int32): Int32 { n + 1 }) >> out
+}` },
+			entry: '/main.gb',
+			out: ['7', '1.5', 'text7', '4'],
+		});
+	});
+
+	s.test('specialization permits a reentrant independent compilation', (a: TestApi) => {
+		const program = Program();
+		const nested = Program();
+		const compiled = program.compile(`measure = <T>(value: T): Int32 { length(value) + 7 };
+main { measure('abcd') >> out; measure([1, 2]) >> out }`);
+		a.equalValues(compiled.errors, []);
+		const definition = compiled.ast.children.find(node => node.kind === 'def' && node.symbol.name === 'measure');
+		a.assert(definition?.kind === 'def' && definition.value.kind === 'fn');
+		const tail = definition.value.statements?.[0];
+		a.assert(tail?.kind === 'next' && tail.children?.[0]?.kind === '+');
+		const constant = childNodes(tail.children[0])[1];
+		a.assert(constant?.kind === 'number');
+		let entered = false;
+		Object.defineProperty(constant, 'value', { get: () => {
+			if (!entered) {
+				entered = true;
+				const result = nested.compile(`identity = <T>(value: T): T { value }; main { identity(2.5) >> out }`);
+				a.equalValues(result.errors, []);
+				a.assert(result.bytes);
+				const output: string[] = [];
+				runWasm(result.bytes, value => output.push(value));
+				a.equalValues(output, ['2.5']);
+			}
+			return 7;
+		} });
+		const output: string[] = [];
+		runWasm(program.compileAst(compiled.ast), value => output.push(value));
+		a.equalValues(output, ['11', '9']);
+		a.ok(entered);
 	});
 
 	s.test('shared call resolution survives library sealing and consumption', (a: TestApi) => {
