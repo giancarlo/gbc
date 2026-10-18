@@ -10,17 +10,31 @@ function run(tool: string, args: string[], input?: string | Buffer): Buffer {
 	return result.stdout;
 }
 
+export function nativeToolchain(platform: NodeJS.Platform, arch: string) {
+	if ((platform !== 'linux' && platform !== 'darwin') || (arch !== 'arm64' && arch !== 'x64'))
+		throw new Error('Native builds support Linux and macOS on ARM64 and x86-64');
+	const command = platform === 'darwin' ? 'xcrun' : 'cc';
+	const args = platform === 'darwin'
+		? ['--sdk', 'macosx', 'clang', '-arch', arch === 'arm64' ? 'arm64' : 'x86_64']
+		: [];
+	const target = run(command, [...args, platform === 'darwin' ? '-print-target-triple' : '-dumpmachine']).toString().trim();
+	const architecture = arch === 'arm64' ? /^(aarch64|arm64)-/ : /^x86_64-/;
+	const system = platform === 'darwin' ? /-apple-(darwin|macosx)/ : /-linux(-|$)/;
+	if (!/^[\w.-]+$/.test(target) || !architecture.test(target) || !system.test(target))
+		throw new Error(`${command}: target ${JSON.stringify(target)} does not match ${platform} ${arch}`);
+	return { command, args, target };
+}
+
 export function buildNative(ir: string, output: string): void {
-	if (process.platform !== 'linux' || process.arch !== 'arm64')
-		throw new Error('Native builds currently support only Linux ARM64');
+	const { command, args, target } = nativeToolchain(process.platform, process.arch);
 	mkdirSync(dirname(output), { recursive: true });
 	const directory = mkdtempSync(join(dirname(output), '.gbc-native-'));
 	try {
-		const bitcode = run('opt', ['-passes=default<O2>', '-o', '-', '-'], ir);
+		const bitcode = run('opt', [`-mtriple=${target}`, '-passes=default<O2>', '-o', '-', '-'], ir);
 		const object = join(directory, 'program.o');
-		run('llc', ['-O2', '-filetype=obj', '-relocation-model=pic', '-o', object, '-'], bitcode);
+		run('llc', [`-mtriple=${target}`, '-O2', '-filetype=obj', '-relocation-model=pic', '-o', object, '-'], bitcode);
 		const executable = join(directory, 'program');
-		run('cc', [object, '-o', executable]);
+		run(command, [...args, object, '-o', executable]);
 		renameSync(executable, output);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });

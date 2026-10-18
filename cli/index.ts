@@ -188,7 +188,7 @@ const start = program('gbc', () => {
 				type: 'boolean',
 			},
 			native: {
-				help: 'Build a Linux ARM64 executable using LLVM',
+				help: 'Build a native Linux or macOS executable using LLVM (ARM64/x86-64)',
 				type: 'boolean',
 			},
 			debug: {

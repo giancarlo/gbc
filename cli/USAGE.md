@@ -8,6 +8,11 @@
 	gbc test file.gb       # run #test blocks
 	gbc file.gb            # type-check only
 
+Native builds target the host architecture on Linux or macOS (ARM64/x86-64).
+They require `opt` and `llc` on `PATH`, plus `cc` on Linux or the macOS SDK
+and compiler driver available through `xcrun`. Only empty `main` blocks and
+Int32 literal output are currently supported; cross-compilation is not supported.
+
 Modules: `@.file.path` imports a local module (relative to the importing
 file); `@name` imports a library through the entry's `#importmap { @name =
 '<path>'; }`. `(a, b) = @…` destructures exports by name; `m = @…` binds a
