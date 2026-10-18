@@ -16,6 +16,7 @@ import {
 import { parse } from './parser.js';
 import { scan } from './scanner.js';
 import { compileTypes } from './compiler-types.js';
+import { compileLlvm } from './target-llvm.js';
 import {
 	compileWasm,
 	setDivByZeroType,
@@ -114,7 +115,12 @@ export interface CompileResult {
 	ast: NodeMap['root'];
 	errors: ProgramDiagnostic[];
 	bytes: Uint8Array | undefined;
+	ir: string | undefined;
 	hasMain: boolean;
+}
+
+export interface CompileOptions {
+	target?: 'wasm' | 'llvm';
 }
 
 export interface FormatResult {
@@ -997,7 +1003,7 @@ export function Program(options?: ProgramOptions) {
 	function compileMode(
 		src: string,
 		testMode = false,
-		modeOptions: {
+		modeOptions: CompileOptions & {
 			requireMain?: boolean;
 			loader?: ModuleLoader;
 			moduleDefs?: (NodeMap['def'] | NodeMap['extend'])[];
@@ -1023,9 +1029,14 @@ export function Program(options?: ProgramOptions) {
 						c.kind === 'def' && !!(c.symbol.flags & Flags.Export),
 				);
 		let bytes: Uint8Array | undefined;
+		let ir: string | undefined;
 		if (parsed.errors.length === 0) {
 			try {
-				bytes = compileWasm({
+				if (modeOptions.target === 'llvm') {
+					if (testMode || options?.debug)
+						throw new CompilerError('LLVM target does not support test or debug builds', parsed.root);
+					ir = compileLlvm(parsed.root);
+				} else bytes = compileWasm({
 					root: withStdlib(parsed.root, testMode, modeOptions.moduleDefs),
 					testMode,
 					debugBuild: !!options?.debug,
@@ -1048,12 +1059,13 @@ export function Program(options?: ProgramOptions) {
 			ast: parsed.root,
 			errors: parsed.errors,
 			bytes,
+			ir,
 			hasMain,
 		};
 	}
 
-	function compile(src: string) {
-		return compileMode(src);
+	function compile(src: string, compileOptions?: CompileOptions) {
+		return compileMode(src, false, compileOptions);
 	}
 
 	function compileTest(src: string) {
@@ -1171,7 +1183,7 @@ export function Program(options?: ProgramOptions) {
 	 */
 	function compileFile(
 		path: string,
-		fileOptions: { requireMain?: boolean; testMode?: boolean } = {},
+		fileOptions: CompileOptions & { requireMain?: boolean; testMode?: boolean } = {},
 	) {
 		const sys = options?.sys;
 		if (!sys) throw new Error('compileFile requires ProgramOptions.sys');
@@ -1179,6 +1191,7 @@ export function Program(options?: ProgramOptions) {
 		const { loader, moduleDefs, sourcePaths, spliceInput } =
 			createModuleLoader(sys, dirName(path));
 		return compileMode(src, fileOptions.testMode ?? false, {
+			target: fileOptions.target,
 			requireMain: fileOptions.requireMain ?? false,
 			loader,
 			moduleDefs,

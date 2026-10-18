@@ -3,6 +3,7 @@
 	gbc run main.gb        # compile and run
 	gbc run app.wasm       # run a built .wasm
 	gbc build main.gb      # build one .wasm (with `main` runnable, else host exports)
+	gbc build --native main.gb --outdir ./bin
 	gbc library lib.gb     # bundle a library into lib.gbm
 	gbc test file.gb       # run #test blocks
 	gbc file.gb            # type-check only

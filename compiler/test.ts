@@ -34,6 +34,58 @@ Language design proposals must satisfy docs/feature-laws.md.
 */
 export default spec('Language Reference', s => {
 	s.addSpec(lifecycle);
+	s.test('LLVM target validates its bounded native subset', (a: TestApi) => {
+		const program = Program();
+		const source = 'main { 42 >> out; -2147483648 >> out; 2147483647 >> out; 0 >> out }';
+		const native = program.compile(source, { target: 'llvm' });
+		a.equal(native.errors.length, 0);
+		a.equal(native.bytes, undefined);
+		a.assert(native.ir);
+		a.ok(native.ir.includes('i32 42)'));
+		a.ok(native.ir.includes('i32 -2147483648)'));
+		a.ok(native.ir.includes('i32 2147483647)'));
+		a.ok(native.ir.includes('i32 0)'));
+		for (const invalid of [
+			'main {',
+			'main { missing >> out }',
+			'main { true >> out }',
+			'main { 1.5 >> out }',
+			'main { 1.0 >> out }',
+			"main { 'text' >> out }",
+			'main { 2147483648 >> out }',
+			'main { (1 + 2) >> out }',
+			'main { value = 42; value >> out }',
+			'value = 42; main { 42 >> out }',
+			'export value = (): Int32 { 42 }',
+		]) {
+			const result = program.compile(invalid, { target: 'llvm' });
+			a.ok(result.errors.length > 0, invalid);
+			a.equal(result.ir, undefined);
+			a.equal(result.bytes, undefined);
+			a.equal(result.errors[0]?.position.source, invalid);
+		}
+		const empty = program.compile('main {}', { target: 'llvm' });
+		a.equal(empty.errors.length, 0);
+		a.ok(empty.ir?.includes('ret i32 0'));
+		a.ok(!empty.ir?.includes('%out'));
+		const wasm = program.compile(source);
+		a.equal(wasm.errors.length, 0);
+		a.ok(wasm.bytes);
+		a.equal(wasm.ir, undefined);
+		const debug = Program({ debug: true }).compile('main {}', { target: 'llvm' });
+		a.equal(debug.errors[0]?.message, 'LLVM target does not support test or debug builds');
+		a.equal(debug.ir, undefined);
+		const files = Program({ sys: {
+			readFile: () => 'main {}',
+			readBytes: () => new Uint8Array(),
+		} });
+		const file = files.compileFile('/main.gb', { target: 'llvm' });
+		a.equal(file.errors.length, 0);
+		a.equal(file.ir, empty.ir);
+		const test = files.compileFile('/main.gb', { target: 'llvm', testMode: true });
+		a.equal(test.errors[0]?.message, 'LLVM target does not support test or debug builds');
+		a.equal(test.ir, undefined);
+	});
 	s.test('shared semantic infrastructure compatibility', a => {
 		const definition: NodeMap['label'] = {
 			kind: 'label',

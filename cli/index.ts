@@ -8,6 +8,7 @@ import { loadCompiler } from '../compiler/program.js';
 import { runWasm } from '../compiler/host.js';
 import { ast } from '../compiler/debug.js';
 import { formatError } from '../sdk/index.js';
+import { buildNative } from './native.js';
 
 const { Program } = await loadCompiler(async () =>
 	new Uint8Array(await readFile(new URL('./stdlib.gbm', import.meta.url))),
@@ -56,20 +57,34 @@ function runCommand(files: string[], debug = false): number {
 /** `gbc build entry.gb` — fuse the entry and its imports into one wasm.
  * With `main` the artifact is runnable; without, it exports the entry's
  * exported fns for host embedding (inits run in the start section). */
-function buildCommand(files: string[], outdir: string | undefined, debug = false): number {
+function buildCommand(files: string[], outdir: string | undefined, debug = false, native = false): number {
 	for (const srcFile of files) {
 		const resolved = resolve(srcFile);
 		const out = Program({ debug, sys: fileSys }).compileFile(resolved, {
-			requireMain: false,
+			requireMain: native,
+			target: native ? 'llvm' : 'wasm',
 		});
-		if (out.errors.length || !out.bytes) {
+		if (out.errors.length || (native ? out.ir === undefined : !out.bytes)) {
 			for (const e of out.errors) console.error(formatError(e));
 			return 1;
 		}
 		const dir = outdir ? resolve(outdir) : process.cwd();
+		if (native && out.ir !== undefined) {
+			const output = join(dir, basename(resolved, extname(resolved)));
+			try {
+				if (output === resolved)
+					throw new Error('Native output would overwrite source; choose a different --outdir');
+				buildNative(out.ir, output);
+				process.stdout.write(`${output}\n`);
+			} catch (error) {
+				console.error(`${srcFile}: ${error instanceof Error ? error.message : error}`);
+				return 1;
+			}
+			continue;
+		}
 		mkdirSync(dir, { recursive: true });
 		const outFile = join(dir, `${basename(resolved, extname(resolved))}.wasm`);
-		writeFileSync(outFile, out.bytes);
+		if (out.bytes) writeFileSync(outFile, out.bytes);
 		process.stdout.write(
 			`${outFile}${out.hasMain ? '' : ' (library exports, no main)'}\n`,
 		);
@@ -153,6 +168,10 @@ function formatCommand(files: string[], check: boolean): number {
 	return failed ? 1 : 0;
 }
 
+function supportsNativeBuild(command: string | undefined, files: string[], wasm: boolean): boolean {
+	return command === 'build' && files.length > 0 && !wasm;
+}
+
 const start = program('gbc', () => {
 	const options = parseParameters(
 		{
@@ -168,6 +187,10 @@ const start = program('gbc', () => {
 				help: 'Target WebAssembly',
 				type: 'boolean',
 			},
+			native: {
+				help: 'Build a Linux ARM64 executable using LLVM',
+				type: 'boolean',
+			},
 			debug: {
 				help: 'Debug build: errors capture full call chains',
 				type: 'boolean',
@@ -181,12 +204,17 @@ const start = program('gbc', () => {
 	);
 
 	const [cmd, ...rest] = options.$;
+	if (options.native && !supportsNativeBuild(cmd, rest, !!options.wasm)) {
+		console.error('gbc: --native requires build with source files and cannot be combined with --wasm');
+		process.exitCode = 1;
+		return;
+	}
 	if (cmd === 'run' && rest.length) {
 		process.exitCode = runCommand(rest, !!options.debug);
 		return;
 	}
 	if (cmd === 'build' && rest.length) {
-		process.exitCode = buildCommand(rest, options.outdir, !!options.debug);
+		process.exitCode = buildCommand(rest, options.outdir, !!options.debug, !!options.native);
 		return;
 	}
 	if (cmd === 'library' && rest.length) {

@@ -33,7 +33,7 @@ export function loadCompiler(
 }
 
 export { createCompiler };
-export type { Compiler } from './program.js';
+export type { Compiler, CompileOptions } from './program.js';
 export const { Program } = await loadCompiler();
 export { scan } from './scanner.js';
 export {
