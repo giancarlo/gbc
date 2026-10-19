@@ -2,12 +2,15 @@ import { CompilerError, sleb128, sleb128big, text, uleb128 } from '@cxl/gbc.sdk'
 
 import {
 	argumentNodes as argListFromCall,
+	composes,
+	dispatchArms,
 	mergeValueTypes,
 	numericOperation,
 	numericOperands,
 	numericConversion,
 	setDivByZero,
 	dataItems,
+	itemValue,
 	resolveArgNodes,
 } from './semantic.js';
 import {
@@ -18,6 +21,7 @@ import {
 	classifyEmission,
 	isFloatType,
 	isHeapType,
+	typeOwnsHeap,
 	isInt64Type,
 	isIntType,
 	isCollection,
@@ -27,7 +31,6 @@ import {
 	numberLiteralType,
 	StackIntrinsic,
 } from './symbol-table.js';
-import { childNodes } from './node.js';
 import { bindTypeArguments, createSpecializationKey } from './specialization.js';
 import type { SpecializationEnvironment } from './specialization.js';
 import {
@@ -41,7 +44,6 @@ import type { BackendNode as Node, BackendNodeMap as NodeMap, ProgramInput, Expr
 import type {
 	Symbol as FrontendSymbol,
 	SymbolMap as FrontendSymbolMap,
-	OwnershipMode,
 	ResolvedType as FrontendResolvedType,
 	Type as FrontendType,
 	TypeFamily,
@@ -73,10 +75,6 @@ function hasHostVectorSignature(definition: NodeMap['def']): boolean {
 type ValueType = ResolvedType & {
 	family: Exclude<TypeFamily, 'void' | 'invalid' | 'unknown'>;
 };
-
-function identifierName(node: NodeMap['ident']): string {
-	return node.symbol.name ?? text(node);
-}
 
 function hasRuntimeValue(t: Type): t is ValueType {
 	return (
@@ -631,21 +629,6 @@ function fieldBytes(t: Type): number {
 	return 4;
 }
 
-// Does a value of this type own heap allocations that drop-glue must free?
-// Scalars/void: no. String: yes. A collection always owns its block. A record
-// owns heap iff any member (or the hidden trace slot) does.
-function typeOwnsHeap(t: Type | undefined): boolean {
-	if (t?.kind !== 'type') return false;
-	if (t.family === 'string') return true;
-	if (t.family === 'buffer') return true;
-	if (t.family === 'data') {
-		return Object.keys(t.members).some(
-			k => k === '__trace' || typeOwnsHeap(t.members[k]?.type),
-		);
-	}
-	return false;
-}
-
 function fieldAlign(t: Type): number {
 	if (isUnionType(t)) {
 		const payload = unionPayloadWasm(t);
@@ -707,10 +690,6 @@ function fnSignature(fn: SymbolMap['function']): {
 
 function isStringType(t: Type): boolean {
 	return t.kind === 'type' && t.family === 'string';
-}
-
-function composes(m: Type, target: Type): boolean {
-	return m === target || !!m.components?.some(c => composes(c, target));
 }
 
 function namedData(t: Type): boolean {
@@ -1092,7 +1071,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 	const fnNodeBySym = new Map<GbcSymbol, NodeMap['fn']>();
 	const builderSym = new Map<number, GbcSymbol>();
 	const spliceByBuilder = new Map<FuncBuilder, SerialObject>();
-	const ownedInParams = new Map<GbcSymbol, boolean[]>();
+	const ownership = preparation.createOwnership(root, !!hostExports);
 	type EmissionType = Extract<ResolvedType, { family: 'emission' }>;
 
 	function resolvedEmissionType(sym: SymbolMap['function'], typeArgs = environment.typeArguments): EmissionType | undefined {
@@ -1110,15 +1089,6 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		return (sym.returnTypes?.length ?? 0) > 1;
 	}
 
-	function directEmissionOwnership(
-		sym: SymbolMap['function'],
-	): OwnershipMode | undefined {
-		const emission = resolvedEmissionType(sym);
-		if (!emission || emission.rest || emission.elements.length !== 1)
-			return undefined;
-		return emission.ownerships[0];
-	}
-
 	function templateHasNonScalarEmission(template: NodeMap['fn']): boolean {
 		const emission = resolvedEmissionType(template.symbol);
 		if (!emission) return true;
@@ -1130,305 +1100,6 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		);
 	}
 
-	/** Owned-in params: a self-recursive fn whose every call site feeds a
-	 * heap param a fresh (or static) value owns that param — the body
-	 * frees it at exit and releases it when moved, and callers stop
-	 * temp-marking the slot. A bare re-pass of the same param is allowed
-	 * only at the fn's own tail (the thread-through accumulator); any
-	 * other bare-ident argument, a non-call use of the fn (stage, value),
-	 * or a host export disqualifies the slot. */
-	function computeDeclaredOwnedInParams(rootNode: Node) {
-		if (rootNode.kind !== 'root') return;
-		ownedInParams.clear();
-		const definitions: {
-			definition: NodeMap['def'];
-			fn: NodeMap['fn'];
-		}[] = [];
-		for (const child of rootNode.children)
-			if (child.kind === 'def' && child.value.kind === 'fn')
-				definitions.push({ definition: child, fn: child.value });
-		if (
-			definitions.some(({ fn }) =>
-				(fn.parameters ?? []).some(
-					p => p.symbol.ownership === undefined,
-				),
-			)
-		)
-			computeInferredOwnedInParams(rootNode);
-		for (const { definition, fn } of definitions) {
-			const explicit = (fn.parameters ?? []).every(
-				p => p.symbol.ownership !== undefined,
-			);
-			if (!explicit) continue;
-			const flags = (fn.parameters ?? []).map(
-				p => p.symbol.ownership === 'own',
-			);
-			ownedInParams.set(definition.symbol, flags);
-			ownedInParams.set(fn.symbol, flags);
-		}
-	}
-
-	function computeInferredOwnedInParams(rootNode: Node) {
-		if (rootNode.kind !== 'root') return;
-		interface Info {
-			defSym: GbcSymbol;
-			fnNode: NodeMap['fn'];
-			sites: NodeMap['call'][];
-			nonCall: boolean;
-			selfSites: Set<NodeMap['call']>;
-		}
-		const infos = new Map<GbcSymbol, Info>();
-		for (const child of rootNode.children) {
-			if (child.kind !== 'def' || child.value.kind !== 'fn') continue;
-			const fnNode = child.value;
-			const params = fnNode.parameters ?? [];
-			if (!params.length) continue;
-			// Dispatch (union-typed) params are handled by other machinery — skip
-			// those fns. Function and type-param value params are fine: the fn is
-			// analyzed and the per-param type gate excludes them, while a concrete
-			// `Buffer<U>` accumulator alongside a function param (e.g. `map`'s
-			// destination) still qualifies.
-			const hasUnionParam = params.some(p => {
-				const t = typeOf(p.symbol);
-				return t.kind === 'type' && t.family === 'union';
-			});
-			if (hasUnionParam) continue;
-			if (hostExports && child.symbol.flags & Flags.Export) continue;
-			infos.set(child.symbol, {
-				defSym: child.symbol,
-				fnNode,
-				sites: [],
-				nonCall: false,
-				selfSites: new Set(),
-			});
-		}
-		if (!infos.size) return;
-		const calleeIdents = new Set<Node>();
-		const fnStack: NodeMap['fn'][] = [];
-		const visit = (n: Node | undefined): void => {
-			if (!n) return;
-			const isFn = n.kind === 'fn';
-			if (isFn) fnStack.push(n);
-			if (n.kind === 'call') {
-				const callee = n.children[0];
-				if (callee.kind === 'ident') {
-					calleeIdents.add(callee);
-					const info = infos.get(callee.symbol);
-					if (info) {
-						info.sites.push(n);
-						if (fnStack.includes(info.fnNode))
-							info.selfSites.add(n);
-					}
-				}
-			} else if (n.kind === 'ident') {
-				const info = infos.get(n.symbol);
-				if (info && !calleeIdents.has(n)) info.nonCall = true;
-			}
-			for (const child of childNodes(n)) visit(child);
-			if (n.kind === 'def' || n.kind === 'propdef') visit(n.value);
-			if (isFn) fnStack.pop();
-		};
-		visit(rootNode);
-		const tailCallsOf = (fnNode: NodeMap['fn']): Set<Node> => {
-			const tails = new Set<Node>();
-			const visitTail = (n: Node | undefined): void => {
-				if (!n) return;
-				if (n.kind === 'next') return visitTail(n.children?.[0]);
-				if (n.kind === '?') {
-					visitTail(n.children[1]);
-					visitTail(n.children[2]);
-					return;
-				}
-				if (n.kind === 'call') tails.add(n);
-			};
-			const stmts = fnNode.statements ?? [];
-			visitTail(stmts[stmts.length - 1]);
-			return tails;
-		};
-		// paramSym -> its owning fn + index, so an arg that is itself an
-		// owned-in param can be recognized as movable-in.
-		const paramOwner = new Map<GbcSymbol, { info: Info; idx: number }>();
-		for (const info of infos.values())
-			(info.fnNode.parameters ?? []).forEach((p, i) =>
-				paramOwner.set(p.symbol, { info, idx: i }),
-			);
-		// Walk the body; true when `sym` appears at an arg position of a
-		// `set`/`transfer` call that `match(name, argIndex)` accepts. Buffer args
-		// (arg 0) are relocated; a `set` value arg (arg 2) is embedded — both
-		// move `sym` into the buffer, so the param must be owned-in.
-		const paramFlowsInto = (
-			fnNode: NodeMap['fn'],
-			sym: GbcSymbol,
-		): boolean => {
-			const flowsAtCall = (n: NodeMap['call']): boolean => {
-				const callee = n.children[0];
-				if (callee.kind !== 'ident') return false;
-				const fn =
-					callee.symbol.kind === 'function'
-						? callee.symbol
-						: callee.symbol.type?.kind === 'function'
-							? callee.symbol.type
-							: undefined;
-				if (!fn) return false;
-				const a = n.children[1];
-				const args = a?.kind === ',' ? a.children : a ? [a] : [];
-				for (let k = 0; k < args.length; k++) {
-					const ak = args[k];
-					if (
-						ak?.kind === 'ident' &&
-						ak.symbol === sym &&
-						fn.parameters?.[k]?.ownership === 'own'
-					)
-						return true;
-				}
-				return false;
-			};
-			let hit = false;
-			const walk = (n: Node | undefined): void => {
-				if (!n || hit) return;
-				if (n.kind === 'call' && flowsAtCall(n)) hit = true;
-				for (const child of childNodes(n)) walk(child);
-				if (n.kind === 'def' || n.kind === 'propdef') walk(n.value);
-			};
-			(fnNode.statements ?? []).forEach(walk);
-			return hit;
-		};
-		const consumesBuffer = (fnNode: NodeMap['fn'], sym: GbcSymbol): boolean =>
-			paramFlowsInto(fnNode, sym);
-		const embedsValue = (fnNode: NodeMap['fn'], sym: GbcSymbol): boolean =>
-			paramFlowsInto(fnNode, sym);
-		const flagsOf = new Map<Info, boolean[]>();
-		const meta = new Map<Info, { paramSyms: GbcSymbol[]; tails: Set<Node> }>();
-		const isOwnedInParam = (sym: GbcSymbol): boolean => {
-			const o = paramOwner.get(sym);
-			return !!o && !!flagsOf.get(o.info)?.[o.idx];
-		};
-		// The caller owns `a` and can move it into a consuming slot: a fresh
-		// block, an owned local (fresh-valued binding — incl. a `push`/`set`
-		// result once its callee is known owned-in), or an owned-in param.
-		const argMovableIn = (a: Node): boolean => {
-			if (a.kind === 'string') return true;
-			if (ownableExpr(a)) return true;
-			if (a.kind === 'ident') {
-				if (isOwnedInParam(a.symbol)) return true;
-				const def = a.symbol.definition;
-				if (def?.kind === 'def' && ownableExpr(def.value)) return true;
-			}
-			// A call to a higher-order (function-typed) param produces a value the
-			// caller relinquishes into the consumer — treat it as movable so a
-			// consumer like `push` stays owned-in even when one caller feeds it
-			// `f(get(a, i))` (as `map` does). Sound when `f` returns a fresh value;
-			// a passthrough/identity `f` over heap elements would alias.
-			if (a.kind === 'call') {
-				const callee = a.children[0];
-				if (callee.kind === 'ident' && callee.symbol.type?.kind === 'function')
-					return true;
-			}
-			return false;
-		};
-		const typedHeap = (sym: GbcSymbol): boolean => {
-			return isHeapType(sym.type);
-		};
-		// A self-recursive accumulator keeps the original site rule (string |
-		// fresh | tail re-pass); a consuming param admits any movable-in arg.
-		const okSites = (
-			info: Info,
-			i: number,
-			paramSyms: GbcSymbol[],
-			tails: Set<Node>,
-			accum: boolean,
-		): boolean =>
-			info.sites.every(site => {
-				const a = resolveArgNodes(
-					paramSyms,
-					argListFromCall(site.children[1]),
-				)[i];
-				if (!a) return false;
-				if (accum && a.kind === 'string') return true;
-				if (
-					a.kind === 'ident' &&
-					a.symbol === paramSyms[i] &&
-					info.selfSites.has(site) &&
-					tails.has(site)
-				)
-					return true;
-				return accum ? ownableExpr(a) : argMovableIn(a);
-			});
-		const qualifies = (
-			info: Info,
-			i: number,
-			paramSyms: GbcSymbol[],
-			tails: Set<Node>,
-		): boolean => {
-			const sym = paramSyms[i];
-			if (!sym) return false;
-			const heap = typedHeap(sym);
-			// An embedded value param (`set`'s value arg) is owned-in even when
-			// its declared type is a type variable — it monomorphizes to a heap
-			// element in some specs; `compileFnBody` gates the actual drop-glue
-			// on the concrete type, so a scalar spec stays a no-op.
-			const embed = embedsValue(info.fnNode, sym);
-			if (!heap && !embed) return false;
-			if (
-				heap &&
-				info.selfSites.size > 0 &&
-				okSites(info, i, paramSyms, tails, true)
-			)
-				return true;
-			return (
-				((heap && consumesBuffer(info.fnNode, sym)) || embed) &&
-				okSites(info, i, paramSyms, tails, false)
-			);
-		};
-		// Seed: self-accumulators are decided by the map-independent rule;
-		// consuming params start optimistic so a `push`-of-a-`push` chain can
-		// converge (a consuming fn's result is owned only when its own param is
-		// owned-in). The fixpoint below is monotone decreasing.
-		for (const info of infos.values()) {
-			if (info.nonCall || !info.sites.length) continue;
-			const paramSyms = (info.fnNode.parameters ?? []).map(p => p.symbol);
-			const tails = tailCallsOf(info.fnNode);
-			meta.set(info, { paramSyms, tails });
-			flagsOf.set(
-				info,
-				paramSyms.map(
-					sym =>
-						(typedHeap(sym) &&
-							(info.selfSites.size > 0 ||
-								consumesBuffer(info.fnNode, sym))) ||
-						embedsValue(info.fnNode, sym),
-				),
-			);
-		}
-		// Publish working flags so `ownableExpr`/`fnReturnsOwned` reflect them
-		// while checking movability; refine until stable.
-		const publish = () => {
-			ownedInParams.clear();
-			environment.returnsOwned.clear();
-			for (const [info, flags] of flagsOf)
-				if (flags.some(Boolean)) {
-					ownedInParams.set(info.defSym, flags);
-					ownedInParams.set(info.fnNode.symbol, flags);
-				}
-		};
-		let changed = true;
-		while (changed) {
-			changed = false;
-			publish();
-			for (const [info, { paramSyms, tails }] of meta) {
-				const cur = flagsOf.get(info);
-				if (!cur) continue;
-				const next = cur.map(
-					(on, i) => on && qualifies(info, i, paramSyms, tails),
-				);
-				if (next.some((v, i) => v !== cur[i])) {
-					changed = true;
-					flagsOf.set(info, next);
-				}
-			}
-		}
-		publish();
-	}
 	/**
 	 * Fns with at least one union-typed parameter. They are NOT given an
 	 * eager FuncBuilder; each call site monomorphizes a per-signature
@@ -1525,17 +1196,12 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		return preparation.stageReturn(stage, input, expressionContext());
 	}
 
-	const makeThreadCall = preparation.threadCall;
 	const fallbackResultType = preparation.valueFallbackType;
 
 	function threadCallResolution(call: NodeMap['call'], fn?: FuncBuilder) {
 		return preparation.threadResolution(call, expressionContext(fn));
 	}
 
-	function itemValue(item: Node): Node {
-		if (item.kind === 'propdef' && item.value) return item.value;
-		return item;
-	}
 
 	/** Convert top of stack to the requested float width if needed. */
 	function coerceToFloat(
@@ -1876,242 +1542,14 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			fn.owned = fn.owned.filter(o => o.sym !== node.symbol);
 	}
 
-	function returnedArgument(node: NodeMap['call']): Node | undefined {
-		const callee = node.children[0];
-		if (callee.kind !== 'ident' || callee.symbol.kind !== 'function')
-			return;
-		const origin = callee.symbol.returnBorrowOrigins?.[0];
-		if (origin === undefined) return;
-		const args = node.children[1];
-		return args?.kind === ','
-			? args.children[origin]
-			: origin === 0
-				? args
-				: undefined;
-	}
-
 	function releaseTailOwned(fn: FuncBuilder, node: Node | undefined) {
 		if (!node) return;
 		if (node.kind === 'ident') return releaseOwned(fn, node);
-		if (node.kind === 'call') releaseTailOwned(fn, returnedArgument(node));
-	}
-
-	/** `String(x)` allocates for these argument families — via a ctor arm
-	 * whose return paths are fresh-or-static, or the built-in char/float
-	 * conversions when no arm matches. */
-	function ctorAllocsFresh(t: Type): boolean {
-		if (t.kind !== 'type') return false;
-		if (
-			t.family !== 'int' &&
-			t.family !== 'uint' &&
-			t.family !== 'float' &&
-			t.family !== 'bool' &&
-			t.family !== 'char'
-		)
-			return false;
-		const arm = findCtorArm('String', t);
-		if (arm) return fnReturnsOwned(arm);
-		return true;
-	}
-
-	/** The node's value is a fresh heap allocation this expression owns —
-	 * structurally, or via a callee whose every return path is fresh-or-static
-	 * (a static pointer reaching `__free` is a no-op). Borrows are never
-	 * ownable, so freeing an ownable temp cannot invalidate an owner. */
-	function isFreeableScalar(vt: Type): boolean {
-		return (
-			vt.kind === 'type' &&
-			(vt.family === 'int' ||
-				vt.family === 'uint' ||
-				vt.family === 'float' ||
-				vt.family === 'vector' ||
-				vt.family === 'bool' ||
-				vt.family === 'char' ||
-				vt.family === 'void')
-		);
-	}
-
-	// `Buffer<T>(cap)` allocates a fresh collection block; a `String(x)` ctor is
-	// ownable when its arm allocates fresh. Other type ctors are not.
-	function typeidentOwnable(
-		callee: NodeMap['typeident'],
-		args: Node | undefined,
-		fn?: FuncBuilder,
-	): boolean {
-		if (
-			callee.symbol === BufferSymbol ||
-			isCollection(typeOf(callee.symbol))
-		)
-			return true;
-		const type = typeOf(callee.symbol);
-		if (type.kind !== 'type' || type.family !== 'string') return false;
-		if (!args || args.kind === ',') return false;
-		return ctorAllocsFresh(inferType(args, fn));
-	}
-
-	// A user fn/dispatch is ownable when the resolved arm returns an owned value.
-	function callableOwnable(
-		def: NodeMap['def'],
-		args: Node | undefined,
-		fn?: FuncBuilder,
-	): boolean {
-		if (def.value.kind === 'fn') return fnReturnsOwned(def.value);
-		const armNodes = dispatchArmNodes(def.value);
-		if (!armNodes) return false;
-		const overloads: SymbolMap['function'][] = [];
-		for (const a of armNodes) {
-			if (a.kind !== 'fn') return false;
-			overloads.push(a.symbol);
-		}
-		const argList = args ? (args.kind === ',' ? args.children : [args]) : [];
-		const arm = findDispatchArm(
-			overloads,
-			argList.map(a => inferType(a, fn)),
-		);
-		const armNode = armNodes.find(a => a.kind === 'fn' && a.symbol === arm);
-		return armNode?.kind === 'fn' ? fnReturnsOwned(armNode) : false;
-	}
-
-	function ownableCall(node: NodeMap['call'], fn?: FuncBuilder): boolean {
-		const callee = node.children[0];
-		const args = node.children[1];
-		if (callee.kind === '.') {
-			// `runtime.stack(e)` materializes a fresh collection; its members
-			// are static frame words, so a block free suffices.
-			const sfn = resolveStaticMemberFn(callee);
-			if (sfn === StackIntrinsic) return true;
-			const target = threadCallResolution(node, fn)?.target;
-			return !!target &&
-				(directEmissionOwnership(target) === 'own' ||
-					target.returnOwnership === 'own');
-		}
-		if (callee.kind === 'typeident')
-			return typeidentOwnable(callee, args, fn);
-		if (callee.kind !== 'ident') return false;
-		if (
-			callee.symbol.kind === 'function' &&
-			(directEmissionOwnership(callee.symbol) === 'own' ||
-				callee.symbol.returnOwnership === 'own')
-		)
-			return true;
-		if (
-			callee.symbol.kind === 'function' &&
-			callee.symbol.flags & Flags.Intrinsic
-		)
-			return false;
-		const def = callee.symbol.definition;
-		return def?.kind === 'def' ? callableOwnable(def, args, fn) : false;
+		if (node.kind === 'call') releaseTailOwned(fn, ownership.forwardedArgument(node));
 	}
 
 	function ownableExpr(node: Node, fn?: FuncBuilder): boolean {
-		if (node.kind === 'interp') return true;
-		const vt = inferType(node, fn);
-		// vacuous: scalars carry nothing to free
-		if (isFreeableScalar(vt)) return true;
-		if (node.kind === 'data') {
-			const items = dataItems(node).flatMap(flattenDataItem);
-			const hasLabels = items.some(
-				it => it.kind === 'propdef' && it.label,
-			);
-			const first = items[0];
-			if (items.length === 1 && !hasLabels && first && !nominalOf(node))
-				return ownableExpr(itemValue(first), fn); // collapse = alias
-			return true; // labeled/multi/nominal blocks allocate fresh
-		}
-		if (node.kind === '?')
-			return (
-				!!node.children[2] &&
-				ownableExpr(node.children[1], fn) &&
-				ownableExpr(node.children[2], fn)
-			);
-		if (node.kind === '->') {
-			let carrier: Node = node.children[0];
-			for (let i = 1; i < node.children.length; i++) {
-				const stage = node.children[i];
-				if (!stage || stage.kind !== 'call') continue;
-				const call = makeThreadCall(stage, carrier, i === 1);
-				const resolved = threadCallResolution(call, fn);
-				if (!resolved) return false;
-				if (resolved.classification.cardinality === 'zero') continue;
-				if (
-					resolved.classification.mayEmitVoid &&
-					(!ownableExpr(carrier, fn) || !ownableCall(call, fn))
-				)
-					return false;
-				carrier = call;
-			}
-			return ownableExpr(carrier, fn);
-		}
-		if (node.kind === 'call') return ownableCall(node, fn);
-		return false;
-	}
-
-	const definitionOwners = new Map<NodeMap['def'], NodeMap['fn']>();
-	{
-		const seen = new Set<Node>();
-		const visit = (node: Node | undefined, owner?: NodeMap['fn']): void => {
-			if (!node || seen.has(node)) return;
-			seen.add(node);
-			const nextOwner = node.kind === 'fn' ? node : owner;
-			if (node.kind === 'def' && owner) definitionOwners.set(node, owner);
-			for (const child of childNodes(node)) visit(child, nextOwner);
-		};
-		visit(root);
-	}
-
-	function fnReturnsOwned(fnNode: NodeMap['fn']): boolean {
-		const emissionOwnership = directEmissionOwnership(fnNode.symbol);
-		if (emissionOwnership) return emissionOwnership === 'own';
-		if (fnNode.symbol.returnOwnership)
-			return fnNode.symbol.returnOwnership === 'own';
-		const memo = environment.returnsOwned.get(fnNode);
-		if (memo !== undefined) return memo;
-		environment.returnsOwned.set(fnNode, true);
-		const stmts = fnNode.statements ?? [];
-		let result = stmts.length > 0;
-		for (let i = 0; i < stmts.length - 1; i++)
-			if (stmts[i]?.kind === 'next') result = false;
-		const last = stmts[stmts.length - 1];
-		if (result && last) result = returnPathOwned(last, fnNode);
-		environment.returnsOwned.set(fnNode, result);
-		return result;
-	}
-
-	// `next s` of a local this body owns is a move of a fresh value — the
-	// idiomatic constructor. Params and outer locals stay borrows, except an
-	// owned-in param: returning it moves a value this body owned, fresh to
-	// every caller.
-	function returnIdentOwned(
-		node: NodeMap['ident'],
-		fnNode: NodeMap['fn'],
-	): boolean {
-		if (node.symbol.ownership === 'own') return true;
-		const def = node.symbol.definition;
-		return (
-			def?.kind === 'def' &&
-			definitionOwners.get(def) === fnNode &&
-			ownableExpr(def.value)
-		);
-	}
-
-	function returnPathOwned(node: Node, fnNode: NodeMap['fn']): boolean {
-		if (node.kind === 'next')
-			return node.children?.[0]
-				? returnPathOwned(node.children[0], fnNode)
-				: false;
-		if (node.kind === 'string') return true;
-		if (isFreeableScalar(inferType(node))) return true;
-		if (node.kind === '?')
-			return node.children[2]
-				? returnPathOwned(node.children[1], fnNode) &&
-						returnPathOwned(node.children[2], fnNode)
-				: false;
-		if (node.kind === 'ident') return returnIdentOwned(node, fnNode);
-		if (node.kind === 'call') {
-			const returned = returnedArgument(node);
-			if (returned) return returnPathOwned(returned, fnNode);
-		}
-		return ownableExpr(node);
+		return ownership.ownableExpr(node, expressionContext(fn));
 	}
 
 	/** Records own their members (embedding moves ownership), so dropping a
@@ -3885,62 +3323,13 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		} else uleb128(gIdx, fn.body);
 	}
 
-	const typeCtorArms = new Map<string, NodeMap['fn'][]>();
-	if (root.kind === 'root')
-		for (const c of root.children)
-			if (
-				c.kind === 'extend' &&
-				c.children[0].symbol.kind !== 'function'
-			) {
-				const nm = identifierName(c.children[0]);
-				const arms = typeCtorArms.get(nm) ?? [];
-				arms.push(c.children[1]);
-				typeCtorArms.set(nm, arms);
-			}
-
-	// A `extend Type (x: In): Type { … }` arm converts `In` to `Type` — the
-	// stdlib's own `Int32`/`Int64`/`Bool` to-text arms use the same mechanism.
-	// Exact input match first, then a narrower int widens to a wider int arm
-	// (the dispatch rule).
-	function findCtorArm(
-		typeName: string,
-		at: Type,
-	): NodeMap['fn'] | undefined {
-		const arms = typeCtorArms.get(typeName);
-		if (!arms || at.kind !== 'type') return undefined;
-		const paramType = (arm: NodeMap['fn']) => {
-			const p = arm.parameters?.[0];
-			return p ? typeOf(p.symbol) : resolveTypeFromNode(undefined);
-		};
-		for (const arm of arms) {
-			const pt = paramType(arm);
-			if (
-				pt.kind === 'type' &&
-				pt.family === at.family &&
-				pt.name === at.name
-			)
-				return arm;
-		}
-		for (const arm of arms) {
-			const pt = paramType(arm);
-			if (isIntType(pt) && isIntType(at) && pt.kind === 'type' && pt.size >= at.size)
-				return arm;
-		}
-		// β composition: a NotFound argument selects the (e: Error) arm.
-		for (const arm of arms) {
-			const pt = paramType(arm);
-			if (pt.kind === 'type' && composes(at, pt)) return arm;
-		}
-		return undefined;
-	}
-
 	function tryUserCtorArm(
 		typeName: string,
 		args: Node | undefined,
 		fn: FuncBuilder,
 	): Type | undefined {
 		if (!args) return undefined;
-		const arm = findCtorArm(typeName, inferType(args, fn));
+		const arm = ownership.findCtorArm(typeName, inferType(args, fn), expressionContext());
 		return arm ? compileTemplateCall(arm, args, fn) : undefined;
 	}
 
@@ -3965,7 +3354,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 					freeable = ownableExpr(hole, fn);
 				} else {
 					compileStringCtor(hole, fn);
-					freeable = ctorAllocsFresh(t);
+					freeable = ownership.ctorAllocsFresh(t, expressionContext());
 				}
 				const local = allocLocal(fn, I32);
 				emitStoreLocal(local, fn);
@@ -7390,7 +6779,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 	function calleeCannotRetain(calleeSym: SymbolMap['function']): boolean {
 		if (noValueReturn(abiReturnType(calleeSym))) return true;
 		const node = fnTemplates.get(calleeSym) ?? fnNodeBySym.get(calleeSym);
-		return node ? fnReturnsOwned(node) : false;
+		return node ? ownership.fnReturnsOwned(node, expressionContext()) : false;
 	}
 
 	function compileCallArgs(
@@ -7403,7 +6792,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		const params = calleeSym.parameters ?? [];
 		const resolved = resolveArgNodes(params, argListFromCall(args));
 		const ownArgs = !noArgFrees && calleeCannotRetain(calleeSym);
-		const ownedIn = ownedInParams.get(calleeSym);
+		const ownedIn = ownership.ownedParameters(calleeSym, environment);
 		for (let i = 0; i < params.length; i++) {
 			const p = params[i];
 			if (!p || bindings?.has(p)) continue;
@@ -7761,7 +7150,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		});
 		if (slots.some(s => !s)) return false;
 		const temps = slots.map(s => allocLocal(fn, s?.type ?? I32));
-		const ownedIn = ownedInParams.get(fnSym);
+		const ownedIn = ownership.ownedParameters(fnSym, environment);
 		for (let i = 0; i < slots.length; i++) {
 			const slot = slots[i];
 			const p = params[i];
@@ -8217,30 +7606,6 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			fn.body.push(OP_DROP);
 	}
 
-	function dispatchArmNodes(node: Node): Node[] | undefined {
-		if (node.kind !== '|') return undefined;
-		const arms: Node[] = [];
-		const walk = (n: Node): boolean => {
-			if (n.kind === '|') return walk(n.children[0]) && walk(n.children[1]);
-			if (n.kind === 'fn') {
-				arms.push(n);
-				return true;
-			}
-			if (n.kind === 'ident') {
-				const s = n.symbol;
-				if (
-					s.kind === 'function' ||
-					(s.definition?.kind === 'def' && s.definition.value.kind === 'fn')
-				) {
-					arms.push(n);
-					return true;
-				}
-			}
-			return false;
-		};
-		return walk(node) ? arms : undefined;
-	}
-
 	function declareTopLevel(): { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] {
 		const fnsToCompile: { builder: FuncBuilder; fnNode: NodeMap['fn'] }[] = [];
 		if (root.kind !== 'root') return fnsToCompile;
@@ -8253,7 +7618,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			const declared = declareFn(arm.symbol, arm);
 			if (declared) fnsToCompile.push(declared);
 		};
-		computeDeclaredOwnedInParams(root);
+		ownership.initialize(expressionContext());
 		for (const child of root.children) {
 			if (
 				child.kind === 'extend' &&
@@ -8268,7 +7633,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 				if (declared) fnsToCompile.push(declared);
 				continue;
 			}
-			const arms = dispatchArmNodes(child.value);
+			const arms = dispatchArms(child.value);
 			if (arms)
 				for (const arm of arms) {
 					if (arm.kind !== 'fn') continue;
@@ -8279,7 +7644,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			if (
 				child.kind === 'def' &&
 				child.value.kind !== 'fn' &&
-				!dispatchArmNodes(child.value)
+				!dispatchArms(child.value)
 			)
 				compileTopLevelDef(child);
 		}
@@ -8350,7 +7715,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			// it fresh, but a consumer could add a call site that doesn't — its
 			// re-derived owned-in would then disagree with the baked free. Leave
 			// such fns as IR so the consumer derives the contract consistently.
-			if (ownedInParams.get(sym)?.some(Boolean)) continue;
+			if (ownership.ownedParameters(sym, environment)?.some(Boolean)) continue;
 			const relocs: ObjReloc[] = [...b.relocs];
 			let ok = true;
 			for (const fix of b.callFixups) {

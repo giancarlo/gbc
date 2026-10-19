@@ -39,8 +39,16 @@ export function setDivByZero(t: Type | undefined): void {
 	divByZero = t;
 }
 
+export function composes(m: Type, target: Type): boolean {
+	return m === target || !!m.components?.some(c => composes(c, target));
+}
+
 export function argumentNodes(args: Node | undefined): Node[] {
 	return args?.kind === ',' ? args.children : args ? [args] : [];
+}
+
+export function itemValue(node: Node): Node {
+	return node.kind === 'propdef' && node.value ? node.value : node;
 }
 
 export function dataItems(node: Node): Node[] {
@@ -580,7 +588,7 @@ function setFnForwarding(node: NodeMap['fn']): void {
 	if (targetValue?.kind === '>>') node.symbol.forwardsPipe = true;
 }
 
-function dispatchArms(node: Node): Node[] | undefined {
+export function dispatchArms(node: Node): Node[] | undefined {
 	if (node.kind !== '|') return undefined;
 	const arms: Node[] = [];
 	const walk = (n: Node): boolean => {

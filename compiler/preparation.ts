@@ -1,7 +1,8 @@
 import { CompilerError, text } from '@cxl/gbc.sdk';
+import { createOwnershipAnalysis } from './ownership.js';
 import { childNodes } from './node.js';
 import type { Node, NodeMap } from './node.js';
-import { createSemanticContext, dataItems, dispatchArgType, literalType, mergeValueTypes } from './semantic.js';
+import { createSemanticContext, dataItems, dispatchArgType, itemValue, literalType, mergeValueTypes } from './semantic.js';
 import { createSpecializationEnvironment, specializeType } from './specialization.js';
 import type { SpecializationEnvironment } from './specialization.js';
 import { BaseTypes, classifyEmission, fixedEmissionType, isFloatType, isInt64Type } from './symbol-table.js';
@@ -39,7 +40,7 @@ export function preparedInput(input: ProgramInput): PreparedProgram {
 	return input.prepared ?? prepareProgram(input.root);
 }
 
-type ThreadResolution = {
+export type ThreadResolution = {
 	readonly target: Readonly<SymbolMap['function']>;
 	readonly output: Type;
 	readonly classification: ReturnType<typeof classifyEmission>;
@@ -207,10 +208,6 @@ function createPreparationContext() {
 
 	function flattenPipe(children: Node[]): Node[] {
 		return children.flatMap(child => child.kind === '>>' ? flattenPipe(child.children) : [child]);
-	}
-
-	function itemValue(item: Node): Node {
-		return item.kind === 'propdef' && item.value ? item.value : item;
 	}
 
 	function valueFallbackType(left: Type, right: Type): Type {
@@ -482,6 +479,10 @@ function createPreparationContext() {
 	}
 
 	return {
+		createOwnership: (root: Node, externalExports = false) => createOwnershipAnalysis(root, {
+			typeOf, expressionType, emissionType, nominalOf, threadCall,
+			threadResolution, staticMemberFunction, resolveOverload,
+		}, externalExports),
 		semantic, createEnvironment: createSpecializationEnvironment, typeOf,
 		functionResult, concreteType, expressionType, stageReturn, stageInputType, functionTypeOf, functionArgument, staticMemberFunction, resolveOverload, threadResolution, valueFallbackType,
 		emissionType, threadCall, resolveThreadCall, prepareThread,

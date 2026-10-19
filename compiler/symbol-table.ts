@@ -217,6 +217,18 @@ export function isNumericType(t?: Type): boolean {
 	return isIntType(t) || isFloatType(t);
 }
 
+export function typeOwnsHeap(t: Type | undefined): boolean {
+	if (t?.kind !== 'type') return false;
+	if (t.family === 'string') return true;
+	if (t.family === 'buffer') return true;
+	if (t.family === 'data') {
+		return Object.keys(t.members).some(
+			k => k === '__trace' || typeOwnsHeap(t.members[k]?.type),
+		);
+	}
+	return false;
+}
+
 export function isHeapType(t?: Type): boolean {
 	return (
 		t?.kind === 'type' &&

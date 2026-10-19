@@ -14,6 +14,7 @@
 		"semantic.ts",
 		"specialization.ts",
 		"preparation.ts",
+		"ownership.ts",
 		"compiler-types.ts",
 		"debug.ts",
 		"error.ts",

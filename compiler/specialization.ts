@@ -8,6 +8,7 @@ export interface SpecializationEnvironment {
 	bindings: Map<GbcSymbol, SymbolMap['function']>;
 	typeArguments: Map<string, Type>;
 	returnsOwned: Map<NodeMap['fn'], boolean>;
+	ownedInputs: Map<GbcSymbol, boolean[]>;
 	annotations?: WeakMap<Node, { nominal?: ResolvedType; originFn?: string }>;
 }
 
@@ -21,6 +22,7 @@ export function createSpecializationEnvironment(
 		bindings: new Map(parent?.bindings),
 		typeArguments,
 		returnsOwned: new Map(),
+		ownedInputs: new Map(),
 	};
 }
 

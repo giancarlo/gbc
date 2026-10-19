@@ -26,7 +26,7 @@ import {
 import { compileWasm, type LibraryObject } from './target-wasm.js';
 import { checker } from './checker.js';
 import { compileLlvm } from './target-llvm.js';
-import { numericConversion, numericOperation } from './semantic.js';
+import { dispatchArms, numericConversion, numericOperation } from './semantic.js';
 import lifecycle from './test-lifecycle.js';
 
 function snapshotGraph(root: object): () => string[] {
@@ -68,6 +68,162 @@ Language design proposals must satisfy docs/feature-laws.md.
 */
 export default spec('Language Reference', s => {
 	s.addSpec(lifecycle);
+	s.test('shared ownership uses overload templates and selected return contracts', (a: TestApi) => {
+		const program = Program();
+		const parsed = program.parse(`pick = (value): own String { 'fresh\${1}' } | (value: Int32): String { 'static' };
+main { a = pick(7); length(a) >> out; b = pick('text'); length(b) >> out }`);
+		checker(parsed).run();
+		a.equalValues(parsed.errors, []);
+		const prepared = program.prepareAst(parsed.root);
+		const unchanged = snapshotGraph(prepared);
+		const preparation = prepared.createContext();
+		const facts = preparation.createOwnership(prepared.linkedRoot);
+		const definition = parsed.root.children.find(node => node.kind === 'def');
+		a.assert(definition?.kind === 'def');
+		const arms = dispatchArms(definition.value);
+		a.assert(arms);
+		const templates = new Map<Symbol, NodeMap['fn']>();
+		for (const arm of arms) {
+			a.assert(arm.kind === 'fn');
+			templates.set(arm.symbol, arm);
+		}
+		const context = { environment: preparation.createEnvironment(), templates };
+		const main = parsed.root.children.find(node => node.kind === 'main');
+		a.assert(main?.kind === 'main');
+		for (const node of main.children.filter(child => child.kind === 'def')) {
+			a.assert(node.value.kind === 'call');
+			a.equal(facts.ownableExpr(node.value, context), node.symbol.name === 'b');
+		}
+		a.equalValues(unchanged(), []);
+	});
+	s.test('shared ownership facts are specialization scoped and retain checked provenance', (a: TestApi) => {
+		const program = Program();
+		const parsed = program.parse(`identity = <T>(value: own T): own T { value };
+borrow = (value: String): String { value };
+choose = (left: var Buffer<Int32>, right: var Buffer<Int32>, first: Bool = true): var Buffer<Int32> { first ? left : right };
+main {
+	left = Buffer<Int32>(1); right = Buffer<Int32>(2);
+	one = choose(left, right, true); length(one) >> out;
+	two = choose(left, right, void); length(two) >> out;
+	length(borrow('x\${1}')) >> out; identity(7) >> out
+}`);
+		checker(parsed).run();
+		a.equalValues(parsed.errors, []);
+		const prepared = program.prepareAst(parsed.root);
+		const unchanged = snapshotGraph(prepared);
+		const first = prepared.createContext();
+		const second = prepared.createContext();
+		const facts = first.createOwnership(prepared.linkedRoot);
+		const other = second.createOwnership(prepared.linkedRoot, true);
+		const firstScope = { environment: first.createEnvironment() };
+		const secondScope = { environment: second.createEnvironment() };
+		const definitions = parsed.root.children.filter(node => node.kind === 'def');
+		const identity = definitions.find(node => node.symbol.name === 'identity')?.value;
+		const borrow = definitions.find(node => node.symbol.name === 'borrow')?.value;
+		const choose = definitions.find(node => node.symbol.name === 'choose')?.value;
+		a.assert(identity?.kind === 'fn');
+		a.assert(borrow?.kind === 'fn');
+		a.assert(choose?.kind === 'fn');
+		const statement = identity.statements?.[0];
+		a.assert(statement?.kind === 'next' && statement.children?.[0]);
+		const value = statement.children[0];
+		const parameter = identity.parameters?.[0];
+		a.assert(parameter);
+		firstScope.environment.types.set(parameter.symbol, BaseTypes.Int32);
+		secondScope.environment.types.set(parameter.symbol, BaseTypes.String);
+		const main = parsed.root.children.find(node => node.kind === 'main');
+		a.assert(main?.kind === 'main');
+		const locals = main.children.filter(node => node.kind === 'def');
+		const left = locals.find(node => node.symbol.name === 'left');
+		const right = locals.find(node => node.symbol.name === 'right');
+		a.assert(left && right);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			facts.initialize(firstScope);
+			other.initialize(secondScope);
+			a.equal(facts.fnReturnsOwned(identity, firstScope), true);
+			a.equal(other.fnReturnsOwned(identity, secondScope), true);
+			a.equal(facts.fnReturnsOwned(borrow, firstScope), false);
+			a.equal(facts.ownableExpr(value, firstScope), true);
+			a.equal(other.ownableExpr(value, secondScope), false);
+			a.equalValues(facts.ownedParameters(identity.symbol, firstScope.environment), [true]);
+			a.equalValues(other.ownedParameters(choose.symbol, secondScope.environment), [false, false, false]);
+			const child = { environment: first.createEnvironment(firstScope.environment) };
+			a.equalValues(facts.ownedParameters(identity.symbol, child.environment), [true]);
+			for (const name of ['one', 'two']) {
+				const call = locals.find(node => node.symbol.name === name)?.value;
+				a.assert(call?.kind === 'call');
+				const origins = facts.returnedBorrowArguments(call, firstScope);
+				a.assert(origins);
+				const [leftOrigin, rightOrigin] = origins;
+				a.assert(leftOrigin?.kind === 'ident');
+				a.assert(rightOrigin?.kind === 'ident');
+				a.equal(leftOrigin.symbol, left.symbol);
+				a.equal(rightOrigin.symbol, right.symbol);
+			}
+			a.equalValues(unchanged(), []);
+		}
+		a.throws(() => compileLlvm(prepared));
+		a.equal(facts.fnReturnsOwned(identity, firstScope), true);
+		a.equalValues(unchanged(), []);
+	});
+	s.test('shared call provenance binds named and data-block arguments without changing validation', (a: TestApi) => {
+		const source = `main {
+	source0 = Buffer<Int32>(0); dest0 = Buffer<Int32>(0);
+	three = transfer(destination = dest0, source = source0); length(three) >> out;
+	source1 = Buffer<Int32>(0); dest1 = Buffer<Int32>(0);
+	four = transfer([source1, dest1]); length(four) >> out
+}`;
+		const program = Program();
+		const parsed = program.parse(source);
+		checker(parsed).run();
+		a.equalValues(parsed.errors.map(error => error.message), [
+			'Argument of type "__data" is not assignable to parameter of type "Buffer<T>".',
+		]);
+		const prepared = program.prepareAst(parsed.root);
+		const unchanged = snapshotGraph(prepared);
+		const preparation = prepared.createContext();
+		const facts = preparation.createOwnership(prepared.linkedRoot);
+		const context = { environment: preparation.createEnvironment() };
+		const main = parsed.root.children.find(node => node.kind === 'main');
+		a.assert(main?.kind === 'main');
+		const locals = main.children.filter(node => node.kind === 'def');
+		for (const [name, destination] of [['three', 'dest0'], ['four', 'dest1']]) {
+			const call = locals.find(node => node.symbol.name === name)?.value;
+			a.assert(call?.kind === 'call');
+			const origin = facts.returnedBorrowArguments(call, context)?.[0];
+			a.assert(origin?.kind === 'ident');
+			a.equal(origin.symbol.name, destination);
+		}
+		a.equalValues(unchanged(), []);
+	});
+	s.test('ownership extraction preserves cleanup and repeated checked inputs', (a: TestApi) => {
+		const sources = [
+			`make = (n: Int32): own String { '\${n}' };
+consume = (s: own String): Int32 { length(s) };
+main { consume(make(12)) >> out }`,
+			`identity = <T>(value: own T): own T { value };
+main { identity(12) >> out; length(identity('x\${1}')) >> out }`,
+			`borrow = (s: String): String { s };
+main { value = 'x\${1}'; alias = borrow(value); length(alias) + length(value) >> out }`,
+			`main { record = [text = 'x\${1}', values = Buffer<Int32>(2)];
+set(record.values, 0, 7); length(record.text) + get(record.values, 0) >> out }`,
+		];
+		const expected = [['2'], ['12', '2'], ['4'], ['9']];
+		for (const [index, source] of sources.entries()) {
+			for (const debug of [false, true]) {
+				const program = Program({ debug });
+				const compiled = program.compile(source);
+				a.equalValues(compiled.errors, []);
+				const unchanged = snapshotGraph(compiled.ast);
+				for (let attempt = 0; attempt < 2; attempt++) {
+					const output: string[] = [];
+					runWasm(program.compileAst(compiled.ast), value => output.push(value));
+					a.equalValues(output, expected[index]);
+					a.equalValues(unchanged(), []);
+				}
+			}
+		}
+	});
 	s.test('shared expression facts preserve context isolation and semantic emissions', (a: TestApi) => {
 		const program = Program();
 		const parsed = program.parse(`identity = <T>(value: T): T { value };
