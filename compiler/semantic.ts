@@ -14,6 +14,8 @@ import {
 	restEmissionType,
 	isFloatType,
 	isIntType,
+	isInt64Type,
+	isUintType,
 	isCollection,
 	isNumericType,
 	isVectorType,
@@ -93,11 +95,26 @@ export function literalType(node: Node): Type | undefined {
 
 export function floatFitsInteger(value: number, target: ResolvedType): boolean {
 	if (!Number.isFinite(value)) return false;
+	const { minimum, maximum } = integerConversionRange(target);
+	return value >= minimum && value < maximum;
+}
+
+function integerConversionRange(target: ResolvedType) {
 	const bits = target.size * 8;
 	const unsigned = target.family === 'uint';
 	const minimum = unsigned ? 0 : -(2 ** (bits - 1));
 	const maximum = unsigned ? 2 ** bits : 2 ** (bits - 1);
-	return value >= minimum && value < maximum;
+	return { minimum, maximum };
+}
+
+export function numericConversion(target: ResolvedType, argument: Node, source: Type) {
+	if (!isIntType(target) || !isFloatType(source)) return;
+	const constant = constantNumericValue(argument);
+	const checked = constant === undefined || !floatFitsInteger(constant, target);
+	return {
+		...integerConversionRange(target), checked,
+		resultType: checked ? runtimeResultType(target, 'NumericOverflow') : target,
+	};
 }
 
 export function dispatchArgType(t: Type): Type {
@@ -262,10 +279,15 @@ export function isKnownNonZeroNumber(
 	return isKnownNonZeroNumber(definition.value, visited);
 }
 
+type NumericValue = number | bigint | undefined;
+type ArithmeticNode = NodeMap['+' | '-' | '*' | '/' | '%'];
+const noNumericErrors: readonly Type[] = [];
+const uncheckedNumeric = { errors: noNumericErrors, zeroError: undefined, overflowError: undefined };
+
 function knownNumberValue(
 	node: Node,
 	seen?: Set<Symbol>,
-): number | bigint | undefined {
+): NumericValue {
 	if (node.kind === 'number') return node.value;
 	if (node.kind !== 'ident') return;
 	const sym = node.symbol;
@@ -277,7 +299,7 @@ function knownNumberValue(
 	return knownNumberValue(definition.value, visited);
 }
 
-function numericLiteralValue(type: Type): number | bigint | undefined {
+function numericLiteralValue(type: Type): NumericValue {
 	return type.kind === 'type' &&
 		type.family === 'literal' &&
 		(typeof type.value === 'number' || typeof type.value === 'bigint')
@@ -285,25 +307,60 @@ function numericLiteralValue(type: Type): number | bigint | undefined {
 		: undefined;
 }
 
-function numericOperationErrors(
-	node: InfixNode,
+function numericSafety(
+	node: ArithmeticNode,
 	base: Type,
 	right: Type,
-): Type[] {
+	knownDivisor?: { readonly value: NumericValue },
+) {
+	if (isFloatType(base) || (node.kind !== '/' && node.kind !== '%')) return uncheckedNumeric;
 	const errors: Type[] = [];
 	const literal = numericLiteralValue(right);
-	if ((node.kind === '/' || node.kind === '%') && divByZero) {
+	let zeroError: Type | undefined;
+	let overflowError: Type | undefined;
+	if (divByZero) {
 		const rhs = node.children[1];
-		if (literal === undefined ? !isKnownNonZeroNumber(rhs) : literal === 0)
+		if (literal === undefined ? !isKnownNonZeroNumber(rhs) : literal === 0) {
+			zeroError = divByZero;
 			errors.push(divByZero);
+		}
 	}
 	const overflow = runtimeErrorType('NumericOverflow');
 	if (node.kind === '/' && base.kind === 'type' && base.family === 'int' && overflow) {
-		const divisor = literal ?? knownNumberValue(node.children[1]);
-		if (divisor === undefined || divisor === -1 || divisor === -1n)
+		const divisor = literal ?? (knownDivisor ? knownDivisor.value : knownNumberValue(node.children[1]));
+		if (divisor === undefined || divisor === -1 || divisor === -1n) {
+			overflowError = overflow;
 			errors.push(overflow);
+		}
 	}
-	return errors;
+	return { errors, zeroError, overflowError };
+}
+
+export function numericOperation(
+	node: ArithmeticNode,
+	left: Type,
+	right: Type,
+	knownDivisor?: { readonly value: NumericValue },
+) {
+	const operands = numericOperands(left, right);
+	const { errors, zeroError, overflowError } = numericSafety(node, operands.valueType, right, knownDivisor);
+	let resultType = zeroError ? mergeValueTypes(operands.valueType, zeroError) : operands.valueType;
+	if (overflowError) resultType = runtimeResultType(resultType, 'NumericOverflow');
+	return {
+		valueType: operands.valueType, floatType: operands.floatType, wide: operands.wide, unsigned: operands.unsigned,
+		resultType, errors, zeroError, overflowError,
+		signedMinimum: operands.wide ? -0x8000000000000000n : -0x80000000n,
+	};
+}
+
+export function numericOperands(left: Type, right: Type) {
+	const valueType = numericValueType(left, right);
+	const floatType = isFloatType(valueType) ? valueType : undefined;
+	return {
+		valueType, floatType,
+		wide: !floatType && (isInt64Type(left) || isInt64Type(right)),
+		unsigned: isUintType(left) || isUintType(right),
+	};
 }
 
 function numericValueType(left: Type, right: Type): Type {
@@ -857,7 +914,7 @@ function unusedValueMessage(type: Type): string {
  * Only data-typed members (kind: 'type') participate; function-kind types
  * are skipped because they aren't valid union arms.
  */
-function unionOf(types: Type[]): Type {
+function unionOf(types: Type[], preferFirst = false): Type {
 	const seen = new Map<string, ResolvedType>();
 	const add = (type: Type): void => {
 		if (type.kind !== 'type') return;
@@ -865,7 +922,7 @@ function unionOf(types: Type[]): Type {
 			for (const member of type.members) add(member);
 			return;
 		}
-		seen.set(type.name, type);
+		if (!preferFirst || !seen.has(type.name)) seen.set(type.name, type);
 	};
 	for (const type of types) add(type);
 	const members = Array.from(seen.values());
@@ -888,7 +945,13 @@ function unionOf(types: Type[]): Type {
 	};
 }
 
-function fallbackResultType(left: Type, right: Type): Type {
+export function mergeValueTypes(left: Type, right: Type): Type {
+	if (left.kind !== 'type' || right.kind !== 'type') return left;
+	if (left === right || (left.name === right.name && left.family === right.family)) return left;
+	return unionOf([left, right], true);
+}
+
+function fallbackResultType(left: Type, right: Type, rightFirst = false): Type {
 	const types: Type[] = [];
 	if (left.kind === 'type' && left.family === 'union')
 		types.push(
@@ -897,8 +960,7 @@ function fallbackResultType(left: Type, right: Type): Type {
 			),
 		);
 	else if (!(left.kind === 'type' && left.family === 'void')) types.push(left);
-	types.push(right);
-	return unionOf(types);
+	return unionOf(rightFirst ? [right, ...types] : [...types, right], rightFirst);
 }
 
 // --- Type-level reduction engine ---
@@ -981,14 +1043,11 @@ export function createSemanticContext(readOnly = false) {
 			!argument ||
 			argument.kind === ',' ||
 			callee.symbol.type.kind !== 'type' ||
-			(callee.symbol.type.family !== 'int' && callee.symbol.type.family !== 'uint') ||
-			!isFloatType(resolve(argument))
+			(callee.symbol.type.family !== 'int' && callee.symbol.type.family !== 'uint')
 		)
 			return;
-		const target = callee.symbol.type;
-		const constant = constantNumericValue(argument);
-		if (constant !== undefined && floatFitsInteger(constant, target)) return target;
-		return runtimeResultType(target, 'NumericOverflow');
+		const source = resolve(argument);
+		return numericConversion(callee.symbol.type, argument, source)?.resultType;
 	}
 
 	function callReturnType(node: NodeMap['call']): Type | undefined {
@@ -1134,7 +1193,7 @@ export function createSemanticContext(readOnly = false) {
 		};
 	}
 
-	function resolveNumericOp(node: InfixNode): Type {
+	function resolveNumericOp(node: ArithmeticNode): Type {
 		const lType = resolver(node.children[0]);
 		const rType = resolver(node.children[1]);
 
@@ -1151,7 +1210,7 @@ export function createSemanticContext(readOnly = false) {
 		if (!isNumericType(lType) || !isNumericType(rType)) return invalidType;
 		const base = numericValueType(lType, rType);
 		if (isFloatType(base)) return base;
-		return unionOf([base, ...numericOperationErrors(node, base, rType)]);
+		return unionOf([base, ...numericSafety(node, base, rType).errors]);
 	}
 
 	function resolveBitwiseType(node: InfixNode): Type {
@@ -1878,6 +1937,7 @@ export function createSemanticContext(readOnly = false) {
 		fallbackResultType,
 		getListTypes,
 		callTypeBindings,
+		functionTypeParameters,
 		selectOverload,
 		pipeArgumentTypes,
 		reduceType,

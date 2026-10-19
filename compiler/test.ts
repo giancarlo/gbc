@@ -26,6 +26,7 @@ import {
 import { compileWasm, type LibraryObject } from './target-wasm.js';
 import { checker } from './checker.js';
 import { compileLlvm } from './target-llvm.js';
+import { numericConversion, numericOperation } from './semantic.js';
 import lifecycle from './test-lifecycle.js';
 
 function snapshotGraph(root: object): () => string[] {
@@ -67,6 +68,174 @@ Language design proposals must satisfy docs/feature-laws.md.
 */
 export default spec('Language Reference', s => {
 	s.addSpec(lifecycle);
+	s.test('shared expression facts preserve context isolation and semantic emissions', (a: TestApi) => {
+		const program = Program();
+		const parsed = program.parse(`identity = <T>(value: T): T { value };
+echo = (Int32): Int32 { $ };
+forward = (Float64): Float64 { identity($) };
+emit = (n: Int32): Void { n >> out };
+apply = <T, U>(value: T, f: (T): U): U { f(value) };
+pair = <T>(value: T): { T, T } { next value; next value };
+stream = <T>(value: T): { ...T } { next value; next value };
+main {
+	literal = 7; reference = literal; record = [count = 7]; member = record.count;
+	constructor = Int8(7); called = identity(7); conditional = reference > 0 ? 7 : 8;
+	fallback = emit(7) ?? 7; pipe = 7 >> identity; thread = 7 -> identity();
+	dispatch = 7 >> Int32 { $ } | String { length($) };
+	[literal, reference, member, constructor, called, conditional, fallback, pipe, thread, dispatch] >> out;
+	apply(7, echo) >> out; pair(7) >> out; stream(7) >> out; forward(1.5) >> out; dispatch >> out
+}`);
+		checker(parsed).run();
+		a.equalValues(parsed.errors, []);
+		const prepared = program.prepareAst(parsed.root);
+		const unchanged = snapshotGraph(prepared);
+		const first = prepared.createContext();
+		const second = prepared.createContext();
+		const firstScope = { environment: first.createEnvironment(), inputType: BaseTypes.Float64 };
+		const secondScope = { environment: second.createEnvironment(), inputType: BaseTypes.String };
+		firstScope.environment.typeArguments.set('U', BaseTypes.Float64);
+		secondScope.environment.typeArguments.set('U', BaseTypes.Int32);
+		const definitions = new Map<string, NodeMap['def']>();
+		const nodes: Node[] = [];
+		const walk = (node: Node): void => {
+			nodes.push(node);
+			if (node.kind === 'def' && node.symbol.name) definitions.set(node.symbol.name, node);
+			for (const child of childNodes(node)) if (child) walk(child);
+		};
+		walk(parsed.root);
+		const definition = (name: string) => {
+			const node = definitions.get(name);
+			a.assert(node);
+			return node.value;
+		};
+		const dollar = nodes.find(node => node.kind === '$');
+		a.assert(dollar);
+		for (let attempt = 0; attempt < 2; attempt++) {
+			a.equal(first.expressionType(dollar, firstScope), BaseTypes.Float64);
+			a.equal(second.expressionType(dollar, secondScope), BaseTypes.String);
+			for (const name of ['literal', 'reference', 'member', 'called', 'conditional', 'fallback', 'pipe', 'thread', 'dispatch'])
+				a.equal(first.expressionType(definition(name), firstScope), BaseTypes.Int32);
+			a.equal(first.expressionType(definition('constructor'), firstScope), BaseTypes.Int8);
+			const forward = definition('forward');
+			a.assert(forward.kind === 'fn');
+			const forwarded = forward.statements?.[0];
+			a.assert(forwarded?.kind === 'next' && forwarded.children?.[0]);
+			a.equal(first.expressionType(forwarded.children[0], firstScope), BaseTypes.Float64);
+			a.equal(second.expressionType(forwarded.children[0], secondScope), BaseTypes.String);
+			const pair = definition('pair');
+			const stream = definition('stream');
+			a.assert(pair.kind === 'fn' && stream.kind === 'fn');
+			const bindings = new Map([['T', BaseTypes.String]]);
+			const identity = definition('identity');
+			a.assert(identity.kind === 'fn');
+			a.equal(first.functionResult(identity.symbol, bindings).type, BaseTypes.String);
+			a.equalValues(first.functionResult(pair.symbol, bindings).emission?.elements, [BaseTypes.String, BaseTypes.String]);
+			a.equal(first.functionResult(stream.symbol, bindings).emission?.rest, BaseTypes.String);
+			const apply = definition('apply');
+			a.assert(apply.kind === 'fn');
+			const statement = apply.statements?.[0];
+			a.assert(statement?.kind === 'next');
+			const call = statement.children?.[0];
+			a.assert(call?.kind === 'call');
+			const callee = call.children[0];
+			a.assert(callee.kind === 'ident');
+			firstScope.environment.bindings.set(callee.symbol, forward.symbol);
+			a.equal(first.expressionType(call, firstScope), BaseTypes.Float64);
+			a.equal(second.expressionType(call, secondScope), BaseTypes.Int32);
+			const reference = definition('reference');
+			a.assert(reference.kind === 'ident');
+			firstScope.environment.types.set(reference.symbol, BaseTypes.Int64);
+			a.equal(first.expressionType(reference, firstScope), BaseTypes.Int64);
+			a.equal(second.expressionType(reference, secondScope), BaseTypes.Int32);
+			firstScope.environment.types.delete(reference.symbol);
+			const thread = definition('thread');
+			a.assert(thread.kind === '->');
+			const stage = thread.children[1];
+			a.assert(stage?.kind === 'call' && stage.children[0].kind === 'ident');
+			const target = stage.children[0].symbol;
+			firstScope.environment.types.set(target, BaseTypes.Unknown);
+			try {
+				a.equal(first.threadResolution(stage, firstScope)?.target === identity.symbol, true);
+			} finally {
+				firstScope.environment.types.delete(target);
+			}
+			a.equalValues(unchanged(), []);
+		}
+		a.throws(() => compileLlvm(prepared));
+		a.equal(first.expressionType(definition('called'), firstScope), BaseTypes.Int32);
+		a.equalValues(unchanged(), []);
+	});
+	s.test('shared numeric facts distinguish guards, signedness and conversion bounds', (a: TestApi) => {
+		const program = Program();
+		const parsed = program.parse(`divide = (a: Int64, b: Uint32): Int64 | DivByZero | NumericOverflow { a / b };
+main { divide(Int64(7), Uint32(2)) >> Int64 { $ } | Error { Int64(0) } >> out }`);
+		checker(parsed).run();
+		a.equalValues(parsed.errors, []);
+		const definition = parsed.root.children.find(node => node.kind === 'def' && node.symbol.name === 'divide');
+		a.assert(definition?.kind === 'def' && definition.value.kind === 'fn');
+		const statement = definition.value.statements?.[0];
+		a.assert(statement?.kind === 'next');
+		const node = statement.children?.[0];
+		a.assert(node?.kind === '/');
+		const unchanged = snapshotGraph(parsed.root);
+		const dynamic = numericOperation(node, BaseTypes.Int64, BaseTypes.Uint32, { value: undefined });
+		a.equal(dynamic.valueType, BaseTypes.Int64);
+		a.equal(dynamic.unsigned, true);
+		a.equal(dynamic.wide, true);
+		a.equal(dynamic.signedMinimum, -(1n << 63n));
+		a.ok(dynamic.zeroError);
+		a.ok(dynamic.overflowError);
+		for (const divisor of [0, -1, 2]) {
+			const facts = numericOperation(node, BaseTypes.Int32, BaseTypes.Int32, { value: divisor });
+			a.equal(!!facts.overflowError, divisor === -1);
+			a.ok(facts.zeroError);
+			a.equal(facts.signedMinimum, -0x80000000n);
+		}
+		const unsigned = numericOperation(node, BaseTypes.Uint64, BaseTypes.Int32);
+		a.equal(unsigned.valueType, BaseTypes.Uint64);
+		a.equal(unsigned.overflowError, undefined);
+		const floating = numericOperation(node, BaseTypes.Float32, BaseTypes.Int64);
+		a.equal(floating.valueType, BaseTypes.Float32);
+		a.equal(floating.zeroError, undefined);
+		a.equal(floating.overflowError, undefined);
+		const conversion = numericConversion(BaseTypes.Int8, node.children[0], BaseTypes.Float64);
+		a.assert(conversion);
+		a.equal(conversion.checked, true);
+		a.equal(conversion.minimum, -128);
+		a.equal(conversion.maximum, 128);
+		const wideConversion = numericConversion(BaseTypes.Uint64, node.children[0], BaseTypes.Float64);
+		a.assert(wideConversion);
+		a.equal(wideConversion.maximum, 2 ** 64);
+		a.equalValues(unchanged(), []);
+	});
+	s.test('numeric extraction preserves mixed-width division and checked results', (a: TestApi) => {
+		const source = `divide = (a: Int64, b: Uint32): Int64 | DivByZero | NumericOverflow { a / b };
+signed = (a: Int32, b: Int32): Int32 | DivByZero | NumericOverflow { a / b };
+remainder = (a: Int32, b: Int32): Int32 | DivByZero { a % b };
+convert = (value: Float64): Int8 | NumericOverflow | OutOfMemory { Int8(value) };
+main {
+	divide(Int64(0 - 6), Uint32(2)) >> Int64 { $ } | Error { Int64(0) } >> out;
+	signed(6, 2) >> Int32 { $ } | DivByZero { 10 } | NumericOverflow { 20 } >> out;
+	signed(6, 0) >> Int32 { $ } | DivByZero { 10 } | NumericOverflow { 20 } >> out;
+	signed(-2147483648, -1) >> Int32 { $ } | DivByZero { 10 } | NumericOverflow { 20 } >> out;
+	remainder(-2147483648, -1) >> Int32 { $ } | DivByZero { 10 } >> out;
+	convert(127.0) >> Int8 { $ } | Error { Int8(0) } >> out;
+	convert(128.0) >> Int8 { $ } | Error { Int8(0) } >> out
+}`;
+		for (const debug of [false, true]) {
+			const program = Program({ debug });
+			const compiled = program.compile(source);
+			a.equalValues(compiled.errors, []);
+			a.assert(compiled.bytes);
+			const unchanged = snapshotGraph(compiled.ast);
+			for (const bytes of [compiled.bytes, program.compileAst(compiled.ast)]) {
+				const output: string[] = [];
+				runWasm(bytes, value => output.push(value));
+				a.equalValues(output, ['9223372036854775805', '3', '10', '20', '0', '127', '0']);
+				a.equalValues(unchanged(), []);
+			}
+		}
+	});
 	s.test('backend emission preserves the checked frontend graph on success and failure', (a: TestApi) => {
 		const program = Program();
 		const parsed = program.parse(`identity = <T>(value: T): T { value };

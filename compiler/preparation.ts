@@ -1,10 +1,10 @@
-import { CompilerError } from '@cxl/gbc.sdk';
+import { CompilerError, text } from '@cxl/gbc.sdk';
 import { childNodes } from './node.js';
 import type { Node, NodeMap } from './node.js';
-import { createSemanticContext } from './semantic.js';
+import { createSemanticContext, dataItems, dispatchArgType, literalType, mergeValueTypes } from './semantic.js';
 import { createSpecializationEnvironment, specializeType } from './specialization.js';
 import type { SpecializationEnvironment } from './specialization.js';
-import { BaseTypes, classifyEmission, fixedEmissionType } from './symbol-table.js';
+import { BaseTypes, classifyEmission, fixedEmissionType, isFloatType, isInt64Type } from './symbol-table.js';
 import type { ResolvedType, Symbol, SymbolMap, Type } from './symbol-table.js';
 
 export type BackendNodeMap = {
@@ -13,12 +13,19 @@ export type BackendNodeMap = {
 export type BackendNode = BackendNodeMap[keyof BackendNodeMap];
 
 type ResolutionContext = Pick<ReturnType<typeof createSemanticContext>,
-	| 'reduceType' | 'isKnownNonZeroNumber' | 'selectOverload'
+	| 'reduceType' | 'selectOverload'
 	| 'scalarCtorType' | 'bufferCtorType' | 'resolveMemberType'
 	| 'numericValueType' | 'resolveCallReturn' | 'callArgumentTypes'
 	| 'pipeArgumentTypes' | 'threadCall' | 'fallbackResultType'
-	| 'callTypeBindings' | 'resolver'
+	| 'callTypeBindings' | 'functionTypeParameters' | 'resolver'
 >;
+
+export interface ExpressionContext {
+	readonly environment: SpecializationEnvironment;
+	readonly inputType?: Type;
+	readonly symbols?: ReadonlyMap<Symbol, Type>;
+	readonly templates?: ReadonlyMap<Symbol, NodeMap['fn']>;
+}
 
 export interface PreparedProgram {
 	readonly root: Readonly<Node>;
@@ -55,7 +62,6 @@ export function prepareProgram(root: Node, definitions: readonly Node[] = []): P
 
 function createPreparationContext() {
 	const semantic: ResolutionContext = createSemanticContext(true);
-	const returns = new Map<SymbolMap['function'], Type>();
 	const { threadCall, fallbackResultType, reduceType, callTypeBindings, resolveCallReturn } = semantic;
 
 	function typeOf(symbol: Readonly<Symbol>, environment: SpecializationEnvironment): Type {
@@ -67,10 +73,6 @@ function createPreparationContext() {
 		return specializeType(symbol.type ?? BaseTypes.Unknown, environment.typeArguments, reduceType);
 	}
 
-	function returnType(fn: Readonly<SymbolMap['function']>): Type | undefined {
-		return returns.get(fn) ?? fn.returnType;
-	}
-
 	function emissionType(fn: Readonly<SymbolMap['function']>, bindings: Map<string, Type>) {
 		const emission = fn.emissionType;
 		if (emission?.family !== 'emission') return;
@@ -80,6 +82,19 @@ function createPreparationContext() {
 			elements: emission.elements.map(type => specializeType(type, bindings, reduceType)),
 			rest: emission.rest ? specializeType(emission.rest, bindings, reduceType) : undefined,
 		};
+	}
+
+	function concreteType(value: Type, bindings: Map<string, Type>): Type {
+		let type = specializeType(value, bindings, reduceType);
+		if (type.kind === 'type' && (type.application || type.family === 'unknown')) {
+			const reduced = reduceType(type, bindings);
+			if (reduced.kind === 'type' && reduced.family !== 'unknown') type = reduced;
+		}
+		return type;
+	}
+
+	function functionResult(fn: Readonly<SymbolMap['function']>, bindings: Map<string, Type>) {
+		return { type: concreteType(fn.returnType ?? BaseTypes.Unknown, bindings), emission: emissionType(fn, bindings) };
 	}
 
 	function resolveThreadCall(
@@ -95,7 +110,7 @@ function createPreparationContext() {
 		const argTypes = (raw?.kind === ',' ? raw.children : raw ? [raw] : []).map(resolveType);
 		const target = select(declared.overloads ?? [], argTypes) ?? declared;
 		const specialized = emissionType(target, callTypeBindings(target, argTypes));
-		const inferred = resolveCallReturn(target, argTypes, select, target.typeParams) ?? returnType(target) ?? BaseTypes.Void;
+		const inferred = resolveCallReturn(target, argTypes, select, target.typeParams) ?? target.returnType ?? BaseTypes.Void;
 		const output = inferred.kind === 'type' && inferred.family === 'unknown' ? reduceType(inferred, environment.typeArguments) : inferred;
 		const emission = specialized ?? (output.kind === 'type' && output.family === 'void' ? fixedEmissionType([]) : fixedEmissionType([output]));
 		return { target, classification: classifyEmission(emission), output: specialized?.elements[0] ?? output };
@@ -140,6 +155,291 @@ function createPreparationContext() {
 		return { operations, result: carrier, type: type ?? BaseTypes.Unknown };
 	}
 
+	function functionTypeOf(symbol: Readonly<Symbol>, environment: SpecializationEnvironment): SymbolMap['function'] | undefined {
+		if (symbol.kind === 'function') return symbol;
+		const type = typeOf(symbol, environment);
+		return type.kind === 'function' ? type : undefined;
+	}
+
+	function functionArgument(node: Node, environment: SpecializationEnvironment): SymbolMap['function'] | undefined {
+		if (node.kind !== 'ident') return;
+		const symbol = node.symbol;
+		if (symbol.kind === 'function') return symbol;
+		const bound = environment.bindings.get(symbol);
+		if (bound) return bound;
+		const type = functionTypeOf(symbol, environment);
+		if (type) return type;
+		const definition = symbol.definition;
+		if (definition?.kind === 'def' && definition.value.kind === 'fn') return definition.value.symbol;
+	}
+
+	function staticMemberFunction(callee: Node, environment: SpecializationEnvironment): SymbolMap['function'] | undefined {
+		if (callee.kind !== '.') return;
+		const [receiver, field] = callee.children;
+		if (receiver.kind !== 'ident' || field.kind !== 'ident') return;
+		const type = typeOf(receiver.symbol, environment);
+		if (type.kind !== 'type' || type.family !== 'data') return;
+		const member = type.members[field.symbol.name ?? '']?.type;
+		return member?.kind === 'function' ? member : undefined;
+	}
+
+	function resolveOverload(arms: SymbolMap['function'][], args: Type[], templates?: ExpressionContext['templates']) {
+		return semantic.selectOverload(arms, args.map(dispatchArgType), arm => {
+			if (arm.parameters?.length !== 1) return false;
+			const template = templates?.get(arm);
+			if (template) return !template.parameters?.[0]?.type;
+			const parameter = arm.parameters[0]?.type;
+			return !parameter || (parameter.kind === 'type' && parameter.family === 'unknown');
+		});
+	}
+
+	function stageInputType(stage: Node, environment: SpecializationEnvironment): ResolvedType | undefined {
+		if (stage.kind !== 'fn' || stage.parameters?.length !== 1) return;
+		const parameter = stage.parameters[0];
+		if (!parameter) return;
+		let type = typeOf(parameter.symbol, environment);
+		if (type.kind !== 'type' && parameter.type?.kind === 'typeident') type = typeOf(parameter.type.symbol, environment);
+		if (type.kind !== 'type') return;
+		if (type.family === 'literal' || (type.family === 'data' && type.name !== '__data') ||
+			type.family === 'int' || type.family === 'uint' || type.family === 'float' ||
+			type.family === 'bool' || type.family === 'string' || type.family === 'vector') return type;
+	}
+
+	function flattenPipe(children: Node[]): Node[] {
+		return children.flatMap(child => child.kind === '>>' ? flattenPipe(child.children) : [child]);
+	}
+
+	function itemValue(item: Node): Node {
+		return item.kind === 'propdef' && item.value ? item.value : item;
+	}
+
+	function valueFallbackType(left: Type, right: Type): Type {
+		return semantic.fallbackResultType(left, right, true);
+	}
+
+	function threadResolution(call: NodeMap['call'], context: ExpressionContext) {
+		return resolveThreadCall(call, callee => callee.kind === '.' ? staticMemberFunction(callee, context.environment) :
+			functionArgument(callee, context.environment),
+			child => expressionType(child, context), (arms, args) => resolveOverload(arms, args, context.templates), context.environment);
+	}
+
+	function inferIdentType(node: NodeMap['ident'], context: ExpressionContext): Type {
+		const sym = node.symbol;
+		if (sym.kind === 'literal') return typeOf(sym, context.environment);
+		if (sym.kind === 'variable' || sym.kind === 'function')
+			return context.symbols?.get(sym) ?? typeOf(sym, context.environment);
+		return BaseTypes.Unknown;
+	}
+
+	function inferTypeConstructorCall(node: NodeMap['call'], context: ExpressionContext): Type {
+		const callee = node.children[0];
+		if (callee.kind !== 'typeident') return BaseTypes.Unknown;
+		return semantic.bufferCtorType(node) ?? semantic.scalarCtorType(node, child => expressionType(child, context)) ?? typeOf(callee.symbol, context.environment);
+	}
+
+	function inferCallType(node: NodeMap['call'], context: ExpressionContext): Type {
+		const callee = node.children[0];
+		if (callee.kind === '.') {
+			const sfn = staticMemberFunction(callee, context.environment);
+			return sfn
+				? inferFunctionReturn(
+						sfn,
+						semantic.callArgumentTypes(sfn, node.children[1], child => expressionType(child, context)),
+						context,
+					)
+				: BaseTypes.Unknown;
+		}
+		if (callee.kind === 'typeident') return inferTypeConstructorCall(node, context);
+		if (callee.kind !== 'ident') return BaseTypes.Unknown;
+		const sym = callee.symbol;
+		const bound = context.environment.bindings.get(sym);
+		if (bound) return bound.returnType ?? BaseTypes.Void;
+		const fnSym = functionTypeOf(sym, context.environment);
+		if (!fnSym) return BaseTypes.Unknown;
+		const template = context.templates?.get(sym);
+		if (!template && !semantic.functionTypeParameters(fnSym).length && !fnSym.overloads?.length && fnSym.returnType)
+			return inferFunctionReturn(fnSym, [], context);
+		return inferFunctionReturn(
+			fnSym,
+			semantic.callArgumentTypes(fnSym, node.children[1], child => expressionType(child, context)),
+			context,
+			template?.typeParameters
+				?.map(p => p.symbol.type)
+				.filter((t): t is Type => !!t),
+		);
+	}
+
+	function inferFunctionReturn(
+		fnSym: SymbolMap['function'],
+		args: Type[],
+		context: ExpressionContext,
+		templateTypeParams?: Type[],
+	): Type {
+		const result = resolveCallReturn(fnSym, args, (arms, types) => resolveOverload(arms, types, context.templates), templateTypeParams) ?? BaseTypes.Void;
+		return result.kind === 'type' && result.family === 'unknown' ? reduceType(result, context.environment.typeArguments) : result;
+	}
+
+	function stageReturn(stage: Node, input: Type, context: ExpressionContext): Type {
+		if (stage.kind === '|') return inferDispatchReturn(stage, input, context);
+		if (stage.kind === '.') {
+			const fnSym = staticMemberFunction(stage, context.environment);
+			if (fnSym)
+				return inferFunctionReturn(
+					fnSym,
+					semantic.pipeArgumentTypes(input, fnSym),
+					context,
+				);
+		}
+		if (stage.kind === 'ident') {
+			const sym = stage.symbol;
+			const fnSym = functionTypeOf(sym, context.environment);
+			if (fnSym)
+				return inferFunctionReturn(
+					fnSym,
+					semantic.pipeArgumentTypes(input, fnSym),
+					context,
+					context.templates?.get(sym)
+						?.typeParameters?.map(p => p.symbol.type)
+						.filter((t): t is Type => !!t),
+				);
+		}
+		if (stage.kind === 'fn') return stage.symbol.returnType ?? BaseTypes.Unknown;
+		return BaseTypes.Unknown;
+	}
+
+	function inferDispatchReturn(stage: NodeMap['|'], input: Type, context: ExpressionContext): Type {
+		let result: Type | undefined;
+		const walk = (arm: Node): void => {
+			if (arm.kind === '|') {
+				walk(arm.children[0]);
+				walk(arm.children[1]);
+				return;
+			}
+			const armInput = stageInputType(arm, context.environment) ?? input;
+			const armResult = stageReturn(arm, armInput, context);
+			result = result ? mergeValueTypes(result, armResult) : armResult;
+		};
+		walk(stage);
+		return result ?? BaseTypes.Unknown;
+	}
+
+	function inferPipeType(node: NodeMap['>>'], context: ExpressionContext): Type {
+		const flat = flattenPipe(node.children);
+		const first = flat[0];
+		if (!first) return BaseTypes.Unknown;
+		let output = expressionType(first, context);
+		for (let i = 1; i < flat.length; i++) {
+			const stage = flat[i];
+			if (stage) output = stageReturn(stage, output, context);
+		}
+		return output;
+	}
+
+	function expressionType(node: Node, context: ExpressionContext): Type {
+		const literal = literalType(node);
+		if (literal) return dispatchArgType(literal);
+		switch (node.kind) {
+			case '$':
+				return context.inputType ?? BaseTypes.Int32;
+			case 'ident':
+				return inferIdentType(node, context);
+			case '+':
+			case '-':
+			case '*':
+			case '/':
+			case '%':
+				return semantic.numericValueType(expressionType(node.children[0], context), expressionType(node.children[1], context));
+			case '|':
+			case '&':
+			case '^':
+			case '<:':
+			case ':>':
+			case '~': {
+				const lt = expressionType(node.children[0], context);
+				const c1 = node.children[1];
+				const rt = c1 ? expressionType(c1, context) : lt;
+				return isInt64Type(lt) || isInt64Type(rt)
+					? BaseTypes.Int64
+					: BaseTypes.Int32;
+			}
+			case '!':
+				return BaseTypes.Bool;
+			case 'negate': {
+				const t = expressionType(node.children[0], context);
+				return isFloatType(t) ? BaseTypes.Float64 : BaseTypes.Int32;
+			}
+			case '==':
+			case '!=':
+			case '<':
+			case '>':
+			case '<=':
+			case '>=':
+				return BaseTypes.Bool;
+			case '||':
+			case '&&':
+				return expressionType(node.children[0], context);
+			case '?':
+				return expressionType(node.children[1], context);
+			case '??':
+				return valueFallbackType(
+					expressionType(node.children[0], context),
+					expressionType(node.children[1], context),
+				);
+			case '>>':
+				return inferPipeType(node, context);
+			case '->':
+				return prepareThread(node, child => expressionType(child, context), call => threadResolution(call, context)).type;
+			case 'call':
+				return inferCallType(node, context);
+			case '.': {
+				const type = semantic.resolveMemberType(node, child => expressionType(child, context), false);
+				return type === BaseTypes.Unknown ? BaseTypes.Int32 : type;
+			}
+			case 'data': {
+				const nominal = nominalOf(node, context.environment);
+				if (isTraceComposed(nominal)) return nominal;
+				const items = dataItems(node).filter(it => {
+					const value = itemValue(it);
+					return !(value.kind === 'ident' && value.symbol.kind === 'function');
+				});
+				const first = items[0];
+				if (
+					items.length === 1 &&
+					first &&
+					!(first.kind === 'propdef' && first.label)
+				)
+					return expressionType(itemValue(first), context);
+				const members: Record<string, Symbol> = {};
+				items.forEach((it, i) => {
+					const key =
+						it.kind === 'propdef' && it.label ? text(it.label) : String(i);
+					members[key] = {
+						kind: 'variable',
+						name: key,
+						flags: 0,
+						type: expressionType(itemValue(it), context),
+					};
+				});
+				return {
+					kind: 'type',
+					flags: 0,
+					name: '__data',
+					family: 'data',
+					size: 0,
+					members,
+				};
+			}
+			case 'next': {
+				const v = node.children?.[0];
+				return v ? expressionType(v, context) : BaseTypes.Void;
+			}
+			case 'break':
+				return BaseTypes.Void;
+			default:
+				return BaseTypes.Unknown;
+		}
+	}
+
 	function stampErrorData(node: Node | undefined, expected: Type | undefined, environment: SpecializationEnvironment, originFn?: string): void {
 		if (!node || expected?.kind !== 'type') return;
 		if (expected.family === 'union') {
@@ -161,8 +461,8 @@ function createPreparationContext() {
 		return type === BaseTypes.Trace || !!type.components?.some(composesTrace);
 	}
 
-	function isTraceComposed(type: Type): type is Extract<ResolvedType, { family: 'data' }> {
-		return type.kind === 'type' && type.family === 'data' && composesTrace(type);
+	function isTraceComposed(type: Type | undefined): type is Extract<ResolvedType, { family: 'data' }> {
+		return type?.kind === 'type' && type.family === 'data' && composesTrace(type);
 	}
 
 	function annotation(node: Node, environment: SpecializationEnvironment) {
@@ -183,7 +483,7 @@ function createPreparationContext() {
 
 	return {
 		semantic, createEnvironment: createSpecializationEnvironment, typeOf,
-		returnType, setReturnType: (fn: SymbolMap['function'], type: Type): void => { returns.set(fn, type); },
+		functionResult, concreteType, expressionType, stageReturn, stageInputType, functionTypeOf, functionArgument, staticMemberFunction, resolveOverload, threadResolution, valueFallbackType,
 		emissionType, threadCall, resolveThreadCall, prepareThread,
 		stampErrorData, nominalOf, originOf,
 	};
