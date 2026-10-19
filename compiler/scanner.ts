@@ -1,4 +1,4 @@
-import { createTrie, ScannerApi, matchers, stringEscape } from '@cxl/gbc.sdk';
+import { type ScannerContext, createTrie, ScannerApi, matchers, stringEscape } from '@cxl/gbc.sdk';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];
@@ -27,7 +27,7 @@ const notEol = (ch: string) => ch !== '\n';
 
 const stringCh = (ch: string) => ch !== "'" && ch !== '$';
 
-export function scan(source: string) {
+export function scan(source: string, braceStack: number[] = [], context?: ScannerContext, previousCharacter = '') {
 	const {
 		current,
 		eof,
@@ -38,11 +38,10 @@ export function scan(source: string) {
 		skipWhitespace,
 		backtrack: apiBacktrack,
 		matchEnclosed,
-	} = ScannerApi({ source });
+	} = ScannerApi({ source, context });
 
 	const keywordMatcher = createTrieMatcher(keywordTrie, notIdent);
 
-	const braceStack: number[] = [];
 	const braceLog: {
 		end: number;
 		kind: 'push' | 'pop' | 'inc' | 'dec';
@@ -91,7 +90,7 @@ export function scan(source: string) {
 		let float = false;
 		// A number right after a member `.` is a positional index, not a
 		// float — `.0` must not merge into it, so `d.1.0` reads as `(d.1).0`.
-		const memberIndex = current(-1) === '.';
+		const memberIndex = (current(-1) || previousCharacter) === '.';
 		if (!memberIndex && current(consumed) === '.') {
 			const decimals = digitRun(digit, consumed + 1);
 			if (decimals === 0)

@@ -74,9 +74,8 @@ export function enrichHighlightToken<Node extends Token<string>>(
 	return result;
 }
 
-export interface Highlighter<Node extends Token<string> = Token<string>> {
-	(source: string): Generator<Node & HighlightToken, void>;
-	resume?(input: HighlightInput, checkpoint?: HighlightCheckpoint<unknown>): Generator<Node & HighlightToken, HighlightCheckpoint<unknown>>;
+export interface Highlighter<Node extends Token<string> = Token<string>, State = unknown> {
+	resume(input: HighlightInput, checkpoint?: HighlightCheckpoint<State>): Generator<Node & HighlightToken, HighlightCheckpoint<State>>;
 }
 
 const noFold = [0, 0] as const;
@@ -96,29 +95,6 @@ export function foldToken(token: HighlightToken): readonly [number, number] {
 		text(token).includes('\n')
 	) return spanFold;
 	return noFold;
-}
-
-export function createHighlighter<Node extends Token<string>>(
-	scanner: Scanner<Node>,
-	classify: (token: Node) => HighlightKind,
-	fold?: (token: Node & HighlightToken) => readonly [number, number],
-): Highlighter<Node | TokenizerError> {
-	const isScannedToken = (token: Node | TokenizerError): token is Node =>
-		token.kind !== 'tokenizer-error';
-	return function* (source) {
-		let offset = 0;
-		let line = 0;
-		for (const token of tokenize(scanner, source)) {
-			for (; offset < token.start; offset++)
-				if (source.charAt(offset) === '\n') line++;
-			token.line = line;
-			if (isScannedToken(token)) {
-				const result = enrichHighlightToken(token, classify(token));
-				if (fold) [result.foldStart, result.foldEnd] = fold(result);
-				yield result;
-			} else yield enrichHighlightToken(token, 'error');
-		}
-	};
 }
 
 export function* tokenize<Node extends Token<string>>(
@@ -1008,13 +984,22 @@ export function createCaseInsensitiveTrie<T extends string>(...map: T[]) {
 	return trie;
 }
 
-export function ScannerApi({ source }: { source: string }) {
+export interface ScannerContext {
+	line: number;
+	endLine: number;
+}
+
+export function ScannerApi({ source, context }: { source: string; context?: ScannerContext }) {
 	const length = source.length;
 	let index = 0;
-	let line = 0;
-	let endLine = 0;
+	let line = context?.line ?? 0;
+	let endLine = context?.endLine ?? 0;
+	function save() {
+		if (context) Object.assign(context, { line, endLine });
+	}
 
 	function tk<Kind extends string>(kind: Kind, consume: number): Token<Kind> {
+		save();
 		return {
 			kind,
 			start: index,
@@ -1030,6 +1015,7 @@ export function ScannerApi({ source }: { source: string }) {
 	): Token<Kind> {
 		const result = tk(kind, consume);
 		line = endLine = result.line + 1;
+		save();
 		return result;
 	}
 
@@ -1088,6 +1074,7 @@ export function ScannerApi({ source }: { source: string }) {
 
 	function error(message: string, consumed = 0, start = index) {
 		index += consumed;
+		save();
 		return new CompilerError(message, {
 			start,
 			end: index,
@@ -1107,6 +1094,7 @@ export function ScannerApi({ source }: { source: string }) {
 	function backtrack(pos: Position) {
 		index = pos.end;
 		endLine = line = pos.line;
+		save();
 	}
 
 	function matchWhileRegex(regex: RegExp, consumed = 0) {

@@ -1,45 +1,35 @@
 import {
-	CompilerError, createHighlighter, createResumableHighlighter,
-	enrichHighlightToken, foldToken,
+	CompilerError, createHighlighter, enrichHighlightToken,
 	type HighlightKind, type HighlightState, type HighlightToken,
-	type HighlightWindow, type TokenizerError,
+	type HighlightWindow, type Position, type TokenizerError,
 } from '@cxl/gbc.sdk';
-import { scan, type ScannerToken } from './index.js';
+import type { ScannerToken } from './index.js';
 import { initialScannerState, scanWindow, whitespace, type JsonScannerState, type Lexeme } from './scanner.js';
 
 export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
-const legacy = createHighlighter(scan, token => {
-	switch (token.kind) {
-		case 'string':
-			return /^[ \t\r\n]*:/.test(token.source.slice(token.end)) ? 'attribute' : 'string';
-		case 'number': return 'number';
-		case 'true': case 'false': case 'null': return 'literal';
-		case 'eof': return 'text';
-		default: return 'punctuation';
-	}
-}, foldToken);
-
 interface JsonState {
 	scanner: JsonScannerState;
-	pending: Lexeme | undefined;
+	pending: Omit<Position, 'source'> | undefined;
 }
 
 type JsonHighlightToken = (ScannerToken | TokenizerError) & HighlightToken;
 
 function* resume(window: HighlightWindow, previous: Readonly<JsonState>): Generator<JsonHighlightToken, HighlightState<JsonState>> {
-	let pending = previous.pending;
+	let pending: Lexeme | undefined = previous.pending ? Object.assign(window.position(
+		previous.pending.start, previous.pending.end, previous.pending.line,
+	), { kind: 'string' as const }) : undefined;
 	let index = 0;
-	const iterator = scanWindow(window.text, window.start, window.line, window.final, previous.scanner);
+	const scanner = scanWindow(window.text, window.start, window.line, window.final, previous.scanner);
 
 	function emit(token: Lexeme, highlight: HighlightKind): JsonHighlightToken {
-		const position = window.position(token.start, token.end, token.line);
-		const result = token.kind === 'tokenizer-error'
-			? enrichHighlightToken(Object.assign(position, {
-				kind: token.kind, error: new CompilerError(token.message, window.position(token.start, token.end, token.line)),
-			}), 'error')
-			: enrichHighlightToken(Object.assign(position, { kind: token.kind }), highlight);
+		if (token.kind === 'tokenizer-error') return Object.assign(window.position(token.start, token.end, token.line), {
+			kind: token.kind, error: new CompilerError(token.message, window.position(token.start, token.end, token.line)),
+			highlight: 'error' as const, foldStart: 0, foldEnd: 0,
+		});
+		const result = enrichHighlightToken(token, highlight);
 		if (token.kind === '{' || token.kind === '[') result.foldStart = 1;
 		else if (token.kind === '}' || token.kind === ']') result.foldEnd = 1;
+		if (window.start || !window.final) window.position(token.start, token.end, token.line, result);
 		return result;
 	}
 
@@ -51,12 +41,14 @@ function* resume(window: HighlightWindow, previous: Readonly<JsonState>): Genera
 				pending = undefined;
 			}
 		}
-		const next = iterator.next();
-		if (next.done) return {
-			state: { scanner: next.value, pending },
-			committed: pending?.start ?? (next.value.kind ? next.value.start : window.start + window.text.length),
-		};
-		const token = next.value;
+		const token = scanner.next();
+		if (!token) {
+			const state = scanner.state;
+			return {
+				state: { scanner: state, pending: pending ? { start: pending.start, end: pending.end, line: pending.line } : undefined },
+				committed: pending?.start ?? (state.kind ? state.start : window.start + window.text.length),
+			};
+		}
 		index = token.end - window.start;
 		if (token.kind === 'string') pending = token;
 		else yield emit(token, token.kind === 'number' ? 'number' :
@@ -64,6 +56,6 @@ function* resume(window: HighlightWindow, previous: Readonly<JsonState>): Genera
 	}
 }
 
-export const highlight = createResumableHighlighter(legacy, (): JsonState => ({
+export const highlight = createHighlighter((): JsonState => ({
 	scanner: initialScannerState(), pending: undefined,
 }), resume);

@@ -6,14 +6,16 @@ import {
 	CompilerError,
 	createCaseInsensitiveTrie,
 	createHighlighter,
-	createResumableHighlighter,
+	highlightTokens,
+	type Scanner,
+	type HighlightKind,
+	type HighlightToken,
 	createTrie,
 	findNodeAtIndex,
 	Flags,
 	enrichHighlightToken,
 	foldToken,
 	formatting,
-	isResumableHighlighter,
 	type Highlighter,
 	type LeafNode,
 	matchers,
@@ -63,10 +65,7 @@ function drain<Node, Result>(iterator: Generator<Node, Result>) {
 }
 
 function resumable() {
-	return createResumableHighlighter(function* (source) {
-		for (let index = 0; index < source.length; index++)
-			yield Object.assign(enrichHighlightToken({ kind: 'char', start: index, end: index + 1, line: 0, source }, 'text'), { ordinal: index });
-	}, () => 0, function* (window, count) {
+	return createHighlighter(() => 0, function* (window, count) {
 		let line = window.line;
 		for (let index = 0; index < window.text.length; index++) {
 			const start = window.start + index;
@@ -81,20 +80,31 @@ function highlightSource(value: string) {
 	return { id: {}, version: 1, length: value.length, read: (start: number, end: number) => value.slice(start, end), text: () => value };
 }
 
+function tokenHighlighter<Node extends Token<string>>(
+	scanner: Scanner<Node>,
+	classify: (token: Node) => HighlightKind,
+	fold?: (token: Node & HighlightToken) => readonly [number, number],
+) {
+	return createHighlighter(() => undefined, function* (window) {
+		yield* highlightTokens(window, tokenize(scanner, window.text), classify, undefined, fold);
+		return { state: undefined, committed: window.start + window.text.length };
+	});
+}
+
 export default spec('sdk', s => {
-	s.test('look up resumable and legacy highlighters through the public contract', (a: TestApi) => {
-		const registered: Record<string, Highlighter> = {
-			native: resumable(), legacy: createHighlighter(source => {
-				const api = ScannerApi({ source });
-				return { next: () => api.eof() ? api.tk('eof', 0) : api.tk('char', 1), backtrack: api.backtrack };
-			}, () => 'text'),
-		};
+	s.test('look up checkpoint-only highlighters through the public contract', (a: TestApi) => {
+		const registered: Record<string, Highlighter> = { native: resumable() };
 		const native = registered.native;
-		const legacy = registered.legacy;
-		a.assert(native && isResumableHighlighter(native));
-		a.assert(legacy && !isResumableHighlighter(legacy));
+		a.assert(native);
+		a.equal(typeof native, 'object');
 		a.equalValues(drain(native.resume({ source: highlightSource('ab') })).tokens.map(text), ['a', 'b']);
-		a.equalValues([...legacy('ab')].map(text), ['a', 'b']);
+	});
+	s.test('complete windows reuse the read snapshot without materializing the source', (a: TestApi) => {
+		const value = 'a\nb';
+		const source = { ...highlightSource(value), text(): string { throw new Error('Unexpected materialization'); } };
+		const tokens = drain(resumable().resume({ source })).tokens;
+		a.equalValues(tokens.map(token => token.source), [value, value, value]);
+		a.equal(JSON.stringify(tokens).includes('"source":"a\\nb"'), true);
 	});
 	s.test('bounded highlighting validates public input before reading', (a: TestApi) => {
 		const highlight = resumable();
@@ -145,7 +155,7 @@ export default spec('sdk', s => {
 		a.equal(result.checkpoint.line, 1);
 		a.equal(result.checkpoint.offset, 3);
 		a.equal(result.checkpoint.committed, 3);
-		a.equalValues([...highlight('ab')].map(text), ['a', 'b']);
+		a.equalValues([...highlight.resume({ source: highlightSource('ab') })].map(text), ['a', 'b']);
 		const empty = drain(highlight.resume({ source: highlightSource('') }));
 		a.equalValues(empty.tokens, []);
 		a.equal(empty.checkpoint.done, true);
@@ -153,7 +163,7 @@ export default spec('sdk', s => {
 	s.test('bounded highlighting rolls back read and scanner failures', (a: TestApi) => {
 		const source = highlightSource('abc');
 		let fail = false;
-		const highlight = createResumableHighlighter(resumable(), () => 0, function* (window, count) {
+		const highlight = createHighlighter(() => 0, function* (window, count) {
 			yield Object.assign(enrichHighlightToken(Object.assign(window.position(window.start, window.start + 1, window.line), { kind: 'char' }), 'text'), { ordinal: count });
 			if (fail) throw new Error('Scanner failed');
 			return { state: count + 1, committed: window.start + window.text.length };
@@ -169,7 +179,7 @@ export default spec('sdk', s => {
 	s.test('bounded highlighting rejects invalid mode commitment', (a: TestApi) => {
 		const source = highlightSource('ab');
 		for (const committed of [-1, 0.5, 3, NaN, 0]) {
-			const highlight = createResumableHighlighter(resumable(), () => 0, function* (window) {
+			const highlight = createHighlighter(() => 0, function* (window) {
 				yield Object.assign(enrichHighlightToken(Object.assign(window.position(0, 1, 0), { kind: 'char' }), 'text'), { ordinal: 0 });
 				return { state: 0, committed };
 			});
@@ -178,7 +188,7 @@ export default spec('sdk', s => {
 	});
 	s.test('resume preserves undefined state without initializing another session', (a: TestApi) => {
 		let sessions = 0;
-		const highlight = createResumableHighlighter(resumable(), () => { sessions++; }, function* (window) {
+		const highlight = createHighlighter(() => { sessions++; }, function* (window) {
 			yield Object.assign(enrichHighlightToken(Object.assign(window.position(window.start, window.start + 1, 0), { kind: 'char' }), 'text'), { ordinal: 0 });
 			return { state: undefined, committed: window.start + window.text.length };
 		});
@@ -201,7 +211,7 @@ export default spec('sdk', s => {
 		a.equalValues(drain(highlight.resume({ source }, prefix.checkpoint)).tokens.map(text), ['b', 'c']);
 	});
 	s.test('parentheses do not mark fold boundaries', a => {
-		const highlight = createHighlighter(source => {
+		const highlight = tokenHighlighter(source => {
 			const api = ScannerApi({ source });
 			return {
 				backtrack: api.backtrack,
@@ -212,12 +222,12 @@ export default spec('sdk', s => {
 			};
 		}, () => 'punctuation', foldToken);
 		for (const source of ['()', '(\n)'])
-			a.equalValues([...highlight(source)].map(token => [token.foldStart, token.foldEnd]), [[0, 0], [0, 0]]);
+			a.equalValues([...highlight.resume({ source: highlightSource(source) })].map(token => [token.foldStart, token.foldEnd]), [[0, 0], [0, 0]]);
 	});
 
-	s.test('fold classifiers receive highlighted tokens and skip errors', a => {
+	s.test('fold classifiers receive highlighted tokens and skip errors', (a: TestApi) => {
 		const calls: string[] = [];
-		const highlight = createHighlighter(source => {
+		const highlight = tokenHighlighter(source => {
 			const api = ScannerApi({ source });
 			return {
 				backtrack: api.backtrack,
@@ -231,21 +241,22 @@ export default spec('sdk', s => {
 			calls.push(text(token));
 			return foldToken(token);
 		});
-		const iterator = highlight('(?[])');
+		const iterator = highlight.resume({ source: highlightSource('(?[])') });
 		a.equal(calls.length, 0);
 		const first = iterator.next();
+		a.assert(!first.done);
 		a.equal(calls.length, 1);
 		a.equalValues(
-			[first.value, ...iterator].map(token => token && [token.foldStart, token.foldEnd]),
+			[first.value, ...iterator].map(token => [token.foldStart, token.foldEnd]),
 			[[0, 0], [0, 0], [1, 0], [0, 1], [0, 0]],
 		);
 		a.equalValues(calls, ['(', '[', ']', ')']);
 	});
 
-	s.test('enriched highlighting stream', a => {
+	s.test('preserves enriched token metadata in a lazy checkpoint stream', (a: TestApi) => {
 		const source = 'a\nb';
 		const scanned: Token<'word'>[] = [];
-		const highlight = createHighlighter(value => {
+		const highlight = tokenHighlighter(value => {
 			const api = ScannerApi({ source: value });
 			return {
 				backtrack: api.backtrack,
@@ -258,12 +269,11 @@ export default spec('sdk', s => {
 				},
 			};
 		}, () => 'identifier');
-		const stream = highlight(source);
+		const stream = highlight.resume({ source: highlightSource(source) });
 		a.equal(scanned.length, 0);
 		const first = stream.next();
 		a.equal(first.done, false);
 		if (!first.done) {
-			a.equal(first.value === scanned[0], true);
 			a.equal(scanned.length, 1);
 			a.equal(first.value.kind, 'word');
 			a.equal(first.value.highlight, 'identifier');
@@ -273,15 +283,14 @@ export default spec('sdk', s => {
 			a.equal(first.value.source, source);
 			const rest = [...stream];
 			a.equal(rest.length, 1);
-			a.equal(rest[0] === scanned[1], true);
 			a.equal(rest[0]?.line, 1);
 			a.equal(first.value.highlight, 'identifier');
 		}
-		a.equalValues([...highlight('')], []);
+		a.equalValues([...highlight.resume({ source: highlightSource('') })], []);
 	});
 
 	s.test('highlighter recovery', a => {
-		const highlight = createHighlighter(source => {
+		const highlight = tokenHighlighter(source => {
 			const api = ScannerApi({ source });
 			return {
 				next: () => {
@@ -291,7 +300,7 @@ export default spec('sdk', s => {
 				backtrack: api.backtrack,
 			};
 		}, () => 'identifier', () => [2, 1]);
-		const tokens = [...highlight('a?b')];
+		const tokens = [...highlight.resume({ source: highlightSource('a?b') })];
 		a.equalValues(tokens.map(token => [token.highlight, token.start, token.end]), [
 			['identifier', 0, 1], ['error', 1, 2], ['identifier', 2, 3],
 		]);

@@ -17,6 +17,27 @@ import {
 //import { ast } from './debug.js';
 
 export default spec('cmd', s => {
+	s.test('retains native context and stable folds across checkpoint windows', a => {
+		const value = 'cat <<EOF\nif done\nEOF\nf(\nvalue: string\n) { echo hi; }';
+		const source = highlightSource(value);
+		const expected = drain(highlight.resume({ source })).tokens;
+		const prefix = drain(highlight.resume({ source, end: Math.floor(value.length / 2) }));
+		const snapshot = JSON.stringify(prefix.tokens);
+		const suffix = drain(highlight.resume({ source }, prefix.checkpoint));
+		a.equalValues([...prefix.tokens, ...suffix.tokens], expected);
+		a.equalValues(drain(highlight.resume({ source }, prefix.checkpoint)).tokens, suffix.tokens);
+		a.equal(JSON.stringify(prefix.tokens), snapshot);
+		let result = drain(highlight.resume({ source, end: 0 }));
+		const tokens = [...result.tokens];
+		for (let end = 1; end <= value.length; end++) {
+			result = drain(highlight.resume({ source, end }, result.checkpoint));
+			tokens.push(...result.tokens);
+		}
+		a.equalValues(tokens, expected);
+		a.equal(result.checkpoint.committed, value.length);
+		a.equal(result.checkpoint.done, true);
+	});
+
 	s.test('public highlighting contract', it => {
 		it.test('marks fold boundaries without folding literal delimiters', a => {
 			const cases: [string, [string, number, number][]][] = [
@@ -50,23 +71,23 @@ export default spec('cmd', s => {
 				['cat <<EOF\nif for\n', [['if for\n', 1, 1]]],
 			];
 			for (const [source, expected] of cases) {
-				const tokens = [...highlight(source)];
+				const tokens = [...highlight.resume({ source: highlightSource(source) })];
 				a.equalValues(
 					tokens.filter(token => token.foldStart || token.foldEnd)
 						.map(token => [source.slice(token.start, token.end), token.foldStart, token.foldEnd]),
 					expected,
 				);
-				const iterator = highlight(source);
+				const iterator = highlight.resume({ source: highlightSource(source) });
 				const first = iterator.next();
 				if (!first.done) {
 					const snapshot = { ...first.value };
-					const other = highlight(source);
+					const other = highlight.resume({ source: highlightSource(source) });
 					other.next();
 					a.equalValues([first.value, ...iterator], tokens);
 					a.equalValues(first.value, snapshot);
 					a.equalValues([...other], tokens.slice(1));
 				}
-				a.equalValues([...highlight(source)], tokens);
+				a.equalValues([...highlight.resume({ source: highlightSource(source) })], tokens);
 			}
 		});
 		it.test('preserves heredoc literals, positions, and resumes commands', (a: TestApi) => {
@@ -82,7 +103,7 @@ export default spec('cmd', s => {
 				['"$\'EOF\'"', "$'EOF'"],
 			] as const) {
 				const source = `cat <<${delimiter}\nif (for) { done; }\n${end}\nif true; then true; fi`;
-				const tokens: HighlightToken[] = [...highlight(source)];
+				const tokens: HighlightToken[] = [...highlight.resume({ source: highlightSource(source) })];
 				const body = tokens.find(token => token.kind === 'heredoc');
 				a.assert(body, 'Expected heredoc token');
 				a.equal(body.highlight, 'string');
@@ -94,14 +115,14 @@ export default spec('cmd', s => {
 		});
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
-				[...highlight('if echo "hi"; then echo 42; fi')].map(token => token.highlight),
+				[...highlight.resume({ source: highlightSource('if echo "hi"; then echo 42; fi') })].map(token => token.highlight),
 				['keyword', 'identifier', 'string', 'punctuation', 'keyword', 'identifier', 'number', 'punctuation', 'keyword'],
 			);
-			a.equalValues([...highlight('')], []);
+			a.equalValues([...highlight.resume({ source: highlightSource('') })], []);
 		});
 		it.test('preserves original source positions and independent calls', a => {
 			const source = 'first\nsecond';
-			const tokens = [...highlight(source)];
+			const tokens = [...highlight.resume({ source: highlightSource(source) })];
 			a.equalValues(
 				tokens
 					.filter(token => token.highlight === 'identifier' || token.highlight === 'text')
@@ -109,7 +130,7 @@ export default spec('cmd', s => {
 				 [['first', 0], ['\n', 0], ['second', 1]],
 			);
 			a.equal(tokens.every(token => token.source === source), true);
-			a.equalValues([...highlight(source)], tokens);
+			a.equalValues([...highlight.resume({ source: highlightSource(source) })], tokens);
 		});
 	});
 
@@ -1407,3 +1428,16 @@ export default spec('cmd', s => {
 		});
 	});
 });
+
+function highlightSource(value: string) {
+	return { id: {}, version: 1, length: value.length, read: (start: number, end: number) => value.slice(start, end), text: () => value };
+}
+
+function drain<Node, Result>(iterator: Generator<Node, Result>) {
+	const tokens: Node[] = [];
+	for (;;) {
+		const next = iterator.next();
+		if (next.done) return { tokens, checkpoint: next.value };
+		tokens.push(next.value);
+	}
+}

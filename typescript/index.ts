@@ -21,12 +21,13 @@ const typeKeywords = new Set(
 );
 const literals = new Set([...javaScriptLiterals, 'undefined']);
 
-export const scan: Scanner<ScannerToken> = createScanner(word =>
+export const classifyIdentifier = (word: string) =>
 	literals.has(word)
 		? 'literal'
 		: typeKeywords.has(word)
 			? 'type'
 			: keywords.has(word)
 				? 'keyword'
-				: 'identifier',
-);
+				: 'identifier';
+
+export const scan: Scanner<ScannerToken> = createScanner(classifyIdentifier);

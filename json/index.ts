@@ -1,3 +1,4 @@
+import { numberPattern } from './scanner.js';
 import {
 	ParserApi,
 	ScannerApi,
@@ -25,7 +26,6 @@ export interface ParseResult {
 	errors: CompilerError[];
 }
 
-const numberPattern = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
 const boundary = (ch: string) => !ch || '{}[]:, \t\r\n'.includes(ch);
 
 export const scan: Scanner<ScannerToken> = source => {

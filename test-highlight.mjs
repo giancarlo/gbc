@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -27,6 +27,10 @@ const foldSources = {
 	cmd: 'if true; then\ntrue; fi',
 	markdown: '# Heading\nbody',
 };
+
+function highlightSource(value) {
+	return { id: {}, version: 1, length: value.length, read: (start, end) => value.slice(start, end), text: () => value };
+}
 
 function compile(args) {
 	const result = spawnSync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), ...args], {
@@ -69,14 +73,13 @@ try {
 				},
 			}],
 		});
-		await copyFile(join(root, 'dist', pkg, 'highlight.d.ts'), join(dir, 'highlight.d.ts'));
-		if (pkg === 'javascript' || pkg === 'typescript' || pkg === 'json')
-			await copyFile(join(root, 'dist', pkg, 'index.d.ts'), join(dir, 'index.d.ts'));
+		for (const file of await readdir(join(root, 'dist', pkg)))
+			if (file.endsWith('.d.ts')) await copyFile(join(root, 'dist', pkg, file), join(dir, file));
 		await symlink(dir, join(fixture, 'node_modules', metadata.name));
 		const { highlight } = await import(pathToFileURL(require.resolve(metadata.name + '/highlight')).href);
-		const tokens = [...highlight(source)];
+		const tokens = [...highlight.resume({ source: highlightSource(source) })];
 		assert(tokens.length > 0);
-		assert.deepEqual([...highlight('')], []);
+		assert.deepEqual([...highlight.resume({ source: highlightSource('') })], []);
 		if (kinds) assert.deepEqual(tokens.map(token => token.highlight), kinds);
 		let end = 0;
 		for (const token of tokens) {
@@ -89,27 +92,30 @@ try {
 			assert(Number.isInteger(token.foldEnd) && token.foldEnd >= 0);
 			end = token.end;
 		}
-		const iterator = highlight(source);
+		const iterator = highlight.resume({ source: highlightSource(source) });
 		assert.equal(iterator.next().value.highlight, tokens[0].highlight);
-		assert.deepEqual([...highlight(source)], tokens);
-		assert([...highlight(incomplete)].length > 0);
-		const folded = [...highlight(foldSources[pkg])];
+		assert.deepEqual([...highlight.resume({ source: highlightSource(source) })], tokens);
+		assert([...highlight.resume({ source: highlightSource(incomplete) })].length > 0);
+		const folded = [...highlight.resume({ source: highlightSource(foldSources[pkg]) })];
 		assert.equal(folded.reduce((sum, token) => sum + token.foldStart, 0), 1);
 		assert.equal(folded.reduce((sum, token) => sum + token.foldEnd, 0), 1);
 		if (['compiler', 'basic', 'cmd'].includes(pkg))
-			assert([...highlight(incomplete)].some(token => token.highlight === 'error'));
+			assert([...highlight.resume({ source: highlightSource(incomplete) })].some(token => token.highlight === 'error'));
 		if (pkg === 'markdown') {
 			assert.equal(tokens.filter(token => token.highlight === 'code').length, 2);
 			assert(!tokens.some(token => token.highlight === 'keyword'));
 			for (const [source, kind] of [['# ', 'heading'], ['`', 'text']])
 				assert.deepEqual(
-					[...highlight(source)].map(({ highlight: kind, start, end }) => ({ kind, start, end })),
+					[...highlight.resume({ source: highlightSource(source) })].map(({ highlight: kind, start, end }) => ({ kind, start, end })),
 					[{ kind, start: 0, end: source.length }],
 				);
 		}
 		declarations.push(`import { highlight as ${pkg}, type Highlighter as ${pkg}Highlighter, type HighlightToken as ${pkg}Token } from '${metadata.name}/highlight';
 const ${pkg}Fn: ${pkg}Highlighter = ${pkg};
-const ${pkg}Tokens: ${pkg}Token[] = [...${pkg}Fn('source')];
+const ${pkg}Source = { id: {}, version: 1, length: 0, read: (_start: number, _end: number) => '', text: () => '' };
+const ${pkg}Tokens: ${pkg}Token[] = [...${pkg}Fn.resume({ source: ${pkg}Source })];
+const ${pkg}Callable: ${pkg}Highlighter extends (...args: never[]) => unknown ? true : false = false;
+void ${pkg}Callable;
 void ${pkg}Tokens;`);
 		console.log(`${pkg}: public highlighting contract passed`);
 	}
@@ -120,3 +126,5 @@ void ${pkg}Tokens;`);
 } finally {
 	await rm(fixture, { recursive: true, force: true });
 }
+
+await import('./test-highlight-windows.mjs');

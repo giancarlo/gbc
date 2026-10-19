@@ -1,7 +1,9 @@
-import { matchers } from '@cxl/gbc.sdk';
+import { matchers, type Position } from '@cxl/gbc.sdk';
 import type { ScannerKind } from './index.js';
 
-export type Lexeme = { start: number; end: number; line: number } & (
+export const numberPattern = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+
+export type Lexeme = Position & (
 	| { kind: ScannerKind; message?: never }
 	| { kind: 'tokenizer-error'; message: string }
 );
@@ -49,78 +51,121 @@ function number(state: NumberState, ch: string): NumberState {
 	}
 }
 
-export function* scanWindow(text: string, start: number, line: number, final: boolean, previous: Readonly<JsonScannerState>): Generator<Lexeme, JsonScannerState> {
-	const state = { ...previous };
+export function scanWindow(text: string, start: number, line: number, final: boolean, previous: Readonly<JsonScannerState>) {
+	let { kind, start: tokenStart, line: tokenLine, escape, unicode, valid, number: numberState, literal } = previous;
+	let index = 0;
+	const stringEnd = /["\\]|[^\u0020-\uffff]/g;
+	const atomEnd = /[ \t\r\n{}[\]:,]/g;
 
 	function error(message: string, end: number): Lexeme {
-		state.kind = undefined;
-		return { kind: 'tokenizer-error', start: state.start, end, line: state.line, message };
+		kind = undefined;
+		return { kind: 'tokenizer-error', start: tokenStart, end, line: tokenLine, source: text, message };
 	}
 
 	function atom(end: number): Lexeme {
-		state.kind = undefined;
-		if (state.valid && state.literal?.length === end - state.start)
-			return { kind: state.literal, start: state.start, end, line: state.line };
-		if (state.number === 'zero' || state.number === 'integer' || state.number === 'fraction' || state.number === 'exponent')
-			return { kind: 'number', start: state.start, end, line: state.line };
+		kind = undefined;
+		if (valid && literal?.length === end - tokenStart)
+			return { kind: literal, start: tokenStart, end, line: tokenLine, source: text };
+		if (numberState === 'zero' || numberState === 'integer' || numberState === 'fraction' || numberState === 'exponent')
+			return { kind: 'number', start: tokenStart, end, line: tokenLine, source: text };
 		return error('Invalid JSON token', end);
 	}
 
 	function string(ch: string, offset: number): Lexeme | undefined {
-		if (state.unicode) {
+		if (unicode) {
 			if (matchers.hexDigit(ch)) {
-				state.unicode--;
+				unicode--;
 				return;
 			}
-			state.valid = false;
-			state.unicode = 0;
+			valid = false;
+			unicode = 0;
 		}
-		if (ch < ' ') return error(state.escape ? 'Invalid escape' : 'Unescaped control character', offset);
-		if (state.escape) {
-			state.escape = false;
-			if (ch === 'u') state.unicode = 4;
-			else if (!'"\\/bfnrt'.includes(ch)) state.valid = false;
-		} else if (ch === '\\') state.escape = true;
+		if (ch < ' ') return error(escape ? 'Invalid escape' : 'Unescaped control character', offset);
+		if (escape) {
+			escape = false;
+			if (ch === 'u') unicode = 4;
+			else if (!'"\\/bfnrt'.includes(ch)) valid = false;
+		} else if (ch === '\\') escape = true;
 		else if (ch === '"') {
-			if (!state.valid) return error('Invalid string', offset + 1);
-			state.kind = undefined;
-			return { kind: 'string', start: state.start, end: offset + 1, line: state.line };
+			if (!valid) return error('Invalid string', offset + 1);
+			kind = undefined;
+			return { kind: 'string', start: tokenStart, end: offset + 1, line: tokenLine, source: text };
 		}
 	}
 
-	for (let index = 0; index < text.length;) {
-		const ch = text.charAt(index);
-		const offset = start + index;
-		if (state.kind === 'atom') {
-			if (whitespace(ch) || punctuation(ch)) yield atom(offset);
-			else {
-				state.number = number(state.number, ch);
-				state.valid &&= state.literal?.charAt(offset - state.start) === ch;
-				index++;
-			}
-		} else if (state.kind === 'string') {
-			const token = string(ch, offset);
-			if (token) yield token;
-			if (ch >= ' ') index++;
-		} else if (whitespace(ch)) {
-			if (ch === '\n') line++;
-			index++;
-		} else if (punctuation(ch)) {
-			yield { kind: ch, start: offset, end: offset + 1, line };
-			index++;
-		} else {
-			state.kind = ch === '"' ? 'string' : 'atom';
-			state.start = offset;
-			state.line = line;
-			state.escape = false;
-			state.unicode = 0;
-			state.valid = true;
-			state.number = 'start';
-			state.literal = ch === 't' ? 'true' : ch === 'f' ? 'false' : ch === 'n' ? 'null' : undefined;
-			if (state.kind === 'string') index++;
+	function stringRun() {
+		if (!escape && !unicode) {
+			stringEnd.lastIndex = index;
+			index = stringEnd.exec(text)?.index ?? text.length;
+			if (index === text.length) return;
 		}
+		const current = text.charAt(index);
+		const token = string(current, start + index);
+		if (current >= ' ') index++;
+		return token;
 	}
-	if (final && state.kind)
-		yield state.kind === 'atom' ? atom(start + text.length) : error('Unterminated string', start + text.length);
-	return state;
+
+	function completeAtom(): Lexeme | undefined {
+		atomEnd.lastIndex = index;
+		const end = atomEnd.exec(text)?.index ?? text.length;
+		if (end === text.length && !final) return;
+		tokenStart = start + index;
+		tokenLine = line;
+		const word = text.slice(index, end);
+		index = end;
+		if (word === 'true' || word === 'false' || word === 'null')
+			return { kind: word, start: tokenStart, end: start + end, line, source: text };
+		if (matchers.digit(word.charAt(word.length - 1)) && numberPattern.test(word))
+			return { kind: 'number', start: tokenStart, end: start + end, line, source: text };
+		return error('Invalid JSON token', start + end);
+	}
+
+	function begin(ch: string, offset: number) {
+		kind = ch === '"' ? 'string' : 'atom';
+		tokenStart = offset;
+		tokenLine = line;
+		escape = false;
+		unicode = 0;
+		valid = true;
+		numberState = 'start';
+		literal = ch === 't' ? 'true' : ch === 'f' ? 'false' : ch === 'n' ? 'null' : undefined;
+		if (kind === 'string') index++;
+	}
+
+	function next(): Lexeme | undefined {
+		while (index < text.length) {
+			const ch = text.charAt(index);
+			const offset = start + index;
+			if (kind === 'atom') {
+				if (whitespace(ch) || punctuation(ch)) return atom(offset);
+				else {
+					if (numberState !== 'invalid') numberState = number(numberState, ch);
+					valid &&= literal?.charAt(offset - tokenStart) === ch;
+					index++;
+				}
+			} else if (kind === 'string') {
+				const token = stringRun();
+				if (token) return token;
+			} else if (whitespace(ch)) {
+				do {
+					if (text.charAt(index) === '\n') line++;
+					index++;
+				} while (index < text.length && whitespace(text.charAt(index)));
+			} else if (punctuation(ch)) {
+				index++;
+				return { kind: ch, start: offset, end: offset + 1, line, source: text };
+			} else {
+				if (ch !== '"') {
+					const token = completeAtom();
+					if (token) return token;
+				}
+				begin(ch, offset);
+			}
+		}
+		if (final && kind)
+			return kind === 'atom' ? atom(start + text.length) : error('Unterminated string', start + text.length);
+	}
+	return { next, get state(): JsonScannerState {
+		return { kind, start: tokenStart, line: tokenLine, escape, unicode, valid, number: numberState, literal };
+	} };
 }

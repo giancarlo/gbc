@@ -1,4 +1,4 @@
-import {
+import { type ScannerContext,
 	createCaseInsensitiveTrie,
 	matchers,
 	ScannerApi,
@@ -132,8 +132,8 @@ const suffix = (ch: string) =>
 	ch === '$' || ch === '%' || ch === '&' || ch === '!' || ch === '#' || ch === '@';
 const notIdent = (ch: string) => !identCh(ch) && !suffix(ch);
 
-export function scan(source: string) {
-	const api = ScannerApi({ source });
+export function scan(source: string, context?: ScannerContext) {
+	const api = ScannerApi({ source, context });
 	const {
 		backtrack: apiBacktrack,
 		createTrieMatcher,

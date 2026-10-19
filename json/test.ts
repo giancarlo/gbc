@@ -48,7 +48,7 @@ export default spec('json', it => {
 			'wrong"string" : 1', '"a":{}\n"b" : []',
 		];
 		for (const value of cases) {
-			const full = [...highlight(value)];
+			const full = [...highlight.resume({ source: input(value) })];
 			for (let end = 0; end < value.length; end++)
 				a.equalValues(windowed(value, [end, value.length]).tokens, full);
 			const result = windowed(value, Array.from({ length: value.length + 1 }, (_, index) => index));
@@ -66,7 +66,7 @@ export default spec('json', it => {
 				seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
 				value += alphabet.charAt(seed % alphabet.length);
 			}
-			a.equalValues(windowed(value, [10, 20, 30, 40]).tokens, [...highlight(value)]);
+			a.equalValues(windowed(value, [10, 20, 30, 40]).tokens, [...highlight.resume({ source: input(value) })]);
 		}
 	});
 	it.should('reuse checkpoints after edits only beyond their consumed input', (a: TestApi) => {
@@ -77,12 +77,12 @@ export default spec('json', it => {
 			current = value;
 			const source = input(value, original.id, 2);
 			const result = drain(highlight.resume({ source, edit: { previousVersion: 1, start: 8 } }, prefix.checkpoint));
-			a.equalValues([...prefix.tokens, ...result.tokens], [...highlight(value)]);
+			a.equalValues([...prefix.tokens, ...result.tokens], [...highlight.resume({ source: input(value) })]);
 		}
 		a.throws(() => drain(highlight.resume({ source: input('{"changed":1}', original.id, 2) }, prefix.checkpoint)));
 		a.throws(() => drain(highlight.resume({ source: input('{"changed":1}', original.id, 2), edit: { previousVersion: 1, start: 2 } }, prefix.checkpoint)));
 		current = '{"key"   : 123}';
-		a.equalValues(drain(highlight.resume({ source: original }, prefix.checkpoint)).tokens, [...highlight(original.text())].slice(1));
+		a.equalValues(drain(highlight.resume({ source: original }, prefix.checkpoint)).tokens, [...highlight.resume({ source: input(original.text()) })].slice(1));
 	});
 	it.should('keep sources lazy and serializable across pending tokens and errors', (a: TestApi) => {
 		const value = '{"key" \n: 01, "bad\\x"}';
@@ -92,7 +92,7 @@ export default spec('json', it => {
 		const result = drain(highlight.resume({ source }, prefix.checkpoint));
 		a.equal(materializations, 0);
 		const tokens = [...prefix.tokens, ...result.tokens];
-		a.equalValues(JSON.parse(JSON.stringify(tokens)), JSON.parse(JSON.stringify([...highlight(value)])));
+		a.equalValues(JSON.parse(JSON.stringify(tokens)), JSON.parse(JSON.stringify([...highlight.resume({ source: input(value) })])));
 		a.assert(materializations > 0);
 		for (const token of tokens) {
 			a.equal(token.source, value);
@@ -118,7 +118,7 @@ export default spec('json', it => {
 		a.equal(next.value.kind, 'string');
 		iterator.return(result.checkpoint);
 		const final = drain(highlight.resume({ source }, result.checkpoint));
-		a.equalValues([...tokens, ...final.tokens], [...highlight(value)]);
+		a.equalValues([...tokens, ...final.tokens], [...highlight.resume({ source: input(value) })]);
 		a.assert(read <= value.length + 32);
 	});
 	it.should('resume bounded windows without committing property lookahead', (a: TestApi) => {
@@ -140,7 +140,7 @@ export default spec('json', it => {
 		a.assert(checkpoint.done);
 		a.equal(checkpoint.value.committed, 1);
 		const rest = highlight.resume({ source }, checkpoint.value);
-		a.equalValues([token.value, ...rest], [...highlight(value)]);
+		a.equalValues([token.value, ...rest], [...highlight.resume({ source: input(value) })]);
 		a.equalValues(reads, [[0, 8], [8, value.length]]);
 	});
 	it.should('parse nested objects and arrays with positioned properties', (a: TestApi) => {
@@ -204,32 +204,32 @@ export default spec('json', it => {
 	});
 	it.should('highlight categories and fold only structural delimiters', (a: TestApi) => {
 		const source = '{"key" \n: ["{}[]", -2, true, false, null]}';
-		const tokens = [...highlight(source)];
+		const tokens = [...highlight.resume({ source: input(source) })];
 		a.equalValues(tokens.map(token => token.highlight), ['punctuation', 'attribute', 'punctuation', 'punctuation', 'string', 'punctuation', 'number', 'punctuation', 'literal', 'punctuation', 'literal', 'punctuation', 'literal', 'punctuation', 'punctuation']);
 		a.equalValues(tokens.filter(token => token.foldStart || token.foldEnd).map(token => [text(token), token.foldStart, token.foldEnd]), [['{', 1, 0], ['[', 1, 0], [']', 0, 1], ['}', 0, 1]]);
 		a.assert(tokens.every(token => token.source === source));
 		a.equalValues(tokens.map(token => token.line), tokens.map(token => source.slice(0, token.start).split('\n').length - 1));
-		a.equalValues([...highlight('')], []);
-		a.equalValues([...highlight(source)], tokens);
-		const iterator = highlight(source);
+		a.equalValues([...highlight.resume({ source: input('') })], []);
+		a.equalValues([...highlight.resume({ source: input(source) })], tokens);
+		const iterator = highlight.resume({ source: input(source) });
 		a.equalValues(iterator.next().value, tokens[0]);
-		a.equalValues([...highlight(source)], tokens);
+		a.equalValues([...highlight.resume({ source: input(source) })], tokens);
 		a.equalValues([...iterator], tokens.slice(1));
 	});
 	it.should('highlight incomplete input and recover after lexical errors', (a: TestApi) => {
 		for (const source of ['{', '[1,', '{"key": "unfinished', '01 true', '"\\x" null']) {
-			const tokens = [...highlight(source)];
+			const tokens = [...highlight.resume({ source: input(source) })];
 			a.assert(tokens.length > 0);
 			a.assert(tokens.every(token => token.start < token.end && token.end <= source.length));
 			if (source.includes('unfinished') || source === '01 true' || source === '"\\x" null')
 				a.assert(tokens.some(token => token.highlight === 'error'));
 		}
-		a.equalValues([...highlight('01 true')].map(token => [text(token), token.highlight]), [['01', 'error'], ['true', 'literal']]);
+		a.equalValues([...highlight.resume({ source: input('01 true') })].map(token => [text(token), token.highlight]), [['01', 'error'], ['true', 'literal']]);
 	});
 	it.should('parse editor-sized JSON', a => a.benchmark(() => parse(benchmarkSource), {
 		warmup: 50, sampleTime: 20, samples: 10, maxRegression: 15,
 	}));
-	it.should('highlight editor-sized JSON', a => a.benchmark(() => [...highlight(benchmarkSource)].length, {
+	it.should('highlight editor-sized JSON', a => a.benchmark(() => [...highlight.resume({ source: input(benchmarkSource) })].length, {
 		warmup: 50, sampleTime: 20, samples: 10, maxRegression: 15,
 	}));
 	it.should('resume a trailing JSON window', async a => {

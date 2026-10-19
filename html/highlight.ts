@@ -1,8 +1,8 @@
-import { createHighlighter, foldToken, text } from '@cxl/gbc.sdk';
+import { tokenize, createHighlighter, highlightTokens, highlightToken, highlightSegments, foldToken, type HighlightKind, type HighlightBuffer, type HighlightToken, type HighlightWindow } from '@cxl/gbc.sdk';
 import { scanner } from './index.js';
 
 export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
-const highlightTokens = createHighlighter(scanner, token => {
+const classify = (token: ReturnType<ReturnType<typeof scanner>['next']>): HighlightKind => {
 	switch (token.kind) {
 		case 'attrName':
 			return 'attribute';
@@ -20,7 +20,7 @@ const highlightTokens = createHighlighter(scanner, token => {
 		default:
 			return 'text';
 	}
-});
+};
 
 const voidTags = new Set('area base br col embed hr img input link meta param source track wbr'.split(' '));
 const optionalEnds = new Set('html head body li dt dd p rt rp optgroup option colgroup caption thead tbody tfoot tr td th'.split(' '));
@@ -84,24 +84,86 @@ function openElement({ names, counts }: OpenElements, name: string, slash: boole
 	return 1;
 }
 
-export function* highlight(source: string): ReturnType<typeof highlightTokens> {
-	let name = '';
-	let closing = false;
-	let slash = false;
-	let declaration = false;
-	const elements: OpenElements = { names: [], counts: new Map() };
-	let pending: (ReturnType<typeof highlightTokens> extends Generator<infer Node> ? Node : never) | undefined;
-	for (const token of highlightTokens(source)) {
-		[token.foldStart, token.foldEnd] = foldToken(token);
+interface HtmlState {
+	buffer: HighlightBuffer;
+	inTag: boolean;
+	inText: boolean;
+	quote: string;
+	escape: boolean;
+	prefix: string;
+	comment: boolean;
+	tail: string;
+	name: string;
+	closing: boolean;
+	slash: boolean;
+	declaration: boolean;
+	elements: OpenElements;
+	pending: HighlightToken | undefined;
+}
+
+export const highlight = createHighlighter((): HtmlState => ({
+	buffer: { start: 0, line: 0, fragment: undefined }, inTag: false, inText: false, quote: '', escape: false,
+	prefix: '', comment: false, tail: '', name: '', closing: false, slash: false, declaration: false,
+	elements: { names: [], counts: new Map() }, pending: undefined,
+}), function* (window, previous) {
+	const state = { ...previous, elements: { names: [...previous.elements.names], counts: new Map(previous.elements.counts) } };
+	if (state.pending) state.pending = highlightToken(window, state.pending);
+	const segments = highlightSegments(window, state.buffer, ch => {
+		if (state.comment) {
+			state.tail = (state.tail + ch).slice(-3);
+			if (state.tail !== '-->') return false;
+			state.comment = state.inTag = false;
+			state.prefix = '';
+			return true;
+		}
+		if (state.quote) {
+			if (state.escape) state.escape = false;
+			else if (ch === '\\') state.escape = true;
+			else if (ch === state.quote) { state.quote = ''; return !state.inTag; }
+			return false;
+		}
+		if (state.inText && ch !== '<') return false;
+		if (ch === '<') { state.inTag = true; state.inText = false; state.prefix = '<'; return false; }
+		if (state.prefix) {
+			state.prefix += ch;
+			if (state.prefix === '<!--') { state.comment = true; state.tail = ''; return false; }
+			if (state.prefix.length >= 4) state.prefix = '';
+		}
+		if (ch === '"' || ch === "'") state.quote = ch;
+		else if (ch === '>') { state.inTag = false; state.prefix = ''; return true; }
+		else if (!state.inTag && !' \t\r\n/='.includes(ch)) state.inText = true;
+		return false;
+	});
+	for (;;) {
+		const next = segments.next();
+		if (next.done) { state.buffer = next.value; break; }
+		yield* highlightMarkup(next.value, state);
+	}
+	if (window.final && state.pending) {
+		while (optionalEnds.has(state.elements.names.at(-1) ?? '')) {
+			state.elements.names.pop();
+			state.pending.foldEnd++;
+		}
+		yield state.pending;
+		state.pending = undefined;
+	}
+	return { state, committed: state.pending?.start ?? state.buffer.start };
+});
+
+function* highlightMarkup(window: HighlightWindow, state: HtmlState) {
+	let { name, closing, slash, declaration, pending } = state;
+	const { elements } = state;
+	const source = window.text;
+	for (const token of highlightTokens(window, tokenize(scanner, window.text), classify, undefined, foldToken)) {
 		switch (token.kind) {
 			case 'openTag':
 				name = '';
 				closing = false;
-				declaration = source[token.end] === '!' || source[token.end] === '?';
+				declaration = source[token.end - window.start] === '!' || source[token.end - window.start] === '?';
 				break;
 			case 'tagName':
 				if (!declaration) {
-					name = text(token).toLowerCase();
+					name = source.slice(token.start - window.start, token.end - window.start).toLowerCase();
 					if (!closing) token.foldEnd += closeElements(elements, name, false);
 				}
 				break;
@@ -125,11 +187,5 @@ export function* highlight(source: string): ReturnType<typeof highlightTokens> {
 		if (pending) yield pending;
 		pending = token;
 	}
-	if (pending) {
-		while (optionalEnds.has(elements.names.at(-1) ?? '')) {
-			elements.names.pop();
-			pending.foldEnd++;
-		}
-		yield pending;
-	}
+	Object.assign(state, { name, closing, slash, declaration, pending });
 }

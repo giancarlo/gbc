@@ -5,7 +5,28 @@ import { scanner } from './index.js';
 const benchmarkSource = (`<ul><li>${'<div>'.repeat(100)}${'</div>'.repeat(100)}</ul>`).repeat(5);
 
 export default spec('html', (a: TestApi) => {
-	a.should('highlight deeply nested markup', a => a.benchmark(() => [...highlight(benchmarkSource)].length, {
+	a.test('retains native context and stable folds across checkpoint windows', a => {
+		const value = '<ul>\n<li>a\n<li>b\n</ul><p>text<div>next</div>';
+		const source = highlightSource(value);
+		const expected = drain(highlight.resume({ source })).tokens;
+		const prefix = drain(highlight.resume({ source, end: Math.floor(value.length / 2) }));
+		const snapshot = JSON.stringify(prefix.tokens);
+		const suffix = drain(highlight.resume({ source }, prefix.checkpoint));
+		a.equalValues([...prefix.tokens, ...suffix.tokens], expected);
+		a.equalValues(drain(highlight.resume({ source }, prefix.checkpoint)).tokens, suffix.tokens);
+		a.equal(JSON.stringify(prefix.tokens), snapshot);
+		let result = drain(highlight.resume({ source, end: 0 }));
+		const tokens = [...result.tokens];
+		for (let end = 1; end <= value.length; end++) {
+			result = drain(highlight.resume({ source, end }, result.checkpoint));
+			tokens.push(...result.tokens);
+		}
+		a.equalValues(tokens, expected);
+		a.equal(result.checkpoint.committed, value.length);
+		a.equal(result.checkpoint.done, true);
+	});
+
+	a.should('highlight deeply nested markup', a => a.benchmark(() => [...highlight.resume({ source: highlightSource(benchmarkSource) })].length, {
 		warmup: 50,
 		sampleTime: 20,
 		samples: 10,
@@ -15,7 +36,7 @@ export default spec('html', (a: TestApi) => {
 		it.test('closes each list item before opening its sibling', a => {
 			const starts: number[] = [];
 			const regions: [number, number][] = [];
-			for (const token of highlight('<ul>\n<li>a\n<li>b\n</ul>')) {
+			for (const token of highlight.resume({ source: highlightSource('<ul>\n<li>a\n<li>b\n</ul>') })) {
 				for (let i = 0; i < token.foldStart; i++) starts.push(token.line);
 				for (let i = 0; i < token.foldEnd; i++) regions.push([starts.pop() ?? -1, token.line]);
 			}
@@ -53,35 +74,35 @@ export default spec('html', (a: TestApi) => {
 				['<html><head><title>title</title><p>text', [['>', 1, 0], ['>', 1, 0], ['>', 1, 0], ['>', 0, 1], ['p', 0, 1], ['>', 1, 0], ['text', 0, 2]]],
 			];
 			for (const [source, expected] of cases) {
-				const tokens = [...highlight(source)];
+				const tokens = [...highlight.resume({ source: highlightSource(source) })];
 				a.equalValues(
 					tokens.filter(token => token.foldStart || token.foldEnd)
 						.map(token => [source.slice(token.start, token.end), token.foldStart, token.foldEnd]),
 					expected,
 				);
-				const iterator = highlight(source);
+				const iterator = highlight.resume({ source: highlightSource(source) });
 				const first = iterator.next();
 				if (!first.done) {
 					const snapshot = { ...first.value };
-					const other = highlight(source);
+					const other = highlight.resume({ source: highlightSource(source) });
 					other.next();
 					a.equalValues([first.value, ...iterator], tokens);
 					a.equalValues(first.value, snapshot);
 					a.equalValues([...other], tokens.slice(1));
 				}
-				a.equalValues([...highlight(source)], tokens);
+				a.equalValues([...highlight.resume({ source: highlightSource(source) })], tokens);
 			}
 		});
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
-				[...highlight('<div id="x">hi</div>')].map(token => token.highlight),
+				[...highlight.resume({ source: highlightSource('<div id="x">hi</div>') })].map(token => token.highlight),
 				['punctuation', 'tag', 'attribute', 'operator', 'string', 'punctuation', 'text', 'punctuation', 'punctuation', 'tag', 'punctuation'],
 			);
-			a.equalValues([...highlight('')], []);
+			a.equalValues([...highlight.resume({ source: highlightSource('') })], []);
 		});
 		it.test('preserves original source positions and independent calls', a => {
 			const source = 'first\nsecond';
-			const tokens = [...highlight(source)];
+			const tokens = [...highlight.resume({ source: highlightSource(source) })];
 			a.equalValues(
 				tokens
 					.filter(token => token.highlight === 'identifier' || token.highlight === 'text')
@@ -89,7 +110,7 @@ export default spec('html', (a: TestApi) => {
 				 [['first\nsecond', 0]],
 			);
 			a.equal(tokens.every(token => token.source === source), true);
-			a.equalValues([...highlight(source)], tokens);
+			a.equalValues([...highlight.resume({ source: highlightSource(source) })], tokens);
 		});
 	});
 
@@ -238,3 +259,16 @@ export default spec('html', (a: TestApi) => {
 		a.equal(s.next().kind, 'gt');
 	});
 });
+
+function highlightSource(value: string) {
+	return { id: {}, version: 1, length: value.length, read: (start: number, end: number) => value.slice(start, end), text: () => value };
+}
+
+function drain<Node, Result>(iterator: Generator<Node, Result>) {
+	const tokens: Node[] = [];
+	for (;;) {
+		const next = iterator.next();
+		if (next.done) return { tokens, checkpoint: next.value };
+		tokens.push(next.value);
+	}
+}

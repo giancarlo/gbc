@@ -4,6 +4,8 @@ import {
 	type MakeNodeMap,
 	ParserApi,
 	ScannerApi,
+	type ScannerContext,
+	type TokenizerError,
 	text,
 	type Token,
 	tokenize,
@@ -492,9 +494,9 @@ function inspectWord(
 	};
 }
 
-function createScanner(source: string) {
+function createScanner(source: string, context?: ScannerContext) {
 	const { current, eof, tk, matchString, matchUntil, error, skip, backtrack } = ScannerApi({
-		source,
+		source, context,
 	});
 	const hereDocuments: { redirect?: RedirectNode; delimiter: string; stripTabs: boolean }[] = [];
 	const substitutions = new WeakMap<object, SubstitutionRange[]>();
@@ -717,9 +719,34 @@ export function scan(source: string) {
 	return { next, backtrack };
 }
 
-export function scanHighlight(source: string) {
-	const scanner = createScanner(source);
-	let pending: boolean | undefined;
+interface HereDocumentState {
+	pending: boolean | undefined;
+}
+
+function takeHereDocument(token: ScannerToken | TokenizerError, state: HereDocumentState) {
+	if (token.kind === 'word' && state.pending !== undefined) {
+		const document = { delimiter: inspectWord(token, [], false).value ?? text(token), stripTabs: state.pending };
+		state.pending = undefined;
+		return document;
+	}
+	if (token.kind === '<<' || token.kind === '<<-') state.pending = token.kind === '<<-';
+	else if (token.kind !== 'comment') state.pending = undefined;
+	return undefined;
+}
+
+export function highlightHereDocuments(source: string) {
+	const documents: { delimiter: string; stripTabs: boolean }[] = [];
+	const state: HereDocumentState = { pending: undefined };
+	for (const token of tokenize(scan, source)) {
+		const document = takeHereDocument(token, state);
+		if (document) documents.push(document);
+	}
+	return documents;
+}
+
+export function scanHighlight(source: string, context?: ScannerContext) {
+	const scanner = createScanner(source, context);
+	const state: HereDocumentState = { pending: undefined };
 	let queued = false;
 	let bodies: HereDocumentNode[] = [];
 	let bodyIndex = 0;
@@ -730,15 +757,11 @@ export function scanHighlight(source: string) {
 			return body;
 		}
 		const token = scanner.next();
-		if (token.kind === 'word' && pending !== undefined) {
-			scanner.queueHereDocument({
-				delimiter: inspectWord(token, [], false).value ?? text(token),
-				stripTabs: pending,
-			});
+		const document = takeHereDocument(token, state);
+		if (document) {
+			scanner.queueHereDocument(document);
 			queued = true;
-			pending = undefined;
-		} else if (token.kind === '<<' || token.kind === '<<-') pending = token.kind === '<<-';
-		else if (token.kind !== 'comment') pending = undefined;
+		}
 		if (queued && token.kind === 'newline') {
 			bodies = scanner.consumeHereDocuments(token.end, token.line).bodies;
 			bodyIndex = 0;

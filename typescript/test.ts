@@ -21,6 +21,27 @@ const tokens = (source: string) =>
 	]);
 
 export default spec('typescript', it => {
+	it.test('retains native context and stable folds across checkpoint windows', a => {
+		const value = 'interface Point {\n readonly x: number;\n}\nreturn /[a/b]+/g';
+		const source = highlightSource(value);
+		const expected = drain(highlight.resume({ source })).tokens;
+		const prefix = drain(highlight.resume({ source, end: Math.floor(value.length / 2) }));
+		const snapshot = JSON.stringify(prefix.tokens);
+		const suffix = drain(highlight.resume({ source }, prefix.checkpoint));
+		a.equalValues([...prefix.tokens, ...suffix.tokens], expected);
+		a.equalValues(drain(highlight.resume({ source }, prefix.checkpoint)).tokens, suffix.tokens);
+		a.equal(JSON.stringify(prefix.tokens), snapshot);
+		let result = drain(highlight.resume({ source, end: 0 }));
+		const tokens = [...result.tokens];
+		for (let end = 1; end <= value.length; end++) {
+			result = drain(highlight.resume({ source, end }, result.checkpoint));
+			tokens.push(...result.tokens);
+		}
+		a.equalValues(tokens, expected);
+		a.equal(result.checkpoint.committed, value.length);
+		a.equal(result.checkpoint.done, true);
+	});
+
 	it.test('public highlighting contract', it => {
 		it.test('marks fold boundaries without folding literal delimiters', a => {
 			const cases: [string, [string, number, number][]][] = [
@@ -30,35 +51,35 @@ export default spec('typescript', it => {
 				['function f(\nvalue: number\n) { return f(\nvalue\n); }', [['{', 1, 0], ['}', 0, 1]]],
 			];
 			for (const [source, expected] of cases) {
-				const tokens = [...highlight(source)];
+				const tokens = [...highlight.resume({ source: highlightSource(source) })];
 				a.equalValues(
 					tokens.filter(token => token.foldStart || token.foldEnd)
 						.map(token => [source.slice(token.start, token.end), token.foldStart, token.foldEnd]),
 					expected,
 				);
-				const iterator = highlight(source);
+				const iterator = highlight.resume({ source: highlightSource(source) });
 				const first = iterator.next();
 				if (!first.done) {
 					const snapshot = { ...first.value };
-					const other = highlight(source);
+					const other = highlight.resume({ source: highlightSource(source) });
 					other.next();
 					a.equalValues([first.value, ...iterator], tokens);
 					a.equalValues(first.value, snapshot);
 					a.equalValues([...other], tokens.slice(1));
 				}
-				a.equalValues([...highlight(source)], tokens);
+				a.equalValues([...highlight.resume({ source: highlightSource(source) })], tokens);
 			}
 		});
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
-				[...highlight('const value: number = 42;')].map(token => token.highlight),
+				[...highlight.resume({ source: highlightSource('const value: number = 42;') })].map(token => token.highlight),
 				['keyword', 'identifier', 'punctuation', 'type', 'operator', 'number', 'punctuation'],
 			);
-			a.equalValues([...highlight('')], []);
+			a.equalValues([...highlight.resume({ source: highlightSource('') })], []);
 		});
 		it.test('preserves original source positions and independent calls', a => {
 			const source = 'first\nsecond';
-			const tokens = [...highlight(source)];
+			const tokens = [...highlight.resume({ source: highlightSource(source) })];
 			a.equalValues(
 				tokens
 					.filter(token => token.highlight === 'identifier' || token.highlight === 'text')
@@ -66,7 +87,7 @@ export default spec('typescript', it => {
 				 [['first', 0], ['second', 1]],
 			);
 			a.equal(tokens.every(token => token.source === source), true);
-			a.equalValues([...highlight(source)], tokens);
+			a.equalValues([...highlight.resume({ source: highlightSource(source) })], tokens);
 		});
 	});
 
@@ -159,7 +180,7 @@ export default spec('typescript', it => {
 		}),
 	);
 	it.should('highlight editor-sized source', a =>
-		a.benchmark(() => [...highlight(benchmarkSource)].length, {
+		a.benchmark(() => [...highlight.resume({ source: highlightSource(benchmarkSource) })].length, {
 			warmup: 50,
 			sampleTime: 20,
 			samples: 10,
@@ -167,3 +188,16 @@ export default spec('typescript', it => {
 		}),
 	);
 });
+
+function highlightSource(value: string) {
+	return { id: {}, version: 1, length: value.length, read: (start: number, end: number) => value.slice(start, end), text: () => value };
+}
+
+function drain<Node, Result>(iterator: Generator<Node, Result>) {
+	const tokens: Node[] = [];
+	for (;;) {
+		const next = iterator.next();
+		if (next.done) return { tokens, checkpoint: next.value };
+		tokens.push(next.value);
+	}
+}
