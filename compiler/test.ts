@@ -189,7 +189,7 @@ main {
 		a.equal(facts.fnReturnsOwned(identity, firstScope), true);
 		a.equalValues(unchanged(), []);
 	});
-	s.test('shared call provenance binds named and data-block arguments without changing validation', (a: TestApi) => {
+	s.test('shared call provenance binds valid named and data-block arguments', (a: TestApi) => {
 		const source = `main {
 	source0 = Buffer<Int32>(0); dest0 = Buffer<Int32>(0);
 	three = transfer(destination = dest0, source = source0); length(three) >> out;
@@ -199,9 +199,7 @@ main {
 		const program = Program();
 		const parsed = program.parse(source);
 		checker(parsed).run();
-		a.equalValues(parsed.errors.map(error => error.message), [
-			'Argument of type "__data" is not assignable to parameter of type "Buffer<T>".',
-		]);
+		a.equalValues(parsed.errors, []);
 		const prepared = program.prepareAst(parsed.root);
 		const unchanged = snapshotGraph(prepared);
 		const preparation = prepared.createContext();
@@ -1391,6 +1389,61 @@ main { recursive(2) >> out; generic(2) >> out }`);
 		return out;
 	};
 
+	s.test('call binding agrees across named mutable and intrinsic generic calls', (a: TestApi) => {
+		const sources = [
+			`main { a = Buffer<Int32>(1); b = Array<Int32>(1); transfer(destination = b, source = a) >> length >> out }`,
+			`main { a = Buffer<Int32>(1); b = Array<Int32>(1); transfer([a, b]) >> length >> out }`,
+			`choose = (left: var Buffer<Int32>, right: var Buffer<Int32>): var Buffer<Int32> { left };
+main { a = Buffer<Int32>(1); b = Buffer<Int32>(2); choose(right = b, left = a) >> length >> out }`,
+		];
+		for (const source of sources)
+			for (const debug of [false, true]) {
+				const program = Program({ debug });
+				for (let attempt = 0; attempt < 2; attempt++) {
+					const compiled = program.compile(source);
+					a.equalValues(compiled.errors.map(error => error.message), []);
+					a.assert(compiled.bytes);
+					const output: string[] = [];
+					a.equal(runWasm(compiled.bytes, value => output.push(value)).exitCode, 0);
+					a.equalValues(output, ['1']);
+				}
+			}
+	});
+
+	s.test('call validation rejects invalid bindings before lowering and supports retry', (a: TestApi) => {
+		const cases = [
+			['sub(a = 1, a = 2)', 'duplicate argument'],
+			['sub(a = 1, unknown = 2)', 'unknown argument'],
+			['sub(a = a, b = 2)', 'self-shadowing'],
+			['sub(a = 1)', 'missing argument'],
+			['sub(1, b = 2)', 'cannot mix positional and named'],
+			['sub(1, 2, 3)', 'too many arguments'],
+		] as const;
+		const program = Program();
+		for (const [call, diagnostic] of cases) {
+			const parsed = program.parse(`sub = (a: Int32, b: Int32): Int32 { a - b }; main { ${call} >> out }`);
+			checker(parsed).run();
+			a.assert(parsed.errors.some(error => error.message.includes(diagnostic)));
+			const valid = program.compile(`sub = (a: Int32, b: Int32): Int32 { a - b }; main { sub(b = 2, a = 1) >> out }`);
+			a.equalValues(valid.errors, []);
+			a.assert(valid.bytes);
+		}
+	});
+
+	s.test('bound calls preserve move and mutable-overlap diagnostics', (a: TestApi) => {
+		for (const call of ['transfer(destination = b, source = a)', 'transfer([a, b])']) {
+			const compiled = Program().compile(`main { a = Buffer<Int32>(1); b = Array<Int32>(1); ${call} >> length >> out; length(a) >> out }`);
+			a.assert(compiled.errors.some(error => error.message.includes('used after move')));
+		}
+		const borrowed = Program().compile(`consume = (input: own Buffer<Int32>): Void { length(input) >> out };
+inspect = (value: Buffer<Int32>): Void { consume(input = value) };
+main { inspect(Buffer<Int32>(1)) }`);
+		a.assert(borrowed.errors.some(error => error.message.includes('cannot move borrowed')));
+		const overlap = Program().compile(`choose = (left: var Buffer<Int32>, right: var Buffer<Int32>): var Buffer<Int32> { left };
+main { a = Buffer<Int32>(1); choose(right = a, left = a) >> length >> out }`);
+		a.assert(overlap.errors.some(error => error.message.includes('overlaps')));
+	});
+
 	s.test('shared call binding preserves effectful argument evaluation', (a: TestApi) => {
 		const source = `mark = (n: Int32): Int32 { n >> out; next n };
 sub = (a: Int32, b: Int32 = mark(9)): Int32 { a - b };
@@ -1407,13 +1460,134 @@ main {
 				a.assert(compiled.bytes);
 				const output: string[] = [];
 				runWasm(compiled.bytes, value => output.push(value));
-				a.equalValues(output, ['1', '2', '-1', '3', '9', '-6', '4', '5', '-1']);
+				a.equalValues(output, ['2', '1', '-1', '3', '9', '-6', '4', '5', '-1']);
 				const unchanged = snapshotGraph(compiled.ast);
 				const astOutput: string[] = [];
 				runWasm(program.compileAst(compiled.ast), value => astOutput.push(value));
 				a.equalValues(astOutput, output);
 				a.equalValues(unchanged(), []);
 			}
+		}
+	});
+
+	s.test('shared binding covers nested validation, defaults, overloads and tail evaluation', (a: TestApi) => {
+		const invalid = Program().compile(`sub = (a: Int32, b: Int32): Int32 { a - b };
+identity = (n: Int32): Int32 { n };
+main { identity(sub(a = 1, a = 2)) >> out }`);
+		a.assert(invalid.errors.some(error => error.message.includes('duplicate argument')));
+		const source = `mark = (n: Int32): Int32 { n >> out; next n };
+sub = (a: Int32, b: Int32 = a + 1): Int32 { a - b };
+forward = (): Int32 { sub(b = mark(2), a = mark(1)) };
+pick = <T, U>(left: T, right: U): T { left };
+main {
+	forward() >> out;
+	sub(b = void, a = mark(3)) >> out;
+	pick(right = 1.5, left = 7) >> out;
+	max(y = mark(4), x = mark(5)) >> out
+}`;
+		for (const debug of [false, true]) {
+			const program = Program({ debug });
+			const compiled = program.compile(source);
+			a.equalValues(compiled.errors.map(error => error.message), []);
+			a.assert(compiled.bytes);
+			for (const bytes of [compiled.bytes, program.compileAst(compiled.ast)]) {
+				const output: string[] = [];
+				runWasm(bytes, value => output.push(value));
+				a.equalValues(output, ['2', '1', '-1', '3', '-1', '7', '4', '5', '5']);
+			}
+		}
+	});
+
+	s.test('bound call facts survive source and GBM imports', (a: TestApi) => {
+		const library = `export sub = (left: Int32, right: Int32): Int32 { left - right };
+export pick = <T, U>(left: T, right: U): T { left };
+export choose = (left: var Buffer<Int32>, right: var Buffer<Int32>): var Buffer<Int32> { left };
+export forward = (a: var Buffer<Int32>, b: var Buffer<Int32>): var Buffer<Int32> { choose(right = b, left = a) };`;
+		for (const bundled of [false, true])
+			a.modules({
+				bundles: bundled ? { '/vendor/binding.gbm': { entry: '/lib.gb', files: { '/lib.gb': library } } } : undefined,
+				files: {
+					'/lib.gb': library,
+					'/main.gb': `#importmap { @binding = '${bundled ? './vendor/binding.gbm' : './lib.gb'}'; }
+(sub, pick, forward) = @binding;
+mark = (n: Int32): Int32 { n >> out; next n };
+main {
+	sub(right = mark(2), left = mark(1)) >> out;
+	pick(right = 1.5, left = 7) >> out;
+	first = Buffer<Int32>(1); second = Buffer<Int32>(2);
+	forward(b = second, a = first) >> length >> out
+}`,
+				},
+				entry: '/main.gb',
+				out: ['2', '1', '-1', '7', '1'],
+			});
+	});
+
+	s.test('named labels reject self-shadowing without changing record scope', (a: TestApi) => {
+		const invalid = Program().compile(`main { source = Buffer<Int32>(1); target = Array<Int32>(1); transfer(source = source, destination = target) >> length >> out }`);
+		a.assert(invalid.errors.some(error => error.message.includes('self-shadowing argument "source"')));
+		a.equalValues(runEmissionProgram(a, `main { source = 7; source >> out; value = [source = source]; value.source >> out }`), ['7', '7']);
+	});
+
+	s.test('bound defaults reference supplied parameters in non-inline calls', (a: TestApi) => {
+		const source = `sub = (a: Int32, b: Int32 = a + 1): Int32 { a - b };
+export target = (): Int32 { sub(b = void, a = 3) }`;
+		const compiled = Program({ sys: { readFile: () => source, readBytes: () => new Uint8Array() } }).compileFile('/defaults.gb');
+		a.equalValues(compiled.errors.map(error => error.message), []);
+		a.assert(compiled.bytes);
+		const target = instantiateWasm(compiled.bytes).exports.target;
+		a.assert(typeof target === 'function');
+		a.equal(target(), -1);
+	});
+
+	s.test('named intrinsic temporaries execute once in source order', (a: TestApi) => {
+		const source = `makeSource = (): own Buffer<Int32> { 1 >> out; next Buffer<Int32>(1) };
+makeDestination = (): own Buffer<Int32> { 2 >> out; next Array<Int32>(1) };
+main { transfer(destination = makeDestination(), source = makeSource()) >> length >> out }`;
+		for (const debug of [false, true]) {
+			const compiled = Program({ debug }).compile(source);
+			a.equalValues(compiled.errors, []);
+			a.assert(compiled.bytes);
+			const output: string[] = [];
+			runWasm(compiled.bytes, value => output.push(value));
+			a.equalValues(output, ['2', '1', '1']);
+		}
+	});
+
+	s.test('reordered owned intrinsic arguments retain bounded cleanup', (a: TestApi) => {
+		const source = `make = (n: Int32): own Buffer<String> {
+	b = Buffer<String>(1); set(b, 0, 'item\${n}'); next b
+};
+main {
+	loop >> (i: Int32) {
+		i >= 20000 ? break;
+		b = transfer(destination = Array<String>(1), source = make(i));
+		length(b) != 1 ? break
+	};
+	'done' >> out
+}`;
+		for (const debug of [false, true]) {
+			const compiled = Program({ debug }).compile(source);
+			a.equalValues(compiled.errors, []);
+			a.assert(compiled.bytes);
+			const output: string[] = [];
+			const result = runWasm(compiled.bytes, value => output.push(value));
+			a.equalValues(output, ['done']);
+			a.ok(result.pages <= 4);
+		}
+	});
+
+	s.test('declined self-loop optimization evaluates bound arguments once', (a: TestApi) => {
+		const source = `mark = (n: Int32): Int32 { n >> out; next n };
+repeat = (n: Int32, payload: Int32): Int32 | String { n <= 0 ? 'done' : repeat(payload = mark(0), n = mark(payload - 1)) };
+main { repeat(1, 2) >> out }`;
+		for (const debug of [false, true]) {
+			const compiled = Program({ debug }).compile(source);
+			a.equalValues(compiled.errors, []);
+			a.assert(compiled.bytes);
+			const output: string[] = [];
+			runWasm(compiled.bytes, value => output.push(value));
+			a.equalValues(output, ['0', '1', '0', '-1', 'done']);
 		}
 	});
 

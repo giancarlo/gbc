@@ -60,23 +60,59 @@ function isVoidLiteralNode(node: Node | undefined): boolean {
 		node.symbol.type?.kind === 'type' && node.symbol.type.family === 'void';
 }
 
-export function resolveArgNodes(params: Symbol[], args: Node[]): (Node | undefined)[] {
+export function bindCallArguments(params: readonly Symbol[], args: readonly Node[]) {
+	if (args.length === params.length && args.every(arg =>
+		arg.kind !== 'propdef' && !isVoidLiteralNode(arg) && (arg.kind !== 'data' || params.length === 1)))
+		return { arguments: [...args], evaluationOrder: args.map((_, index) => index), defaulted: [], errors: [] };
+
 	const first = args[0];
 	const list = args.length === 1 && first?.kind === 'data' && params.length !== 1
 		? dataItems(first) : args;
 	const named = list.some(arg => arg.kind === 'propdef' && !!arg.label);
+	const errors: { message: string; position?: Node }[] = [];
+	const supplied = new Map<number, Node>();
+	const evaluationOrder: number[] = [];
+	const defaulted: number[] = [];
+	const references = (node: Node, symbol: Symbol): boolean =>
+		node.kind === 'ident' && node.symbol === symbol ||
+		childNodes(node).some(child => !!child && references(child, symbol));
 	if (named && list.some(arg => arg.kind !== 'propdef'))
-		throw new Error('cannot mix positional and named arguments');
-	const byName = named ? new Map<string, Node>() : undefined;
-	if (byName)
-		for (const arg of list)
-			if (arg.kind === 'propdef' && arg.label && arg.value && !isVoidLiteralNode(arg.value))
-				byName.set(arg.symbol.name, arg.value);
-	return params.map((param, index) => {
-		const arg = byName ? byName.get(param.name ?? '') : list[index];
-		const def = param.definition;
-		return arg && !isVoidLiteralNode(arg) ? arg : def?.kind === 'parameter' ? def.value : undefined;
+		errors.push({ message: 'cannot mix positional and named arguments', position: first });
+	list.forEach((arg, index) => {
+		const slot = named && arg.kind === 'propdef'
+			? params.findIndex(param => param.name === arg.symbol.name) : index;
+		if (slot < 0) {
+			errors.push({ message: `no match: unknown argument "${arg.kind === 'propdef' ? arg.symbol.name : ''}"`, position: arg });
+			return;
+		}
+		if (params.length && slot >= params.length) {
+			errors.push({ message: 'too many arguments', position: arg });
+			return;
+		}
+		if (supplied.has(slot))
+			errors.push({ message: `duplicate argument "${params[slot]?.name ?? ''}"`, position: arg });
+		else if (!isVoidLiteralNode(itemValue(arg))) evaluationOrder.push(slot);
+		if (arg.kind === 'propdef' && arg.value && references(arg.value, arg.symbol))
+			errors.push({ message: `self-shadowing argument "${arg.symbol.name}"`, position: arg });
+		supplied.set(slot, itemValue(arg));
 	});
+	if (!args.length && params.length)
+		errors.push({ message: `No matching overload — expected ${params.length} argument(s)`, position: params[0]?.definition });
+	const bound = params.map((param, index) => {
+		const arg = supplied.get(index);
+		const def = param.definition;
+		const fallback = def?.kind === 'parameter' ? def.value : undefined;
+		const value = arg && !isVoidLiteralNode(arg) ? arg : fallback ?? arg;
+		if (fallback && value === fallback) defaulted.push(index);
+		if (!value) errors.push({ message: `no match: missing argument for parameter "${param.name ?? '?'}"`, position: first ?? def });
+		if ((!supplied.has(index) || isVoidLiteralNode(arg)) && value) evaluationOrder.push(index);
+		return value;
+	});
+	return { arguments: bound, evaluationOrder, defaulted, errors };
+}
+
+export function resolveArgNodes(params: readonly Symbol[], args: readonly Node[]): (Node | undefined)[] {
+	return bindCallArguments(params, args).arguments;
 }
 
 export function literalType(node: Node): Type | undefined {
@@ -1062,30 +1098,31 @@ export function createSemanticContext(readOnly = false) {
 		const constructor = bufferCtorType(node) ?? scalarCtorType(node);
 		if (constructor) return constructor;
 		const fn = resolveFunctionType(node.children[0]);
-		return fn ? resolveCallReturn(fn, callArgumentTypes(fn, node.children[1])) : resolveReturnType(node.children[0]);
+		const target = fn ? selectCallFunction(fn, node.children[1]) ?? fn : undefined;
+		return target ? resolveCallReturn(target, callArgumentTypes(target, node.children[1])) : resolveReturnType(node.children[0]);
 	}
 
 	function effectiveCallFunction(node: NodeMap['call']): SymbolMap['function'] | undefined {
 		const fn = resolveFunctionType(node.children[0]);
 		if (!fn) return undefined;
-		return selectOverload([fn, ...(fn.overloads ?? [])], callArgumentTypes(fn, node.children[1])) ?? fn;
+		return selectCallFunction(fn, node.children[1]) ?? fn;
 	}
 
 	function callArgumentTypes(fn: SymbolMap['function'], args: Node | undefined, resolve: (node: Node) => Type = resolver): Type[] {
-		if (args && args.kind !== ',' && args.kind !== 'propdef' && args.kind !== 'data' && !isVoidLiteralNode(args))
-			return [resolve(args)];
 		const raw = argumentNodes(args);
-		const params = fn.parameters;
-		if (!params?.length) return raw.map(resolve);
-		if (raw.length === params.length && raw.every(arg => arg.kind !== 'propdef' && !isVoidLiteralNode(arg)))
-			return raw.map(resolve);
-		let bound: (Node | undefined)[];
-		try {
-			bound = resolveArgNodes(params, raw);
-		} catch {
-			return raw.map(resolve);
-		}
-		return bound.map(arg => arg ? resolve(arg) : BT.Unknown);
+		if (!fn.parameters?.length) return raw.map(arg => resolve(itemValue(arg)));
+		return resolveArgNodes(fn.parameters, raw).map(arg => arg ? resolve(arg) : BT.Unknown);
+	}
+
+	function selectCallFunction(fn: SymbolMap['function'], args: Node | undefined, resolve: (node: Node) => Type = resolver, select: typeof selectOverload = selectOverload): SymbolMap['function'] | undefined {
+		if (!fn.overloads) return fn;
+		const raw = argumentNodes(args);
+		if (raw.every(arg => arg.kind !== 'propdef' && arg.kind !== 'data' && !isVoidLiteralNode(arg)))
+			return select([fn, ...fn.overloads], raw.map(resolve));
+		const candidates = [fn, ...fn.overloads].filter(candidate =>
+			!bindCallArguments(candidate.parameters ?? [], argumentNodes(args)).errors.length);
+		return select(candidates, callArgumentTypes(fn, args, resolve), undefined,
+			candidate => callArgumentTypes(candidate, args, resolve));
 	}
 
 	function resolveCallReturn(fn: SymbolMap['function'], argTypes: Type[], select = selectOverload, typeParams?: Type[]) {
@@ -1120,21 +1157,22 @@ export function createSemanticContext(readOnly = false) {
 		return functionTypeParameters(fnSym).length ? reduceType(rt, callTypeBindings(fnSym, args)) : rt;
 	}
 
-	function selectOverload(candidates: SymbolMap['function'][], args: Type[], catchAll?: (fn: SymbolMap['function']) => boolean): SymbolMap['function'] | undefined {
+	function selectOverload(candidates: SymbolMap['function'][], args: Type[], catchAll?: (fn: SymbolMap['function']) => boolean, argumentsFor?: (fn: SymbolMap['function']) => Type[]): SymbolMap['function'] | undefined {
 		if (!candidates.length) return undefined;
 		const matches = (candidate: SymbolMap['function'], widen: boolean) => {
+			const actualArgs = argumentsFor?.(candidate) ?? args;
 			if (catchAll?.(candidate)) return false;
 			let params = candidate.parameters;
 			if (functionTypeParameters(candidate).length) {
-				const bindings = callTypeBindings(candidate, args);
+				const bindings = callTypeBindings(candidate, actualArgs);
 				params = params?.map(param => ({
 					...param,
 					type: param.type ? reduceType(param.type, bindings) : undefined,
 				}));
 			}
-			return paramsMatch(params, args, widen, !!catchAll) && (params ?? []).every((param, index) => {
+			return paramsMatch(params, actualArgs, widen, !!catchAll) && (params ?? []).every((param, index) => {
 				const expected = param.type;
-				const actual = args[index];
+				const actual = actualArgs[index];
 				return !catchAll || candidate.flags & Flags.Intrinsic ||
 					expected?.kind !== 'type' || expected.family !== 'data' || expected.name === '__data' ||
 					actual?.kind !== 'type' || actual.family !== 'data' || actual.name !== '__data' ||
@@ -1954,6 +1992,7 @@ export function createSemanticContext(readOnly = false) {
 		bufferCtorType,
 		numericValueType,
 		callArgumentTypes,
+		selectCallFunction,
 		resolveCallReturn,
 	};
 }

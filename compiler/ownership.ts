@@ -308,12 +308,7 @@ export function createOwnershipAnalysis(root: Node, resolution: OwnershipResolut
 			return;
 		const origin = callee.symbol.returnBorrowOrigins?.[0];
 		if (origin === undefined) return;
-		const args = node.children[1];
-		return args?.kind === ','
-			? args.children[origin]
-			: origin === 0
-				? args
-				: undefined;
+		return resolveArgNodes(callee.symbol.parameters ?? [], argListFromCall(node.children[1]))[origin];
 	}
 
 	function ctorAllocsFresh(t: Type, context: ExpressionContext): boolean {

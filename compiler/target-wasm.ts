@@ -12,6 +12,7 @@ import {
 	dataItems,
 	itemValue,
 	resolveArgNodes,
+	bindCallArguments,
 } from './semantic.js';
 import {
 	bufferTypeOf,
@@ -1494,7 +1495,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		if (tStmts.length === 1 && tbody?.kind === 'call') return false;
 		if (tbody && pipeTemplateBails(tbody)) return false;
 		const args = callNode.children[1];
-		const argTypes = collectArgTypes(args, fn);
+		const argTypes = collectArgTypes(args, fn, template.symbol);
 		const a0 = argTypes[0];
 		if (
 			a0?.kind === 'type' &&
@@ -2144,7 +2145,58 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		throw new Error(`Cannot assign to "${sym.name ?? '?'}" (not bound)`);
 	}
 
+	const evaluatedArguments = new Map<FuncBuilder, Map<Node, { type: Type; locals: number[] }>>();
+
+	function withBoundArguments<T>(params: readonly GbcSymbol[], facts: ReturnType<typeof bindCallArguments>, fn: FuncBuilder, emit: (bound: Node[]) => T): T {
+		const diagnostic = facts.errors[0];
+		if (diagnostic) throw new Error(diagnostic.message);
+		const bound = facts.arguments.filter((arg): arg is Node => !!arg);
+		if (!facts.defaulted.length && facts.evaluationOrder.every((slot, index) => slot === index))
+			return emit(bound);
+		const saved = evaluatedArguments.get(fn);
+		const values = new Map(saved);
+		const slots = new Map<number, { type: Type; locals: number[] }>();
+		evaluatedArguments.set(fn, values);
+		try {
+			for (const slot of facts.evaluationOrder) {
+				const arg = facts.arguments[slot];
+				if (!arg || inferType(arg, fn).kind === 'function') continue;
+				const compile = () => {
+					stampErrorData(arg, params[slot]?.type);
+					return compileExpr(arg, fn);
+				};
+				const type = facts.defaulted.includes(slot)
+					? inlineEnvironment(fn, preparation.createEnvironment(environment), () => {
+						for (const [index, value] of slots) {
+							const parameter = params[index];
+							const local = value.locals[0];
+							if (!parameter || local === undefined) continue;
+							fn.paramMap.set(parameter, local);
+							const tag = value.locals[1];
+							if (tag !== undefined) (fn.tagMap ??= new Map()).set(parameter, tag);
+							environment.types.set(parameter, value.type);
+						}
+						return compile();
+					}) : compile();
+				const locals = wasmTypesOf(type).map(wasm => allocLocal(fn, wasm));
+				for (const local of [...locals].reverse()) emitStoreLocal(local, fn);
+				const value = { type, locals };
+				values.set(arg, value);
+				slots.set(slot, value);
+			}
+			return emit(bound);
+		} finally {
+			if (saved) evaluatedArguments.set(fn, saved);
+			else evaluatedArguments.delete(fn);
+		}
+	}
+
 	function compileExpr(node: Node, fn: FuncBuilder): Type {
+		const evaluated = evaluatedArguments.get(fn)?.get(node);
+		if (evaluated) {
+			for (const local of evaluated.locals) emitLoadLocal(local, fn);
+			return evaluated.type;
+		}
 		switch (node.kind) {
 			case 'import':
 				return BaseTypes.Void;
@@ -2904,6 +2956,15 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		fn.body.push(OP_LOCAL_GET);
 		uleb128(b, fn.body);
 		return StackIntrinsic.returnType ?? BaseTypes.Unknown;
+	}
+
+	function compileBoundIntrinsic(target: SymbolMap['function'], args: Node | undefined, fn: FuncBuilder): Type {
+		return withBoundArguments(target.parameters ?? [], bindCallArguments(target.parameters ?? [], argListFromCall(args)), fn, bound => {
+			const first = bound[0];
+			const normalized: Node | undefined = bound.length > 1 && first
+				? { ...first, kind: ',', children: bound } : first;
+			return compileIntrinsic(target.name ?? '', normalized, fn);
+		});
 	}
 
 	function compileIntrinsic(
@@ -4349,7 +4410,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 	): Type {
 		const fnSym = templateNode.symbol;
 		const params = templateNode.parameters ?? [];
-		const argList = argListFromCall(args);
+		const argList = resolveArgNodes(fnSym.parameters ?? [], argListFromCall(args));
 		const bindings = new Map<GbcSymbol, SymbolMap['function']>();
 		params.forEach((p, i) => {
 			if (typeOf(p.symbol).kind !== 'function') return;
@@ -4357,7 +4418,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			const fa = a ? (resolveFnArg(a) ?? liftFnArg(a)) : undefined;
 			if (fa) bindings.set(p.symbol, fa);
 		});
-		const argTypes = collectArgTypes(args, fn);
+		const argTypes = collectArgTypes(args, fn, fnSym);
 		const builderIdx = getOrCreateSpec(templateNode, argTypes, bindings);
 		compileCallArgs(args, fnSym, fn, bindings);
 		emitFixedCall(fn, builderIdx);
@@ -4457,7 +4518,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		if (callee.kind === 'call') {
 			const innerFn = returnedFnLiteral(callee);
 			if (!innerFn) throw new Error('Indirect call not yet supported');
-			const argTypes = collectArgTypes(args, fn);
+			const argTypes = collectArgTypes(args, fn, innerFn.symbol);
 			const idx = getOrCreateSpec(innerFn, argTypes);
 			compileCallArgs(args, innerFn.symbol, fn);
 			emitFixedCall(fn, idx);
@@ -4484,7 +4545,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			return abiReturnType(sfn) ?? BaseTypes.Void;
 		}
 		if (sfn && sfn.flags & Flags.Intrinsic)
-			return compileIntrinsic(sfn.name ?? '', args, fn);
+			return compileBoundIntrinsic(sfn, args, fn);
 		if (sfn) {
 			const disp = tryCompileDispatch(sfn, args, fn);
 			if (disp) return disp;
@@ -4501,7 +4562,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		const bound = boundFunction(calleeSym);
 		if (bound) return compileDirectCall(bound, args, fn);
 		if (calleeSym.kind === 'function' && calleeSym.flags & Flags.Intrinsic)
-			return compileIntrinsic(calleeSym.name ?? '', args, fn);
+			return compileBoundIntrinsic(calleeSym, args, fn);
 		const templateNode = fnTemplates.get(calleeSym);
 		if (templateNode) return compileTemplateCall(templateNode, args, fn);
 		const disp = tryCompileDispatch(calleeSym, args, fn);
@@ -4553,8 +4614,9 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 	): Type | undefined {
 		const dt = calleeSym.kind === 'function' ? calleeSym : typeOf(calleeSym);
 		if (dt.kind !== 'function' || !dt.overloads) return undefined;
-		const argTypes = collectArgTypes(args, fn);
-		const arm = findDispatchArm(dt.overloads, argTypes);
+		const argTypes = collectArgTypes(args, fn, dt);
+		const arm = preparation.semantic.selectCallFunction(dt, args, node => inferType(node, fn),
+			(arms, types, _catchAll, argumentsFor) => preparation.resolveOverload(arms, types, fnTemplates, argumentsFor));
 		if (!arm)
 			throw new Error(
 				`dispatch "${calleeSym.name ?? '?'}": no arm accepts (${argTypes
@@ -4566,7 +4628,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		const tmpl = fnTemplates.get(arm);
 		if (tmpl) return compileTemplateCall(tmpl, args, fn);
 		if (arm.flags & Flags.Intrinsic)
-			return compileIntrinsic(arm.name ?? '', args, fn);
+			return compileBoundIntrinsic(arm, args, fn);
 		compileCallArgs(args, arm, fn);
 		emitArmCall(arm, calleeSym.name, fn);
 		return abiReturnType(arm) ?? BaseTypes.Void;
@@ -5404,14 +5466,14 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		ownArgs?: boolean,
 		ownedIn?: boolean[],
 	): boolean {
-		const resolved = resolveArgNodes(
+		const facts = bindCallArguments(
 			params.map(p => p.symbol),
 			argList,
 		);
-		for (let i = 0; i < params.length; i++) {
+		for (const i of facts.evaluationOrder) {
 			const p = params[i];
 			if (!p) return false;
-			const argNode = resolved[i];
+			const argNode = facts.arguments[i];
 			if (!argNode) return false;
 			bindOneParam(
 				p,
@@ -6230,7 +6292,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		const params = intrinsic.parameters ?? [];
 		if (params.length === 0) {
 			if (hasRuntimeValue(inputType)) fn.body.push(OP_DROP);
-			const result = compileIntrinsic(intrinsic.name ?? '', undefined, fn);
+			const result = compileBoundIntrinsic(intrinsic, undefined, fn);
 			return driveStages(rest, result, fn);
 		}
 		const argTypes =
@@ -6269,7 +6331,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 					? args[0]
 					: spreadArgs;
 		try {
-			const result = compileIntrinsic(intrinsic.name ?? '', argNode, fn);
+			const result = compileBoundIntrinsic(intrinsic, argNode, fn);
 			return driveStages(rest, result, fn);
 		} finally {
 			for (const arg of args) fn.paramMap.delete(arg.symbol);
@@ -6790,30 +6852,26 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		noArgFrees?: boolean,
 	) {
 		const params = calleeSym.parameters ?? [];
-		const resolved = resolveArgNodes(params, argListFromCall(args));
-		const ownArgs = !noArgFrees && calleeCannotRetain(calleeSym);
-		const ownedIn = ownership.ownedParameters(calleeSym, environment);
-		for (let i = 0; i < params.length; i++) {
-			const p = params[i];
-			if (!p || bindings?.has(p)) continue;
-			const a = resolved[i];
-			if (!a)
-				throw new Error(
-					`no match: missing argument for parameter "${p.name ?? '?'}"`,
+		withBoundArguments(params, bindCallArguments(params, argListFromCall(args)), fn, resolved => {
+			const ownArgs = !noArgFrees && calleeCannotRetain(calleeSym);
+			const ownedIn = ownership.ownedParameters(calleeSym, environment);
+			resolved.forEach((a, i) => {
+				const p = params[i];
+				if (!p || bindings?.has(p)) return;
+				stampErrorData(a, p.type);
+				const at = compileExpr(a, fn);
+				trackCallArgOwned(
+					a,
+					at,
+					p.ownership === 'own' || ownedIn?.[i],
+					ownArgs,
+					noArgFrees,
+					fn,
 				);
-			stampErrorData(a, p.type);
-			const at = compileExpr(a, fn);
-			trackCallArgOwned(
-				a,
-				at,
-				p.ownership === 'own' || ownedIn?.[i],
-				ownArgs,
-				noArgFrees,
-				fn,
-			);
-			coerceIntWidth(at, p.type, fn);
-			maybeUpcastAdjust(at, p.type, fn);
-		}
+				coerceIntWidth(at, p.type, fn);
+				maybeUpcastAdjust(at, p.type, fn);
+			});
+		});
 	}
 
 	function trackCallArgOwned(
@@ -7032,14 +7090,8 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 	 * arg's static type via `inferType`. Used by `compileCall` to compute
 	 * the signature key for monomorphization.
 	 */
-	function collectArgTypes(
-		args: Node | undefined,
-		fn: FuncBuilder,
-	): Type[] {
-		if (!args) return [];
-		if (args.kind === ',')
-			return args.children.map(c => inferType(c, fn));
-		return [inferType(args, fn)];
+	function collectArgTypes(args: Node | undefined, fn: FuncBuilder, target: SymbolMap['function']): Type[] {
+		return preparation.semantic.callArgumentTypes(target, args, node => inferType(node, fn));
 	}
 
 	// A direct call whose result types match this fn's is emitted as a tail
@@ -7090,7 +7142,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			return false;
 		if (
 			funcBuilders[builderIdx] === fn &&
-			trySelfLoopCall(node.children[1], fnSym, fn)
+			trySelfLoopArgs(argListFromCall(node.children[1]), fnSym.parameters ?? [], fnSym, fn)
 		)
 			return true;
 		// A fresh heap arg would be orphaned by `return_call` (no frame left
@@ -7117,72 +7169,62 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		return true;
 	}
 
-	function trySelfLoopCall(
-		args: Node | undefined,
-		fnSym: SymbolMap['function'],
-		fn: FuncBuilder,
-	): boolean {
-		const params = fnSym.parameters ?? [];
-		return trySelfLoopArgs(
-			resolveArgNodes(params, argListFromCall(args)),
-			params,
-			fnSym,
-			fn,
-		);
-	}
-
 	function trySelfLoopArgs(
-		resolved: (Node | undefined)[],
+		args: readonly Node[],
 		params: GbcSymbol[],
 		fnSym: SymbolMap['function'],
 		fn: FuncBuilder,
 	): boolean {
-		if (fn.selfLoopDepth === undefined) return false;
+		const depth = fn.selfLoopDepth;
+		if (depth === undefined) return false;
+		const facts = bindCallArguments(params, args);
 		const slots = params.map((p, i) => {
 			const target = p.type;
 			if (!target) return undefined;
 			const wasm = wasmTypesOf(target);
 			const param = fn.paramMap.get(p);
-			const arg = resolved[i];
+			const arg = facts.arguments[i];
 			return wasm.length === 1 && param !== undefined && arg
 				? { arg, param, type: wasm[0] ?? I32, target }
 				: undefined;
 		});
 		if (slots.some(s => !s)) return false;
-		const temps = slots.map(s => allocLocal(fn, s?.type ?? I32));
-		const ownedIn = ownership.ownedParameters(fnSym, environment);
-		for (let i = 0; i < slots.length; i++) {
-			const slot = slots[i];
-			const p = params[i];
-			if (!slot || !p) return false;
-			stampErrorData(slot.arg, slot.target);
-			const at = compileExpr(slot.arg, fn);
-			trackCallArgOwned(
-				slot.arg,
-				at,
-				p.ownership === 'own' || ownedIn?.[i],
-				false,
-				true,
-				fn,
-			);
-			coerceIntWidth(at, slot.target, fn);
-			maybeUpcastAdjust(at, slot.target, fn);
-			fn.body.push(OP_LOCAL_SET);
-			uleb128(temps[i] ?? 0, fn.body);
-		}
-		if (fn.owned?.length) emitOwnedFrees(fn);
-		for (let i = 0; i < slots.length; i++) {
-			const slot = slots[i];
-			if (!slot) return false;
-			fn.body.push(OP_LOCAL_GET);
-			uleb128(temps[i] ?? 0, fn.body);
-			fn.body.push(OP_LOCAL_SET);
-			uleb128(slot.param, fn.body);
-		}
-		fn.body.push(OP_BR);
-		uleb128(fn.blockDepth - fn.selfLoopDepth, fn.body);
-		fn.selfLoopUsed = true;
-		return true;
+		return withBoundArguments(params, facts, fn, () => {
+			const temps = slots.map(s => allocLocal(fn, s?.type ?? I32));
+			const ownedIn = ownership.ownedParameters(fnSym, environment);
+			for (let i = 0; i < slots.length; i++) {
+				const slot = slots[i];
+				const p = params[i];
+				if (!slot || !p) return false;
+				stampErrorData(slot.arg, slot.target);
+				const at = compileExpr(slot.arg, fn);
+				trackCallArgOwned(
+					slot.arg,
+					at,
+					p.ownership === 'own' || ownedIn?.[i],
+					false,
+					true,
+					fn,
+				);
+				coerceIntWidth(at, slot.target, fn);
+				maybeUpcastAdjust(at, slot.target, fn);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(temps[i] ?? 0, fn.body);
+			}
+			if (fn.owned?.length) emitOwnedFrees(fn);
+			for (let i = 0; i < slots.length; i++) {
+				const slot = slots[i];
+				if (!slot) return false;
+				fn.body.push(OP_LOCAL_GET);
+				uleb128(temps[i] ?? 0, fn.body);
+				fn.body.push(OP_LOCAL_SET);
+				uleb128(slot.param, fn.body);
+			}
+			fn.body.push(OP_BR);
+			uleb128(fn.blockDepth - depth, fn.body);
+			fn.selfLoopUsed = true;
+			return true;
+		});
 	}
 
 	// A pipe whose final stage is a direct single-param fn call, in tail

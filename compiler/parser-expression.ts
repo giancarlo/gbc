@@ -685,6 +685,30 @@ export function parseExpression(
 		return expectNode(exprParser(), 'Expected expression');
 	}
 
+	function callArguments(): Node | undefined {
+		const items: Node[] = [];
+		if (current().kind === ')') return;
+		do {
+			const tk = current();
+			let value: Node | undefined;
+			if (tk.kind === 'ident') {
+				api.next();
+				if (current().kind === '=' || current().kind === ':')
+					value = symbolTable.withScope(() => parseSlot(tk, slot => ({
+						...slot, kind: 'propdef', children: [slot.label, slot.type, slot.value],
+					}), 1));
+				else api.backtrack(tk);
+			}
+			const arg = value ?? exprParser(1);
+			if (!arg) break;
+			items.push(arg);
+		} while (optional(','));
+		const first = items[0];
+		return first && items.length > 1
+			? { ...first, kind: ',', children: items, end: items[items.length - 1]?.end ?? first.end }
+			: first;
+	}
+
 	function isLiteralValueData(typeNode: Node | undefined): boolean {
 		if (!typeNode || typeNode.kind !== 'data') return false;
 		const inner = typeNode.children[0];
@@ -718,7 +742,6 @@ export function parseExpression(
 	const pipePrecedence = 1.5;
 	const parser = parserTable<NodeMap, ScannerToken>(
 		({
-			expression: expr,
 			infixOperator,
 			infix,
 			expectExpression,
@@ -1043,11 +1066,10 @@ export function parseExpression(
 					return node;
 				},
 				infix(tk, left) {
-					const cur = current();
 					return {
 						...tk,
 						kind: 'call',
-						children: [left, cur.kind === ')' ? undefined : expr()],
+						children: [left, callArguments()],
 						start: left.start,
 						end: consume(')').end,
 					};

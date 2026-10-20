@@ -21,7 +21,7 @@ import type {
 	Type,
 } from './symbol-table.js';
 
-import { createSemanticContext } from './semantic.js';
+import { argumentNodes, bindCallArguments, createSemanticContext } from './semantic.js';
 export { setDivByZero, reduceType, isKnownNonZeroNumber } from './semantic.js';
 
 /**
@@ -66,10 +66,10 @@ export function checker({
 		unusedValueMessage,
 		unionOf,
 		fallbackResultType,
-		getListTypes,
 		reduceType,
+		callArgumentTypes,
+		selectCallFunction,
 		callTypeBindings,
-		selectOverload,
 	} = createSemanticContext();
 	const outputOwnershipChecked = new Set<SymbolMap['function']>();
 
@@ -147,57 +147,14 @@ export function checker({
 		}
 	}
 
-	function chooseOverload(
-		fn: SymbolMap['function'],
-		argTypes: Type[],
-		node: NodeMap['call'],
-	): SymbolMap['function'] | undefined {
-		if (fn.overloads) {
-			const arms = [fn, ...fn.overloads];
-			const match =
-				selectOverload(arms, argTypes);
-			if (!match) {
-				error(
-					`No matching overload for ${fn.name ?? '?'}(${argTypes
-						.map(typeToStr)
-						.join(', ')})`,
-					node,
-				);
-				return undefined;
-			}
-			return match;
-		}
-		if (
-			(fn.parameters?.length ?? 0) > 0 &&
-			argTypes.length === 0
-		) {
-			error(
-				`No matching overload for ${fn.name ?? '?'}() — expected ${fn.parameters?.length ?? 0} argument(s)`,
-				node,
-			);
-			return undefined;
-		}
-		return fn;
-	}
-
 	function checkCallArgs(
 		chosen: SymbolMap['function'],
 		argTypes: Type[],
 		node: NodeMap['call'],
+		argNodes: readonly (Node | undefined)[],
 	) {
 		const params = chosen.parameters;
 		if (!params?.length) return;
-		const fnNode =
-			chosen.definition && chosen.definition.kind === 'fn'
-				? chosen.definition
-				: undefined;
-		const paramNodes = fnNode?.parameters;
-		const argsNode = node.children[1];
-		const argNodes = argsNode
-			? argsNode.kind === ','
-				? argsNode.children
-				: [argsNode]
-			: [];
 		const bindings = callTypeBindings(chosen, argTypes);
 
 		for (let i = 0; i < argTypes.length; i++) {
@@ -205,10 +162,6 @@ export function checker({
 			const parameterType = params[i]?.type;
 			if (!typeA || !parameterType) continue;
 			const typeB = reduceType(parameterType, bindings);
-			const isVoidArg =
-				typeA.kind === 'type' && typeA.family === 'void';
-			const hasDefault = !!paramNodes?.[i]?.value;
-			if (isVoidArg && hasDefault) continue;
 			if (literalFits(argNodes[i], typeB)) continue;
 			if (!canAssign(typeB, typeA))
 				error(
@@ -253,15 +206,15 @@ export function checker({
 
 	function contextualizeCallBlocks(
 		fn: SymbolMap['function'],
-		args: Node[],
+		args: readonly (Node | undefined)[],
 	): void {
 		if (fn.overloads) return;
 		const provisional = args.map(arg =>
-			arg.kind === 'fn' ? BT.Unknown : resolver(arg),
+			!arg || arg.kind === 'fn' ? BT.Unknown : resolver(arg),
 		);
 		const bindings = callTypeBindings(fn, provisional);
 		args.forEach((arg, index) => {
-			if (arg.kind !== 'fn' || arg.parameters?.length) return;
+			if (!arg || arg.kind !== 'fn' || arg.parameters?.length) return;
 			const expected = fn.parameters?.[index]?.type;
 			if (expected?.kind !== 'function') return;
 			const context = contextualFunctionType(expected, bindings);
@@ -462,6 +415,16 @@ export function checker({
 		argTypes: Type[];
 	};
 
+	function checkArgumentCalls(node: Node): void {
+		if (node.kind === 'call' && node.children[0].kind !== 'typeident') {
+			checkCall(node);
+			return;
+		}
+		if (node.kind === 'fn') return;
+		for (const child of childNodes(node))
+			if (child) checkArgumentCalls(child);
+	}
+
 	function checkCall(
 		node: NodeMap['call'],
 		threadArgCount = 0,
@@ -491,23 +454,22 @@ export function checker({
 		}
 
 		const args = node.children[1];
-		const argNodes = args
-			? args.kind === ',' ? args.children : [args]
-			: [];
-		contextualizeCallBlocks(fn, argNodes);
-		const argTypes = args
-			? args.kind === ',' ? getListTypes(args) : [resolver(args)]
-			: [];
-
-		if (argTypes.some(isTypeParam)) return;
-
-		const chosen = chooseOverload(fn, argTypes, node);
-		if (!chosen) return;
-		if (args) {
-			checkTypeArgConstraints(chosen, argTypes, node);
-			checkCallArgs(chosen, argTypes, node);
-			checkMutableCallArgs(chosen, node, threadArgCount);
+		const chosen = selectCallFunction(fn, args);
+		if (!chosen) {
+			error(`No matching overload for ${fn.name ?? '?'}(${argumentNodes(args).map(arg => typeToStr(resolver(arg))).join(', ')})`, node);
+			return;
 		}
+		const bound = bindCallArguments(chosen.parameters ?? [], argumentNodes(args));
+		for (const diagnostic of bound.errors) error(diagnostic.message, diagnostic.position ?? node);
+		if (bound.errors.length) return;
+		contextualizeCallBlocks(chosen, bound.arguments);
+		for (const arg of bound.arguments.slice(threadArgCount))
+			if (arg) checkArgumentCalls(arg);
+		const argTypes = callArgumentTypes(chosen, args);
+		if (argTypes.some(isTypeParam)) return;
+		checkTypeArgConstraints(chosen, argTypes, node);
+		checkCallArgs(chosen, argTypes, node, bound.arguments);
+		checkMutableCallArgs(chosen, node, bound.arguments, threadArgCount);
 		return { fn, chosen, argTypes };
 	}
 
@@ -600,10 +562,9 @@ export function checker({
 	function checkMutableCallArgs(
 		fn: SymbolMap['function'],
 		node: NodeMap['call'],
+		args: readonly (Node | undefined)[],
 		threadArgCount = 0,
 	): void {
-		const raw = node.children[1];
-		const args = raw?.kind === ',' ? raw.children : raw ? [raw] : [];
 		const roots = new Map<Symbol, number>();
 		for (let i = 0; i < args.length; i++) {
 			if (fn.parameters?.[i]?.ownership !== 'var') continue;
@@ -1134,8 +1095,7 @@ export function checker({
 	): void {
 		const fn = effectiveCallFunction(node);
 		if (!fn) return;
-		const list = node.children[1];
-		const args = list?.kind === ',' ? list.children : list ? [list] : [];
+		const args = bindCallArguments(fn.parameters ?? [], argumentNodes(node.children[1])).arguments;
 		const seenExclusive = new Set<Symbol>();
 		for (let i = 0; i < args.length; i++) {
 			const arg = args[i];
@@ -1305,12 +1265,11 @@ export function checker({
 		fn: NodeMap['fn'],
 		seen: Set<Symbol>,
 	): number[] | undefined {
-		const callee = resolveFunctionType(node.children[0]);
+		const callee = effectiveCallFunction(node);
 		if (callee?.returnOwnership !== 'var') return undefined;
 		const origins = callee.returnBorrowOrigins;
 		if (!origins?.length) return undefined;
-		const args = node.children[1];
-		const values = args?.kind === ',' ? args.children : args ? [args] : [];
+		const values = bindCallArguments(callee.parameters ?? [], argumentNodes(node.children[1])).arguments;
 		const mapped = origins.map(origin => {
 			const value = values[origin];
 			return value

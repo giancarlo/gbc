@@ -18,7 +18,7 @@ type ResolutionContext = Pick<ReturnType<typeof createSemanticContext>,
 	| 'scalarCtorType' | 'bufferCtorType' | 'resolveMemberType'
 	| 'numericValueType' | 'resolveCallReturn' | 'callArgumentTypes'
 	| 'pipeArgumentTypes' | 'threadCall' | 'fallbackResultType'
-	| 'callTypeBindings' | 'functionTypeParameters' | 'resolver'
+	| 'callTypeBindings' | 'functionTypeParameters' | 'resolver' | 'selectCallFunction'
 >;
 
 export interface ExpressionContext {
@@ -102,14 +102,13 @@ function createPreparationContext() {
 		call: NodeMap['call'],
 		resolveFunction: (node: Node) => SymbolMap['function'] | undefined,
 		resolveType: (node: Node) => Type,
-		select: (arms: SymbolMap['function'][], args: Type[]) => SymbolMap['function'] | undefined,
+		select: ResolutionContext['selectOverload'],
 		environment: SpecializationEnvironment,
 	): ThreadResolution | undefined {
 		const declared = resolveFunction(call.children[0]);
 		if (!declared) return;
-		const raw = call.children[1];
-		const argTypes = (raw?.kind === ',' ? raw.children : raw ? [raw] : []).map(resolveType);
-		const target = select(declared.overloads ?? [], argTypes) ?? declared;
+		const target = semantic.selectCallFunction(declared, call.children[1], resolveType, select) ?? declared;
+		const argTypes = semantic.callArgumentTypes(target, call.children[1], resolveType);
 		const specialized = emissionType(target, callTypeBindings(target, argTypes));
 		const inferred = resolveCallReturn(target, argTypes, select, target.typeParams) ?? target.returnType ?? BaseTypes.Void;
 		const output = inferred.kind === 'type' && inferred.family === 'unknown' ? reduceType(inferred, environment.typeArguments) : inferred;
@@ -184,14 +183,14 @@ function createPreparationContext() {
 		return member?.kind === 'function' ? member : undefined;
 	}
 
-	function resolveOverload(arms: SymbolMap['function'][], args: Type[], templates?: ExpressionContext['templates']) {
+	function resolveOverload(arms: SymbolMap['function'][], args: Type[], templates?: ExpressionContext['templates'], argumentsFor?: (fn: SymbolMap['function']) => Type[]) {
 		return semantic.selectOverload(arms, args.map(dispatchArgType), arm => {
 			if (arm.parameters?.length !== 1) return false;
 			const template = templates?.get(arm);
 			if (template) return !template.parameters?.[0]?.type;
 			const parameter = arm.parameters[0]?.type;
 			return !parameter || (parameter.kind === 'type' && parameter.family === 'unknown');
-		});
+		}, argumentsFor ? candidate => argumentsFor(candidate).map(dispatchArgType) : undefined);
 	}
 
 	function stageInputType(stage: Node, environment: SpecializationEnvironment): ResolvedType | undefined {
@@ -217,7 +216,7 @@ function createPreparationContext() {
 	function threadResolution(call: NodeMap['call'], context: ExpressionContext) {
 		return resolveThreadCall(call, callee => callee.kind === '.' ? staticMemberFunction(callee, context.environment) :
 			functionArgument(callee, context.environment),
-			child => expressionType(child, context), (arms, args) => resolveOverload(arms, args, context.templates), context.environment);
+			child => expressionType(child, context), (arms, args, _catchAll, argumentsFor) => resolveOverload(arms, args, context.templates, argumentsFor), context.environment);
 	}
 
 	function inferIdentType(node: NodeMap['ident'], context: ExpressionContext): Type {
