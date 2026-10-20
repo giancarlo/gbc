@@ -1,8 +1,10 @@
-import { highlight } from './highlight.js';
+import { highlight as createHighlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import { program } from './index.js';
 import tests from './test-commonmark.js';
 import highlightTests from './test-highlight.js';
+
+const highlight = createHighlight();
 
 type MdTest = {
 	md: string;

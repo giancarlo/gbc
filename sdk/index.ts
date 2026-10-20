@@ -74,6 +74,12 @@ export function enrichHighlightToken<Node extends Token<string>>(
 	return result;
 }
 
+export type LanguageResolver = (language: string) => Highlighter | undefined;
+
+export interface HighlightOptions {
+	resolveLanguage?: LanguageResolver;
+}
+
 export interface Highlighter<Node extends Token<string> = Token<string>, State = unknown> {
 	resume(input: HighlightInput, checkpoint?: HighlightCheckpoint<State>): Generator<Node & HighlightToken, HighlightCheckpoint<State>>;
 	equivalent(left: HighlightCheckpoint<State>, right: HighlightCheckpoint<State>): boolean;

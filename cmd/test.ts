@@ -1,4 +1,4 @@
-import { highlight, type HighlightToken } from './highlight.js';
+import { highlight as createHighlight, type HighlightToken } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import {
 	compiler,
@@ -14,6 +14,8 @@ import {
 	type Token,
 	tokenize,
 } from './index.js';
+
+const highlight = createHighlight();
 //import { ast } from './debug.js';
 
 export default spec('cmd', s => {

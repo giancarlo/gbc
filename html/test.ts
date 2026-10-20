@@ -1,6 +1,8 @@
-import { highlight } from './highlight.js';
+import { highlight as createHighlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import { scanner } from './index.js';
+
+const highlight = createHighlight();
 
 const benchmarkSource = (`<ul><li>${'<div>'.repeat(100)}${'</div>'.repeat(100)}</ul>`).repeat(5);
 

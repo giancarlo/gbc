@@ -76,7 +76,15 @@ try {
 		for (const file of await readdir(join(root, 'dist', pkg)))
 			if (file.endsWith('.d.ts')) await copyFile(join(root, 'dist', pkg, file), join(dir, file));
 		await symlink(dir, join(fixture, 'node_modules', metadata.name));
-		const { highlight } = await import(pathToFileURL(require.resolve(metadata.name + '/highlight')).href);
+		const { highlight: createHighlight } = await import(pathToFileURL(require.resolve(metadata.name + '/highlight')).href);
+		assert.equal(typeof createHighlight, 'function');
+		const highlight = createHighlight();
+		const independent = createHighlight({ resolveLanguage: () => undefined });
+		assert.notEqual(independent, highlight);
+		const sharedSource = highlightSource(source);
+		const pending = highlight.resume({ source: sharedSource, end: 0 }).next().value;
+		assert.throws(() => [...independent.resume({ source: sharedSource }, pending)]);
+		assert.deepEqual([...independent.resume({ source: highlightSource(source) })], [...highlight.resume({ source: highlightSource(source) })]);
 		const tokens = [...highlight.resume({ source: highlightSource(source) })];
 		assert(tokens.length > 0);
 		assert.deepEqual([...highlight.resume({ source: highlightSource('') })], []);
@@ -110,12 +118,11 @@ try {
 					[{ kind, start: 0, end: source.length }],
 				);
 		}
-		declarations.push(`import { highlight as ${pkg}, type Highlighter as ${pkg}Highlighter, type HighlightToken as ${pkg}Token } from '${metadata.name}/highlight';
-const ${pkg}Fn: ${pkg}Highlighter = ${pkg};
+		declarations.push(`import { highlight as ${pkg}, type Highlighter as ${pkg}Highlighter, type HighlightToken as ${pkg}Token, type HighlightOptions as ${pkg}Options } from '${metadata.name}/highlight';
+const ${pkg}Factory: (options?: ${pkg}Options) => ${pkg}Highlighter = ${pkg};
+const ${pkg}Fn: ${pkg}Highlighter = ${pkg}Factory({ resolveLanguage: () => undefined });
 const ${pkg}Source = { id: {}, version: 1, length: 0, read: (_start: number, _end: number) => '', text: () => '' };
 const ${pkg}Tokens: ${pkg}Token[] = [...${pkg}Fn.resume({ source: ${pkg}Source })];
-const ${pkg}Callable: ${pkg}Highlighter extends (...args: never[]) => unknown ? true : false = false;
-void ${pkg}Callable;
 void ${pkg}Tokens;`);
 		console.log(`${pkg}: public highlighting contract passed`);
 	}

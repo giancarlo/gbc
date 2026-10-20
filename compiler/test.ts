@@ -1,4 +1,4 @@
-import { highlight } from './highlight.js';
+import { highlight as createHighlight } from './highlight.js';
 import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
 import {
@@ -28,6 +28,8 @@ import { checker } from './checker.js';
 import { compileLlvm } from './target-llvm.js';
 import { dispatchArms, numericConversion, numericOperation } from './semantic.js';
 import lifecycle from './test-lifecycle.js';
+
+const highlight = createHighlight();
 
 function snapshotGraph(root: object): () => string[] {
 	const objects = new Map<object, { path: string; properties: Record<PropertyKey, PropertyDescriptor>; entries?: unknown[] }>();

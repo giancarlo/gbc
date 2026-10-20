@@ -250,7 +250,7 @@ export const createScanner = <ExtraKind extends string = never>(
 		if (ch === '/' && canStartRegex()) return regex();
 		if (punctuation.has(ch)) return token('punctuation', 1);
 		const operator = ch + current(1) + current(2) + current(3);
-		for (let length = 4; length > 0; length--)
+		for (let length = operator.length; length > 0; length--)
 			if (operators.has(operator.slice(0, length)))
 				return token('operator', length);
 		return token('operator', 1);

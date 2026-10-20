@@ -1,7 +1,7 @@
-import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightToken, highlightSegments, foldToken, type HighlightKind, type HighlightBuffer, type HighlightToken, type HighlightWindow } from '@cxl/gbc.sdk';
+import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightToken, highlightSegments, foldToken, type HighlightOptions, type HighlightKind, type HighlightBuffer, type HighlightToken, type HighlightWindow } from '@cxl/gbc.sdk';
 import { scanner } from './index.js';
 
-export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
+export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
 const classify = (token: ReturnType<ReturnType<typeof scanner>['next']>): HighlightKind => {
 	switch (token.kind) {
 		case 'attrName':
@@ -101,7 +101,7 @@ interface HtmlState {
 	pending: HighlightToken | undefined;
 }
 
-export const highlight = createHighlighter((): HtmlState => ({
+export const highlight = (_options?: HighlightOptions) => createHighlighter((): HtmlState => ({
 	buffer: { start: 0, line: 0, fragment: undefined }, inTag: false, inText: false, quote: '', escape: false,
 	prefix: '', comment: false, tail: '', name: '', closing: false, slash: false, declaration: false,
 	elements: { names: [], counts: new Map() }, pending: undefined,

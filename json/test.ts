@@ -1,7 +1,9 @@
 import { spec, type TestApi } from '@cxl/spec';
 import { CompilerError, text, tokenize } from '@cxl/gbc.sdk';
 import { parse, scan } from './index.js';
-import { highlight } from './highlight.js';
+import { highlight as createHighlight } from './highlight.js';
+
+const highlight = createHighlight();
 
 const benchmarkSource = JSON.stringify(Array.from({ length: 100 }, (_, id) => ({
 	id,

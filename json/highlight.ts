@@ -1,12 +1,12 @@
 import {
 	CompilerError, createHighlighter, enrichHighlightToken,
-	type HighlightKind, type HighlightState, type HighlightToken,
+	type HighlightOptions, type HighlightKind, type HighlightState, type HighlightToken,
 	type HighlightWindow, type Position, type TokenizerError,
 } from '@cxl/gbc.sdk';
 import type { ScannerToken } from './index.js';
 import { initialScannerState, scanWindow, whitespace, type JsonScannerState, type Lexeme } from './scanner.js';
 
-export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
+export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
 interface JsonState {
 	scanner: JsonScannerState;
 	pending: Omit<Position, 'source'> | undefined;
@@ -56,7 +56,7 @@ function* resume(window: HighlightWindow, previous: Readonly<JsonState>): Genera
 	}
 }
 
-export const highlight = createHighlighter((): JsonState => ({
+export const highlight = (_options?: HighlightOptions) => createHighlighter((): JsonState => ({
 	scanner: initialScannerState(), pending: undefined,
 }), resume, (state, shift) => ({
 	scanner: state.scanner.kind ? { ...state.scanner, start: state.scanner.start + shift.offset, line: state.scanner.line + shift.line } : initialScannerState(),

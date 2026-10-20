@@ -3,7 +3,7 @@ import {
 	CompilerError, createHighlighter, highlightSegments, shiftHighlightBuffer,
 	type Highlighter, type HighlightToken, type HighlightBuffer,
 } from '@cxl/gbc.sdk';
-import { createMarkdownHighlighter, highlight } from './highlight.js';
+import { highlight } from './highlight.js';
 
 function snapshot(value: string, id = {}, version = 1) {
 	return { id, version, length: value.length, read: (start: number, end: number) => value.slice(start, end), text: () => value };
@@ -40,7 +40,7 @@ export default function highlightTests(a: TestApi) {
 	a.test('streams bodies before closure and preserves delimiters, diagnostics and child folds', a => {
 		const names: string[] = [];
 		const child = language();
-		const md = createMarkdownHighlighter(name => { names.push(name); return name === 'test' ? child : undefined; });
+		const md = highlight({ resolveLanguage: name => { names.push(name); return name === 'test' ? child : undefined; } });
 		const value = '# Section\n```test extra\n{\nbad\n}\n```\nafter';
 		const source = snapshot(value);
 		const prefix = drain(md.resume({ source, end: value.indexOf('}\n') }));
@@ -72,15 +72,15 @@ export default function highlightTests(a: TestApi) {
 
 	a.test('preserves fallback behavior and only resolves fenced language tags', a => {
 		const names: string[] = [];
-		const md = createMarkdownHighlighter(name => { names.push(name); return undefined; });
+		const md = highlight({ resolveLanguage: name => { names.push(name); return undefined; } });
 		for (const value of ['```\nplain\n```', '~~~unknown options\nplain\n~~~', '    indented\n', '`inline`'])
-			a.equalValues([...md.resume({ source: snapshot(value) })], [...highlight.resume({ source: snapshot(value) })]);
+			a.equalValues([...md.resume({ source: snapshot(value) })], [...highlight().resume({ source: snapshot(value) })]);
 		a.equalValues(names, ['unknown']);
 	});
 
 	a.test('handles every chunk boundary, incomplete fences and valid closing lines', a => {
 		const child = language();
-		const md = createMarkdownHighlighter(() => child);
+		const md = highlight({ resolveLanguage: () => child });
 		for (const value of [
 			'```test', '```test\n', '```test\nlast', '```test\nlast\n```',
 			'~~~test\n{\n}\n~~~~\n', '  ```test\n  raw\n  ```\n',
@@ -112,7 +112,7 @@ export default function highlightTests(a: TestApi) {
 
 	a.test('recursively highlights Markdown without exposing outer delimiters to children', a => {
 		const child = language();
-		const md: Highlighter = createMarkdownHighlighter(name => name === 'md' ? md : name === 'test' ? child : undefined);
+		const md: Highlighter = highlight({ resolveLanguage: name => name === 'md' ? md : name === 'test' ? child : undefined });
 		const value = '~~~~md\n# Inner\n```test\nbad\n```\n~~~~\n';
 		const source = snapshot(value);
 		const tokens = [...md.resume({ source })];
@@ -130,7 +130,7 @@ export default function highlightTests(a: TestApi) {
 	});
 
 	a.test('converges and rebases active child checkpoints across edits', a => {
-		const md = createMarkdownHighlighter(() => languageHighlighter);
+		const md = highlight({ resolveLanguage: () => languageHighlighter });
 		const languageHighlighter = language();
 		const value = '```test\none\ntwo\nthree\nbad\n```\nend';
 		const source = snapshot(value);
@@ -159,7 +159,7 @@ export default function highlightTests(a: TestApi) {
 				yield Object.assign(window.position(start, start + 1, window.line), { kind: 'char', highlight: 'keyword' as const, foldStart: 0, foldEnd: 0 });
 			return { state: flagged || window.text.includes('x'), committed: window.start + window.text.length };
 		}, state => state);
-		const md = createMarkdownHighlighter(() => child);
+		const md = highlight({ resolveLanguage: () => child });
 		const value = '```test\nx\nsame\n```';
 		const source = snapshot(value);
 		const changed = snapshot(value.replace('x', 'y'), source.id, 2);
@@ -171,7 +171,7 @@ export default function highlightTests(a: TestApi) {
 
 	a.test('contains unmatched child folds within the fence', a => {
 		const child = language();
-		const md = createMarkdownHighlighter(() => child);
+		const md = highlight({ resolveLanguage: () => child });
 		for (const [body, close] of [['{\n', '```\n'], ['}\n', '```\n'], ['{\nlast', '']] as const) {
 			const value = '# Outer\n```test\n' + body + close + (close ? 'after' : '');
 			const tokens = [...md.resume({ source: snapshot(value) })];
@@ -197,7 +197,7 @@ export default function highlightTests(a: TestApi) {
 			}
 			return { state: undefined, committed: window.start + window.text.length };
 		}, state => state);
-		const md = createMarkdownHighlighter(() => child);
+		const md = highlight({ resolveLanguage: () => child });
 		const value = '```test\n' + 'line\n'.repeat(20) + '```';
 		const source = snapshot(value);
 		const old = drain(md.resume({ source, end: 98 })).checkpoint;
@@ -212,10 +212,10 @@ export default function highlightTests(a: TestApi) {
 	a.test('allows interleaved scans and retries after resolver failure', a => {
 		const child = language();
 		let fail = false;
-		const md = createMarkdownHighlighter(() => {
+		const md = highlight({ resolveLanguage: () => {
 			if (fail) throw new Error('resolver failure');
 			return child;
-		});
+		} });
 		const source = snapshot('before\n\n```test\none\ntwo\n```\n');
 		const prefix = drain(md.resume({ source, end: 7 }));
 		fail = true;
@@ -242,7 +242,7 @@ export default function highlightTests(a: TestApi) {
 				return { state: undefined, committed: window.start + window.text.length };
 			} finally { closed++; }
 		});
-		const md = createMarkdownHighlighter(() => child);
+		const md = highlight({ resolveLanguage: () => child });
 		for (const token of md.resume({ source: snapshot('```test\nbody\n```') })) {
 			a.equal(token.highlight, 'code');
 			break;
@@ -252,7 +252,7 @@ export default function highlightTests(a: TestApi) {
 
 	a.test('reads large streamed bodies once without materializing the document', a => {
 		const child = language();
-		const md = createMarkdownHighlighter(() => child);
+		const md = highlight({ resolveLanguage: () => child });
 		const opener = '```test\n';
 		const value = opener + 'line\n'.repeat(2000) + '```\n';
 		let read = 0;
@@ -271,7 +271,7 @@ export default function highlightTests(a: TestApi) {
 
 	a.test('benchmarks resuming a large embedded fence tail', async a => {
 		const child = language();
-		const md = createMarkdownHighlighter(() => child);
+		const md = highlight({ resolveLanguage: () => child });
 		const source = snapshot('```test\n' + 'line\n'.repeat(2000) + '```\n');
 		const prefix = drain(md.resume({ source, end: source.length - 164 }));
 		await a.benchmark(() => drain(md.resume({ source }, prefix.checkpoint)).tokens.length, {

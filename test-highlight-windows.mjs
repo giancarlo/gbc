@@ -11,9 +11,21 @@ const describe = tokens => tokens.map(t => [t.kind, t.highlight, t.start, t.end,
 const drain = iterator => { const tokens = []; for (;;) { const next = iterator.next(); if (next.done) return { tokens, checkpoint: next.value }; tokens.push(next.value); } };
 const sourceOf = (value, id = {}, version = 1) => ({ id, version, length: value.length, read: (start, end) => value.slice(start, end), text: () => value });
 const fixtures = JSON.parse(await readFile(path, 'utf8'));
-const registered = Object.fromEntries(await Promise.all(Object.keys(fixtures).map(async mode => [mode, (await import(`./dist/${mode}/highlight.js`)).highlight])));
+const registered = Object.fromEntries(await Promise.all(Object.keys(fixtures).map(async mode => [mode, (await import(`./dist/${mode}/highlight.js`)).highlight()])));
+const { highlight } = await import('./dist/markdown/highlight.js');
+const embedded = highlight({ resolveLanguage: name => name === 'js' ? registered.javascript : undefined });
+for (const value of ['```js\nconst x =', '```js\nconst x ==', '```js\nconst x ===']) {
+	const source = sourceOf(value);
+	const expected = drain(embedded.resume({ source })).tokens;
+	assert.deepEqual(expected.filter(token => token.kind === 'operator').map(token => [token.start, token.end]), [[14, value.length]]);
+	for (let split = 0; split < value.length; split++) {
+		const prefix = drain(embedded.resume({ source, end: split }));
+		const suffix = drain(embedded.resume({ source }, prefix.checkpoint));
+		assert.deepEqual([...prefix.tokens, ...suffix.tokens], expected);
+	}
+}
 for (const [mode, highlight] of Object.entries(registered)) {
-	assert.equal(typeof highlight, 'object', `${mode}: legacy callable API must be removed`);
+	assert.equal(typeof highlight, 'object', `${mode}: factory must return a highlighter`);
 	for (const [value, expected] of fixtures[mode]) {
 		const source = sourceOf(value);
 		const full = drain(highlight.resume({ source }));

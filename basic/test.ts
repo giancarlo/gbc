@@ -1,5 +1,5 @@
 import analysis from './test-analysis.js';
-import { highlight } from './highlight.js';
+import { highlight as createHighlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import {
 	Flags,
@@ -13,6 +13,8 @@ import { type NodeMap } from './index.js';
 import { compatibilityCases, demoNames } from './test-corpus.js';
 import { parseAssignment, parseExpression, parseProgram } from './parser.js';
 import { scan } from './scanner.js';
+
+const highlight = createHighlight();
 
 declare const fetch: (url: URL) => Promise<{
 	ok: boolean;

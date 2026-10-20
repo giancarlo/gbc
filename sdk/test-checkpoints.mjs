@@ -21,7 +21,7 @@ function plain(tokens) {
  return tokens.map(({kind, highlight, start, end, line, foldStart, foldEnd}) => ({kind, highlight, start, end, line, foldStart, foldEnd}));
 }
 for (const [mode, unit] of Object.entries(cases)) {
- const { highlight } = await import(`../dist/${mode}/package/highlight.js`);
+ const highlight = (await import(`../dist/${mode}/package/highlight.js`)).highlight();
  const value = unit.repeat(100);
  const source = snapshot(value);
  const checkpoints = [];
@@ -56,11 +56,11 @@ for (const [mode, unit] of Object.entries(cases)) {
  console.log(`${mode}: chunking, convergence, relocation, serialization pass`);
 }
 
-const { createMarkdownHighlighter } = await import('../dist/markdown/package/highlight.js');
+const { highlight } = await import('../dist/markdown/package/highlight.js');
 const languages = Object.fromEntries(await Promise.all(Object.keys(cases).filter(mode => mode !== 'markdown').map(async mode =>
- [mode, (await import(`../dist/${mode}/package/highlight.js`)).highlight],
+ [mode, (await import(`../dist/${mode}/package/highlight.js`)).highlight()],
 )));
-const embedded = createMarkdownHighlighter(mode => mode === 'markdown' ? embedded : languages[mode]);
+const embedded = highlight({ resolveLanguage: mode => mode === 'markdown' ? embedded : languages[mode] });
 for (const [mode, unit] of Object.entries(cases)) {
  const value = `# Outer\n~~~~${mode}\n${unit.repeat(10)}~~~~\nafter`;
  const source = snapshot(value);

@@ -1,7 +1,7 @@
-import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, text, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow } from '@cxl/gbc.sdk';
+import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, text, type HighlightOptions, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow } from '@cxl/gbc.sdk';
 import { keywords, scanHighlight, highlightHereDocuments } from './index.js';
 
-export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
+export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
 const keywordWords = new Set(keywords);
 const punctuation: ReadonlySet<string> = new Set(['(', ')', '{', '}', ';', ',', '...']);
 
@@ -132,7 +132,7 @@ function wordBoundary(state: ShellState, ch: string) {
 	state.last = ch;
 }
 
-export const highlight = createHighlighter((): ShellState => ({
+export const highlight = (_options?: HighlightOptions) => createHighlighter((): ShellState => ({
 	scanner: { line: 0, endLine: 0 }, buffer: { start: 0, line: 0, fragment: undefined }, frames: [], escape: false, word: false, comment: false,
 	last: '', probe: undefined, header: '', line: '', documents: [],
 	commandStart: true, redirectTarget: false, commandName: false, parentheses: [],

@@ -1,7 +1,9 @@
-import { highlight } from './highlight.js';
+import { highlight as createHighlight } from './highlight.js';
 import { spec } from '@cxl/spec';
 import { text, tokenize } from '@cxl/gbc.sdk';
 import { scan } from './index.js';
+
+const highlight = createHighlight();
 
 const benchmarkSource = `export class Point {
 	constructor(x, y) {
@@ -22,6 +24,14 @@ const tokens = (source: string) =>
 	]);
 
 export default spec('javascript', it => {
+	it.test('keeps trailing operators within the source', a => {
+		for (const operator of ['=', '==', '===', '>', '>>', '>>>', '>>>=', '+', '+=', '??', '??=']) {
+			const value = 'const x ' + operator;
+			const tokens = [...highlight.resume({ source: highlightSource(value) })];
+			a.equalValues(tokens.filter(token => token.kind === 'operator').map(token => [token.start, token.end]), [[8, value.length]]);
+		}
+	});
+
 	it.test('retains native context and stable folds across checkpoint windows', a => {
 		const value = 'return /* note\n */ /[a/b]+/gi;\n`template\ntext`';
 		const source = highlightSource(value);

@@ -13,12 +13,12 @@ import {
 	type Highlighter,
 	type HighlightCheckpoint,
 	type HighlightSource,
+	type HighlightOptions,
+	type LanguageResolver,
 } from '@cxl/gbc.sdk';
 import { scannerBlock, scannerInline } from './index.js';
 
-export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
-
-export type LanguageResolver = (language: string) => Highlighter | undefined;
+export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
 
 interface EmbeddedFence {
 	highlighter: Highlighter;
@@ -118,7 +118,8 @@ function ready(state: MarkdownState, line: string): number {
 	}
 }
 
-export function createMarkdownHighlighter(resolveLanguage?: LanguageResolver): Highlighter {
+export function highlight(options?: HighlightOptions): Highlighter {
+	const resolveLanguage = options?.resolveLanguage;
 	return createHighlighter((): MarkdownState => ({
 		buffer: { start: 0, line: 0, fragment: undefined }, text: '', start: 0, line: 0, mode: undefined,
 		marker: '', closing: '', label: false, linkUrl: false, linkTitle: '', linkDone: false, pending: undefined, indented: false, sections: [], embedded: undefined,
@@ -178,8 +179,6 @@ export function createMarkdownHighlighter(resolveLanguage?: LanguageResolver): H
 			: a === b);
 	});
 }
-
-export const highlight = createMarkdownHighlighter();
 
 function* openFence(window: HighlightWindow, state: MarkdownState, resolveLanguage?: LanguageResolver) {
 	const name = state.text.slice(state.text.indexOf(state.marker) + state.marker.length).trim().split(/\s/)[0];

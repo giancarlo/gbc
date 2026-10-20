@@ -1,7 +1,7 @@
-import { tokenize, matchers, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, type ScannerContext, type HighlightKind, type HighlightToken, type HighlightBuffer } from '@cxl/gbc.sdk';
+import { tokenize, matchers, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, type HighlightOptions, type ScannerContext, type HighlightKind, type HighlightToken, type HighlightBuffer } from '@cxl/gbc.sdk';
 import { keywords, scan, type ScannerToken } from './scanner.js';
 
-export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
+export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
 const keywordKinds: ReadonlySet<string> = new Set(keywords);
 const punctuation: ReadonlySet<string> = new Set('{}()[],;');
 
@@ -115,7 +115,7 @@ function lexicalBoundary(state: GbState, ch: string): boolean {
 	return ch === '\n' && !state.quote;
 }
 
-export const highlight = createHighlighter((): GbState => ({
+export const highlight = (_options?: HighlightOptions) => createHighlighter((): GbState => ({
 	scanner: { line: 0, endLine: 0 }, buffer: { start: 0, line: 0, fragment: undefined }, braces: [], quote: false, directive: undefined, invalidDirective: false, slashes: 0, dollar: false, context: [], word: false, number: undefined, member: false, previousCharacter: '',
 }), function* (window, previous) {
 	const state = { ...previous, scanner: { ...previous.scanner }, braces: [...previous.braces], context: [...previous.context] };

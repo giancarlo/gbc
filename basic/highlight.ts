@@ -1,7 +1,7 @@
-import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow, type HighlightToken } from '@cxl/gbc.sdk';
+import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, type HighlightOptions, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow, type HighlightToken } from '@cxl/gbc.sdk';
 import { keywords, scan, type ScannerToken } from './scanner.js';
 
-export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
+export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
 const keywordKinds: ReadonlySet<string> = new Set(keywords);
 const wordOperators = new Set('and or xor eqv imp not mod'.split(' '));
 const punctuation: ReadonlySet<string> = new Set(['(', ')', ',', ';', ':']);
@@ -37,7 +37,7 @@ interface BasicState {
 	tail: string;
 }
 
-export const highlight = createHighlighter((): BasicState => ({
+export const highlight = (_options?: HighlightOptions) => createHighlighter((): BasicState => ({
 	scanner: { line: 0, endLine: 0 }, buffer: { start: 0, line: 0, fragment: undefined }, previous: '', blockIf: false, tail: '',
 }), function* (window, previousState) {
 	const state = { ...previousState, scanner: { ...previousState.scanner } };
