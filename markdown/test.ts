@@ -2,6 +2,7 @@ import { highlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
 import { program } from './index.js';
 import tests from './test-commonmark.js';
+import highlightTests from './test-highlight.js';
 
 type MdTest = {
 	md: string;
@@ -10,6 +11,7 @@ type MdTest = {
 };
 
 export default spec('markdown', (a: TestApi) => {
+	a.test('embedded Markdown highlighting', highlightTests);
 	a.test('retains native context and stable folds across checkpoint windows', a => {
 		const value = '# One\nbody\n## Two\nbody\nTitle\n=====\nlast';
 		const source = highlightSource(value);

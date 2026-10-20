@@ -7,6 +7,7 @@ import {
 	createCaseInsensitiveTrie,
 	createHighlighter,
 	highlightTokens,
+	highlightToken,
 	type Scanner,
 	type HighlightKind,
 	type HighlightToken,
@@ -96,6 +97,37 @@ export default spec('sdk', s => {
 		const native = resumable();
 		a.equal(typeof native.equivalent === 'function', true);
 		a.equal(typeof native.rebase === 'function', true);
+	});
+	s.test('composed highlighters access snapshots and compare opaque child state', (a: TestApi) => {
+		let comparisons = 0;
+		const source = highlightSource('ab');
+		const highlighter = createHighlighter(() => ({ child: new WeakMap<object, object>() }), function* (window, state) {
+			a.equal(window.source, source);
+			yield* [];
+			return { state, committed: window.start + window.text.length };
+		}, state => ({ ...state }), (left, right, equal) => {
+			comparisons++;
+			return equal({ ...left, child: undefined }, { ...right, child: undefined });
+		});
+		const first = drain(highlighter.resume({ source, end: 1 })).checkpoint;
+		const second = drain(highlighter.resume({ source, end: 1 })).checkpoint;
+		a.equal(highlighter.equivalent(first, second), true);
+		a.equal(comparisons, 1);
+	});
+	s.test('relocates structural diagnostics from independently bundled highlighters', (a: TestApi) => {
+		const source = highlightSource('prefix bad');
+		const highlighter = createHighlighter(() => undefined, function* (window) {
+			const token = {
+				kind: 'tokenizer-error', source: 'bad', start: 0, end: 3, line: 0,
+				error: { message: 'foreign diagnostic', position: { source: 'bad', start: 0, end: 3, line: 0 } },
+			};
+			yield enrichHighlightToken(highlightToken(window, token, 7), 'error');
+			return { state: undefined, committed: source.length };
+		});
+		const token = drain(highlighter.resume({ source })).tokens[0];
+		a.equal(token?.error.position.start, 7);
+		a.equal(token?.error.position.end, 10);
+		a.equal(token?.error.position.source, source.text());
 	});
 	s.test('look up checkpoint-only highlighters through the public contract', (a: TestApi) => {
 		const registered: Record<string, Highlighter> = { native: resumable() };

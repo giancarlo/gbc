@@ -10,10 +10,24 @@ import {
 	type HighlightKind,
 	type HighlightToken,
 	type TokenizerError,
+	type Highlighter,
+	type HighlightCheckpoint,
+	type HighlightSource,
 } from '@cxl/gbc.sdk';
 import { scannerBlock, scannerInline } from './index.js';
 
 export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
+
+export type LanguageResolver = (language: string) => Highlighter | undefined;
+
+interface EmbeddedFence {
+	highlighter: Highlighter;
+	checkpoint: HighlightCheckpoint<unknown> | undefined;
+	start: number;
+	line: number;
+	version: string | number;
+	folds: number;
+}
 
 interface MarkdownState {
 	buffer: HighlightBuffer;
@@ -30,6 +44,7 @@ interface MarkdownState {
 	pending: HighlightToken | undefined;
 	indented: boolean;
 	sections: number[];
+	embedded: EmbeddedFence | undefined;
 }
 
 function blockMode(state: MarkdownState) {
@@ -94,11 +109,7 @@ function ready(state: MarkdownState, line: string): number {
 	switch (state.mode) {
 		case 'normal': return state.text.length - line.length;
 		case 'eol': return /^[ \t]*\n$/.test(line) ? 0 : state.text.length - line.length;
-		case 'fence': {
-			const marker = state.marker.charAt(0);
-			const trailing = new RegExp(`${marker === '`' ? '`' : '~'}{${state.marker.length},}[ \t]*\n$`);
-			return !/^ {4}|^ *\t/.test(line) && trailing.test(line) ? 1 : 0;
-		}
+		case 'fence': return closesFence(state.marker, line) ? 1 : 0;
 		case 'html':
 			if (state.closing === '</') return /<\/[a-z-]*(?:pre|script|style|textarea)[a-z-]*[ \t]*>/i.test(line) ? 1 : 0;
 			return state.closing ? (line.includes(state.closing) ? 1 : 0) : (line === '\n' ? 1 : 0);
@@ -107,39 +118,131 @@ function ready(state: MarkdownState, line: string): number {
 	}
 }
 
-export const highlight = createHighlighter((): MarkdownState => ({
-	buffer: { start: 0, line: 0, fragment: undefined }, text: '', start: 0, line: 0, mode: undefined,
-	marker: '', closing: '', label: false, linkUrl: false, linkTitle: '', linkDone: false, pending: undefined, indented: false, sections: [],
-}), function* (window, previous) {
-	const state = { ...previous, sections: [...previous.sections] };
-	if (state.pending) state.pending = highlightToken(window, state.pending);
-	const lines = highlightSegments(window, state.buffer, ch => ch === '\n', true);
-	for (;;) {
-		const next = lines.next();
-		if (next.done) { state.buffer = next.value; break; }
-		const line = next.value.text;
-		state.text += line;
-		let limit = 0;
-		if (state.mode === undefined) {
-			const mode = blockMode(state);
-			if (mode === 'html' && state.closing && state.closing !== '</' && line.includes(state.closing)) limit = 1;
-		} else limit = ready(state, line);
-		if (limit) yield* flush(window, state, limit);
-	}
-	if (window.final) {
-		if (state.text) yield* flush(window, state, Infinity);
-		if (state.pending) {
-			state.pending.foldEnd += state.sections.length + Number(state.indented);
-			yield state.pending;
-			state.pending = undefined;
+export function createMarkdownHighlighter(resolveLanguage?: LanguageResolver): Highlighter {
+	return createHighlighter((): MarkdownState => ({
+		buffer: { start: 0, line: 0, fragment: undefined }, text: '', start: 0, line: 0, mode: undefined,
+		marker: '', closing: '', label: false, linkUrl: false, linkTitle: '', linkDone: false, pending: undefined, indented: false, sections: [], embedded: undefined,
+	}), function* (window, previous) {
+		const state = { ...previous, sections: [...previous.sections], embedded: previous.embedded ? { ...previous.embedded } : undefined };
+		if (state.pending) state.pending = highlightToken(window, state.pending);
+		const lines = highlightSegments(window, state.buffer, ch => ch === '\n', true);
+		for (;;) {
+			const next = lines.next();
+			if (next.done) { state.buffer = next.value; break; }
+			const line = next.value.text;
+			if (state.embedded) {
+				if (closesFence(state.marker, line)) {
+					yield* embeddedBody(window, state, true);
+					yield* appendToken(state, Object.assign(window.position(next.value.start, next.value.start + line.length, next.value.line), {
+						kind: 'block', highlight: 'code' as const, foldStart: 0, foldEnd: state.embedded.folds + 1,
+					}));
+					state.embedded = undefined;
+					state.mode = undefined;
+				}
+				state.start = next.value.start + line.length;
+				state.line = next.value.line + Number(line.endsWith('\n'));
+				continue;
+			}
+			const opening = state.mode !== 'fence';
+			state.text += line;
+			let limit = 0;
+			if (state.mode === undefined) {
+				const mode = blockMode(state);
+				if (mode === 'html' && state.closing && state.closing !== '</' && line.includes(state.closing)) limit = 1;
+			} else limit = ready(state, line);
+			if (limit) yield* flush(window, state, limit);
+			if (opening && state.mode === 'fence') yield* openFence(window, state, resolveLanguage);
 		}
+		yield* embeddedBody(window, state, window.final);
+		if (window.final) {
+			if (state.text) yield* flush(window, state, Infinity);
+			if (state.pending) {
+				state.pending.foldEnd += state.sections.length + Number(state.indented) + (state.embedded ? state.embedded.folds + 1 : 0);
+				yield state.pending;
+				state.pending = undefined;
+			}
+		}
+		return { state, committed: window.final ? window.start + window.text.length : committedBoundary(state) };
+	}, (state, shift) => ({
+		...state, buffer: shiftHighlightBuffer(state.buffer, shift),
+		pending: state.pending ? shift.position(state.pending) : undefined,
+		start: state.start + shift.offset, line: state.line + shift.line,
+		embedded: state.embedded ? { ...state.embedded, start: state.embedded.start + shift.offset, line: state.embedded.line + shift.line } : undefined,
+	}), (left, right, equal) => {
+		const { embedded: a, ...restA } = left;
+		const { embedded: b, ...restB } = right;
+		return equal(restA, restB) && (a && b
+			? a.highlighter === b.highlighter && a.folds === b.folds && (a.checkpoint && b.checkpoint
+				? a.highlighter.equivalent(a.checkpoint, b.checkpoint)
+				: a.checkpoint === b.checkpoint)
+			: a === b);
+	});
+}
+
+export const highlight = createMarkdownHighlighter();
+
+function* openFence(window: HighlightWindow, state: MarkdownState, resolveLanguage?: LanguageResolver) {
+	const name = state.text.slice(state.text.indexOf(state.marker) + state.marker.length).trim().split(/\s/)[0];
+	const highlighter = name ? resolveLanguage?.(name) : undefined;
+	if (!highlighter) return;
+	if (state.indented && state.pending) state.pending.foldEnd++;
+	state.indented = false;
+	yield* appendToken(state, Object.assign(window.position(state.start, state.start + state.text.length, state.line), {
+		kind: 'block', highlight: 'code' as const, foldStart: 1, foldEnd: 0,
+	}));
+	state.start += state.text.length;
+	state.line += Number(state.text.endsWith('\n'));
+	state.text = '';
+	state.embedded = { highlighter, checkpoint: undefined, start: state.start, line: state.line, version: window.source.version, folds: 0 };
+}
+
+function committedBoundary(state: MarkdownState) {
+	return Math.min(state.pending?.start ?? state.start,
+		state.embedded ? state.embedded.start + (state.embedded.checkpoint?.committed ?? 0) : state.start);
+}
+
+function closesFence(marker: string, line: string) {
+	const close = /^ {0,3}(`{3,}|~{3,})[ \t]*(?:\r?\n)?$/.exec(line)?.[1];
+	return close !== undefined && close.length >= marker.length && close.charAt(0) === marker.charAt(0);
+}
+
+function* appendToken(state: MarkdownState, token: HighlightToken) {
+	const previous = state.pending;
+	state.pending = token;
+	if (previous) yield previous;
+}
+
+function* embeddedBody(window: HighlightWindow, state: MarkdownState, final: boolean) {
+	const embedded = state.embedded;
+	if (!embedded) return;
+	const { source } = window;
+	const { start, line, checkpoint } = embedded;
+	const end = state.start - start;
+	if (!final && end === (checkpoint?.offset ?? 0)) return;
+	let text: string | undefined;
+	const length = final ? end : source.length - start;
+	function read(from: number, to: number) {
+		if (start + from >= 0) return source.read(start + from, start + to);
+		return ' '.repeat(Math.min(to, -start) - from) + source.read(0, Math.max(0, start + to));
 	}
-	return { state, committed: window.final ? window.start + window.text.length : state.pending?.start ?? state.start };
-}, (state, shift) => ({
-	...state, buffer: shiftHighlightBuffer(state.buffer, shift),
-	pending: state.pending ? shift.position(state.pending) : undefined,
-	start: state.start + shift.offset, line: state.line + shift.line,
-}));
+	const body: HighlightSource = {
+		id: source.id, version: source.version, length, read,
+		text: () => text ??= read(0, length),
+	};
+	const scan = function* () {
+		embedded.checkpoint = yield* embedded.highlighter.resume({
+			source: body, end,
+			edit: checkpoint && embedded.version !== source.version ? { previousVersion: embedded.version, start: checkpoint.offset } : undefined,
+		}, checkpoint);
+		embedded.version = source.version;
+	};
+	for (const child of scan()) {
+		const token = highlightToken(window, child, start, line);
+		token.foldEnd = Math.min(token.foldEnd, embedded.folds + token.foldStart);
+		embedded.folds += token.foldStart - token.foldEnd;
+		yield* appendToken(state, token);
+	}
+}
 
 function* flush(window: HighlightWindow, state: MarkdownState, limit: number) {
 	const segment = { ...window, text: state.text, start: state.start, line: state.line,

@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "environments": {
+    "837b8abd7ce17819bc47de22ec6d23253fd9f43d64af7e539d59554f9f2dd041": {
+      "fingerprint": {
+        "browser": "Node/v24.13.0",
+        "platform": "linux",
+        "architecture": "arm64",
+        "cpu": "unknown",
+        "gpu": "",
+        "profile": ""
+      },
+      "benchmarks": {
+        "markdown > embedded Markdown highlighting > benchmarks resuming a large embedded fence tail": {
+          "type": "benchmark",
+          "iterations": 197,
+          "values": [
+            0.10518485279187863,
+            0.09903574619289282,
+            0.10115164974619345,
+            0.09930625888324902,
+            0.09874471573604017,
+            0.10131239593908554,
+            0.09943231979695603,
+            0.1014862487309651,
+            0.09814889847715731,
+            0.0986592639593915
+          ],
+          "median": 0.09936928934010253,
+          "mad": 0.0009652081218281261,
+          "p75": 0.10127220939086252,
+          "p95": 0.10352048096446753,
+          "operationsPerSecond": 10063.471386792231,
+          "options": {
+            "warmup": 50,
+            "sampleTime": 20,
+            "samples": 10,
+            "maxRegression": 15
+          }
+        }
+      }
+    }
+  }
+}

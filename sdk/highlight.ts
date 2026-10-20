@@ -25,6 +25,7 @@ export interface HighlightCheckpoint<State> {
 }
 
 export interface HighlightWindow {
+	readonly source: HighlightSource;
 	readonly text: string;
 	readonly start: number;
 	readonly line: number;
@@ -62,6 +63,11 @@ function equalState<Value>(left: Value, right: Value, seen = new WeakMap<object,
 	return true;
 }
 
+function diagnostic(token: Position & { readonly error?: CompilerError }) {
+	const error = token.error;
+	return error?.position && typeof error.message === 'string' ? error : undefined;
+}
+
 function shiftPosition<Node extends Position>(token: Node, offset: number, line: number, text: () => string): Node {
 	const prototype: object | null = Object.getPrototypeOf(token);
 	const result: Node = Object.create(prototype, Object.getOwnPropertyDescriptors(token));
@@ -69,8 +75,9 @@ function shiftPosition<Node extends Position>(token: Node, offset: number, line:
 	result.end += offset;
 	result.line += line;
 	Object.defineProperty(result, 'source', { enumerable: true, configurable: true, get: text });
-	if ('error' in token && token.error instanceof CompilerError)
-		Object.assign(result, { error: new CompilerError(token.error.message, shiftPosition(token.error.position, offset, line, text)) });
+	const error = diagnostic(token);
+	if (error)
+		Object.assign(result, { error: new CompilerError(error.message, shiftPosition(error.position, offset, line, text)) });
 	return result;
 }
 
@@ -106,7 +113,9 @@ export function createHighlighter<Node extends Token<string>, State>(
 	initial: () => State,
 	scan: (window: HighlightWindow, state: Readonly<State>) => Generator<Node & HighlightToken, HighlightState<State>>,
 	relocate?: (state: Readonly<State>, shift: HighlightShift) => State,
+	compare?: (left: Readonly<State>, right: Readonly<State>, equal: <Value>(left: Value, right: Value) => boolean) => boolean,
 ): Highlighter<Node, State> {
+	const same = compare ?? ((left: Readonly<State>, right: Readonly<State>) => equalState(left, right));
 	const checkpoints = new WeakMap<HighlightCheckpoint<State>, {
 		state: State;
 		id: object;
@@ -135,6 +144,7 @@ export function createHighlighter<Node extends Token<string>, State>(
 		const prototype: object = Object.prototype;
 		const complete = start === 0 && end === length;
 		const window: HighlightWindow = {
+			source,
 			text: value,
 			start,
 			line: checkpoint?.line ?? 0,
@@ -173,7 +183,7 @@ export function createHighlighter<Node extends Token<string>, State>(
 		return Boolean(relocate && a && a.id === b?.id && !left.done && !right.done &&
 			left.offset - left.committed === right.offset - right.committed &&
 			a.source.read(left.committed, left.offset) === b.source.read(right.committed, right.offset) &&
-			equalState(shift(a.state, -left.offset, -left.line, () => ''), shift(b.state, -right.offset, -right.line, () => '')));
+			same(shift(a.state, -left.offset, -left.line, () => ''), shift(b.state, -right.offset, -right.line, () => ''), equalState));
 	}
 
 	function rebase(checkpoint: HighlightCheckpoint<State>, source: HighlightSource, offset: number, line: number) {
@@ -198,9 +208,10 @@ export function highlightToken<Node extends Token<string>>(window: HighlightWind
 	const prototype: object | null = Object.getPrototypeOf(token);
 	const result: Node = Object.create(prototype, Object.getOwnPropertyDescriptors(token));
 	window.position(token.start + offset, token.end + offset, token.line + line, result);
-	if ('error' in token && token.error instanceof CompilerError)
-		Object.assign(result, { error: new CompilerError(token.error.message, window.position(
-			token.error.position.start + offset, token.error.position.end + offset, token.error.position.line + line,
+	const error = diagnostic(token);
+	if (error)
+		Object.assign(result, { error: new CompilerError(error.message, window.position(
+			error.position.start + offset, error.position.end + offset, error.position.line + line,
 		)) });
 	return result;
 }
