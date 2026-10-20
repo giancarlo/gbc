@@ -1,4 +1,4 @@
-import { tokenize, createHighlighter, highlightTokens, highlightSegments, foldToken, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow, type HighlightToken } from '@cxl/gbc.sdk';
+import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow, type HighlightToken } from '@cxl/gbc.sdk';
 import { keywords, scan, type ScannerToken } from './scanner.js';
 
 export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
@@ -58,7 +58,10 @@ export const highlight = createHighlighter((): BasicState => ({
 		}
 		yield* highlightLine(next.value, state);
 	}
-});
+}, (state, shift) => ({
+	...state, buffer: shiftHighlightBuffer(state.buffer, shift),
+	scanner: { line: state.scanner.line + shift.line, endLine: state.scanner.endLine + shift.line },
+}));
 
 function* highlightLine(window: HighlightWindow, state: BasicState) {
 	let { previous, blockIf } = state;

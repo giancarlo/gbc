@@ -1,6 +1,7 @@
 import {
 	ScannerApi,
 	createHighlighter,
+	shiftHighlightBuffer,
 	each,
 	type HighlightWindow,
 	highlightTokens,
@@ -427,5 +428,5 @@ export function createJavaScriptHighlighter<ExtraKind extends 'type' = never>(
 				token => token.kind === 'eof' ? 'text' : token.kind,
 				{ state: previous, committed: window.start + window.text.length }, foldToken);
 		return scan(window, previous);
-	});
+	}, (state, shift) => ({ ...state, buffer: shiftHighlightBuffer(state.buffer, shift) }));
 }

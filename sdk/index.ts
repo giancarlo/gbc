@@ -1,4 +1,4 @@
-import type { HighlightCheckpoint, HighlightInput } from './highlight.js';
+import type { HighlightCheckpoint, HighlightInput, HighlightSource } from './highlight.js';
 
 export * from './format.js';
 export * from './runtime.js';
@@ -76,6 +76,8 @@ export function enrichHighlightToken<Node extends Token<string>>(
 
 export interface Highlighter<Node extends Token<string> = Token<string>, State = unknown> {
 	resume(input: HighlightInput, checkpoint?: HighlightCheckpoint<State>): Generator<Node & HighlightToken, HighlightCheckpoint<State>>;
+	equivalent(left: HighlightCheckpoint<State>, right: HighlightCheckpoint<State>): boolean;
+	rebase(checkpoint: HighlightCheckpoint<State>, source: HighlightSource, offset: number, line: number): HighlightCheckpoint<State>;
 }
 
 const noFold = [0, 0] as const;

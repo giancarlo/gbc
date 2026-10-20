@@ -1,4 +1,4 @@
-import { tokenize, matchers, createHighlighter, highlightTokens, highlightSegments, foldToken, type ScannerContext, type HighlightKind, type HighlightToken, type HighlightBuffer } from '@cxl/gbc.sdk';
+import { tokenize, matchers, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, type ScannerContext, type HighlightKind, type HighlightToken, type HighlightBuffer } from '@cxl/gbc.sdk';
 import { keywords, scan, type ScannerToken } from './scanner.js';
 
 export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
@@ -132,4 +132,7 @@ export const highlight = createHighlighter((): GbState => ({
 		}
 		yield* highlightTokens(next.value, tokenize(source => scan(source, state.context, state.scanner), next.value.text), classify, undefined, fold, 0);
 	}
-});
+}, (state, shift) => ({
+	...state, buffer: shiftHighlightBuffer(state.buffer, shift),
+	scanner: { line: state.scanner.line + shift.line, endLine: state.scanner.endLine + shift.line },
+}));

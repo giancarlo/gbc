@@ -92,12 +92,66 @@ function tokenHighlighter<Node extends Token<string>>(
 }
 
 export default spec('sdk', s => {
+	s.test('native checkpoints expose state convergence and relocation', (a: TestApi) => {
+		const native = resumable();
+		a.equal(typeof native.equivalent === 'function', true);
+		a.equal(typeof native.rebase === 'function', true);
+	});
 	s.test('look up checkpoint-only highlighters through the public contract', (a: TestApi) => {
 		const registered: Record<string, Highlighter> = { native: resumable() };
 		const native = registered.native;
 		a.assert(native);
 		a.equal(typeof native, 'object');
 		a.equalValues(drain(native.resume({ source: highlightSource('ab') })).tokens.map(text), ['a', 'b']);
+	});
+	s.test('compare and rebase immutable native state across edited snapshots', (a: TestApi) => {
+		const highlighter = createHighlighter(() => ({ start: 0, line: 0, mode: '' }), function* (window, state) {
+			for (let index = 0; index < window.text.length; index++)
+				yield enrichHighlightToken(Object.assign(window.position(window.start + index, window.start + index + 1, window.line), { kind: 'char' }), 'text');
+			return { state: { ...state, start: window.start + window.text.length, line: window.line, mode: window.text.slice(-1) }, committed: window.start + window.text.length };
+		}, (state, shift) => ({ ...state, start: state.start + shift.offset, line: state.line + shift.line }));
+		const source = highlightSource('aaxbb');
+		const old = drain(highlighter.resume({ source, end: 2 })).checkpoint;
+		const changed = { ...highlightSource('zaaxbb'), id: source.id, version: 2 };
+		const current = drain(highlighter.resume({ source: changed, end: 3 })).checkpoint;
+		a.equal(highlighter.equivalent(old, current), true);
+		const moved = highlighter.rebase(old, changed, 1, 0);
+		a.equalValues(drain(highlighter.resume({ source: changed }, moved)).tokens.map(text), ['x', 'b', 'b']);
+		a.equalValues(drain(highlighter.resume({ source }, old)).tokens.map(text), ['x', 'b', 'b']);
+		a.equal(highlighter.equivalent(old, { ...old }), false);
+		a.equal(highlighter.equivalent(old, drain(highlighter.resume({ source, end: 3 })).checkpoint), false);
+		a.throws(() => highlighter.rebase(old, highlightSource('zaaxbb'), 1, 0));
+		for (const delta of [-3, 99, NaN, 0.5]) a.throws(() => highlighter.rebase(old, changed, delta, 0));
+		a.throws(() => highlighter.rebase(old, changed, 1, -1));
+		a.throws(() => highlighter.rebase(drain(highlighter.resume({ source })).checkpoint, changed, 0, 0));
+		a.equal(drain(highlighter.resume({ source: changed }, moved)).tokens[0]?.source, changed.text());
+	});
+	s.test('convergence includes uncommitted text and refuses unsupported state', (a: TestApi) => {
+		const pending = createHighlighter(() => undefined, function* () {
+			yield* [];
+			return { state: undefined, committed: 0 };
+		}, state => state);
+		const source = highlightSource('ab ');
+		const old = drain(pending.resume({ source, end: 2 })).checkpoint;
+		const changed = { ...highlightSource('ac '), id: source.id, version: 2 };
+		const current = drain(pending.resume({ source: changed, end: 2 })).checkpoint;
+		a.equal(pending.equivalent(old, current), false);
+		const unsupported = resumable();
+		const checkpoint = drain(unsupported.resume({ source, end: 1 })).checkpoint;
+		a.equal(unsupported.equivalent(checkpoint, checkpoint), false);
+		a.throws(() => unsupported.rebase(checkpoint, source, 0, 0));
+	});
+	s.test('state equivalence preserves values and sparse array lengths', (a: TestApi) => {
+		const native = createHighlighter(() => ({ value: 'a', sparse: new Array<string>(1) }), function* (window, state) {
+			yield* [];
+			return { state: { ...state, value: window.text }, committed: window.start + window.text.length };
+		}, state => ({ ...state }));
+		const source = highlightSource('aa');
+		const other = { ...highlightSource('ba'), id: source.id };
+		const first = drain(native.resume({source, end: 1})).checkpoint;
+		const second = drain(native.resume({source: other, end: 1})).checkpoint;
+		a.equal(native.equivalent(first, first), true);
+		a.equal(native.equivalent(first, second), false);
 	});
 	s.test('complete windows reuse the read snapshot without materializing the source', (a: TestApi) => {
 		const value = 'a\nb';

@@ -32,6 +32,48 @@ export interface HighlightWindow {
 	position(start: number, end: number, line: number, token?: Position): Position;
 }
 
+export interface HighlightShift {
+	readonly offset: number;
+	readonly line: number;
+	position<Node extends Position>(token: Node): Node;
+}
+
+function comparableState(value: object) {
+	const prototype: object | null = Object.getPrototypeOf(value);
+	return !Object.getOwnPropertySymbols(value).length &&
+		(prototype === Object.prototype || prototype === null || Array.isArray(value) || value instanceof CompilerError);
+}
+
+function equalState<Value>(left: Value, right: Value, seen = new WeakMap<object, object>()): boolean {
+	if (Object.is(left, right)) return true;
+	if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+	if (seen.has(left)) return seen.get(left) === right;
+	seen.set(left, right);
+	if (Array.isArray(left) && Array.isArray(right) && left.length !== right.length) return false;
+	if (left instanceof Map && right instanceof Map) {
+		const a: Map<Value, Value> = left;
+		const b: Map<Value, Value> = right;
+		return equalState([...a], [...b], seen);
+	}
+	if (!comparableState(left) || !comparableState(right) || Object.getPrototypeOf(left) !== Object.getPrototypeOf(right) ||
+		Object.keys(left).length !== Object.keys(right).length) return false;
+	for (const key in left)
+		if (Object.hasOwn(left, key) && (!Object.hasOwn(right, key) || !equalState(left[key], right[key], seen))) return false;
+	return true;
+}
+
+function shiftPosition<Node extends Position>(token: Node, offset: number, line: number, text: () => string): Node {
+	const prototype: object | null = Object.getPrototypeOf(token);
+	const result: Node = Object.create(prototype, Object.getOwnPropertyDescriptors(token));
+	result.start += offset;
+	result.end += offset;
+	result.line += line;
+	Object.defineProperty(result, 'source', { enumerable: true, configurable: true, get: text });
+	if ('error' in token && token.error instanceof CompilerError)
+		Object.assign(result, { error: new CompilerError(token.error.message, shiftPosition(token.error.position, offset, line, text)) });
+	return result;
+}
+
 export interface HighlightState<State> {
 	readonly state: State;
 	readonly committed: number;
@@ -63,11 +105,13 @@ function countLines(text: string): number {
 export function createHighlighter<Node extends Token<string>, State>(
 	initial: () => State,
 	scan: (window: HighlightWindow, state: Readonly<State>) => Generator<Node & HighlightToken, HighlightState<State>>,
+	relocate?: (state: Readonly<State>, shift: HighlightShift) => State,
 ): Highlighter<Node, State> {
 	const checkpoints = new WeakMap<HighlightCheckpoint<State>, {
 		state: State;
 		id: object;
 		version: string | number;
+		source: HighlightSource;
 	}>();
 
 	function* resume(input: HighlightInput, checkpoint?: HighlightCheckpoint<State>): Generator<Node & HighlightToken, HighlightCheckpoint<State>> {
@@ -114,11 +158,40 @@ export function createHighlighter<Node extends Token<string>, State>(
 		const next: HighlightCheckpoint<State> = Object.freeze({
 			offset: end, line, committed: result.committed, done: window.final,
 		});
-		if (!window.final) checkpoints.set(next, { state: result.state, id, version });
+		if (!window.final) checkpoints.set(next, { state: result.state, id, version, source });
 		return next;
 	}
 
-	return { resume };
+	function shift(state: State, offset: number, line: number, text: () => string) {
+		if (!relocate) throw new Error('Checkpoint relocation is unavailable');
+		return relocate(state, { offset, line, position: token => shiftPosition(token, offset, line, text) });
+	}
+
+	function equivalent(left: HighlightCheckpoint<State>, right: HighlightCheckpoint<State>) {
+		const a = checkpoints.get(left);
+		const b = checkpoints.get(right);
+		return Boolean(relocate && a && a.id === b?.id && !left.done && !right.done &&
+			left.offset - left.committed === right.offset - right.committed &&
+			a.source.read(left.committed, left.offset) === b.source.read(right.committed, right.offset) &&
+			equalState(shift(a.state, -left.offset, -left.line, () => ''), shift(b.state, -right.offset, -right.line, () => '')));
+	}
+
+	function rebase(checkpoint: HighlightCheckpoint<State>, source: HighlightSource, offset: number, line: number) {
+		const previous = checkpoints.get(checkpoint);
+		const end = checkpoint.offset + offset;
+		if (previous?.id !== source.id || checkpoint.done || !Number.isSafeInteger(offset) ||
+			!Number.isSafeInteger(line) || checkpoint.line + line < 0 || checkpoint.committed + offset < 0)
+			throw new Error('Invalid highlight rebase');
+		validateWindow(source.length, 0, end);
+		const state = shift(previous.state, offset, line, () => source.text());
+		const next: HighlightCheckpoint<State> = Object.freeze({
+			offset: end, line: checkpoint.line + line, committed: checkpoint.committed + offset, done: false,
+		});
+		checkpoints.set(next, { state, id: source.id, version: source.version, source });
+		return next;
+	}
+
+	return { resume, equivalent, rebase };
 }
 
 export function highlightToken<Node extends Token<string>>(window: HighlightWindow, token: Node, offset = 0, line = 0): Node {
@@ -222,4 +295,8 @@ export function* highlightSegments(
 	} else if (offset < window.text.length)
 		return { start, line, fragment: { text: window.text.slice(offset), previous: fragment } };
 	return { start, line, fragment };
+}
+
+export function shiftHighlightBuffer(buffer: HighlightBuffer, shift: HighlightShift): HighlightBuffer {
+	return { ...buffer, start: buffer.start + shift.offset, line: buffer.line + shift.line };
 }

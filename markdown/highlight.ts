@@ -1,6 +1,6 @@
 import {
 	tokenize,
-	createHighlighter,
+	createHighlighter, shiftHighlightBuffer,
 	highlightToken,
 	highlightSegments,
 	type HighlightWindow,
@@ -135,7 +135,11 @@ export const highlight = createHighlighter((): MarkdownState => ({
 		}
 	}
 	return { state, committed: window.final ? window.start + window.text.length : state.pending?.start ?? state.start };
-});
+}, (state, shift) => ({
+	...state, buffer: shiftHighlightBuffer(state.buffer, shift),
+	pending: state.pending ? shift.position(state.pending) : undefined,
+	start: state.start + shift.offset, line: state.line + shift.line,
+}));
 
 function* flush(window: HighlightWindow, state: MarkdownState, limit: number) {
 	const segment = { ...window, text: state.text, start: state.start, line: state.line,

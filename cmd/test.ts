@@ -17,6 +17,21 @@ import {
 //import { ast } from './debug.js';
 
 export default spec('cmd', s => {
+	s.test('normalizes error lines before and after checkpoint relocation', (a: TestApi) => {
+		const value = 'echo value\n'.repeat(3) + "'unfinished";
+		const source = highlightSource(value);
+		const expected = drain(highlight.resume({source})).tokens;
+		const error = expected.find(token => token.kind === 'tokenizer-error');
+		a.assert(error?.kind === 'tokenizer-error');
+		a.equal(error.error.position.line, 3);
+		const prefix = drain(highlight.resume({source, end: 22}));
+		const changed = { ...highlightSource('\n' + value), id: source.id, version: 2 };
+		const moved = highlight.rebase(prefix.checkpoint, changed, 1, 1);
+		const suffix = drain(highlight.resume({source: changed}, moved)).tokens;
+		const movedError = suffix.find(token => token.kind === 'tokenizer-error');
+		a.assert(movedError?.kind === 'tokenizer-error');
+		a.equal(movedError.error.position.line, 4);
+	});
 	s.test('retains native context and stable folds across checkpoint windows', a => {
 		const value = 'cat <<EOF\nif done\nEOF\nf(\nvalue: string\n) { echo hi; }';
 		const source = highlightSource(value);

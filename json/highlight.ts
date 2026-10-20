@@ -58,4 +58,7 @@ function* resume(window: HighlightWindow, previous: Readonly<JsonState>): Genera
 
 export const highlight = createHighlighter((): JsonState => ({
 	scanner: initialScannerState(), pending: undefined,
-}), resume);
+}), resume, (state, shift) => ({
+	scanner: state.scanner.kind ? { ...state.scanner, start: state.scanner.start + shift.offset, line: state.scanner.line + shift.line } : initialScannerState(),
+	pending: state.pending ? { start: state.pending.start + shift.offset, end: state.pending.end + shift.offset, line: state.pending.line + shift.line } : undefined,
+}));

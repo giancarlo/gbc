@@ -1,4 +1,4 @@
-import { tokenize, createHighlighter, highlightTokens, highlightToken, highlightSegments, foldToken, type HighlightKind, type HighlightBuffer, type HighlightToken, type HighlightWindow } from '@cxl/gbc.sdk';
+import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightToken, highlightSegments, foldToken, type HighlightKind, type HighlightBuffer, type HighlightToken, type HighlightWindow } from '@cxl/gbc.sdk';
 import { scanner } from './index.js';
 
 export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
@@ -148,7 +148,10 @@ export const highlight = createHighlighter((): HtmlState => ({
 		state.pending = undefined;
 	}
 	return { state, committed: state.pending?.start ?? state.buffer.start };
-});
+}, (state, shift) => ({
+	...state, buffer: shiftHighlightBuffer(state.buffer, shift),
+	pending: state.pending ? shift.position(state.pending) : undefined,
+}));
 
 function* highlightMarkup(window: HighlightWindow, state: HtmlState) {
 	let { name, closing, slash, declaration, pending } = state;

@@ -1,4 +1,4 @@
-import { tokenize, createHighlighter, highlightTokens, highlightSegments, foldToken, text, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow } from '@cxl/gbc.sdk';
+import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, text, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow } from '@cxl/gbc.sdk';
 import { keywords, scanHighlight, highlightHereDocuments } from './index.js';
 
 export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
@@ -144,13 +144,16 @@ export const highlight = createHighlighter((): ShellState => ({
 		if (next.done) { state.buffer = next.value; return { state, committed: state.buffer.start }; }
 		yield* highlightCommand(next.value, state);
 	}
-});
+}, (state, shift) => ({
+	...state, buffer: shiftHighlightBuffer(state.buffer, shift),
+}));
 
 function* highlightCommand(window: HighlightWindow, state: ShellState) {
 	let { commandStart, redirectTarget, commandName } = state;
 	const { parentheses } = state;
 	const source = window.text;
 	for (const token of highlightTokens(window, tokenize(source => scanHighlight(source, state.scanner), window.text), classify, undefined, foldToken, 0)) {
+		if (token.kind === 'tokenizer-error') token.error.position.line = window.line + source.slice(0, token.error.position.start - window.start).split('\n').length - 1;
 		const kind = token.kind;
 		if (kind === '(') {
 			const signature = commandName && /^(?:$|\)|(?:\.\.\.[ \t\r\n]*)?[A-Za-z_]\w*\??[ \t\r\n]*:)/.test(source.slice(token.end - window.start).trimStart());
