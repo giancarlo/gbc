@@ -8,6 +8,7 @@ import { build } from 'esbuild-wasm';
 
 const root = import.meta.dirname;
 const cases = {
+	python: ['value = True', "'unfinished", ['identifier', 'operator', 'literal']],
 	json: ['{"value": [true, null, 42]}', '{"value": "unfinished', ['punctuation', 'attribute', 'punctuation', 'punctuation', 'literal', 'punctuation', 'literal', 'punctuation', 'number', 'punctuation', 'punctuation']],
 	javascript: ['const value = 42;', "'unfinished", ['keyword', 'identifier', 'operator', 'number', 'punctuation']],
 	typescript: ['const value: number = 42;', '/* unfinished', ['keyword', 'identifier', 'punctuation', 'type', 'operator', 'number', 'punctuation']],
@@ -18,6 +19,7 @@ const cases = {
 	cmd: ['if echo "hi"; then echo 42; fi', 'echo "unterminated', ['keyword', 'identifier', 'string', 'punctuation', 'keyword', 'identifier', 'number', 'punctuation', 'keyword']],
 };
 const foldSources = {
+	python: '[\n]',
 	json: '{\n}',
 	javascript: '{\n}',
 	typescript: '{\n}',
