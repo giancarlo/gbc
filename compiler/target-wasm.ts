@@ -13,6 +13,7 @@ import {
 	itemValue,
 	resolveArgNodes,
 	bindCallArguments,
+	type BorrowOrigin,
 } from './semantic.js';
 import {
 	bufferTypeOf,
@@ -764,6 +765,7 @@ interface FuncBuilder {
 		tagIdx?: number;
 		type?: Type;
 		temp?: boolean;
+		borrowedOrigins?: readonly BorrowOrigin[];
 		/** An owned-in param — every call site feeds it a fresh value, so
 		 * this body owns it like a temp, but by its real name (moves and
 		 * re-passes release it). Tail calls may free these too. */
@@ -1546,7 +1548,9 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 	function releaseTailOwned(fn: FuncBuilder, node: Node | undefined) {
 		if (!node) return;
 		if (node.kind === 'ident') return releaseOwned(fn, node);
-		if (node.kind === 'call') releaseTailOwned(fn, ownership.forwardedArgument(node));
+		if (node.kind === 'call')
+			for (const origin of ownership.returnedBorrowArguments(node, expressionContext(fn)) ?? [])
+				releaseTailOwned(fn, origin);
 	}
 
 	function ownableExpr(node: Node, fn?: FuncBuilder): boolean {
@@ -4447,8 +4451,29 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		return preparation.staticMemberFunction(callee, environment);
 	}
 
+	function releaseDeadBorrows(fn: FuncBuilder, lastUses: () => ReadonlyMap<BorrowOrigin, number>, index: number): void {
+		if (!fn.owned?.some(value => value.borrowedOrigins)) return;
+		const uses = lastUses();
+		const retained = fn.owned.filter(value => !value.borrowedOrigins || value.borrowedOrigins.some(origin => (uses.get(origin) ?? -1) > index));
+		fn.owned = fn.owned.filter(value => !retained.includes(value));
+		emitOwnedFrees(fn);
+		fn.owned = retained;
+	}
+
+	function consumingExpression(fn: FuncBuilder, compile: () => Type): Type {
+		const previous = fn.owned?.slice();
+		const type = compile();
+		if (scalarOrVoidReturn(type) && fn.owned?.length) {
+			const retained = fn.owned.filter(value => previous?.includes(value));
+			fn.owned = fn.owned.filter(value => !previous?.includes(value));
+			emitOwnedFrees(fn);
+			fn.owned = retained;
+		}
+		return type;
+	}
+
 	function compileCall(node: NodeMap['call'], fn: FuncBuilder): Type {
-		return compileCallInner(node, fn);
+		return consumingExpression(fn, () => compileCallInner(node, fn));
 	}
 
 	function materializeThreadCarrier(
@@ -5227,9 +5252,9 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 
 	function compilePipe(children: Node[], fn: FuncBuilder): Type {
 		const flat = flattenPipe(children);
-		return flat[0]?.kind === 'call'
+		return consumingExpression(fn, () => flat[0]?.kind === 'call'
 			? inlineEnvironment(fn, preparation.createEnvironment(environment), () => compilePipeSource(flat, fn))
-			: compilePipeSource(flat, fn);
+			: compilePipeSource(flat, fn));
 	}
 
 	function compilePipeSource(flat: Node[], fn: FuncBuilder): Type {
@@ -6901,15 +6926,14 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			});
 			return;
 		}
-		if (!noArgFrees && !ownArgs && fn.bindingSym && heap) {
-			// Borrow-returning callee, bound result: the binder adopts
-			// the fresh arg — the result may alias it, so it lives as
-			// long as the binder's name and leaves with it.
+		if (!noArgFrees && !ownArgs && heap) {
 			const tmp = allocLocal(fn, I32);
 			fn.body.push(OP_LOCAL_TEE);
 			uleb128(tmp, fn.body);
 			(fn.owned ??= []).push({
-				sym: fn.bindingSym,
+				sym: fn.bindingSym ?? { kind: 'variable', name: '', flags: 0 },
+				temp: !fn.bindingSym,
+				borrowedOrigins: preparation.borrowOrigins(a, expressionContext(fn)),
 				localIdx: tmp,
 				type: at,
 			});
@@ -7391,6 +7415,8 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 			compileTail(stmts[0], builder);
 			return;
 		}
+		let uses: ReadonlyMap<BorrowOrigin, number> | undefined;
+		const lastUses = () => uses ??= preparation.borrowLastUses(stmts, expressionContext(builder));
 		for (let i = 0; i < stmts.length; i++) {
 			const stmt = stmts[i];
 			if (!stmt) continue;
@@ -7409,6 +7435,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 				builder.body.push(OP_DROP);
 				if (isUnionType(t)) builder.body.push(OP_DROP);
 			}
+			releaseDeadBorrows(builder, lastUses, i);
 		}
 	}
 
@@ -7828,13 +7855,21 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		}
 	}
 
+	function compileMainStatements(statements: readonly Node[], fn: FuncBuilder): void {
+		let uses: ReadonlyMap<BorrowOrigin, number> | undefined;
+		const lastUses = () => uses ??= preparation.borrowLastUses(statements, expressionContext(fn));
+		statements.forEach((statement, index) => {
+			compileMainStatement(statement, fn);
+			releaseDeadBorrows(fn, lastUses, index);
+		});
+	}
+
 	function compileTopLevelStatements(mainBuilder: FuncBuilder) {
 		if (root.kind !== 'root') return;
 		if (testMode) {
 			for (const child of root.children) {
 				if (child.kind !== 'test') continue;
-				for (const stmt of child.statements)
-					compileMainStatement(stmt, mainBuilder);
+				compileMainStatements(child.statements, mainBuilder);
 			}
 			return;
 		}
@@ -7844,8 +7879,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 				continue;
 			}
 			if (child.kind === 'main') {
-				for (const stmt of child.statements)
-					compileMainStatement(stmt, mainBuilder);
+				compileMainStatements(child.statements, mainBuilder);
 			}
 		}
 	}

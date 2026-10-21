@@ -12,6 +12,7 @@ import {
 	emissionElements,
 	fixedEmissionType,
 	restEmissionType,
+	isHeapType,
 	isFloatType,
 	isIntType,
 	isInt64Type,
@@ -114,6 +115,10 @@ export function bindCallArguments(params: readonly Symbol[], args: readonly Node
 export function resolveArgNodes(params: readonly Symbol[], args: readonly Node[]): (Node | undefined)[] {
 	return bindCallArguments(params, args).arguments;
 }
+
+const staticBorrowOrigin = { kind: 'static' } as const;
+export type BorrowOrigin = Symbol | NodeMap['interp' | 'data' | 'call'] | typeof staticBorrowOrigin;
+type BorrowCallResolver = (call: NodeMap['call']) => SymbolMap['function'] | undefined;
 
 export function literalType(node: Node): Type | undefined {
 	switch (node.kind) {
@@ -1094,6 +1099,107 @@ export function createSemanticContext(readOnly = false) {
 		return numericConversion(callee.symbol.type, argument, source)?.resultType;
 	}
 
+	function returnedArguments(target: SymbolMap['function'], args: Node | undefined, resolve: (node: Node) => Type = resolver): Node[] | undefined {
+		const origins = target.returnBorrowOrigins;
+		const output = functionElementReturn(target);
+		if (target.returnOwnership !== 'var' && output?.kind === 'type' && output.family !== 'unknown' && !isHeapType(output)) return [];
+		if (!origins && target.returnOwnership === 'own') return;
+		const params = target.parameters ?? [];
+		const facts = bindCallArguments(params, argumentNodes(args));
+		const bound = params.length ? facts.arguments : argumentNodes(args);
+		const indices = origins?.every(index => Number.isInteger(index) && index >= 0 && index < bound.length)
+			? origins : bound.flatMap((arg, index) => {
+				const type = arg ? resolve(arg) : undefined;
+				return type?.kind !== 'type' || type.family === 'unknown' || isHeapType(type) ? [index] : [];
+			});
+		const expand = (index: number, seen = new Set<number>()): Node[] => {
+			const value = bound[index];
+			if (!value || seen.has(index)) return [];
+			if (!facts.defaulted.includes(index)) return [value];
+			seen.add(index);
+			return borrowOrigins(value).flatMap(origin => {
+				const parameter = params.findIndex(parameter => parameter === origin);
+				return parameter < 0 ? [value] : expand(parameter, new Set(seen));
+			});
+		};
+		return [...new Set(indices.flatMap(index => expand(index)))];
+	}
+
+	function borrowIdentOrigins(node: NodeMap['ident'], resolveCall: BorrowCallResolver, seen: Set<Symbol>): BorrowOrigin[] {
+		const symbol = node.symbol;
+		if (symbol.kind !== 'variable') return [staticBorrowOrigin];
+		if (seen.has(symbol)) return [];
+		seen.add(symbol);
+		const definition = symbol.definition;
+		if (definition?.kind !== 'def') return [symbol];
+		const value = definition.value;
+		if (value.kind === 'interp' || value.kind === 'data' ||
+			value.kind === 'call' && (value.children[0].kind === 'typeident' || resolveCall(value)?.returnOwnership === 'own'))
+			return [symbol];
+		return borrowOrigins(value, resolveCall, seen);
+	}
+
+	function borrowCallOrigins(node: NodeMap['call'], resolveCall: BorrowCallResolver, seen: Set<Symbol>): BorrowOrigin[] {
+		if (node.children[0].kind === 'typeident') return [node];
+		const target = resolveCall(node);
+		if (target?.returnOwnership === 'own') return [node];
+		const type = resolver(node);
+		if (target?.returnOwnership !== 'var' && type.kind === 'type' && type.family !== 'unknown' && !isHeapType(type)) return [staticBorrowOrigin];
+		const values = target ? returnedArguments(target, node.children[1]) ?? [] : argumentNodes(node.children[1]);
+		const origins = [...new Set(values.flatMap(value => borrowOrigins(value, resolveCall, new Set(seen))))];
+		if (target?.returnOwnership !== 'var') origins.push(target ?? staticBorrowOrigin);
+		return origins.length ? origins : [staticBorrowOrigin];
+	}
+
+	function borrowThreadOrigins(node: NodeMap['>>' | '->'], resolveCall: BorrowCallResolver, seen: Set<Symbol>): BorrowOrigin[] {
+		let carrier = node.children[0];
+		for (let index = 1; index < node.children.length; index++) {
+			const stage = node.children[index];
+			if (!stage) continue;
+			const call: NodeMap['call'] = stage.kind === 'call'
+				? threadCall(stage, carrier, index === 1)
+				: { ...stage, kind: 'call', children: [stage, carrier] };
+			const emission = callEmissionType(call);
+			if (emission && classifyEmission(emission).cardinality === 'zero') continue;
+			carrier = call;
+		}
+		return borrowOrigins(carrier, resolveCall, seen);
+	}
+
+	function borrowOrigins(node: Node, resolveCall: BorrowCallResolver = effectiveCallFunction, seen = new Set<Symbol>()): BorrowOrigin[] {
+		const roots = (value: Node) => borrowOrigins(value, resolveCall, new Set(seen));
+		const merge = (values: readonly (Node | undefined)[]) => [...new Set(values.flatMap(value => value ? roots(value) : []))];
+		if (node.kind === 'next') return node.children?.[0] ? roots(node.children[0]) : [];
+		if (node.kind === '?') return merge(node.children.slice(1));
+		if (node.kind === '.') return roots(node.children[0]);
+		if (node.kind === 'interp') return [node];
+		if (node.kind === 'data') {
+			const items = dataItems(node);
+			return items.length === 1 && items[0]?.kind !== 'propdef' && !node.nominal
+				? merge(items) : [node];
+		}
+		if (node.kind === 'ident') return borrowIdentOrigins(node, resolveCall, seen);
+		if (node.kind === 'call') return borrowCallOrigins(node, resolveCall, seen);
+		if (node.kind === '>>' || node.kind === '->') return borrowThreadOrigins(node, resolveCall, seen);
+		return [staticBorrowOrigin];
+	}
+
+	function borrowLastUses(statements: readonly Node[], resolveCall: (call: NodeMap['call']) => SymbolMap['function'] | undefined = effectiveCallFunction): ReadonlyMap<BorrowOrigin, number> {
+		const uses = new Map<BorrowOrigin, number>();
+		statements.forEach((statement, index) => {
+			const seen = new Set<Node>();
+			const visit = (node: Node): void => {
+				if (seen.has(node)) return;
+				seen.add(node);
+				if (node.kind === 'ident')
+					for (const origin of borrowOrigins(node, resolveCall)) uses.set(origin, index);
+				for (const child of childNodes(node)) if (child) visit(child);
+			};
+			visit(statement);
+		});
+		return uses;
+	}
+
 	function callReturnType(node: NodeMap['call']): Type | undefined {
 		const constructor = bufferCtorType(node) ?? scalarCtorType(node);
 		if (constructor) return constructor;
@@ -1991,6 +2097,9 @@ export function createSemanticContext(readOnly = false) {
 		scalarCtorType,
 		bufferCtorType,
 		numericValueType,
+		returnedArguments,
+		borrowOrigins,
+		borrowLastUses,
 		callArgumentTypes,
 		selectCallFunction,
 		resolveCallReturn,

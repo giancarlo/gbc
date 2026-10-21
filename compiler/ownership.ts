@@ -10,6 +10,7 @@ import type { OwnershipMode, ResolvedType, Symbol, SymbolMap, Type } from './sym
 type EmissionType = Extract<ResolvedType, { family: 'emission' }>;
 
 interface OwnershipResolution {
+	returnedArguments(target: SymbolMap['function'], args: Node | undefined, context: ExpressionContext): readonly Node[] | undefined;
 	typeOf(symbol: Symbol, environment: SpecializationEnvironment): Type;
 	expressionType(node: Node, context: ExpressionContext): Type;
 	emissionType(symbol: SymbolMap['function'], bindings: Map<string, Type>): EmissionType | undefined;
@@ -302,14 +303,6 @@ export function createOwnershipAnalysis(root: Node, resolution: OwnershipResolut
 		}
 		publish();
 	}
-	function forwardedArgument(node: NodeMap['call']): Node | undefined {
-		const callee = node.children[0];
-		if (callee.kind !== 'ident' || callee.symbol.kind !== 'function')
-			return;
-		const origin = callee.symbol.returnBorrowOrigins?.[0];
-		if (origin === undefined) return;
-		return resolveArgNodes(callee.symbol.parameters ?? [], argListFromCall(node.children[1]))[origin];
-	}
 
 	function ctorAllocsFresh(t: Type, context: ExpressionContext): boolean {
 		if (t.kind !== 'type') return false;
@@ -508,8 +501,8 @@ export function createOwnershipAnalysis(root: Node, resolution: OwnershipResolut
 				: false;
 		if (node.kind === 'ident') return returnIdentOwned(node, fnNode, context);
 		if (node.kind === 'call') {
-			const returned = forwardedArgument(node);
-			if (returned) return returnPathOwned(returned, fnNode, context);
+			const returned = returnedBorrowArguments(node, context);
+			if (returned?.length) return returned.every(value => returnPathOwned(value, fnNode, context));
 		}
 		return ownableExpr(node, context);
 	}
@@ -560,11 +553,9 @@ export function createOwnershipAnalysis(root: Node, resolution: OwnershipResolut
 		return undefined;
 	}
 
-	function returnedBorrowArguments(call: NodeMap['call'], context: ExpressionContext): readonly (Node | undefined)[] | undefined {
+	function returnedBorrowArguments(call: NodeMap['call'], context: ExpressionContext): readonly Node[] | undefined {
 		const target = threadResolution(call, context)?.target;
-		if (!target?.returnBorrowOrigins) return;
-		const args = resolveArgNodes(target.parameters ?? [], argListFromCall(call.children[1]));
-		return target.returnBorrowOrigins.map(origin => args[origin]);
+		return target ? resolution.returnedArguments(target, call.children[1], context) : undefined;
 	}
 
 	function ownedParameters(symbol: Symbol, environment: SpecializationEnvironment): readonly boolean[] | undefined {
@@ -573,5 +564,5 @@ export function createOwnershipAnalysis(root: Node, resolution: OwnershipResolut
 			if (flags) return flags;
 		}
 	}
-	return { initialize: (context: ExpressionContext) => computeDeclaredOwnedInParams(root, context), ownedParameters, ownableExpr, fnReturnsOwned, forwardedArgument, returnedBorrowArguments, ctorAllocsFresh, findCtorArm };
+	return { initialize: (context: ExpressionContext) => computeDeclaredOwnedInParams(root, context), ownedParameters, ownableExpr, fnReturnsOwned, returnedBorrowArguments, ctorAllocsFresh, findCtorArm };
 }

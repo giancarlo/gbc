@@ -18,7 +18,7 @@ type ResolutionContext = Pick<ReturnType<typeof createSemanticContext>,
 	| 'scalarCtorType' | 'bufferCtorType' | 'resolveMemberType'
 	| 'numericValueType' | 'resolveCallReturn' | 'callArgumentTypes'
 	| 'pipeArgumentTypes' | 'threadCall' | 'fallbackResultType'
-	| 'callTypeBindings' | 'functionTypeParameters' | 'resolver' | 'selectCallFunction'
+	| 'callTypeBindings' | 'functionTypeParameters' | 'resolver' | 'selectCallFunction' | 'returnedArguments' | 'borrowOrigins' | 'borrowLastUses'
 >;
 
 export interface ExpressionContext {
@@ -481,10 +481,13 @@ function createPreparationContext() {
 		createOwnership: (root: Node, externalExports = false) => createOwnershipAnalysis(root, {
 			typeOf, expressionType, emissionType, nominalOf, threadCall,
 			threadResolution, staticMemberFunction, resolveOverload,
+			returnedArguments: (target, args, context) => semantic.returnedArguments(target, args, node => expressionType(node, context)),
 		}, externalExports),
 		semantic, createEnvironment: createSpecializationEnvironment, typeOf,
 		functionResult, concreteType, expressionType, stageReturn, stageInputType, functionTypeOf, functionArgument, staticMemberFunction, resolveOverload, threadResolution, valueFallbackType,
 		emissionType, threadCall, resolveThreadCall, prepareThread,
+		borrowOrigins: (node: Node, context: ExpressionContext) => semantic.borrowOrigins(node, call => threadResolution(call, context)?.target),
+		borrowLastUses: (statements: readonly Node[], context: ExpressionContext) => semantic.borrowLastUses(statements, call => threadResolution(call, context)?.target),
 		stampErrorData, nominalOf, originOf,
 	};
 }

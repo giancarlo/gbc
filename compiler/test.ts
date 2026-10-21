@@ -91,6 +91,241 @@ export default spec('Language Reference', s => {
 	});
 
 	s.addSpec(lifecycle);
+	s.test('borrowed return contracts retain all input origins', (a: TestApi) => {
+		const source = `pick = (a: String, b: String, k: Int32): String { k > 0 ? a : b };
+forward = (left: String, right: String): String { pick(b = right, a = left, k = 0) };
+identity = <T>(value: T): T { value };
+recursive = (value: String, n: Int32): String { n <= 0 ? value : recursive(value, n - 1) };
+staticText = (): String { 'static' };
+staticRecursive = (ignored: String, n: Int32): String { n <= 0 ? 'static' : staticRecursive(ignored, n - 1) };
+main { staticRecursive('ignored', 2) >> out; forward('left', 'right') >> out; identity('value') >> out; recursive('recur', 2) >> out; staticText() >> out }`;
+		const result = Program().compile(source);
+		a.equalValues(result.errors, []);
+		const expected: Record<string, number[]> = { pick: [0, 1], forward: [0, 1], identity: [0], recursive: [0], staticText: [], staticRecursive: [] };
+		for (const node of result.ast.children)
+			if (node.kind === 'def' && node.value.kind === 'fn' && node.symbol.name && expected[node.symbol.name])
+				a.equalValues(node.value.symbol.returnBorrowOrigins, expected[node.symbol.name]);
+	});
+
+	s.test('derived borrows reject moved origins and locally rooted escapes', (a: TestApi) => {
+		const prelude = `pick = (a: String, b: String, k: Int32): String { k > 0 ? a : b };
+consume = (x: own String): Void { length(x) >> out };`;
+		for (const owner of ['left', 'right']) {
+			const result = Program().compile(`${prelude}
+main { left = 'owner\${1}'; right = 'other\${2}'; alias = pick(left, right, 0); consume(${owner}); replacement = 'reuse\${3}'; alias >> out; replacement >> out }`);
+			a.assert(result.errors.some(error => error.message.includes('used after')));
+		}
+		const escaped = Program().compile(`id = (s: String): String { s };
+wrap = (n: Int32): String { local = 'value\${n}'; next id(local) };
+main { alias = wrap(1); replacement = 'reuse\${2}'; alias >> out; replacement >> out }`);
+		a.assert(escaped.errors.some(error => error.message.includes('dies with this block')));
+	});
+
+	s.test('member and element aliases retain their owner after binding', (a: TestApi) => {
+		for (const source of [
+			`consume = (items: own Buffer<String>): Void { length(items) >> out };
+main { items = Buffer<String>(1); set(items, 0, 'value\${1}'); alias = get(items, 0); consume(items); alias >> out }`,
+			`type Item = [text: String]; consume = (item: own Item): Void { length(item.text) >> out };
+main { item: Item = [text = 'value\${1}']; alias = item.text; consume(item); alias >> out }`,
+			`id = (s: String): String { s }; consume = (s: own String): Void { length(s) >> out };
+main { owner = length('x') > 0 ? 'left\${1}' : 'right\${2}'; alias = id(owner); consume(owner); alias >> out }`,
+		]) {
+			const result = Program().compile(source);
+			a.assert(result.errors.some(error => error.message.includes('used after')));
+		}
+	});
+
+	s.test('nested borrowed-call temporaries are released after consumption', (a: TestApi) => {
+		const source = `pick = (a: String, b: String, k: Int32): String { k > 0 ? a : b };
+step = (n: Int32): Int32 { length(pick('left\${n}', 'right\${n}', 0)) };
+main { loop >> (i: Int32) { i >= 20000 ? break; step(i) > 100 ? break }; 'done' >> out }`;
+		for (const debug of [false, true]) {
+			const result = Program({ debug }).compile(source);
+			a.equalValues(result.errors, []);
+			a.assert(result.bytes);
+			const output: string[] = [];
+			const runtime = runWasm(result.bytes, text => output.push(text));
+			a.equalValues(output, ['done']);
+			a.ok(runtime.pages <= 4);
+		}
+	});
+
+	s.test('default and spread bindings preserve borrowed origins', (a: TestApi) => {
+		const prelude = `fallback = (first: String, second: String = first): String { second };
+pick = <T>(left: T, right: T, k: Int32): T { k > 0 ? left : right };
+consume = (value: own String): Void { length(value) >> out };`;
+		for (const call of ['fallback(owner)', "pick([other, owner, 0])"]) {
+			const result = Program().compile(`${prelude}
+main { owner = 'value\${1}'; other = 'other\${2}'; alias = ${call}; length(other) >> out; consume(owner); alias >> out }`);
+			a.assert(result.errors.some(error => error.message.includes('used after')));
+		}
+	});
+
+	s.test('mutable summaries reject a nonmutable return branch', (a: TestApi) => {
+		for (const [type, value] of [['String', "'static'"], ['Bool', 'true'], ['Int32', '7']]) {
+			const result = Program().compile(`export invalid = (value: var ${type}, k: Bool): var ${type} { k ? value : ${value} }; main {}`);
+			a.assert(result.errors.some(error => error.message.includes('`var` result must originate')));
+		}
+		const result = Program().compile(`shared = (s: String): String { s };
+export invalid = (s: var String): var String { shared(s) }; main {}`);
+		a.assert(result.errors.some(error => error.message.includes('`var` result must originate')));
+	});
+
+	s.test('missing and invalid borrow summaries retain conservative dependencies', (a: TestApi) => {
+		for (const summary of [undefined, [99], [NaN]]) {
+			const program = Program();
+			const parsed = program.parse(`pick = (a: String, b: String, k: Int32): String { k > 0 ? a : b };
+step = (n: Int32): Int32 { alias = pick('left\${n}', 'right\${n}', 0); derived = alias; next length(derived) };
+main { loop >> (i: Int32) { i >= 20000 ? break; step(i) > 100 ? break }; 'done' >> out }`);
+			checker(parsed).run();
+			a.equalValues(parsed.errors, []);
+			const definition = parsed.root.children.find(node => node.kind === 'def' && node.symbol.name === 'pick');
+			a.assert(definition?.kind === 'def' && definition.value.kind === 'fn');
+			definition.value.symbol.returnBorrowOrigins = summary;
+			const unchanged = snapshotGraph(parsed.root);
+			const output: string[] = [];
+			const runtime = runWasm(program.compileAst(parsed.root), text => output.push(text));
+			a.equalValues(output, ['done']);
+			a.ok(runtime.pages <= 4);
+			a.equalValues(unchanged(), []);
+		}
+	});
+
+	s.test('borrow summaries compose through members, elements, recursion and higher-order calls', (a: TestApi) => {
+		const source = `type Item = [text: String];
+export field = (item: Item): String { item.text };
+export element = (items: Buffer<String>, index: Int32): String { get(items, index) };
+rotate = (first: String, second: String, n: Int32): String { n <= 0 ? first : rotate(second, first, n - 1) };
+apply = (value: String, f: (String): String): String { f(value) };
+main { apply('value', (s: String): String { s }) >> out; rotate('first', 'second', 2) >> out }`;
+		const parsed = Program().parse(source);
+		checker(parsed).run();
+		a.equalValues(parsed.errors, []);
+		const expected: Record<string, number[]> = { field: [0], element: [0], rotate: [0, 1], apply: [0] };
+		for (const node of parsed.root.children)
+			if (node.kind === 'def' && node.value.kind === 'fn' && node.symbol.name && expected[node.symbol.name])
+				a.equalValues(node.value.symbol.returnBorrowOrigins, expected[node.symbol.name]);
+		const decoded = decodeBundle(encodeBundle('/fixture.gb', [{ path: '/fixture.gb', hash: 'borrow-fixture', root: parsed.root }], () => false, []));
+		const module = decoded.modules.get('/fixture.gb');
+		a.assert(module);
+		const unexpected = (): never => { throw new Error('Unexpected external reference'); };
+		const restored = materializeModule(module, '/fixture.gb', unexpected, unexpected, unexpected, unexpected);
+		a.assert(restored.kind === 'root');
+		for (const node of restored.children)
+			if (node.kind === 'def' && node.value.kind === 'fn' && node.symbol.name && expected[node.symbol.name])
+				a.equalValues(node.value.symbol.returnBorrowOrigins, expected[node.symbol.name]);
+	});
+
+	s.test('source and GBM borrowed contracts reject moved imported origins', (a: TestApi) => {
+		const library = `export pick = (a: String, b: String, k: Int32): String { length(a) >> out; next k > 0 ? a : b };`;
+		for (const bundled of [false, true]) {
+			a.modules({
+				bundles: bundled ? { '/vendor/borrow.gbm': { entry: '/lib.gb', files: { '/lib.gb': library } } } : undefined,
+				files: {
+					'/lib.gb': library,
+					'/main.gb': `#importmap { @borrow = '${bundled ? './vendor/borrow.gbm' : './lib.gb'}'; }
+library = @borrow;
+consume = (value: own String): Void { length(value) >> out };
+main { left = 'first\${1}'; right = 'other\${2}'; result = library.pick(b = right, a = left, k = 0); consume(right); result >> out }`,
+				},
+				entry: '/main.gb',
+				errors: 'used after',
+			});
+			a.modules({
+				bundles: bundled ? { '/vendor/borrow.gbm': { entry: '/lib.gb', files: { '/lib.gb': library } } } : undefined,
+				files: {
+					'/lib.gb': library,
+					'/main.gb': `#importmap { @borrow = '${bundled ? './vendor/borrow.gbm' : './lib.gb'}'; }
+library = @borrow;
+consume = (value: own String): Void { length(value) >> out };
+main { left = 'first\${1}'; right = 'other\${2}'; result = library.pick(b = right, a = left, k = 0); result >> out; consume(right) }`,
+				},
+				entry: '/main.gb',
+				out: ['6', 'other2', '6'],
+			});
+		}
+	});
+
+	s.test('borrowed branch and member results cannot escape local owners', (a: TestApi) => {
+		for (const source of [
+			`id = (s: String): String { s }; bad = (k: Bool): String { local = 'value\${1}'; next k ? id(local) : 'static' }; main { bad(true) >> out }`,
+			`type Item = [text: String]; bad = (): String { item: Item = [text = 'value\${1}']; next item.text }; main { bad() >> out }`,
+		]) {
+			const result = Program().compile(source);
+			a.assert(result.errors.some(error => error.message.includes('dies with this block')));
+		}
+	});
+
+	s.test('bound borrowed temporaries release at the final derived use', (a: TestApi) => {
+		const source = `id = (b: Buffer<Int32>): Buffer<Int32> { b };
+main {
+	alias = id(Buffer<Int32>(200000));
+	derived = alias;
+	length(derived) >> out;
+	other = Buffer<Int32>(200000);
+	length(other) >> out
+}`;
+		for (const debug of [false, true]) {
+			const result = Program({ debug }).compile(source);
+			a.equalValues(result.errors, []);
+			a.assert(result.bytes);
+			const output: string[] = [];
+			const runtime = runWasm(result.bytes, text => output.push(text));
+			a.equalValues(output, ['200000', '200000']);
+			a.ok(runtime.pages <= 16);
+		}
+	});
+
+	s.test('borrowed tails and threads bound string record and buffer churn', (a: TestApi) => {
+		for (const source of [
+			`pick = (a: String, b: String, k: Int32): String { k > 0 ? a : b };
+relay = (left: String, right: String, k: Int32): String { pick(left, right, k) };
+step = (n: Int32): Int32 { length(relay('left\${n}', 'right\${n}', 0)) };`,
+			`identity = <T>(value: T): T { value };
+step = (n: Int32): Int32 { Buffer<Int32>(n % 10 + 1) -> identity() -> length() };`,
+			`type Item = [text: String];
+field = (item: Item): String { item.text };
+step = (n: Int32): Int32 { [text = 'value\${n}'] >> field >> length };`,
+		]) for (const debug of [false, true]) {
+			const result = Program({ debug }).compile(`${source}
+main { loop >> (i: Int32) { i >= 20000 ? break; step(i) > 100 ? break }; 'done' >> out }`);
+			a.equalValues(result.errors, []);
+			a.assert(result.bytes);
+			const output: string[] = [];
+			const runtime = runWasm(result.bytes, text => output.push(text));
+			a.equalValues(output, ['done']);
+			a.ok(runtime.pages <= 4);
+		}
+	});
+
+	s.test('borrow contracts survive replaced files and interleaved readonly emission', (a: TestApi) => {
+		let source = '';
+		const program = Program({ sys: { readFile: () => source, readBytes: () => new Uint8Array() } });
+		const preparedInputs = [];
+		for (const [body, expected] of [['left', [0]], ['right', [1]], ["'static'", []]] as const) {
+			source = `export pick = (left: String, right: String): String { ${body} };
+export target = (): Int32 { length(pick('first\${1}', 'other\${2}')) }`;
+			const result = program.compileFile('/borrow.gb');
+			a.equalValues(result.errors, []);
+			a.assert(result.bytes);
+			const definition = result.ast.children.find(node => node.kind === 'def' && node.symbol.name === 'pick');
+			a.assert(definition?.kind === 'def' && definition.value.kind === 'fn');
+			a.equalValues(definition.value.symbol.returnBorrowOrigins, [...expected]);
+			const prepared = program.prepareAst(result.ast);
+			const hostExports = result.ast.children.filter((node): node is NodeMap['def'] => node.kind === 'def' && !!(node.symbol.flags & Flags.Export));
+			preparedInputs.push({ prepared, hostExports, expected: 6 });
+		}
+		source = `export target = (): String { local = 'value\${1}'; alias = local; next alias }`;
+		a.ok(program.compileFile('/borrow.gb').errors.length > 0);
+		const inputs = preparedInputs.map(input => ({ ...input, unchanged: snapshotGraph(input.prepared) }));
+		for (let attempt = 0; attempt < 2; attempt++) for (const { prepared, hostExports, unchanged, expected } of inputs) {
+			const target = instantiateWasm(compileWasm({ prepared, hostExports })).exports.target;
+			a.assert(typeof target === 'function');
+			a.equal(target(), expected);
+			a.equalValues(unchanged(), []);
+		}
+	});
+
 	s.test('shared ownership uses overload templates and selected return contracts', (a: TestApi) => {
 		const program = Program();
 		const parsed = program.parse(`pick = (value): own String { 'fresh\${1}' } | (value: Int32): String { 'static' };

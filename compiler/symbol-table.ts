@@ -592,6 +592,8 @@ export function ProgramSymbolTable() {
 			kind: 'function',
 			name: 'get',
 			flags: Flags.Intrinsic,
+			returnOwnership: 'borrow',
+			returnBorrowOrigins: [0],
 			typeParams: [getType],
 			parameters: [
 				param('b', bufferTypeOf(getType)),

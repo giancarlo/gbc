@@ -21,7 +21,7 @@ import type {
 	Type,
 } from './symbol-table.js';
 
-import { argumentNodes, bindCallArguments, createSemanticContext } from './semantic.js';
+import { argumentNodes, bindCallArguments, createSemanticContext, type BorrowOrigin } from './semantic.js';
 export { setDivByZero, reduceType, isKnownNonZeroNumber } from './semantic.js';
 
 /**
@@ -35,13 +35,13 @@ export function checker({
 	errors: CompilerError[];
 }) {
 	const {
+		borrowOrigins,
 		setNodeType,
 		isInvalidType,
 		literalFits,
 		branchesFit,
 		typeToStr,
 		effectiveCallFunction,
-		resolveFunctionType,
 		resolveFunctionStageReturn,
 		callEmissionType,
 		specializedCallEmission,
@@ -72,6 +72,7 @@ export function checker({
 		callTypeBindings,
 	} = createSemanticContext();
 	const outputOwnershipChecked = new Set<SymbolMap['function']>();
+	const ownershipBlocks = new Set<NodeMap['fn' | 'main' | 'test']>();
 
 	function checkEach(node: Node[]) {
 		node.forEach(check);
@@ -974,13 +975,8 @@ export function checker({
 	function ownedHere(def: NodeMap['def']): boolean {
 		const v = def.value;
 		if (v.kind === 'ident') return false;
-		const t = resolver(v);
-		if (v.kind === 'call') {
-			const callee = resolveFunctionType(v.children[0]);
-			if (callee?.returnOwnership)
-				return callee.returnOwnership === 'own';
-		}
-		return isHeapType(t);
+		const mode = expressionOwnership(v);
+		return mode !== 'borrow' && mode !== 'var' && isHeapType(resolver(v));
 	}
 	type Move = {
 		position: Position;
@@ -995,7 +991,7 @@ export function checker({
 	function flagMovedUses(
 		n: Node,
 		moved: Map<Symbol, Move>,
-		borrowed?: Map<Symbol, Symbol>,
+		borrowed?: Map<BorrowOrigin, ReadonlySet<Symbol>>,
 	): void {
 		if (n.kind === 'ident') {
 			const move = moved.get(n.symbol);
@@ -1005,7 +1001,7 @@ export function checker({
 					n,
 				);
 			else {
-				const owner = borrowed?.get(n.symbol);
+				const owner = [...(borrowed?.get(n.symbol) ?? [])].find(root => moved.has(root));
 				const ownerMove = owner && moved.get(owner);
 				if (owner && ownerMove)
 					error(
@@ -1024,7 +1020,7 @@ export function checker({
 		value: Node,
 		seen: Set<Symbol>,
 		owned: Set<Symbol>,
-		borrowed: Map<Symbol, Symbol>,
+		borrowed: Map<BorrowOrigin, ReadonlySet<Symbol>>,
 		onMove: (sym: Symbol, position: Position) => void,
 	): void {
 		if (value.kind !== 'data') return;
@@ -1155,6 +1151,14 @@ export function checker({
 				if (k) markConsumingMoves(k, owned, moved);
 		}
 	}
+	function escapingBorrow(value: Node, owned: ReadonlySet<Symbol>): boolean {
+		if (value.kind === '?') return value.children.slice(1).some(branch => !!branch && escapingBorrow(branch, owned));
+		if (isCopyType(resolver(value))) return false;
+		const mode = expressionOwnership(value);
+		return (mode === 'borrow' || mode === 'var') && borrowOrigins(value).some(root =>
+			root.kind === 'call' || root.kind === 'interp' || root.kind === 'data' || root.kind !== 'static' && owned.has(root));
+	}
+
 	function checkMoves(node: {
 		parameters?: NodeMap['parameter'][];
 		statements?: Node[];
@@ -1167,37 +1171,39 @@ export function checker({
 				.map(p => p.symbol) ?? [],
 		);
 		const moved = new Map<Symbol, Move>();
-		const borrowed = new Map<Symbol, Symbol>();
+		const borrowed = new Map<BorrowOrigin, ReadonlySet<Symbol>>();
 		for (const s of node.statements) {
 			flagMovedUses(s, moved, borrowed);
 			markConsumingMoves(s, owned, moved);
 			if (s.kind === 'def') {
 				walkEmbeds(s.value, new Set(), owned, borrowed, m => {
 					owned.delete(m);
-					borrowed.set(m, s.symbol);
+					borrowed.set(m, new Set([s.symbol]));
 				});
-				// `b = a` of an owned local: b borrows a value that dies
-				// with this block — track it so emitting b is rejected and
-				// reads after `a` moves are flagged.
-				if (
-					s.value.kind === 'ident' &&
-					owned.has(s.value.symbol)
-				)
-					borrowed.set(s.symbol, s.value.symbol);
-				if (ownedHere(s)) owned.add(s.symbol);
+				const roots = borrowOrigins(s.value);
+				if (ownedHere(s)) {
+					owned.add(s.symbol);
+					for (const root of roots)
+						if (root.kind !== 'variable' && root.kind !== 'static') borrowed.set(root, new Set([s.symbol]));
+				} else if (!isCopyType(resolver(s.value))) {
+					borrowed.set(s.symbol, new Set(roots.flatMap(root => [...(borrowed.get(root) ?? (root.kind === 'variable' ? [root] : []))])));
+				}
 			} else if (s.kind === 'next') {
 				const v = s.children?.[0];
-				if (v && v.kind === 'ident' && borrowed.has(v.symbol))
+				if (!v) continue;
+				if (v.kind === 'ident' && [...(borrowed.get(v.symbol) ?? [])].some(root => owned.has(root)))
 					error(
 						`cannot emit "${v.symbol.name ?? ''}" — it borrows a value that dies with this block`,
 						v,
 					);
-				else if (v && v.kind === 'ident' && owned.has(v.symbol))
+				else if (v.kind === 'ident' && owned.has(v.symbol))
 					moved.set(v.symbol, {
 						position: v,
 						context: 'with `next`',
 					});
-				else if (v && v.kind === 'data')
+				else if (escapingBorrow(v, owned))
+					error('cannot emit borrowed result — it borrows a value that dies with this block', v);
+				else if (v.kind === 'data')
 					walkEmbeds(v, new Set(), owned, borrowed, (m, position) => {
 						owned.delete(m);
 						moved.set(m, {
@@ -1237,105 +1243,43 @@ export function checker({
 		if (tail) checkOwnedReturn(tail, owned, fn);
 	}
 
-	function mutableIdentReturnOrigin(
-		node: NodeMap['ident'],
-		fn: NodeMap['fn'],
-		seen: Set<Symbol>,
-	): number[] | undefined {
-		if (node.symbol.kind !== 'variable') return undefined;
-		const index = fn.parameters?.findIndex(
-			parameter => parameter.symbol === node.symbol,
-		);
-		if (
-			index !== undefined &&
-			index >= 0 &&
-			fn.parameters?.[index]?.symbol.ownership === 'var'
-		)
-			return [index];
-		if (seen.has(node.symbol)) return undefined;
-		seen.add(node.symbol);
-		const definition = node.symbol.definition;
-		return definition?.kind === 'def'
-			? mutableReturnOrigin(definition.value, fn, seen)
-			: undefined;
-	}
-
-	function mutableCallReturnOrigin(
-		node: NodeMap['call'],
-		fn: NodeMap['fn'],
-		seen: Set<Symbol>,
-	): number[] | undefined {
-		const callee = effectiveCallFunction(node);
-		if (callee?.returnOwnership !== 'var') return undefined;
-		const origins = callee.returnBorrowOrigins;
-		if (!origins?.length) return undefined;
-		const values = bindCallArguments(callee.parameters ?? [], argumentNodes(node.children[1])).arguments;
-		const mapped = origins.map(origin => {
-			const value = values[origin];
-			return value
-				? mutableReturnOrigin(value, fn, new Set(seen))
-				: undefined;
-		});
-		if (mapped.some(origin => origin === undefined)) return undefined;
-		return [...new Set(mapped.flatMap(origin => origin ?? []))];
-	}
-
-	function mutableConditionalReturnOrigin(
-		node: NodeMap['?'],
-		fn: NodeMap['fn'],
-		seen: Set<Symbol>,
-	): number[] | undefined {
-		const truthy = mutableReturnOrigin(
-			node.children[1],
-			fn,
-			new Set(seen),
-		);
-		const alternate = node.children[2];
-		const falsy = alternate
-			? mutableReturnOrigin(alternate, fn, new Set(seen))
-			: undefined;
-		return truthy && falsy
-			? [...new Set([...truthy, ...falsy])]
-			: undefined;
-	}
-
-	function mutableReturnOrigin(
-		node: Node,
-		fn: NodeMap['fn'],
-		seen = new Set<Symbol>(),
-	): number[] | undefined {
-		if (node.kind === 'next') {
-			const value = node.children?.[0];
-			return value ? mutableReturnOrigin(value, fn, seen) : undefined;
+	function inferBorrowReturns(): void {
+		const seen = new Set<Node>();
+		const collect = (node: Node): void => {
+			if (seen.has(node)) return;
+			seen.add(node);
+			if (node.kind === 'fn' && node.statements) {
+				functionOutputOwnership(node);
+				ownershipBlocks.add(node);
+			}
+			for (const child of childNodes(node)) if (child) collect(child);
+		};
+		collect(root);
+		const functions = [...ownershipBlocks].filter((node): node is NodeMap['fn'] =>
+			node.kind === 'fn' && !!node.statements &&
+			(node.symbol.returnOwnership === 'borrow' || node.symbol.returnOwnership === 'var'));
+		for (const fn of functions)
+			fn.symbol.returnBorrowOrigins = [];
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const fn of functions) {
+				const roots = new Set((fn.statements ?? []).flatMap(statement =>
+					statement.kind === 'next' ? borrowOrigins(statement) : []));
+				const origins = (fn.parameters ?? []).flatMap((parameter, index) => roots.has(parameter.symbol) ? [index] : []);
+				const previous = fn.symbol.returnBorrowOrigins;
+				if (origins.length === previous?.length && origins.every((origin, index) => origin === previous[index])) continue;
+				fn.symbol.returnBorrowOrigins = origins;
+				changed = true;
+			}
 		}
-		if (node.kind === '?')
-			return mutableConditionalReturnOrigin(node, fn, seen);
-		if (node.kind === '>>') {
-			const source = node.children[0];
-			const output = node.children[node.children.length - 1];
-			return source && output && pipeOutputOwnership(output) === 'var'
-				? mutableReturnOrigin(source, fn, seen)
-				: undefined;
+		for (const fn of functions) {
+			if (fn.symbol.returnOwnership !== 'var') continue;
+			const roots = (fn.statements ?? []).flatMap(statement => statement.kind === 'next' ? borrowOrigins(statement) : []);
+			if (!roots.length || roots.some(root => !fn.parameters?.some(parameter =>
+				parameter.symbol === root && parameter.symbol.ownership === 'var')))
+				error('`var` result must originate from a `var` parameter', fn);
 		}
-		if (node.kind === 'ident')
-			return mutableIdentReturnOrigin(node, fn, seen);
-		if (node.kind === 'call') return mutableCallReturnOrigin(node, fn, seen);
-	}
-
-	function checkMutableReturn(node: NodeMap['fn']): void {
-		if (node.symbol.returnOwnership !== 'var') return;
-		const statements = node.statements ?? [];
-		const emissions = statements.filter(statement => statement.kind === 'next');
-		const origins = emissions.map(emission =>
-			mutableReturnOrigin(emission, node),
-		);
-		if (!origins.length || origins.some(origin => origin === undefined)) {
-			error('`var` result must originate from a `var` parameter', node);
-			return;
-		}
-		node.symbol.returnBorrowOrigins = [
-			...new Set(origins.flatMap(origin => origin ?? [])),
-		];
 	}
 
 	function checkOwnedThreadReturn(
@@ -1382,7 +1326,7 @@ export function checker({
 		const type = resolver(node);
 		if (!isHeapType(type)) return;
 		if (node.kind === 'ident' && owned.has(node.symbol)) return;
-		if (node.kind === 'string' || node.kind === 'interp' || node.kind === 'data')
+		if (['string', 'interp', 'data'].includes(node.kind))
 			return;
 		if (node.kind === 'call') {
 			if (effectiveCallFunction(node)?.returnOwnership === 'own') return;
@@ -1411,9 +1355,8 @@ export function checker({
 			checkEach(node.statements);
 		}
 		checkDeclaredEmissions(node);
-		checkMoves(node);
+		ownershipBlocks.add(node);
 		functionOutputOwnership(node);
-		checkMutableReturn(node);
 	}
 
 	function checkOnlyStmt(c: NodeMap['fn'], i?: number) {
@@ -1765,18 +1708,28 @@ export function checker({
 		return mode;
 	}
 
+	function bindingOwnership(symbol: Symbol): OwnershipMode | undefined {
+		if (symbol.kind !== 'variable') return;
+		if (symbol.ownership) return symbol.ownership;
+		const definition = symbol.definition;
+		return definition?.kind === 'def' && ownedHere(definition) ? 'own' : 'borrow';
+	}
+
 	function expressionOwnership(node: Node): OwnershipMode | undefined {
+		if (node.kind === '.') return 'borrow';
+		if (node.kind === '>>') {
+			const last = node.children[node.children.length - 1];
+			return last ? pipeOutputOwnership(last) : undefined;
+		}
+		if (node.kind === '?') {
+			const modes = node.children.slice(1).map(branch => branch ? expressionOwnership(branch) : undefined);
+			return modes.every(mode => mode === modes[0]) ? modes[0] : 'borrow';
+		}
 		if (node.kind === 'next')
 			return node.children?.[0]
 				? expressionOwnership(node.children[0])
 				: undefined;
-		if (node.kind === 'ident' && node.symbol.kind === 'variable') {
-			if (node.symbol.ownership) return node.symbol.ownership;
-			const definition = node.symbol.definition;
-			return definition?.kind === 'def' && ownedHere(definition)
-				? 'own'
-				: 'borrow';
-		}
+		if (node.kind === 'ident') return bindingOwnership(node.symbol);
 		if (node.kind === 'call') {
 			const callee = effectiveCallFunction(node);
 			if (callee?.returnOwnership) return callee.returnOwnership;
@@ -1897,7 +1850,8 @@ export function checker({
 				checkRedundantIntermediates(node.statements);
 				checkEach(node.statements);
 				checkUnusedStatements(node.statements);
-				return checkMoves(node);
+				ownershipBlocks.add(node);
+				return;
 			case 'test':
 				checkRedundantIntermediates(node.statements);
 				return checkEach(node.statements);
@@ -2274,6 +2228,8 @@ export function checker({
 			walkPipes(root);
 			check(root);
 			finalizeFnSemantics(root);
+			inferBorrowReturns();
+			for (const block of ownershipBlocks) checkMoves(block);
 		},
 		resolver,
 	};
