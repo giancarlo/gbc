@@ -1,4 +1,4 @@
-import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, text, type HighlightOptions, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow } from '@cxl/gbc.sdk';
+import { tokenize, createHighlighter, shiftHighlightBuffer, highlightToken, highlightTokens, highlightSegments, foldToken, text, type Highlighter, type HighlightToken, type LanguageResolver, type HighlightOptions, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow } from '@cxl/gbc.sdk';
 import { keywords, scanHighlight, highlightHereDocuments } from './index.js';
 
 export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
@@ -132,7 +132,7 @@ function wordBoundary(state: ShellState, ch: string) {
 	state.last = ch;
 }
 
-export const highlight = (_options?: HighlightOptions) => createHighlighter((): ShellState => ({
+export const highlight = (options?: HighlightOptions) => createHighlighter((): ShellState => ({
 	scanner: { line: 0, endLine: 0 }, buffer: { start: 0, line: 0, fragment: undefined }, frames: [], escape: false, word: false, comment: false,
 	last: '', probe: undefined, header: '', line: '', documents: [],
 	commandStart: true, redirectTarget: false, commandName: false, parentheses: [],
@@ -142,13 +142,35 @@ export const highlight = (_options?: HighlightOptions) => createHighlighter((): 
 	for (;;) {
 		const next = segments.next();
 		if (next.done) { state.buffer = next.value; return { state, committed: state.buffer.start }; }
-		yield* highlightCommand(next.value, state);
+		yield* highlightCommand(next.value, state, options?.resolveLanguage);
 	}
 }, (state, shift) => ({
 	...state, buffer: shiftHighlightBuffer(state.buffer, shift),
 }));
 
-function* highlightCommand(window: HighlightWindow, state: ShellState) {
+function* highlightCommand(window: HighlightWindow, state: ShellState, resolveLanguage?: LanguageResolver): Generator<HighlightToken> {
+	const source = window.text;
+	const documents: string[] = [];
+	let redirect: number | undefined;
+	for (const token of highlightShellCommand(window, state)) {
+		const kind = token.kind;
+		if (kind === 'heredoc') {
+			const name = documents.shift();
+			const highlighter = name === undefined ? undefined : resolveLanguage?.(name.toLowerCase());
+			if (highlighter) yield* highlightDocument(window, token, highlighter);
+			else yield token;
+			continue;
+		}
+		if (resolveLanguage && kind === 'word' && redirect !== undefined) {
+			const document = highlightHereDocuments(source.slice(redirect, token.end - window.start))[0];
+			if (document) documents.push(document.delimiter);
+		}
+		if (kind !== 'comment') redirect = kind === '<<' || kind === '<<-' ? token.start - window.start : undefined;
+		yield token;
+	}
+}
+
+function* highlightShellCommand(window: HighlightWindow, state: ShellState) {
 	let { commandStart, redirectTarget, commandName } = state;
 	const { parentheses } = state;
 	const source = window.text;
@@ -188,4 +210,28 @@ function* highlightCommand(window: HighlightWindow, state: ShellState) {
 		yield token;
 	}
 	Object.assign(state, { commandStart, redirectTarget, commandName });
+}
+
+function* highlightDocument(window: HighlightWindow, token: HighlightToken & { value: string; terminator: string }, highlighter: Highlighter): Generator<HighlightToken> {
+	const value = token.value;
+	const source = { id: {}, version: window.source.version, length: value.length,
+		read: (start: number, end: number) => value.slice(start, end), text: () => value };
+	let pending: HighlightToken | undefined;
+	let folds = 0;
+	for (const child of highlighter.resume({ source })) {
+		const result = highlightToken(window, child, token.start, token.line);
+		result.foldEnd = Math.min(result.foldEnd, folds + result.foldStart);
+		folds += result.foldStart - result.foldEnd;
+		if (pending) yield pending;
+		else result.foldStart += token.foldStart;
+		pending = result;
+	}
+	if (token.terminator) {
+		if (pending) yield pending;
+		yield { ...token, start: token.start + value.length, line: token.line + value.split('\n').length - 1,
+			foldStart: pending ? 0 : token.foldStart, foldEnd: folds + token.foldEnd };
+	} else if (pending) {
+		pending.foldEnd += folds + token.foldEnd;
+		yield pending;
+	} else yield token;
 }

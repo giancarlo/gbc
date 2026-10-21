@@ -1,4 +1,5 @@
 import { highlight as createHighlight, type HighlightToken } from './highlight.js';
+import { type TokenizerError } from '@cxl/gbc.sdk';
 import { TestApi, spec } from '@cxl/spec';
 import {
 	compiler,
@@ -23,15 +24,15 @@ export default spec('cmd', s => {
 		const value = 'echo value\n'.repeat(3) + "'unfinished";
 		const source = highlightSource(value);
 		const expected = drain(highlight.resume({source})).tokens;
-		const error = expected.find(token => token.kind === 'tokenizer-error');
-		a.assert(error?.kind === 'tokenizer-error');
+		const error = expected.find(isHighlightError);
+		a.assert(error);
 		a.equal(error.error.position.line, 3);
 		const prefix = drain(highlight.resume({source, end: 22}));
 		const changed = { ...highlightSource('\n' + value), id: source.id, version: 2 };
 		const moved = highlight.rebase(prefix.checkpoint, changed, 1, 1);
 		const suffix = drain(highlight.resume({source: changed}, moved)).tokens;
-		const movedError = suffix.find(token => token.kind === 'tokenizer-error');
-		a.assert(movedError?.kind === 'tokenizer-error');
+		const movedError = suffix.find(isHighlightError);
+		a.assert(movedError);
 		a.equal(movedError.error.position.line, 4);
 	});
 	s.test('retains native context and stable folds across checkpoint windows', a => {
@@ -129,6 +130,82 @@ export default spec('cmd', s => {
 				a.equal(body.source, source);
 				a.equalValues(tokens.filter(token => token.highlight === 'keyword').map(token => [source.slice(token.start, token.end), token.line]), [['if', 3], ['then', 3], ['fi', 3]]);
 			}
+		});
+		it.test('resolves heredoc languages while preserving delimiters and positions', a => {
+			const names: string[] = [];
+			const embedded = createHighlight({ resolveLanguage: name => { names.push(name); return name === 'cmd' ? highlight : undefined; } });
+			for (const delimiter of ['CMD', "'CMD'", '"CMD"', 'C"M"D', '\\CMD']) {
+				const value = `echo before\ncat <<${delimiter}\nif true; then echo 42; fi\nCMD\necho after`;
+				const tokens = [...embedded.resume({ source: highlightSource(value) })];
+				a.equalValues(tokens.filter(token => token.highlight === 'keyword').map(token => value.slice(token.start, token.end)), ['if', 'then', 'fi']);
+				a.equalValues(tokens.filter(token => token.kind === 'heredoc').map(token => value.slice(token.start, token.end)), ['CMD\n']);
+				for (const token of tokens) {
+					a.equal(token.source, value);
+					a.equal(token.line, value.slice(0, token.start).split('\n').length - 1);
+				}
+			}
+			a.equalValues(names, ['cmd', 'cmd', 'cmd', 'cmd', 'cmd']);
+		});
+		it.test('keeps unknown heredocs and ordinary words unchanged', a => {
+			const names: string[] = [];
+			const embedded = createHighlight({ resolveLanguage: name => { names.push(name); return undefined; } });
+			const value = 'echo CMD "<<CMD"; cat <<UNKNOWN\nif true\nUNKNOWN\necho after';
+			a.equalValues([...embedded.resume({ source: highlightSource(value) })], [...highlight.resume({ source: highlightSource(value) })]);
+			a.equalValues(names, ['unknown']);
+		});
+		it.test('resolves multiple bodies independently and preserves tab offsets', a => {
+			const names: string[] = [];
+			const embedded = createHighlight({ resolveLanguage: name => { names.push(name); return name === 'cmd' ? highlight : undefined; } });
+			const value = "cat <<UNKNOWN <<-'CMD'\nif literal\nUNKNOWN\n\techo 42\n\tCMD\necho 7";
+			const tokens = [...embedded.resume({ source: highlightSource(value) })];
+			a.equalValues(names, ['unknown', 'cmd']);
+			a.equalValues(tokens.filter(token => token.highlight === 'number').map(token => [value.slice(token.start, token.end), token.line]), [['42', 3], ['7', 5]]);
+			a.equalValues(tokens.filter(token => token.kind === 'heredoc').map(token => value.slice(token.start, token.end)), ['if literal\nUNKNOWN\n', '\tCMD\n']);
+		});
+		it.test('preserves embedded heredocs at every checkpoint boundary', a => {
+			const embedded = createHighlight({ resolveLanguage: name => name === 'cmd' ? highlight : undefined });
+			for (const value of [
+				'cat <<CMD\nif true; then echo 42; fi\nCMD\necho after',
+				"cat <<'CMD' <<-CMD\nif true\nCMD\n\tthen echo 42; fi\n\tCMD\necho after",
+				'cat <<CMD\nif true; then echo 42',
+				'cat <<CMD\nCMD',
+				'cat <<CMD\n',
+				'cat <<CMD\r\nif true; then echo 42; fi\r\nCMD\r\necho after',
+			]) {
+				const source = highlightSource(value);
+				const expected = drain(embedded.resume({ source })).tokens;
+				for (let end = 0; end < value.length; end++) {
+					const prefix = drain(embedded.resume({ source, end }));
+					const saved = JSON.stringify(prefix.tokens);
+					const suffix = drain(embedded.resume({ source }, prefix.checkpoint));
+					a.equalValues([...prefix.tokens, ...suffix.tokens], expected);
+					a.equalValues(drain(embedded.resume({ source }, prefix.checkpoint)).tokens, suffix.tokens);
+					a.equal(JSON.stringify(prefix.tokens), saved);
+				}
+				a.equal(expected.reduce((folds, token) => folds + token.foldStart - token.foldEnd, 0), 0);
+			}
+		});
+		it.test('relocates embedded diagnostics and contains child folds', (a: TestApi) => {
+			const embedded = createHighlight({ resolveLanguage: () => highlight });
+			const value = "echo before\ncat <<CMD\nfi\nif true\n'unfinished\nCMD\necho after";
+			const source = highlightSource(value);
+			const tokens = drain(embedded.resume({ source })).tokens;
+			const error = tokens.find(isHighlightError);
+			a.assert(error);
+			a.equal(error.error.position.start, value.indexOf("'unfinished"));
+			a.equal(error.error.position.line, 4);
+			a.equal(error.error.position.source, value);
+			let folds = 0;
+			for (const token of tokens) {
+				folds += token.foldStart - token.foldEnd;
+				a.assert(folds >= 0);
+			}
+			a.equal(folds, 0);
+			const prefix = drain(embedded.resume({ source, end: value.indexOf('if true') }));
+			const changed = { ...highlightSource('\n' + value), id: source.id, version: 2 };
+			const moved = embedded.rebase(prefix.checkpoint, changed, 1, 1);
+			const suffix = drain(embedded.resume({ source: changed }, moved)).tokens;
+			a.equalValues(suffix, drain(embedded.resume({ source: changed })).tokens.filter(token => token.start >= prefix.checkpoint.committed + 1));
 		});
 		it.test('normalizes categories and omits EOF', a => {
 			a.equalValues(
@@ -1457,4 +1534,8 @@ function drain<Node, Result>(iterator: Generator<Node, Result>) {
 		if (next.done) return { tokens, checkpoint: next.value };
 		tokens.push(next.value);
 	}
+}
+
+function isHighlightError(token: HighlightToken): token is HighlightToken & TokenizerError {
+	return token.kind === 'tokenizer-error';
 }
