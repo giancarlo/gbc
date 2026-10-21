@@ -63,6 +63,33 @@
             "samples": 10,
             "maxRegression": 15
           }
+        },
+        "javascript > should highlight editor-sized JSX in checkpoint windows": {
+          "type": "benchmark",
+          "iterations": 7,
+          "values": [
+            4.49795842857137,
+            4.018607142857101,
+            4.320964285714321,
+            4.031202428571435,
+            4.101726142857193,
+            4.112285714285723,
+            4.006339285714278,
+            4.123035714285704,
+            4.037833428571438,
+            4.125535714285694
+          ],
+          "median": 4.107005928571458,
+          "mad": 0.07248800000002165,
+          "p75": 4.124910714285696,
+          "p95": 4.418311064285698,
+          "operationsPerSecond": 243.48637849369516,
+          "options": {
+            "warmup": 50,
+            "sampleTime": 20,
+            "samples": 10,
+            "maxRegression": 15
+          }
         }
       }
     },

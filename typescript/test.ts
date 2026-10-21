@@ -23,6 +23,37 @@ const tokens = (source: string) =>
 	]);
 
 export default spec('typescript', it => {
+	it.test('combines TypeScript classifications with opt-in JSX', a => {
+		const options = { jsx: true };
+		const tsx = createHighlight(options);
+		const value = 'const render = <T,>(value: T): unknown => <Box enabled={true}>{value as string}</Box>;';
+		const source = highlightSource(value);
+		const expected = drain(tsx.resume({ source })).tokens;
+		a.equalValues(expected.filter(token => ['tag', 'attribute', 'type', 'literal'].includes(token.highlight))
+			.map(token => [token.highlight, text(token)]), [
+			['type', 'unknown'], ['tag', 'Box'], ['attribute', 'enabled'], ['literal', 'true'], ['type', 'string'], ['tag', 'Box'],
+		]);
+		a.equal([...highlight.resume({ source })].some(token => token.highlight === 'tag'), false);
+		for (let end = 0; end < value.length; end++) {
+			const prefix = drain(tsx.resume({ source, end }));
+			a.equalValues([...prefix.tokens, ...tsx.resume({ source }, prefix.checkpoint)], expected);
+		}
+	});
+
+	it.test('handles generic components and constrained generic arrows in TSX', a => {
+		const tsx = createHighlight({ jsx: true });
+		const value = 'const render = <T extends object>(value: T) => <UI.Box<Result<string>> value={value as T} />;';
+		const source = highlightSource(value);
+		const expected = drain(tsx.resume({ source })).tokens;
+		a.equalValues(expected.filter(token => token.highlight === 'tag').map(text), ['UI.Box']);
+		a.equalValues(expected.filter(token => token.highlight === 'attribute').map(text), ['value']);
+		a.equalValues(expected.filter(token => token.highlight === 'type').map(text), ['object', 'string']);
+		for (let end = 0; end < value.length; end++) {
+			const prefix = drain(tsx.resume({ source, end }));
+			a.equalValues([...prefix.tokens, ...tsx.resume({ source }, prefix.checkpoint)], expected);
+		}
+	});
+
 	it.test('retains native context and stable folds across checkpoint windows', a => {
 		const value = 'interface Point {\n readonly x: number;\n}\nreturn /[a/b]+/g';
 		const source = highlightSource(value);

@@ -24,6 +24,105 @@ const tokens = (source: string) =>
 	]);
 
 export default spec('javascript', it => {
+	it.test('highlights JSX only when enabled', a => {
+		const options = { jsx: true };
+		const jsx = createHighlight(options);
+		const value = 'const view = <Box data-id="x" disabled>Hello &amp; {name}<br /></Box>; view / 2;';
+		const source = highlightSource(value);
+		const tokens = [...jsx.resume({ source })];
+		a.equalValues(tokens.filter(token => ['tag', 'attribute', 'text', 'string'].includes(token.highlight))
+			.map(token => [token.highlight, text(token)]), [
+			['tag', 'Box'], ['attribute', 'data-id'], ['string', '"x"'], ['attribute', 'disabled'],
+			['text', 'Hello &amp; '], ['tag', 'br'], ['tag', 'Box'],
+		]);
+		a.equal(tokens.some(token => token.highlight === 'regex'), false);
+		a.equal(tokens.reduce((sum, token) => sum + token.foldStart - token.foldEnd, 0), 0);
+		a.equal([...highlight.resume({ source })].some(token => token.highlight === 'tag'), false);
+		const disabled = { ...options, jsx: false };
+		a.equalValues([...createHighlight(disabled).resume({ source })], [...highlight.resume({ source })]);
+	});
+
+	it.test('distinguishes JSX text and attribute strings from embedded JavaScript', a => {
+		const jsx = createHighlight({ jsx: true });
+		const value = '<><svg:path title="a\\">// text\n{ready ? <UI.Button extends = {null} value={{ name: "}", pattern: /[{}<>]/g }} /> : null}{/* note */}</svg:path></>';
+		const tokens = [...jsx.resume({ source: highlightSource(value) })];
+		a.equalValues(tokens.filter(token => token.highlight === 'tag').map(text), ['svg:path', 'UI.Button', 'svg:path']);
+		a.equalValues(tokens.filter(token => token.highlight === 'attribute').map(text), ['title', 'extends', 'value']);
+		a.equalValues(tokens.filter(token => token.highlight === 'text').map(text), ['// text\n']);
+		a.equalValues(tokens.filter(token => token.highlight === 'regex').map(text), ['/[{}<>]/g']);
+		a.equalValues(tokens.filter(token => token.highlight === 'comment').map(text), ['/* note */']);
+		a.equalValues(tokens.filter(token => token.highlight === 'string').map(text), ['"a\\"', '"}"']);
+		a.equal(tokens.reduce((sum, token) => sum + token.foldStart - token.foldEnd, 0), 0);
+	});
+
+	it.test('preserves JSX lexical contexts at every checkpoint boundary', a => {
+		const options = { jsx: true };
+		const jsx = createHighlight(options);
+		const values = [
+			'const view = <><UI.Button data-id="a\\">Hello &amp;\n{/* note */ ready ? <b>{items.map(x => <i>{x}</i>)}</b> : null}</UI.Button><input {...props} disabled /></>; view / 2;',
+			'const view = <a value={{ text: "}", regex: /[{}<>]/g }} other={total / 2}>\n// text, not a comment\n{`text ${name}`}\n</a>;',
+			'const value = left < right ? /a/.test(text) : total / count;\nconst view = <div>{/* multi\nline */ <span>{value}</span>}</div>;',
+			'const view = <Box extends = {value} extends-other="x" />;',
+			'const view = <Button title="unfinished', 'const view = <div>{', '<div>Hi </', '<div foo={/a',
+		];
+		for (const value of values) {
+			const source = highlightSource(value);
+			const expected = drain(jsx.resume({ source })).tokens;
+			for (const token of expected) {
+				a.equal(token.source, value);
+				a.equal(token.line, value.slice(0, token.start).split('\n').length - 1);
+				a.equal(token.start >= 0 && token.end > token.start && token.end <= value.length, true);
+			}
+			for (let end = 0; end < value.length; end++) {
+				const prefix = drain(jsx.resume({ source, end }));
+				const snapshot = JSON.stringify(prefix.tokens);
+				const suffix = drain(jsx.resume({ source }, prefix.checkpoint));
+				a.equalValues([...prefix.tokens, ...suffix.tokens], expected);
+				a.equalValues(drain(jsx.resume({ source }, prefix.checkpoint)).tokens, suffix.tokens);
+				a.equal(JSON.stringify(prefix.tokens), snapshot);
+			}
+			let result = drain(jsx.resume({ source, end: 0 }));
+			const tokens = [...result.tokens];
+			for (let end = 1; end <= value.length; end++) {
+				result = drain(jsx.resume({ source, end }, result.checkpoint));
+				tokens.push(...result.tokens);
+			}
+			a.equalValues(tokens, expected);
+			a.equal(result.checkpoint.committed, value.length);
+		}
+	});
+
+	it.test('keeps JSX checkpoints independent and relocatable after edits', a => {
+		const options = { jsx: true };
+		const jsx = createHighlight(options);
+		const value = 'const view = <Box>\n{ready ? <i>{name}</i> : null}\n</Box>;';
+		const source = highlightSource(value);
+		const end = value.indexOf('{name') + 3;
+		const prefix = drain(jsx.resume({ source, end }));
+		a.equal(prefix.checkpoint.committed > 0, true);
+		const other = jsx.resume({ source });
+		const first = other.next();
+		if (!first.done) {
+			const snapshot = { ...first.value };
+			a.equalValues([...jsx.resume({ source })], [first.value, ...other]);
+			a.equalValues(first.value, snapshot);
+		}
+		const cancelled = jsx.resume({ source }, prefix.checkpoint);
+		cancelled.next();
+		cancelled.return(prefix.checkpoint);
+		a.equalValues([...prefix.tokens, ...jsx.resume({ source }, prefix.checkpoint)], [...jsx.resume({ source })]);
+		const edited = { ...highlightSource(value.slice(0, end) + 'x' + value.slice(end)), id: source.id, version: 2 };
+		a.equalValues([...jsx.resume({ source: edited, edit: { previousVersion: 1, start: end } }, prefix.checkpoint)],
+			[...jsx.resume({ source: edited })].filter(token => token.start >= prefix.checkpoint.committed));
+		const changed = { ...highlightSource('\n' + value), id: source.id, version: 2 };
+		const shifted = jsx.rebase(prefix.checkpoint, changed, 1, 1);
+		const fresh = drain(jsx.resume({ source: changed, end: end + 1 }));
+		a.equal(jsx.equivalent(shifted, fresh.checkpoint), true);
+		a.equalValues([...jsx.resume({ source: changed }, shifted)], [...jsx.resume({ source: changed })].filter(token => token.start >= shifted.committed));
+		a.throws(() => drain(jsx.resume({ source: changed }, prefix.checkpoint)));
+		a.throws(() => drain(createHighlight(options).resume({ source }, prefix.checkpoint)));
+	});
+
 	it.test('keeps trailing operators within the source', a => {
 		for (const operator of ['=', '==', '===', '>', '>>', '>>>', '>>>=', '+', '+=', '??', '??=']) {
 			const value = 'const x ' + operator;
@@ -202,6 +301,19 @@ export default spec('javascript', it => {
 			maxRegression: 15,
 		}),
 	);
+	it.should('highlight editor-sized JSX in checkpoint windows', async a => {
+		const jsx = createHighlight({ jsx: true });
+		const source = highlightSource('const view = <Panel title="hello">\n{items.map(item => <Row key={item.id}>{item.name}</Row>)}\n</Panel>;\n'.repeat(100));
+		await a.benchmark(() => {
+			let result = drain(jsx.resume({ source, end: 0 }));
+			let count = 0;
+			while (!result.checkpoint.done) {
+				result = drain(jsx.resume({ source, end: Math.min(source.length, result.checkpoint.offset + 4096) }, result.checkpoint));
+				count += result.tokens.length;
+			}
+			return count;
+		}, { warmup: 50, sampleTime: 20, samples: 10, maxRegression: 15 });
+	});
 });
 
 function highlightSource(value: string) {

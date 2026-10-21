@@ -4,6 +4,8 @@ import {
 	shiftHighlightBuffer,
 	each,
 	type HighlightWindow,
+	type HighlightOptions,
+	type Highlighter,
 	highlightTokens,
 	highlightSegments,
 	foldToken,
@@ -29,6 +31,10 @@ export type ScannerKind = LexicalHighlightKind | IdentifierHighlightKind;
 
 export type ScannerToken = Token<ScannerKind | 'eof'>;
 export type { HighlightKind, HighlightToken, Highlighter } from '@cxl/gbc.sdk';
+
+export interface JavaScriptHighlightOptions extends HighlightOptions {
+	jsx?: boolean;
+}
 
 export const keywords: ReadonlySet<string> = new Set(
 	'async await break case catch class const continue debugger default delete do else export extends finally for from function get if import in instanceof let new of return set static super switch this throw try typeof using var void while with yield'.split(
@@ -399,9 +405,193 @@ function boundary(state: JavaScriptLexicalState, ch: string): boolean {
 	}
 }
 
+type JsxContext =
+	| { mode: 'code'; depth: number; regex: boolean }
+	| { mode: 'tag'; closing: boolean; name: boolean; types: number }
+	| { mode: 'text' };
+
+interface JsxState {
+	contexts: JsxContext[];
+	pending: string;
+	start: number;
+	line: number;
+}
+
+type JsxKind = 'tag' | 'attribute' | 'text' | 'jsx-open' | 'jsx-close';
+
+function jsxStart(source: string, start: number, final: boolean): boolean | undefined {
+	const value = source.slice(start + 1);
+	if (value.startsWith('>')) return true;
+	const name = /^[A-Za-z_$][\w$.:-]*/.exec(value)?.[0];
+	if (!name) return !value && !final ? undefined : false;
+	const rest = value.slice(name.length);
+	if (!rest) return final ? true : undefined;
+	if (rest.startsWith(',')) return false;
+	if (/^\s+extends(?:\s|$)/.test(rest)) {
+		const constraint = rest.trimStart().slice('extends'.length).trimStart();
+		if (!constraint && !final) return undefined;
+		return /^[=/>]/.test(constraint);
+	}
+	if (!final && /^\s+[\w$]*$/.test(rest)) return undefined;
+	return /^[\s/<>]/.test(rest);
+}
+
+function* scanJsx<ExtraKind extends 'type'>(
+	source: string,
+	contexts: JsxContext[],
+	classify: (word: string) => IdentifierHighlightKind | ExtraKind,
+	final: boolean,
+): Generator<Token<ScannerKind | ExtraKind | JsxKind>, number> {
+	type JsxToken = Token<ScannerKind | ExtraKind | JsxKind>;
+	let index = 0;
+	function token(kind: ScannerKind | ExtraKind | JsxKind, end: number) {
+		const result = { kind, source, start: index, end, line: 0 };
+		index = end;
+		return result;
+	}
+	function expression() {
+		return { mode: 'code' as const, depth: 0, regex: true };
+	}
+	function finishTag() {
+		contexts.pop();
+		const parent = contexts.at(-1);
+		if (parent?.mode === 'code') parent.regex = false;
+	}
+	function incomplete(next: JsxToken, regex: boolean) {
+		return !final && (next.end === source.length || next.kind === 'operator' &&
+			source.charAt(next.start) === '/' && regex && !/[\r\n]/.test(source.slice(next.start)));
+	}
+	function updateCode(context: Extract<JsxContext, { mode: 'code' }>, value: string) {
+		if (value === '{') context.depth++;
+		else if (value === '}') {
+			if (!context.depth && contexts.length > 1) contexts.pop();
+			else context.depth = Math.max(0, context.depth - 1);
+		}
+		context.regex = regexContext(value);
+	}
+	function* code(context: Extract<JsxContext, { mode: 'code' }>): Generator<JsxToken, boolean> {
+		const offset = index;
+		const scanner = createScanner(classify, context.regex)(source.slice(offset));
+		while (context === contexts.at(-1)) {
+			const scanned = scanner.next();
+			if (scanned.kind === 'eof') { index = source.length; return true; }
+			const next = { ...scanned, kind: scanned.kind, start: scanned.start + offset, end: scanned.end + offset, source };
+			index = next.start;
+			const value = source.slice(next.start, next.end);
+			if (incomplete(next, context.regex)) return false;
+			if (value === '<' && context.regex) {
+				const opening = jsxStart(source, index, final);
+				if (opening === undefined) return false;
+				if (opening) {
+					contexts.push({ mode: 'tag', closing: false, name: true, types: 0 });
+					next.kind = 'punctuation';
+				}
+			}
+			if (next.kind !== 'comment') updateCode(context, value);
+			index = next.end;
+			yield next;
+		}
+		return true;
+	}
+	function* text(): Generator<JsxToken, boolean> {
+		const ch = source.charAt(index);
+		if (ch === '<') {
+			if (index + 1 === source.length && !final) return false;
+			const closing = source.charAt(index + 1) === '/';
+			if (closing) contexts.pop();
+			contexts.push({ mode: 'tag', closing, name: true, types: 0 });
+			yield token(closing ? 'jsx-close' : 'punctuation', index + (closing ? 2 : 1));
+		} else if (ch === '{') {
+			contexts.push(expression());
+			yield token('punctuation', index + 1);
+		} else {
+			let end = index;
+			while (end < source.length && source.charAt(end) !== '<' && source.charAt(end) !== '{') {
+				if (source.charAt(end++) === '\n') break;
+			}
+			if (end === source.length && !final && source.charAt(end - 1) !== '\n') return false;
+			yield token('text', end);
+		}
+		return true;
+	}
+	function* types(context: Extract<JsxContext, { mode: 'tag' }>): Generator<JsxToken, boolean> {
+		const ch = source.charAt(index);
+		if (ch === '<' || ch === '>') {
+			context.types += ch === '<' ? 1 : -1;
+			yield token('operator', index + 1);
+		} else {
+			const next = createScanner(classify)(source.slice(index)).next();
+			if (!final && index + next.end === source.length) return false;
+			yield token(next.kind === 'eof' ? 'text' : next.kind, index + next.end);
+		}
+		return true;
+	}
+	function* name(context: Extract<JsxContext, { mode: 'tag' }>): Generator<JsxToken, boolean> {
+		const value = /^[\w$.:-]+/.exec(source.slice(index))?.[0];
+		if (!final && index + (value?.length ?? 1) === source.length) return false;
+		const kind = value ? context.name ? 'tag' : 'attribute' : source.charAt(index) === '=' ? 'operator' : 'punctuation';
+		if (value) context.name = false;
+		yield token(kind, index + (value?.length ?? 1));
+		return true;
+	}
+	function* tag(context: Extract<JsxContext, { mode: 'tag' }>): Generator<JsxToken, boolean> {
+		const ch = source.charAt(index);
+		if (/\s/.test(ch)) { index++; return true; }
+		if (context.types) return yield* types(context);
+		if (ch === '>') {
+			if (context.closing) finishTag();
+			else contexts.splice(contexts.length - 1, 1, { mode: 'text' });
+			yield token(context.closing ? 'punctuation' : 'jsx-open', index + 1);
+		} else if (ch === '/' && source.charAt(index + 1) === '>') {
+			finishTag();
+			yield token('punctuation', index + 2);
+		} else if (ch === '<') {
+			context.types++;
+			yield token('operator', index + 1);
+		} else if (ch === '{') {
+			contexts.push(expression());
+			yield token('punctuation', index + 1);
+		} else if (ch === '"' || ch === "'") {
+			const closing = source.indexOf(ch, index + 1);
+			if (closing < 0 && !final) return false;
+			yield token('string', closing < 0 ? source.length : closing + 1);
+		} else return yield* name(context);
+		return true;
+	}
+	while (index < source.length) {
+		const context = contexts.at(-1);
+		if (!context) return index;
+		const complete = yield* (context.mode === 'code' ? code(context) : context.mode === 'text' ? text() : tag(context));
+		if (!complete) return index;
+	}
+	return index;
+}
+
+function createJsxHighlighter<ExtraKind extends 'type'>(classify: (word: string) => IdentifierHighlightKind | ExtraKind) {
+	return createHighlighter((): JsxState => ({
+		contexts: [{ mode: 'code', depth: 0, regex: true }], pending: '', start: 0, line: 0,
+	}), function* (window, previous) {
+		const state = { ...previous, contexts: previous.contexts.map(context => ({ ...context })) };
+		const source = state.pending + window.text;
+		let end = 0;
+		function* tokens() {
+			end = yield* scanJsx(source, state.contexts, classify, window.final);
+		}
+		yield* highlightTokens({ ...window, text: source, start: state.start, line: state.line }, tokens(),
+			token => token.kind === 'jsx-open' || token.kind === 'jsx-close' ? 'punctuation' : token.kind,
+			undefined, token => token.kind === 'jsx-open' ? [1, 0] : token.kind === 'jsx-close' ? [0, 1] : foldToken(token));
+		state.pending = source.slice(end);
+		state.start += end;
+		for (let index = 0; index < end; index++) if (source.charAt(index) === '\n') state.line++;
+		return { state, committed: state.start };
+	}, (state, shift) => ({ ...state, start: state.start + shift.offset, line: state.line + shift.line }));
+}
+
 export function createJavaScriptHighlighter<ExtraKind extends 'type' = never>(
 	classify: (word: string) => IdentifierHighlightKind | ExtraKind,
-) {
+	options?: JavaScriptHighlightOptions,
+): Highlighter {
+	if (options?.jsx) return createJsxHighlighter(classify);
 	const initial = (): JavaScriptHighlightState => ({
 		buffer: { start: 0, line: 0, fragment: undefined }, mode: 'code', quote: '', escape: false,
 		characterClass: false, star: false, word: '', regexAllowed: true, regex: true, fallback: undefined,

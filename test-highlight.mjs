@@ -89,6 +89,16 @@ try {
 		assert(tokens.length > 0);
 		assert.deepEqual([...highlight.resume({ source: highlightSource('') })], []);
 		if (kinds) assert.deepEqual(tokens.map(token => token.highlight), kinds);
+		if (pkg === 'javascript' || pkg === 'typescript') {
+			const jsx = createHighlight({ jsx: true });
+			const value = '<Box title="hello">{value}</Box>';
+			assert.deepEqual([...jsx.resume({ source: highlightSource(value) })]
+				.filter(token => token.highlight === 'tag').map(token => value.slice(token.start, token.end)), ['Box', 'Box']);
+			declarations.push(`import type { JavaScriptHighlightOptions as ${pkg}JsxOptions } from '${metadata.name}/highlight';
+const ${pkg}JsxOptions: ${pkg}JsxOptions = { jsx: true, resolveLanguage: () => undefined };
+const ${pkg}Jsx: ${pkg}Highlighter = ${pkg}(${pkg}JsxOptions);
+void ${pkg}Jsx;`);
+		}
 		let end = 0;
 		for (const token of tokens) {
 			assert.equal(token.source, source);

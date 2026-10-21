@@ -1,6 +1,6 @@
-import type { HighlightOptions } from '@cxl/gbc.sdk';
-import { classifyIdentifier, createJavaScriptHighlighter } from './index.js';
+import { classifyIdentifier, createJavaScriptHighlighter, type JavaScriptHighlightOptions } from './index.js';
 
 export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
+export type { JavaScriptHighlightOptions } from './index.js';
 
-export const highlight = (_options?: HighlightOptions) => createJavaScriptHighlighter(classifyIdentifier);
+export const highlight = (options?: JavaScriptHighlightOptions) => createJavaScriptHighlighter(classifyIdentifier, options);
