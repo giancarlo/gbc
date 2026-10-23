@@ -1,6 +1,7 @@
 import { highlight as createHighlight } from './highlight.js';
 import { TestApi, spec } from '@cxl/spec';
-import { program } from './index.js';
+import { compiler, program, render } from './index.js';
+import { createHighlighter, type HighlightOptions } from '@cxl/gbc.sdk';
 import tests from './test-commonmark.js';
 import highlightTests from './test-highlight.js';
 
@@ -13,6 +14,60 @@ type MdTest = {
 };
 
 export default spec('markdown', (a: TestApi) => {
+	a.test('renders syntax-highlighted code through every public entry point', a => {
+		const child = createHighlighter(() => undefined, function* (window) {
+			if (window.source.length) yield Object.assign(window.position(2, 7, 0), {
+				kind: 'keyword', highlight: 'keyword' as const, foldStart: 0, foldEnd: 0,
+			});
+			return { state: undefined, committed: window.source.length };
+		}, state => state);
+		const names: string[] = [];
+		let fail = false;
+		const options: HighlightOptions = { resolveLanguage: name => {
+			names.push(name);
+			if (fail) throw new Error('resolver failure');
+			return name === 'test' ? child : undefined;
+		} };
+		const source = '```test extra\n  <&">x\n```';
+		const expected = '<pre><code class="language-test">  <span class="keyword">&lt;&amp;&quot;&gt;x</span>\n</code></pre>\n';
+		const md = program(options);
+		a.equal(render(source, options), expected);
+		a.equal(md.compile(source).output, expected);
+		a.equal(compiler(md.parse(source).root, options), expected);
+		a.equalValues(names, ['test', 'test', 'test']);
+		for (const value of ['`inline`', '    indented\n', '```\nplain\n```', '```unknown\n<&\n```', '```test\n```'])
+			a.equal(render(value, options), render(value));
+		a.equal(render(source.slice(0, -3), options), expected);
+		a.equal(render('> ' + source.replaceAll('\n', '\n> '), options), '<blockquote>' + expected.trimEnd() + '</blockquote>\n');
+		a.equal(render('- ' + source.replaceAll('\n', '\n  '), options), '<ul><li>' + expected.trimEnd() + '</li></ul>\n');
+		fail = true;
+		a.throws(() => md.compile(source));
+		fail = false;
+		a.equal(md.compile(source).output, expected);
+		a.equal(program().compile(source).output, render(source));
+		a.equal(md.compile(source).output, expected);
+	});
+	a.test('renders real highlighter tokens and recovers from child scan failures', a => {
+		const options = { resolveLanguage: () => highlight };
+		a.equal(render('```md\n# Title\n```', options), '<pre><code class="language-md"><span class="heading"># </span><span class="heading">Title</span><span class="text">\n</span></code></pre>\n');
+		let fail = true;
+		let closed = 0;
+		const child = createHighlighter(() => undefined, function* (window) {
+			try {
+				if (fail) throw new Error('scan failure');
+				yield Object.assign(window.position(0, window.source.length, 0), {
+					kind: 'text', highlight: 'string' as const, foldStart: 0, foldEnd: 0,
+				});
+				return { state: undefined, committed: window.source.length };
+			} finally { closed++; }
+		}, state => state);
+		const md = program({ resolveLanguage: () => child });
+		a.throws(() => md.compile('```test\nvalue\n```'));
+		a.equal(closed, 1);
+		fail = false;
+		a.equal(md.compile('```test\nvalue\n```').output, '<pre><code class="language-test"><span class="string">value\n</span></code></pre>\n');
+		a.equal(closed, 2);
+	});
 	a.test('embedded Markdown highlighting', highlightTests);
 	a.test('retains native context and stable folds across checkpoint windows', a => {
 		const value = '# One\nbody\n## Two\nbody\nTitle\n=====\nlast';

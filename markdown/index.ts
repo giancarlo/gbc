@@ -5,6 +5,7 @@ import {
 	ParserApi,
 	text,
 	type MatchFn,
+	type HighlightOptions,
 } from '@cxl/gbc.sdk';
 
 type Children = Node[];
@@ -2061,8 +2062,8 @@ function parserBlock(
 	return root;
 }
 
-function renderChildren(children: Node[], tag?: string) {
-	const text = children.map(compiler).join('');
+function renderChildren(children: Node[], tag?: string, options?: HighlightOptions) {
+	const text = children.map(node => compiler(node, options)).join('');
 	return tag ? `<${tag}>${text}</${tag}>` : text;
 }
 
@@ -2145,15 +2146,15 @@ function nodeChildren(node: Node) {
 	}
 }
 
-function renderList(node: NodeMap['ul'] | NodeMap['ol']) {
+function renderList(node: NodeMap['ul'] | NodeMap['ol'], options?: HighlightOptions) {
 	const result = [];
 	for (const li of node.children) {
 		if (li.kind !== 'li') break;
-		if (node.loose) result.push(renderChildren(li.children, li.kind));
+		if (node.loose) result.push(renderChildren(li.children, li.kind, options));
 		else {
 			const children: string = li.children
 				.map(n =>
-					n.kind === 'p' ? renderChildren(n.children) : compiler(n),
+					n.kind === 'p' ? renderChildren(n.children, undefined, options) : compiler(n, options),
 				)
 				.join('');
 			result.push(`<${li.kind}>${children}</${li.kind}>`);
@@ -2163,16 +2164,16 @@ function renderList(node: NodeMap['ul'] | NodeMap['ol']) {
 	return result.join('');
 }
 
-function renderTableCell<Kind extends 'td' | 'th'>(node: TableCell<Kind>) {
+function renderTableCell<Kind extends 'td' | 'th'>(node: TableCell<Kind>, options?: HighlightOptions) {
 	const alignment = node.alignment ? ` align="${node.alignment}"` : '';
-	return `<${node.kind}${alignment}>${renderChildren(node.children)}</${node.kind}>`;
+	return `<${node.kind}${alignment}>${renderChildren(node.children, undefined, options)}</${node.kind}>`;
 }
 
-function renderTable(node: NodeMap['table']) {
-	const header = node.header.map(renderTableCell).join('');
+function renderTable(node: NodeMap['table'], options?: HighlightOptions) {
+	const header = node.header.map(cell => renderTableCell(cell, options)).join('');
 	const body = node.rows.length
 		? `<tbody>${node.rows
-				.map(row => `<tr>${row.map(renderTableCell).join('')}</tr>`)
+				.map(row => `<tr>${row.map(cell => renderTableCell(cell, options)).join('')}</tr>`)
 				.join('')}</tbody>`
 		: '';
 	return `<table><thead><tr>${header}</tr></thead>${body}</table>`;
@@ -2182,10 +2183,28 @@ function encodeUrl(href: string) {
 	return encodeURI(href).replace(/%25([\da-f]{2})/gi, '%$1');
 }
 
-export function compiler(node: Node): string {
+function renderCode(value: string, language: string | undefined, options?: HighlightOptions) {
+	const highlighter = language ? options?.resolveLanguage?.(language) : undefined;
+	if (!highlighter) return escapeHtml(value);
+	const source = {
+		id: {}, version: 1, length: value.length,
+		read: (start: number, end: number) => value.slice(start, end),
+		text: () => value,
+	};
+	let result = '';
+	let end = 0;
+	for (const token of highlighter.resume({ source })) {
+		result += escapeHtml(value.slice(end, token.start));
+		result += `<span class="${escapeHtml(token.highlight)}">${escapeHtml(value.slice(token.start, token.end))}</span>`;
+		end = token.end;
+	}
+	return result + escapeHtml(value.slice(end));
+}
+
+export function compiler(node: Node, options?: HighlightOptions): string {
 	switch (node.kind) {
 		case 'root': {
-			const str = renderChildren(node.children);
+			const str = renderChildren(node.children, undefined, options);
 			return str ? (str.endsWith('\n') ? str : str + '\n') : '';
 		}
 		case 'hr':
@@ -2210,37 +2229,37 @@ export function compiler(node: Node): string {
 				: '';
 			return `<a href="${escapeHtml(
 				encodeUrl(node.href),
-			)}"${title}>${renderChildren(node.children)}</a>`;
+			)}"${title}>${renderChildren(node.children, undefined, options)}</a>`;
 		}
 		case 'ol': {
 			const start = node.listStart;
 			const startStr = start && start !== '1' ? ` start="${start}"` : '';
-			return `<ol${startStr}>${renderList(node)}</ol>`;
+			return `<ol${startStr}>${renderList(node, options)}</ol>`;
 		}
 		case 'blockquote': {
-			const value = renderChildren(node.children);
+			const value = renderChildren(node.children, undefined, options);
 			return `<blockquote>${value || '\n'}</blockquote>`;
 		}
 		case 'em':
 		case 'strong':
 		case 'p':
-			return renderChildren(node.children, node.kind);
+			return renderChildren(node.children, node.kind, options);
 		case 'ul':
-			return `<ul>${renderList(node)}</ul>`;
+			return `<ul>${renderList(node, options)}</ul>`;
 		case 'table':
-			return renderTable(node);
+			return renderTable(node, options);
 		case 'heading':
-			return renderChildren(node.children, `h${node.level}`);
+			return renderChildren(node.children, `h${node.level}`, options);
 		case 'block': {
 			const lang = node.info?.trimStart().split(/\s/, 1)[0];
 			const cls = lang
 				? ` class="language-${unescapeText(lang)}"`
 				: '';
-			return `<pre><code${cls}>${escapeHtml(node.value)}</code></pre>`;
+			return `<pre><code${cls}>${renderCode(node.value, lang, options)}</code></pre>`;
 		}
 		case 'text':
 			return node.children
-				? renderChildren(node.children)
+				? renderChildren(node.children, undefined, options)
 				: escapeHtml(decodeEntities(node.value));
 		case 'html':
 			return (
@@ -2252,7 +2271,7 @@ export function compiler(node: Node): string {
 	}
 }
 
-export function program() {
+export function program(options?: HighlightOptions) {
 	const api = ParserApi(scannerBlock);
 
 	function parse(src: string) {
@@ -2264,7 +2283,7 @@ export function program() {
 	function compile(src: string) {
 		const parsed = parse(src);
 		return {
-			output: compiler(parsed.root),
+			output: compiler(parsed.root, options),
 			ast: parsed.root,
 			errors: parsed.errors,
 		};
@@ -2276,7 +2295,7 @@ export function program() {
 	};
 }
 
-export function render(src: string) {
-	const md = program();
+export function render(src: string, options?: HighlightOptions) {
+	const md = program(options);
 	return md.compile(src).output;
 }
