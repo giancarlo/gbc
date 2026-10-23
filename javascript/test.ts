@@ -24,6 +24,84 @@ const tokens = (source: string) =>
 	]);
 
 export default spec('javascript', it => {
+	it.test('highlights template interpolation as code', a => {
+		const value = '`hello ${name + 1} ${true}`';
+		const expected = [
+			['template', '`hello '], ['punctuation', '${'], ['identifier', 'name'],
+			['operator', '+'], ['number', '1'], ['punctuation', '}'],
+			['template', ' '], ['punctuation', '${'], ['literal', 'true'],
+			['punctuation', '}'], ['template', '`'],
+		];
+		a.equalValues(tokens(value).map(token => token.slice(0, 2)), expected);
+		for (const jsx of [false, true]) {
+			a.equalValues([...createHighlight({ jsx }).resume({ source: highlightSource(value) })]
+				.map(token => [token.highlight, text(token)]), expected);
+		}
+	});
+
+	it.test('preserves nested template expressions across checkpoint windows', a => {
+		const values = [
+			'`outer ${ { key: `inner ${name}` }.key } tail`; value / 2;\nnext',
+			'`text ${/}/.test(value) ? "}" : 42} ${total / 2}`;\nnext',
+			'`line\n${ /* } */ true ?\n`nested ${name}` : false }\ntail`;\nnext',
+			'`text ${ // }\nname} tail`;\nnext',
+			'<Box>{`text ${name}}${1}{${2}<${3}`}</Box>',
+			'`escaped \\${name} \\` ${1}`',
+			'`unfinished ${ { value: 1 }', '`unfinished ${`nested ${name}`}', '`tail\\',
+		];
+		for (const jsx of [false, true]) {
+			const highlighter = createHighlight({ jsx });
+			for (const value of values) {
+				const source = highlightSource(value);
+				const expected = drain(highlighter.resume({ source })).tokens;
+				for (const token of expected) {
+					a.equal(token.line, value.slice(0, token.start).split('\n').length - 1);
+					a.equal(token.end > token.start && token.end <= value.length, true);
+				}
+				for (let end = 0; end < value.length; end++) {
+					const prefix = drain(highlighter.resume({ source, end }));
+					const snapshot = JSON.stringify(prefix.tokens);
+					a.equalValues([...prefix.tokens, ...highlighter.resume({ source }, prefix.checkpoint)], expected);
+					a.equalValues([...prefix.tokens, ...highlighter.resume({ source }, prefix.checkpoint)], expected);
+					a.equal(JSON.stringify(prefix.tokens), snapshot);
+				}
+				let result = drain(highlighter.resume({ source, end: 0 }));
+				const actual = [...result.tokens];
+				for (let end = 1; end <= value.length; end++) {
+					result = drain(highlighter.resume({ source, end }, result.checkpoint));
+					actual.push(...result.tokens);
+				}
+				a.equalValues(actual, expected);
+			}
+		}
+	});
+
+	it.test('keeps template expressions distinct from literal text and balances folds', a => {
+		const value = '`outer ${ { key: `inner ${name}` }.key } ${/}/.test("}")} tail`';
+		const result = [...highlight.resume({ source: highlightSource(value) })];
+		a.equalValues(result.filter(token => token.highlight === 'template').map(text),
+			['`outer ', '`inner ', '`', ' ', ' tail`']);
+		a.equalValues(result.filter(token => token.highlight === 'identifier').map(text), ['key', 'name', 'key', 'test']);
+		a.equalValues(result.filter(token => token.highlight === 'regex').map(text), ['/}/']);
+		a.equal(result.reduce((sum, token) => sum + token.foldStart - token.foldEnd, 0), 0);
+		a.equalValues(tokens('`escaped \\${name} ${1}`').map(token => token.slice(0, 2)), [
+			['template', '`escaped \\${name} '], ['punctuation', '${'], ['number', '1'],
+			['punctuation', '}'], ['template', '`'],
+		]);
+	});
+
+	it.test('restores nested template context when backtracking', a => {
+		const value = '`outer ${ { key: `inner ${name}` }.key } tail`';
+		const scanner = scan(value);
+		const expected = [...tokenize(() => scanner, value)];
+		for (const token of expected) {
+			scanner.backtrack(token);
+			a.equalValues([...function* () {
+				for (let next = scanner.next(); next.kind !== 'eof'; next = scanner.next()) yield next;
+			}()], expected.filter(next => next.start >= token.end));
+		}
+	});
+
 	it.test('highlights JSX only when enabled', a => {
 		const options = { jsx: true };
 		const jsx = createHighlight(options);
@@ -245,7 +323,11 @@ export default spec('javascript', it => {
 			['string', "'text'", 0],
 			['comment', '// note', 0],
 			['comment', '/* block\ncomment */', 1],
-			['template', '`hello ${name}`', 2],
+			['template', '`hello ', 2],
+			['punctuation', '${', 2],
+			['identifier', 'name', 2],
+			['punctuation', '}', 2],
+			['template', '`', 2],
 			['literal', 'true', 2],
 		]);
 	});

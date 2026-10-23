@@ -23,6 +23,40 @@ const tokens = (source: string) =>
 	]);
 
 export default spec('typescript', it => {
+	it.test('highlights template interpolation as code', a => {
+		const value = '`hello ${name + 1} ${true}`';
+		const expected = [
+			['template', '`hello '], ['punctuation', '${'], ['identifier', 'name'],
+			['operator', '+'], ['number', '1'], ['punctuation', '}'],
+			['template', ' '], ['punctuation', '${'], ['literal', 'true'],
+			['punctuation', '}'], ['template', '`'],
+		];
+		a.equalValues(tokens(value).map(token => token.slice(0, 2)), expected);
+		for (const jsx of [false, true]) {
+			a.equalValues([...createHighlight({ jsx }).resume({ source: highlightSource(value) })]
+				.map(token => [token.highlight, text(token)]), expected);
+		}
+	});
+
+	it.test('classifies TypeScript expressions inside nested templates and TSX', a => {
+		const value = '`outer ${value as string} ${`inner ${undefined satisfies unknown}`}`';
+		for (const jsx of [false, true]) {
+			const highlighter = createHighlight({ jsx });
+			const input = jsx ? '<Box>{' + value + '}</Box>' : value;
+			const source = highlightSource(input);
+			const expected = [...highlighter.resume({ source })];
+			a.equalValues(expected.filter(token => ['keyword', 'type', 'literal'].includes(token.highlight))
+				.map(token => [token.highlight, text(token)]), [
+				['keyword', 'as'], ['type', 'string'], ['literal', 'undefined'],
+				['keyword', 'satisfies'], ['type', 'unknown'],
+			]);
+			for (let end = 0; end < input.length; end++) {
+				const prefix = drain(highlighter.resume({ source, end }));
+				a.equalValues([...prefix.tokens, ...highlighter.resume({ source }, prefix.checkpoint)], expected);
+			}
+		}
+	});
+
 	it.test('combines TypeScript classifications with opt-in JSX', a => {
 		const options = { jsx: true };
 		const tsx = createHighlight(options);
@@ -148,7 +182,11 @@ export default spec('typescript', it => {
 			['string', "'text'", 0],
 			['comment', '// note', 0],
 			['comment', '/* block\ncomment */', 1],
-			['template', '`hello ${name}`', 2],
+			['template', '`hello ', 2],
+			['punctuation', '${', 2],
+			['identifier', 'name', 2],
+			['punctuation', '}', 2],
+			['template', '`', 2],
 			['literal', 'true', 2],
 		]);
 	});

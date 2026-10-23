@@ -10,6 +10,7 @@ import {
 	highlightSegments,
 	foldToken,
 	type HighlightBuffer,
+	type HighlightToken,
 	matchers,
 	type Position,
 	type Scanner,
@@ -116,13 +117,27 @@ function escaped(index: number, source: string) {
 	return slashes % 2 === 1;
 }
 
+function templateBrace(templates: number[], ch: string) {
+	if (!templates.length) return false;
+	const depth = templates[templates.length - 1];
+	if (depth === undefined) return false;
+	if (ch === '{') templates[templates.length - 1] = depth + 1;
+	else if (ch === '}') {
+		templates[templates.length - 1] = depth - 1;
+		return depth === 0;
+	}
+	return false;
+}
+
 export const createScanner = <ExtraKind extends string = never>(
 	classifyIdentifier: (word: string) => IdentifierHighlightKind | ExtraKind,
 	context?: boolean,
 	capturePrevious = false,
+	templateContext?: number[],
 ): Scanner<
 	Token<LexicalHighlightKind | IdentifierHighlightKind | ExtraKind | 'eof'>
 > => source => {
+	const templates = templateContext ?? [];
 	const api = ScannerApi({ source });
 	const {
 		backtrack: apiBacktrack,
@@ -134,6 +149,7 @@ export const createScanner = <ExtraKind extends string = never>(
 		tk,
 	} = api;
 	const commentContexts = new Map<number, string | undefined>();
+	const templateContexts = new Map<number, number[]>();
 	type ScannedToken = Token<
 		LexicalHighlightKind | IdentifierHighlightKind | ExtraKind | 'eof'
 	>;
@@ -151,6 +167,7 @@ export const createScanner = <ExtraKind extends string = never>(
 			previous = result;
 			backtrackedValue = capturePrevious ? source.slice(result.start, result.end) : undefined;
 		}
+		if (templates.length || kind === 'template') templateContexts.set(result.end, [...templates]);
 		return result;
 	}
 
@@ -159,6 +176,7 @@ export const createScanner = <ExtraKind extends string = never>(
 		const result: ScannedToken = tk('identifier', consumed);
 		const word = source.slice(result.start, result.end);
 		result.kind = classifyIdentifier(word);
+		if (templates.length) templateContexts.set(result.end, [...templates]);
 		previous = result;
 		backtrackedValue = capturePrevious ? word : undefined;
 		return result;
@@ -195,13 +213,36 @@ export const createScanner = <ExtraKind extends string = never>(
 		return token('number', consumed);
 	}
 
-	function enclosed(kind: 'string' | 'template', quote: string) {
+	function enclosed(quote: string) {
 		const consumed = matchEnclosed(
 			ch =>
-				ch !== quote && (kind === 'template' || !matchers.lineBreak(ch)),
+				ch !== quote && !matchers.lineBreak(ch),
 			escaped,
 		);
-		return token(kind, current(consumed) === quote ? consumed + 1 : consumed);
+		return token('string', current(consumed) === quote ? consumed + 1 : consumed);
+	}
+
+	function template(offset: number) {
+		let lines = 0;
+		while (!eof(offset)) {
+			const ch = current(offset);
+			if (ch === '\n') lines++;
+			if (ch === '\\') {
+				if (current(offset + 1) === '\n') lines++;
+				offset += eof(offset + 1) ? 1 : 2;
+				continue;
+			}
+			if (ch === '`') { templates.pop(); offset++; break; }
+			if (ch === '$' && current(offset + 1) === '{') break;
+			offset++;
+		}
+		if (!offset) {
+			templates[templates.length - 1] = 0;
+			return token('punctuation', 2);
+		}
+		const result = token('template', offset);
+		if (lines) apiBacktrack({ ...result, line: result.line + lines });
+		return result;
 	}
 
 	function blockComment() {
@@ -242,14 +283,16 @@ export const createScanner = <ExtraKind extends string = never>(
 	}
 
 	function next(): ScannedToken {
+		if (templates.length && templates[templates.length - 1] === -1 && !eof()) return template(0);
 		skipWhitespace();
 		if (eof()) return tk('eof', 0);
 		const ch = current();
 		if (identifierStart(ch)) return identifier();
 		if (matchers.digit(ch) || ch === '.' && matchers.digit(current(1)))
 			return number();
-		if (ch === '"' || ch === "'") return enclosed('string', ch);
-		if (ch === '`') return enclosed('template', ch);
+		if (ch === '"' || ch === "'") return enclosed(ch);
+		if (ch === '`') { templates.push(-1); return template(1); }
+		templateBrace(templates, ch);
 		if (ch === '/' && current(1) === '/')
 			return token('comment', matchWhile(matchers.notLineBreak, 2));
 		if (ch === '/' && current(1) === '*') return blockComment();
@@ -272,6 +315,7 @@ export const createScanner = <ExtraKind extends string = never>(
 			line,
 			source: position.source,
 		});
+		templates.splice(0, templates.length, ...(templateContexts.get(position.end) ?? []));
 		previous = undefined;
 		backtrackedValue = commentContexts.has(position.end)
 			? commentContexts.get(position.end)
@@ -293,6 +337,8 @@ export const scan = createScanner(classifyIdentifier);
 
 interface JavaScriptLexicalState {
 	fallback: JavaScriptLexicalState | undefined;
+	templates: number[];
+	dollar: boolean;
 	mode: 'code' | 'word' | 'operator' | 'slash' | 'string' | 'template' | 'line' | 'block' | 'regex' | 'flags';
 	quote: string;
 	escape: boolean;
@@ -308,10 +354,10 @@ export interface JavaScriptHighlightState extends JavaScriptLexicalState {
 }
 
 function copyLexical(previous: Readonly<JavaScriptHighlightState>): JavaScriptHighlightState {
-	const result = { ...previous };
+	const result = { ...previous, templates: [...previous.templates] };
 	let current: JavaScriptLexicalState = result;
 	while (current.fallback) {
-		current.fallback = { ...current.fallback };
+		current.fallback = { ...current.fallback, templates: [...current.fallback.templates] };
 		current = current.fallback;
 	}
 	return result;
@@ -319,14 +365,14 @@ function copyLexical(previous: Readonly<JavaScriptHighlightState>): JavaScriptHi
 
 function regexContext(value: string | undefined) {
 	return value === undefined || operators.has(value) && value !== '++' && value !== '--' ||
-		'([{,;:'.includes(value) || regexKeywords.has(value);
+		value === '${' || '([{,;:'.includes(value) || regexKeywords.has(value);
 }
 
 function enclosedBoundary(state: JavaScriptLexicalState, ch: string): boolean {
 	if (state.mode === 'line') {
 		if (ch !== '\n' && ch !== '\r') return false;
 		state.mode = 'code';
-		return ch === '\n';
+		return ch === '\n' && !state.templates.length;
 	}
 	if (state.mode === 'block') {
 		if (state.star && ch === '/') { state.mode = 'code'; state.star = false; }
@@ -334,11 +380,27 @@ function enclosedBoundary(state: JavaScriptLexicalState, ch: string): boolean {
 		return false;
 	}
 	if (state.mode === 'regex') return regexBoundary(state, ch);
+	if (state.mode === 'template') return templateBoundary(state, ch);
 	if (state.escape) state.escape = false;
 	else if (ch === '\\') state.escape = true;
 	else if (ch === state.quote || state.mode === 'string' && (ch === '\n' || ch === '\r')) {
 		state.mode = 'code'; state.regexAllowed = false;
-		return ch === '\n';
+		return ch === '\n' && !state.templates.length;
+	}
+	return false;
+}
+
+function templateBoundary(state: JavaScriptLexicalState, ch: string): boolean {
+	if (!state.escape && state.dollar && ch === '{') {
+		state.templates[state.templates.length - 1] = 0;
+		state.mode = 'code'; state.regexAllowed = true; state.dollar = false;
+		return false;
+	}
+	state.dollar = !state.escape && ch === '$';
+	if (state.escape) state.escape = false;
+	else if (ch === '\\') state.escape = true;
+	else if (ch === '`') {
+		state.templates.pop(); state.mode = 'code'; state.regexAllowed = false;
 	}
 	return false;
 }
@@ -379,6 +441,7 @@ function boundary(state: JavaScriptLexicalState, ch: string): boolean {
 					state.fallback = {
 						mode: 'operator', word: '/', fallback: undefined,
 						quote: state.quote, escape: state.escape, characterClass: state.characterClass,
+						templates: [...state.templates], dollar: state.dollar,
 						star: state.star, regexAllowed: state.regexAllowed,
 					};
 					state.mode = 'regex'; state.characterClass = state.escape = false; continue;
@@ -392,21 +455,27 @@ function boundary(state: JavaScriptLexicalState, ch: string): boolean {
 				state.mode = 'code';
 				continue;
 			case 'code':
-				if (ch === '\n') return true;
+				if (ch === '\n') return !state.templates.length;
 				if (' \t\r'.includes(ch)) return false;
 				if (identifierPart(ch)) { state.mode = 'word'; state.word = ch; }
 				else if (ch === '/') state.mode = 'slash';
 				else if (ch === '"' || ch === "'" || ch === '`') {
 					state.quote = ch; state.escape = false; state.mode = ch === '`' ? 'template' : 'string';
+					if (ch === '`') { state.templates.push(-1); state.dollar = false; }
 				} else if (operators.has(ch)) { state.mode = 'operator'; state.word = ch; }
-				else state.regexAllowed = regexContext(ch);
+				else {
+					if (templateBrace(state.templates, ch)) {
+						state.mode = 'template'; state.escape = state.dollar = false;
+					}
+					state.regexAllowed = regexContext(ch);
+				}
 				return false;
 		}
 	}
 }
 
 type JsxContext =
-	| { mode: 'code'; depth: number; regex: boolean }
+	| { mode: 'code'; depth: number; regex: boolean; templates: number[] }
 	| { mode: 'tag'; closing: boolean; name: boolean; types: number }
 	| { mode: 'text' };
 
@@ -450,7 +519,7 @@ function* scanJsx<ExtraKind extends 'type'>(
 		return result;
 	}
 	function expression() {
-		return { mode: 'code' as const, depth: 0, regex: true };
+		return { mode: 'code' as const, depth: 0, regex: true, templates: [] };
 	}
 	function finishTag() {
 		contexts.pop();
@@ -462,7 +531,7 @@ function* scanJsx<ExtraKind extends 'type'>(
 			source.charAt(next.start) === '/' && regex && !/[\r\n]/.test(source.slice(next.start)));
 	}
 	function updateCode(context: Extract<JsxContext, { mode: 'code' }>, value: string) {
-		if (value === '{') context.depth++;
+		if (value === '{' || value === '${') context.depth++;
 		else if (value === '}') {
 			if (!context.depth && contexts.length > 1) contexts.pop();
 			else context.depth = Math.max(0, context.depth - 1);
@@ -471,7 +540,8 @@ function* scanJsx<ExtraKind extends 'type'>(
 	}
 	function* code(context: Extract<JsxContext, { mode: 'code' }>): Generator<JsxToken, boolean> {
 		const offset = index;
-		const scanner = createScanner(classify, context.regex)(source.slice(offset));
+		const templates = [...context.templates];
+		const scanner = createScanner(classify, context.regex, false, templates)(source.slice(offset));
 		while (context === contexts.at(-1)) {
 			const scanned = scanner.next();
 			if (scanned.kind === 'eof') { index = source.length; return true; }
@@ -479,7 +549,7 @@ function* scanJsx<ExtraKind extends 'type'>(
 			index = next.start;
 			const value = source.slice(next.start, next.end);
 			if (incomplete(next, context.regex)) return false;
-			if (value === '<' && context.regex) {
+			if (next.kind === 'operator' && value === '<' && context.regex) {
 				const opening = jsxStart(source, index, final);
 				if (opening === undefined) return false;
 				if (opening) {
@@ -487,7 +557,9 @@ function* scanJsx<ExtraKind extends 'type'>(
 					next.kind = 'punctuation';
 				}
 			}
-			if (next.kind !== 'comment') updateCode(context, value);
+			if (templates.length || context.templates.length) context.templates = [...templates];
+			if (next.kind === 'template') context.regex = false;
+			else if (next.kind !== 'comment') updateCode(context, value);
 			index = next.end;
 			yield next;
 		}
@@ -569,9 +641,9 @@ function* scanJsx<ExtraKind extends 'type'>(
 
 function createJsxHighlighter<ExtraKind extends 'type'>(classify: (word: string) => IdentifierHighlightKind | ExtraKind) {
 	return createHighlighter((): JsxState => ({
-		contexts: [{ mode: 'code', depth: 0, regex: true }], pending: '', start: 0, line: 0,
+		contexts: [{ mode: 'code', depth: 0, regex: true, templates: [] }], pending: '', start: 0, line: 0,
 	}), function* (window, previous) {
-		const state = { ...previous, contexts: previous.contexts.map(context => ({ ...context })) };
+		const state = { ...previous, contexts: previous.contexts.map(context => context.mode === 'code' ? { ...context, templates: [...context.templates] } : { ...context }) };
 		const source = state.pending + window.text;
 		let end = 0;
 		function* tokens() {
@@ -579,12 +651,17 @@ function createJsxHighlighter<ExtraKind extends 'type'>(classify: (word: string)
 		}
 		yield* highlightTokens({ ...window, text: source, start: state.start, line: state.line }, tokens(),
 			token => token.kind === 'jsx-open' || token.kind === 'jsx-close' ? 'punctuation' : token.kind,
-			undefined, token => token.kind === 'jsx-open' ? [1, 0] : token.kind === 'jsx-close' ? [0, 1] : foldToken(token));
+			undefined, token => token.kind === 'jsx-open' ? [1, 0] : token.kind === 'jsx-close' ? [0, 1] : javaScriptFold(token));
 		state.pending = source.slice(end);
 		state.start += end;
 		for (let index = 0; index < end; index++) if (source.charAt(index) === '\n') state.line++;
 		return { state, committed: state.start };
 	}, (state, shift) => ({ ...state, start: state.start + shift.offset, line: state.line + shift.line }));
+}
+
+function javaScriptFold(token: HighlightToken): readonly [number, number] {
+	return token.highlight === 'punctuation' && token.end - token.start === 2 && token.source.slice(token.start, token.end) === '${'
+		? [1, 0] : foldToken(token);
 }
 
 export function createJavaScriptHighlighter<ExtraKind extends 'type' = never>(
@@ -594,7 +671,7 @@ export function createJavaScriptHighlighter<ExtraKind extends 'type' = never>(
 	if (options?.jsx) return createJsxHighlighter(classify);
 	const initial = (): JavaScriptHighlightState => ({
 		buffer: { start: 0, line: 0, fragment: undefined }, mode: 'code', quote: '', escape: false,
-		characterClass: false, star: false, word: '', regexAllowed: true, regex: true, fallback: undefined,
+		characterClass: false, star: false, word: '', regexAllowed: true, regex: true, fallback: undefined, templates: [], dollar: false,
 	});
 	function* scan(window: HighlightWindow, previous: Readonly<JavaScriptHighlightState>) {
 		const state = copyLexical(previous);
@@ -608,7 +685,7 @@ export function createJavaScriptHighlighter<ExtraKind extends 'type' = never>(
 			yield* highlightTokens(next.value, each(createScanner(classify, state.regex, next.value.start !== 0 || !next.value.final)(next.value.text).next), next.value.final ? token => token.kind === 'eof' ? 'text' : token.kind : token => {
 				if (token.kind !== 'comment' && token.kind !== 'eof') state.regex = regexContext(token.source.slice(token.start, token.end));
 				return token.kind === 'eof' ? 'text' : token.kind;
-			}, undefined, foldToken);
+			}, undefined, javaScriptFold);
 			state.regexAllowed = state.regex;
 		}
 	}
@@ -616,7 +693,7 @@ export function createJavaScriptHighlighter<ExtraKind extends 'type' = never>(
 		if (window.final && !previous.buffer.fragment)
 			return highlightTokens(window, each(createScanner(classify, previous.regex, window.start !== 0)(window.text).next),
 				token => token.kind === 'eof' ? 'text' : token.kind,
-				{ state: previous, committed: window.start + window.text.length }, foldToken);
+				{ state: previous, committed: window.start + window.text.length }, javaScriptFold);
 		return scan(window, previous);
 	}, (state, shift) => ({ ...state, buffer: shiftHighlightBuffer(state.buffer, shift) }));
 }
