@@ -1,5 +1,6 @@
 import {
 	each,
+	CompilerError,
 	findNodeAtIndex,
 	type MakeNodeMap,
 	ParserApi,
@@ -29,10 +30,34 @@ type BaseNodeMap = {
 		hasExpansion: boolean;
 		hasParameterExpansion: boolean;
 		hasCommandSubstitution: boolean;
-		commandSubstitutions?: RootNode[];
-		processSubstitutions?: { operator: '<' | '>'; body: RootNode }[];
+		children: WordPartNode[];
 		hasBackticks: boolean;
 		hasNonliteralConstruct: boolean;
+	};
+	literal: { value: string };
+	escape: { value: string };
+	pattern: { value: string };
+	quoted: {
+		quote: "'" | '"' | "$'" | '$"';
+		children: WordPartNode[];
+	};
+	parameterExpansion: {
+		name: NodeMap['literal'];
+		braced: boolean;
+		operator: ParameterOperator;
+		operand?: WordNode;
+		children: (NodeMap['literal'] | WordNode)[];
+	};
+	commandSubstitution: {
+		backticks: boolean;
+		body: RootNode;
+		children: [RootNode];
+	};
+	arithmeticExpansion: { body: WordNode; children: [WordNode] };
+	processSubstitution: {
+		operator: '<' | '>';
+		body: RootNode;
+		children: [RootNode];
 	};
 	redirect: {
 		operator: RedirectOperator;
@@ -102,6 +127,8 @@ type BaseNodeMap = {
 	root: { children: Node[] };
 };
 export type NodeMap = MakeNodeMap<BaseNodeMap>;
+export type ParameterOperator = '' | '#' | ':-' | ':=' | ':?' | ':+' | '-' | '=' | '?' | '+' | '%' | '%%' | '##';
+export type WordPartNode = NodeMap['literal' | 'escape' | 'pattern' | 'quoted' | 'parameterExpansion' | 'commandSubstitution' | 'arithmeticExpansion' | 'processSubstitution'];
 export type WordNode = NodeMap['word'];
 type RedirectOperator =
 	| '>'
@@ -143,6 +170,14 @@ export enum IrKind {
 	List,
 	For,
 	If,
+	Literal,
+	Escape,
+	Pattern,
+	Quoted,
+	ParameterExpansion,
+	CommandSubstitution,
+	ArithmeticExpansion,
+	ProcessSubstitution,
 }
 
 export enum IrWordFlags {
@@ -180,7 +215,14 @@ export enum IrSeparator {
 	Newline,
 }
 
-export type IrWordNode = [kind: IrKind.Word, value: string, flags?: number];
+export type IrWordPart =
+	| [kind: IrKind.Literal | IrKind.Escape | IrKind.Pattern, value: string]
+	| [kind: IrKind.Quoted, quote: NodeMap['quoted']['quote'], children: IrWordPart[]]
+	| [kind: IrKind.ParameterExpansion, name: string, operator: ParameterOperator, operand: IrWordNode | null]
+	| [kind: IrKind.CommandSubstitution, backticks: boolean, body: IrListNode | null]
+	| [kind: IrKind.ArithmeticExpansion, body: IrWordNode]
+	| [kind: IrKind.ProcessSubstitution, operator: '<' | '>', body: IrListNode | null];
+export type IrWordNode = [kind: IrKind.Word, value: string, flags?: number, parts?: IrWordPart[]];
 export type IrRedirectNode = [
 	kind: IrKind.Redirect,
 	operator: IrRedirectOperator,
@@ -243,6 +285,7 @@ export type IrIfNode = [
 	...redirects: IrRedirectNode[],
 ];
 export type IrNode =
+	| IrWordPart
 	| IrWordNode
 	| IrRedirectNode
 	| IrCommandNode
@@ -255,7 +298,7 @@ export type IrNode =
 	| IrForNode
 	| IrIfNode
 	| IrListNode;
-export type Ir = [version: 1, root?: IrListNode];
+export type Ir = [version: 2, root?: IrListNode];
 
 const operators = [
 	'<<-',
@@ -285,22 +328,6 @@ const isNameStart = (ch: string) => /[A-Za-z_]/.test(ch);
 const portableName = /^[A-Za-z_]\w*$/;
 const ideCommandName = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*!?$/;
 const isSpecialParameter = (ch: string) => '@*#?$!-0123456789'.includes(ch);
-
-type WordState = Omit<
-	WordNode,
-	| 'start'
-	| 'end'
-	| 'line'
-	| 'source'
-	| 'kind'
-	| 'commandSubstitutions'
-	| 'processSubstitutions'
->;
-interface SubstitutionRange {
-	start: number;
-	end: number;
-	operator?: '<' | '>';
-}
 
 function decodeAnsiEscape(source: string, index: number) {
 	const ch = source[index];
@@ -340,158 +367,255 @@ function decodeAnsiEscape(source: string, index: number) {
 	return { value: `\\${ch}`, end: index + 1 };
 }
 
-function inspectWord(
-	{ source, start, end }: ScannerToken,
-	ranges: SubstitutionRange[],
-	expansions = true,
-): WordState {
+function wordMetadata(children: WordPartNode[]) {
 	let value = '';
-	let index = start;
-	const processes = ranges.filter(range => range.operator);
-	let processIndex = 0;
 	const state = {
 		hasParameterExpansion: false,
 		hasCommandSubstitution: false,
 		hasBackticks: false,
 		hasNonliteralConstruct: false,
 	};
-
-	const markParameter = () => {
-		state.hasParameterExpansion = true;
-		state.hasNonliteralConstruct = true;
-	};
-	const markCommand = () => {
-		state.hasCommandSubstitution = true;
-		state.hasNonliteralConstruct = true;
-	};
-	const markOther = () => {
-		state.hasNonliteralConstruct = true;
-	};
-
-	function readQuoted(quote: "'" | '"', ansi = false) {
-		index++;
-		while (index < end && source[index] !== quote) {
-			const ch = source.charAt(index);
-			if (ch === '\\') {
-				if (ansi) {
-					const escape = decodeAnsiEscape(source, index + 1);
-					value += escape.value;
-					index = escape.end;
-					continue;
-				}
-				const next = source[index + 1];
-				if (quote === '"' && next && '$`"\\\n'.includes(next)) {
-					if (next !== '\n') value += next;
-					index += 2;
-					continue;
-				}
-				if (quote === "'" || next === undefined) {
-					value += '\\';
-					index++;
-					continue;
-				}
-				value += `\\${next}`;
-				index += 2;
-				continue;
+	function visit(parts: WordPartNode[]) {
+		for (const part of parts) {
+			switch (part.kind) {
+				case 'literal':
+				case 'escape':
+					value += part.value;
+					break;
+				case 'quoted':
+					if (part.quote === '$"') state.hasNonliteralConstruct = true;
+					visit(part.children);
+					break;
+				case 'parameterExpansion':
+					state.hasParameterExpansion = state.hasNonliteralConstruct = true;
+					state.hasCommandSubstitution ||= part.operand?.hasCommandSubstitution ?? false;
+					state.hasBackticks ||= part.operand?.hasBackticks ?? false;
+					break;
+				case 'commandSubstitution':
+					state.hasCommandSubstitution = state.hasNonliteralConstruct = true;
+					state.hasBackticks ||= part.backticks;
+					break;
+				case 'arithmeticExpansion':
+					state.hasNonliteralConstruct = true;
+					state.hasParameterExpansion ||= part.body.hasParameterExpansion;
+					state.hasCommandSubstitution ||= part.body.hasCommandSubstitution;
+					state.hasBackticks ||= part.body.hasBackticks;
+					break;
+				case 'pattern':
+				case 'processSubstitution':
+					state.hasNonliteralConstruct = true;
 			}
-			if (quote === '"' && expansions && readSpecial(ch)) continue;
-			value += ch;
-			index++;
 		}
-		if (source[index] === quote) index++;
 	}
-
-	function readDollar() {
-		const next = source[index + 1];
-		if (next === "'") {
-			index++;
-			readQuoted("'", true);
-			return;
-		}
-		if (!expansions) {
-			value += '$';
-			index++;
-			return;
-		}
-		if (next === '(') {
-			if (source[index + 2] === '(') markOther();
-			else markCommand();
-			index += 2;
-			return;
-		}
-		if (next === '"') markOther();
-		if (next === '{' || (next !== undefined && (isNameStart(next) || isSpecialParameter(next)))) {
-			markParameter();
-			index += 2;
-			return;
-		}
-		value += '$';
-		index++;
-	}
-
-	function readSpecial(ch: string) {
-		if (ch === '$') {
-			readDollar();
-			return true;
-		}
-		if (!expansions || ch !== '`') return false;
-		state.hasBackticks = true;
-		markCommand();
-		index++;
-		return true;
-	}
-
-	while (index < end) {
-		const process = processes[processIndex];
-		if (process && start + process.start - 2 === index) {
-			markOther();
-			index = start + process.end + 1;
-			processIndex++;
-			continue;
-		}
-		const ch = source.charAt(index);
-		if (ch === "'") {
-			readQuoted("'");
-			continue;
-		}
-		if (ch === '"') {
-			readQuoted('"');
-			continue;
-		}
-		if (readSpecial(ch)) continue;
-		if (ch === '\\') {
-			const next = source[index + 1];
-			if (next === '\n') index += 2;
-			else {
-				value += next ?? '\\';
-				index += next === undefined ? 1 : 2;
-			}
-			continue;
-		}
-		if (
-			(index === start && ch === '~') ||
-			ch === '*' ||
-			ch === '?' ||
-			ch === '[' ||
-			ch === ']' ||
-			ch === '{' ||
-			ch === '}'
-		)
-			markOther();
-		value += ch;
-		index++;
-	}
-
-	const hasExpansion = state.hasNonliteralConstruct;
+	visit(children);
 	return {
-		value: expansions && state.hasNonliteralConstruct ? undefined : value,
+		value: state.hasNonliteralConstruct ? undefined : value,
 		literal: !state.hasNonliteralConstruct,
-		hasExpansion,
-		hasParameterExpansion: state.hasParameterExpansion,
-		hasCommandSubstitution: state.hasCommandSubstitution,
-		hasBackticks: state.hasBackticks,
-		hasNonliteralConstruct: state.hasNonliteralConstruct,
+		hasExpansion: state.hasNonliteralConstruct,
+		...state,
 	};
+}
+
+function readShellWord(token: Token<string>, signature = false, expansions = true): WordNode {
+	const { source } = token;
+	const bounded = !expansions && token.end > token.start;
+	const limit = bounded ? token.end : source.length;
+	let index = token.start;
+	const position = (start: number, end = index) => ({
+		start, end, source,
+		line: token.line + source.slice(token.start, start).split('\n').length - 1,
+	});
+	function fail(message: string): never {
+		throw new CompilerError(message, position(token.start));
+	}
+	const literal = (start: number, value: string): NodeMap['literal'] => ({
+		kind: 'literal', ...position(start), value,
+	});
+	function enclosed() {
+		const scanner = createScanner(source);
+		scanner.backtrack(position(index));
+		const state: HereDocumentState = { pending: undefined };
+		let depth = 1;
+		for (;;) {
+			const token = scanner.next();
+			index = token.end;
+			if (token.kind === 'eof') fail('Unterminated () expansion');
+			if (token.kind === '(') depth++;
+			if (token.kind === ')' && !--depth) return;
+			const document = takeHereDocument(token, state);
+			if (document) scanner.queueHereDocument(document);
+			if (token.kind === 'newline') {
+				scanner.consumeHereDocuments(token.end, token.line);
+			}
+		}
+	}
+	function substitution(): WordPartNode {
+		const start = index;
+		const operator = source.charAt(index);
+		const backticks = operator === '`';
+		index += backticks ? 1 : 2;
+		if (!backticks && operator === '$' && source[index] === '(') {
+			index++;
+			const body = word('))', false, true);
+			if (!source.startsWith('))', index)) fail('Unterminated () expansion');
+			index += 2;
+			return { kind: 'arithmeticExpansion', ...position(start), body, children: [body] };
+		}
+		const bodyStart = index;
+		if (backticks) {
+			while (index < source.length && source[index] !== '`')
+				index += source[index] === '\\' && source[index + 1] ? 2 : 1;
+			if (source[index] !== '`') fail('Unterminated string');
+			index++;
+		} else enclosed();
+		const body: RootNode = { kind: 'root', ...position(bodyStart, index - 1), children: [] };
+		if (operator === '<' || operator === '>')
+			return { kind: 'processSubstitution', ...position(start), operator, body, children: [body] };
+		return { kind: 'commandSubstitution', ...position(start), backticks, body, children: [body] };
+	}
+	function lengthParameter() {
+		const next = source.charAt(index + 1);
+		return source[index] === '#' && (isNameStart(next) || /\d/.test(next) ||
+			(isSpecialParameter(next) && source[index + 2] === '}'));
+	}
+	function parameterName(braced: boolean) {
+		const start = index;
+		if (isNameStart(source.charAt(index))) {
+			while (/\w/.test(source.charAt(index))) index++;
+		} else if (/\d/.test(source.charAt(index))) {
+			index++;
+			if (braced) while (/\d/.test(source.charAt(index))) index++;
+		} else if (source[index] && isSpecialParameter(source.charAt(index))) index++;
+		else fail('Expected parameter name');
+		return literal(start, source.slice(start, index));
+	}
+	function parameter(doubleQuoted = false): NodeMap['parameterExpansion'] {
+		const start = index++;
+		const braced = source[index] === '{';
+		if (braced) index++;
+		let operator: ParameterOperator = '';
+		if (braced && lengthParameter()) {
+			operator = '#';
+			index++;
+		}
+		const name = parameterName(braced);
+		let operand: WordNode | undefined;
+		if (braced) {
+			if (source[index] !== '}') {
+				if (operator) fail('Unexpected operator after parameter length');
+				const matched = ([':-', ':=', ':?', ':+', '%%', '##', '-', '=', '?', '+', '%', '#'] as const)
+					.find(op => source.startsWith(op, index));
+				if (!matched) fail('Expected parameter expansion operator');
+				operator = matched;
+				index += operator.length;
+				operand = word('}', doubleQuoted && !['#', '##', '%', '%%'].includes(operator), false, true);
+			}
+			if (source[index] !== '}') fail('Unterminated {} expansion');
+			index++;
+		}
+		return {
+			kind: 'parameterExpansion', ...position(start), name, braced, operator,
+			...(operand ? { operand } : {}), children: operand ? [name, operand] : [name],
+		};
+	}
+	function quoted(): WordPartNode {
+		if (source[index] === '`') return substitution();
+		const start = index;
+		const prefix = source[index] === '$';
+		if (prefix) index++;
+		const quote = source[index++] === "'" ? "'" : '"';
+		const style = prefix ? quote === "'" ? "$'" : '$"' : quote;
+		const children: WordPartNode[] = [];
+		if (quote === '"') children.push(...word('"', true).children);
+		else {
+			while (index < source.length && source[index] !== quote) {
+				const partStart = index;
+				if (prefix && source[index] === '\\') {
+					const escape = decodeAnsiEscape(source, index + 1);
+					index = escape.end;
+					children.push({ kind: 'escape', ...position(partStart), value: escape.value ?? '' });
+				} else {
+					while (index < source.length && source[index] !== quote && !(prefix && source[index] === '\\')) index++;
+					children.push(literal(partStart, source.slice(partStart, index)));
+				}
+			}
+		}
+		if (source[index] !== quote) fail('Unterminated string');
+		index++;
+		return { kind: 'quoted', ...position(start), quote: style, children };
+	}
+	function escaped(doubleQuoted: boolean): NodeMap['escape'] {
+		const start = index++;
+		const next = source.charAt(index);
+		if (next && (!doubleQuoted || '$`"\\\n'.includes(next))) index++;
+		const value = next === '\n' ? '' : index > start + 1 ? next : '\\';
+		return { kind: 'escape', ...position(start), value };
+	}
+	function processStart(doubleQuoted: boolean) {
+		return !doubleQuoted && '<>'.includes(source.charAt(index)) && source[index + 1] === '(';
+	}
+	function quoteStart(doubleQuoted: boolean, operand: boolean) {
+		const ch = source.charAt(index);
+		const next = source.charAt(index + 1);
+		return (!doubleQuoted && (ch === "'" || ch === '"' || (ch === '$' && (next === "'" || next === '"')))) ||
+			(operand && ch === '"');
+	}
+	function special(doubleQuoted: boolean, operand: boolean): WordPartNode | undefined {
+		const start = index;
+		const ch = source.charAt(index);
+		const next = source.charAt(index + 1);
+		if (ch === '\\') return escaped(doubleQuoted);
+		if (quoteStart(doubleQuoted, operand)) return quoted();
+		if (processStart(doubleQuoted) || ch === '`' || (ch === '$' && next === '(')) {
+			const part = substitution();
+			return expansions ? part : literal(start, source.slice(start, index));
+		}
+		if (ch !== '$') return;
+		if (next === '{' && !expansions) {
+			index += 2;
+			word('}');
+			if (source[index] !== '}') fail('Unterminated {} expansion');
+			index++;
+			return literal(start, source.slice(start, index));
+		}
+		if (expansions && (next === '{' || (next && (isNameStart(next) || isSpecialParameter(next)))))
+			return parameter(doubleQuoted);
+		return undefined;
+	}
+	function boundary(stop: string | undefined, doubleQuoted: boolean) {
+		if (bounded || stop) return false;
+		const ch = source.charAt(index);
+		return (!processStart(doubleQuoted) && isControl(ch)) || (signature && ':,=?'.includes(ch));
+	}
+	function pattern(ch: string, start: number, doubleQuoted: boolean, arithmetic: boolean) {
+		return expansions && !doubleQuoted && !arithmetic &&
+			('*?[]{}'.includes(ch) || (ch === '~' && index === start + 1));
+	}
+	function word(stop?: string, doubleQuoted = false, arithmetic = false, operand = false): WordNode {
+		const start = index;
+		const children: WordPartNode[] = [];
+		let parentheses = 0;
+		while (index < limit) {
+			if (stop && !parentheses && source.startsWith(stop, index)) break;
+			if (boundary(stop, doubleQuoted)) break;
+			const partStart = index;
+			const part = special(doubleQuoted, operand);
+			if (part) children.push(part);
+			else {
+				const ch = source.charAt(index++);
+				if (arithmetic && ch === '(') parentheses++;
+				if (arithmetic && ch === ')' && parentheses) parentheses--;
+				const isPattern = pattern(ch, start, doubleQuoted, arithmetic);
+				const previous = children.at(-1);
+				if (previous?.kind === 'literal' && !isPattern && previous.end === partStart) {
+					previous.value += ch;
+					previous.end = index;
+				} else children.push(isPattern ? { kind: 'pattern', ...position(partStart), value: ch } : literal(partStart, ch));
+			}
+		}
+		return { kind: 'word', ...position(start), children, ...wordMetadata(children) };
+	}
+	return word();
 }
 
 function createScanner(source: string, context?: ScannerContext) {
@@ -499,132 +623,22 @@ function createScanner(source: string, context?: ScannerContext) {
 		source, context,
 	});
 	const hereDocuments: { redirect?: RedirectNode; delimiter: string; stripTabs: boolean }[] = [];
-	const substitutions = new WeakMap<object, SubstitutionRange[]>();
-	let substitutionRanges: SubstitutionRange[] | undefined;
+	const words = new WeakMap<object, WordNode>();
 	let signature = false;
-
-	function scanQuoted(
-		quote: string,
-		consumed: number,
-		captureCommandSubstitutions = false,
-		ansi = false,
-	) {
-		for (;;) {
-			const ch = current(consumed);
-			if (!ch) throw error('Unterminated string', consumed);
-			if (ch === quote) return consumed + 1;
-			if (
-				quote === '"' &&
-				ch === '$' &&
-				current(consumed + 1) === '('
-			) {
-				consumed = scanCommandSubstitution(consumed, captureCommandSubstitutions);
-				continue;
-			}
-			if (ch === '\\' && (quote !== "'" || ansi) && current(consumed + 1)) {
-				consumed += 2;
-				continue;
-			}
-			consumed++;
-		}
-	}
-
-	function scanEnclosed(
-		open: string,
-		close: string,
-		consumed: number,
-		captureCommandSubstitutions = false,
-	) {
-		const matches = (value: string, offset: number) =>
-			[...value].every((ch, index) => current(offset + index) === ch);
-		let depth = 1;
-		while (depth) {
-			const ch = current(consumed);
-			if (!ch) throw error(`Unterminated ${open}${close} expansion`, consumed);
-			if (ch === '$' && current(consumed + 1) === "'") {
-				consumed = scanQuoted("'", consumed + 2, false, true);
-				continue;
-			}
-			if (ch === "'" || ch === '"') {
-				consumed = scanQuoted(ch, consumed + 1, captureCommandSubstitutions);
-				continue;
-			}
-			if (ch === '\\' && current(consumed + 1)) {
-				consumed += 2;
-				continue;
-			}
-			if (ch === '$' && current(consumed + 1) === '(') {
-				consumed = scanCommandSubstitution(consumed, captureCommandSubstitutions);
-			} else if (matches(open, consumed)) {
-				depth++;
-				consumed += open.length;
-			} else if (matches(close, consumed)) {
-				depth--;
-				consumed += close.length;
-			} else consumed++;
-		}
-		return consumed;
-	}
-
-	function scanCommandSubstitution(
-		consumed: number,
-		captureCommandSubstitutions = false,
-	) {
-		const start = consumed + 2;
-		const arithmetic = current(start) === '(';
-		const end = scanEnclosed(
-			'(',
-			')',
-			start,
-			arithmetic && captureCommandSubstitutions,
-		);
-		if (captureCommandSubstitutions && !arithmetic)
-			(substitutionRanges ??= []).push({ start, end: end - 1 });
-		return end;
-	}
+	let delimiter = false;
 
 	function scanWord() {
-		let consumed = 0;
-		substitutionRanges = undefined;
-		while (
-			(!isControl(current(consumed)) || isProcessSubstitution(consumed)) &&
-			(!signature || !':,=?'.includes(current(consumed)))
-		) {
-			const ch = current(consumed);
-			if (ch === '$' && current(consumed + 1) === "'") {
-				consumed = scanQuoted("'", consumed + 2, false, true);
-				continue;
-			}
-			if (ch === "'" || ch === '"') {
-				consumed = scanQuoted(ch, consumed + 1, true);
-				continue;
-			}
-			if (ch === '\\' && current(consumed + 1)) {
-				consumed += 2;
-				continue;
-			}
-			if ((ch === '<' || ch === '>') && isProcessSubstitution(consumed)) {
-				const start = consumed + 2;
-				consumed = scanEnclosed('(', ')', start);
-				(substitutionRanges ??= []).push({
-					start,
-					end: consumed - 1,
-					operator: ch,
-				});
-			} else if (ch === '$' && current(consumed + 1) === '(')
-				consumed = scanCommandSubstitution(consumed, true);
-			else if (ch === '$' && current(consumed + 1) === '{')
-				consumed = scanEnclosed(
-					'{',
-					'}',
-					consumed + 2,
-					true,
-				);
-			else if (ch === '`') consumed = scanQuoted('`', consumed + 1);
-			else consumed++;
+		const start = tk('word', 0);
+		let word: WordNode;
+		try { word = readShellWord(start, signature, !delimiter); }
+		catch (value) {
+			if (!(value instanceof CompilerError)) throw value;
+			throw error(value.message, value.position.end - start.start);
 		}
-		const token = tk('word', consumed);
-		if (substitutionRanges) substitutions.set(token, substitutionRanges);
+		delimiter = false;
+		const token = tk('word', word.end - word.start);
+		backtrack({ ...token, line: token.line + text(token).split('\n').length - 1 });
+		words.set(token, word);
 		return token;
 	}
 
@@ -651,7 +665,10 @@ function createScanner(source: string, context?: ScannerContext) {
 		if (isProcessSubstitution()) return scanWord();
 		for (const operator of operators) {
 			const consumed = matchString(operator);
-			if (consumed) return tk(operator, consumed);
+			if (consumed) {
+				delimiter = operator === '<<' || operator === '<<-';
+				return tk(operator, consumed);
+			}
 		}
 		return scanWord();
 	}
@@ -705,8 +722,8 @@ function createScanner(source: string, context?: ScannerContext) {
 			});
 			return { missing, bodies };
 		},
-		substitutions(token: object) {
-			return substitutions.get(token) ?? [];
+		word(token: Token<string>) {
+			return words.get(token) ?? readShellWord(token);
 		},
 		setSignature(value: boolean) {
 			signature = value;
@@ -725,7 +742,7 @@ interface HereDocumentState {
 
 function takeHereDocument(token: ScannerToken | TokenizerError, state: HereDocumentState) {
 	if (token.kind === 'word' && state.pending !== undefined) {
-		const document = { delimiter: inspectWord(token, [], false).value ?? text(token), stripTabs: state.pending };
+		const document = { delimiter: readShellWord(token, false, false).value ?? text(token), stripTabs: state.pending };
 		state.pending = undefined;
 		return document;
 	}
@@ -838,41 +855,49 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		const token = current();
 		if (token.kind !== 'word') throw error('Expected shell word', token);
 		next();
-		const ranges = scanner.substitutions(token);
-		const metadata = inspectWord(token, ranges);
-		const commandSubstitutions: RootNode[] = [];
-		const processSubstitutions: NonNullable<WordNode['processSubstitutions']> = [];
-		for (const range of ranges) {
-			const offset = token.start + range.start;
-			const parser = createParser(
-				source.slice(offset, token.start + range.end),
-				options,
-			);
-			const root = parser.parse();
-			for (const diagnostic of parser.errors) {
-				const start = offset + diagnostic.position.start;
-				pushError(
-					error(diagnostic.message, {
+		const word = scanner.word(token);
+		function parseBodies(node: WordPartNode) {
+			if (node.kind === 'commandSubstitution' || node.kind === 'processSubstitution') {
+				const offset = node.body.start;
+				const end = node.body.end;
+				const offsets: number[] = [];
+				let input = source.slice(offset, end);
+				if (node.kind === 'commandSubstitution' && node.backticks) {
+					input = '';
+					for (let index = offset; index < end; index++) {
+						offsets.push(index);
+						if (source[index] === '\\' && '$`\\'.includes(source.charAt(index + 1))) index++;
+						input += source.charAt(index);
+					}
+					offsets.push(end);
+				}
+				const parser = createParser(input, options);
+				const root = parser.parse();
+				const line = source.slice(0, offset).split('\n').length - 1;
+				function original(position: Pick<Token<string>, 'start' | 'end' | 'line'>) {
+					const start = offsets[position.start] ?? offset + position.start;
+					return {
 						start,
-						end: offset + diagnostic.position.end,
-						line:
-							source.slice(0, offset).split('\n').length -
-							1 +
-							diagnostic.position.line,
+						end: offsets[position.end] ?? offset + position.end,
+						line: line + position.line,
 						source,
-					}),
-				);
-			}
-			if (range.operator) processSubstitutions.push({ operator: range.operator, body: root });
-			else commandSubstitutions.push(root);
+					};
+				}
+				function relocate(child: Token<string> & { children?: readonly Node[] }) {
+					Object.assign(child, original(child));
+					if (child.children) for (const nested of child.children) relocate(nested);
+				}
+				relocate(root);
+				node.body = root;
+				node.children = [root];
+				for (const diagnostic of parser.errors)
+					pushError(error(diagnostic.message, original(diagnostic.position)));
+			} else if (node.kind === 'quoted') node.children.forEach(parseBodies);
+			else if (node.kind === 'parameterExpansion') node.operand?.children.forEach(parseBodies);
+			else if (node.kind === 'arithmeticExpansion') node.body.children.forEach(parseBodies);
 		}
-		return {
-			...token,
-			kind: 'word',
-			...metadata,
-			commandSubstitutions,
-			...(processSubstitutions.length ? { processSubstitutions } : {}),
-		};
+		word.children.forEach(parseBodies);
+		return word;
 	}
 
 	function isKeyword(value: string) {
@@ -1432,6 +1457,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 			kind: 'root',
 			children: list.children.length ? [list] : [],
 			start: 0,
+			line: 0,
 			end: source.length,
 		};
 		if (hasHereDocuments) extendHereDocumentSpans(root);
@@ -1440,8 +1466,8 @@ function createParser(source: string, options: ProgramOptions = {}) {
 
 	return { parse: parseRoot, errors };
 }
-function extendHereDocumentSpans(node: Node): number {
-	if (node.kind === 'word' || node.kind === 'type' || node.kind === 'heredoc')
+function extendHereDocumentSpans(node: Token<string> & { children?: readonly Node[] }): number {
+	if (!node.children || node.kind === 'word')
 		return node.end;
 	for (const child of node.children)
 		node.end = Math.max(node.end, extendHereDocumentSpans(child));
@@ -1462,6 +1488,14 @@ function compileNode(node: Node): string {
 				})
 				.join('')
 				.trimEnd();
+		case 'literal':
+		case 'escape':
+		case 'pattern':
+		case 'quoted':
+		case 'parameterExpansion':
+		case 'commandSubstitution':
+		case 'arithmeticExpansion':
+		case 'processSubstitution':
 		case 'word':
 			return text(node);
 		case 'heredoc':
@@ -1540,14 +1574,33 @@ function wordValue(node: WordNode) {
 	return node.value ?? text(node);
 }
 
-function lowerWord(node: WordNode): IrWordNode {
+function lowerWord(node: WordNode, structured = false): IrWordNode {
 	let flags = 0;
 	if (node.hasParameterExpansion) flags |= IrWordFlags.ParameterExpansion;
 	if (node.hasCommandSubstitution) flags |= IrWordFlags.CommandSubstitution;
 	if (node.hasBackticks) flags |= IrWordFlags.Backticks;
 	if (node.hasNonliteralConstruct && !flags) flags = IrWordFlags.Other;
 	const value = node.literal ? wordValue(node) : text(node);
-	return flags ? [IrKind.Word, value, flags] : [IrKind.Word, value];
+	return flags || structured ? [IrKind.Word, value, flags, node.children.map(lowerWordPart)] : [IrKind.Word, value];
+}
+
+function lowerWordPart(node: WordPartNode): IrWordPart {
+	const body = (root: RootNode) => {
+		const list = root.children[0];
+		if (!list) return null;
+		if (list.kind !== 'list') throw new Error('Expected substitution command list');
+		return lowerList(list);
+	};
+	switch (node.kind) {
+		case 'literal': return [IrKind.Literal, node.value];
+		case 'escape': return [IrKind.Escape, node.value];
+		case 'pattern': return [IrKind.Pattern, node.value];
+		case 'quoted': return [IrKind.Quoted, node.quote, node.children.map(lowerWordPart)];
+		case 'parameterExpansion': return [IrKind.ParameterExpansion, node.name.value, node.operator, node.operand ? lowerWord(node.operand, true) : null];
+		case 'commandSubstitution': return [IrKind.CommandSubstitution, node.backticks, body(node.body)];
+		case 'arithmeticExpansion': return [IrKind.ArithmeticExpansion, lowerWord(node.body, true)];
+		case 'processSubstitution': return [IrKind.ProcessSubstitution, node.operator, body(node.body)];
+	}
 }
 
 function lowerRedirect(node: RedirectNode): IrRedirectNode {
@@ -1602,6 +1655,15 @@ function lowerIf(node: IfNode): IrIfNode {
 
 function lowerNode(node: Node): IrNode {
 	switch (node.kind) {
+		case 'literal':
+		case 'escape':
+		case 'pattern':
+		case 'quoted':
+		case 'parameterExpansion':
+		case 'commandSubstitution':
+		case 'arithmeticExpansion':
+		case 'processSubstitution':
+			return lowerWordPart(node);
 		case 'word':
 			return lowerWord(node);
 		case 'heredoc':
@@ -1652,7 +1714,7 @@ function lowerNode(node: Node): IrNode {
 			return [
 				IrKind.For,
 				lowerWord(node.variable),
-				node.words?.map(lowerWord) ?? null,
+				node.words?.map(word => lowerWord(word)) ?? null,
 				lowerList(node.body),
 			];
 		case 'if':
@@ -1674,9 +1736,9 @@ function lowerNode(node: Node): IrNode {
 
 function lowerRoot(root: RootNode): Ir {
 	const child = root.children[0];
-	if (!child) return [1];
+	if (!child) return [2];
 	if (child.kind !== 'list') throw new Error('Expected root command list');
-	return [1, lowerList(child)];
+	return [2, lowerList(child)];
 }
 
 export function compiler(node: Node) {

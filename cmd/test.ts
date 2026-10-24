@@ -14,6 +14,10 @@ import {
 	scan,
 	type Token,
 	tokenize,
+	type WordNode,
+	type IrWordPart,
+	type WordPartNode,
+	type Node,
 } from './index.js';
 
 const highlight = createHighlight();
@@ -272,6 +276,14 @@ export default spec('cmd', s => {
 			return result;
 		}
 
+		function parts(word: Pick<WordNode, 'children'>): WordPartNode[] {
+			return word.children.flatMap(part => [part, ...(
+				part.kind === 'quoted' ? parts(part) :
+				part.kind === 'parameterExpansion' && part.operand ? parts(part.operand) :
+				part.kind === 'arithmeticExpansion' ? parts(part.body) : []
+			)]);
+		}
+
 		function metadata(src: string) {
 			const {
 				kind,
@@ -294,6 +306,174 @@ export default spec('cmd', s => {
 				hasNonliteralConstruct,
 			};
 		}
+
+		it.should('expose nested word parts through source lookup', a => {
+			const source = 'echo "prefix${name:-$(pwd)}suffix"';
+			const parsed = program().parse(source);
+			a.equalValues(parsed.errors, []);
+			a.equal(findNodeAtIndex(parsed.root, source.indexOf('prefix'))?.kind, 'literal');
+			a.equal(findNodeAtIndex(parsed.root, source.indexOf('${'))?.kind, 'parameterExpansion');
+			a.equal(findNodeAtIndex(parsed.root, source.indexOf('name'))?.kind, 'literal');
+			a.equal(findNodeAtIndex(parsed.root, source.indexOf('pwd'))?.kind, 'literal');
+			a.equal(program().compile(source).output, source);
+		});
+
+		it.should('diagnose invalid parameter expansions without losing prior commands', (a: TestApi) => {
+			for (const expansion of ['${}', '${name:}', '${name!value}', '${#name:-value}']) {
+				const parsed = program().parse('echo ok; echo ' + expansion);
+				a.assert(parsed.errors.length > 0, expansion);
+				a.assert(compiler(parsed.root).startsWith('echo ok'), expansion);
+			}
+		});
+
+		it.should('parse parameter names and every POSIX parameter operator', (a: TestApi) => {
+			for (const name of ['name', '_value2', '10', '@', '*', '#', '?', '$', '!', '-', '0']) {
+				const expansion = word('${' + name + '}').children[0];
+				a.assert(expansion?.kind === 'parameterExpansion');
+				a.equalValues([expansion.name.value, expansion.braced, expansion.operator, expansion.operand], [name, true, '', undefined]);
+			}
+			for (const operator of [':-', ':=', ':?', ':+', '-', '=', '?', '+', '%', '%%', '#', '##']) {
+				const expansion = word('${name' + operator + 'value}').children[0];
+				a.assert(expansion?.kind === 'parameterExpansion');
+				a.equalValues([expansion.name.value, expansion.operator, expansion.operand?.value], ['name', operator, 'value']);
+				a.equalValues(expansion.children, [expansion.name, expansion.operand]);
+			}
+			for (const source of ['${#name}', '${##}', '${#?}', '${#10}']) {
+				const expansion = word(source).children[0];
+				a.assert(expansion?.kind === 'parameterExpansion');
+				a.equal(expansion.operator, '#');
+			}
+			for (const source of ['${#:-fallback}', '${#-fallback}']) a.equalValues(program().parse(source).errors, []);
+			const positional = word('$10').children;
+			a.assert(positional[0]?.kind === 'parameterExpansion');
+			a.equal(positional[0].name.value, '1');
+			a.assert(positional[1]?.kind === 'literal');
+			a.equal(positional[1].value, '0');
+			const empty = word('${name:-}').children[0];
+			a.assert(empty?.kind === 'parameterExpansion');
+			a.equalValues(empty.operand?.children, []);
+		});
+
+		it.should('retain ordered quoting and inherited parameter operand quoting', (a: TestApi) => {
+			const quoted = word('"prefix${name:-\'fallback\'}suffix"').children[0];
+			a.assert(quoted?.kind === 'quoted');
+			a.equalValues(quoted.children.map(part => part.kind), ['literal', 'parameterExpansion', 'literal']);
+			const expansion = quoted.children[1];
+			a.assert(expansion?.kind === 'parameterExpansion');
+			a.equal(expansion.operand?.value, "'fallback'");
+			const segments = word("plain\\ space'quoted'\"double\"$'ansi\\n'").children;
+			a.equalValues(segments.map(part => part.kind), ['literal', 'escape', 'literal', 'quoted', 'quoted', 'quoted']);
+			a.equal(word("plain\\ space'quoted'\"double\"$'ansi\\n'").value, 'plain spacequoteddoubleansi\n');
+			for (const source of ["'${name}'", '\\$name']) a.equal(word(source).hasExpansion, false);
+		});
+
+		it.should('keep all nested spans in the original source', (a: TestApi) => {
+			const source = 'echo "first\nsecond" tail\necho "${name:-${other:-$(printf "%s" "$(pwd)")}}"';
+			const parsed = program().parse(source);
+			a.equalValues(parsed.errors, []);
+			function check(node: Token<string> & { children?: readonly Node[] }) {
+				a.equal(node.source, source);
+				a.equal(node.line, source.slice(0, node.start).split('\n').length - 1);
+				if (node.children) for (const child of node.children) {
+					a.assert(child.start >= node.start && child.end <= node.end);
+					check(child);
+				}
+			}
+			check(parsed.root);
+			const pwd = findNodeAtIndex(parsed.root, source.indexOf('pwd'));
+			a.assert(pwd?.kind === 'literal');
+			a.equal(pwd.value, 'pwd');
+		});
+
+		it.should('respect comments and here-documents inside substitution bodies', a => {
+			for (const source of ['echo $(echo ok # ) ignored\n)', 'echo $(cat <<EOF\n)\nEOF\n)']) {
+				a.equalValues(program().parse(source).errors, [], source);
+				a.equal(program().compile(source).output, source);
+			}
+		});
+
+		it.should('preserve literal here-document delimiters without expanding them', (a: TestApi) => {
+			for (const delimiter of ['$name', '${name}', '${}', '${name:}', '$(pwd)', '$(pwd &&)']) {
+				const parsed = program().parse('cat <<' + delimiter + '\nbody\n' + delimiter + '\n');
+				a.equalValues(parsed.errors, [], delimiter);
+				const list = parsed.root.children[0];
+				a.assert(list?.kind === 'list');
+				const command = list.children[0];
+				a.assert(command?.kind === 'command');
+				a.equal(command.redirects[0]?.body?.value, 'body\n');
+			}
+		});
+
+		it.should('parse escaped nested backticks with original spans', (a: TestApi) => {
+			const source = 'echo `echo \\`pwd\\``';
+			const parsed = program().parse(source);
+			a.equalValues(parsed.errors, []);
+			const pwd = findNodeAtIndex(parsed.root, source.indexOf('pwd'));
+			a.assert(pwd?.kind === 'literal');
+			a.equal(pwd.value, 'pwd');
+			a.equal(pwd.source, source);
+			const nested = findNodeAtIndex(parsed.root, source.indexOf('\\`'));
+			a.assert(nested?.kind === 'commandSubstitution');
+			a.equal(nested.backticks, true);
+			a.equal(program().compile(source).output, source);
+		});
+
+		it.should('lower nested parameter and arithmetic operands structurally', (a: TestApi) => {
+			const source = '${name:-$((1 + ${offset:-2}))}';
+			const parsed = program().parse(source);
+			a.equalValues(parsed.errors, []);
+			a.equalValues(program().ir(parsed.root), [2, [IrKind.List, [], [IrKind.Command,
+				[IrKind.Word, source, IrWordFlags.ParameterExpansion, [[IrKind.ParameterExpansion, 'name', ':-',
+					[IrKind.Word, '$((1 + ${offset:-2}))', IrWordFlags.ParameterExpansion, [[IrKind.ArithmeticExpansion,
+						[IrKind.Word, '1 + ${offset:-2}', IrWordFlags.ParameterExpansion, [
+							[IrKind.Literal, '1 + '], [IrKind.ParameterExpansion, 'offset', ':-', [IrKind.Word, '2', 0, [[IrKind.Literal, '2']]]],
+						]],
+					]]],
+				]]],
+			]]]);
+			a.equal(word('$(echo "$HOME")').hasParameterExpansion, false);
+			a.equalValues(program().ir(program().parse('').root), [2]);
+		});
+
+		it.should('map nested diagnostics and recover on subsequent parses', (a: TestApi) => {
+			const cmd = program();
+			const source = 'echo first\necho "${name:-$(pwd &&)}"';
+			const parsed = cmd.parse(source);
+			a.equalValues(parsed.errors.map(error => [error.message, error.position.start, error.position.end, error.position.line]),
+				[['Expected command', source.indexOf(')'), source.indexOf(')'), 1]]);
+			for (const source of ['echo ${name', 'echo "${name:-$(pwd &&)}"', 'echo `pwd &&`', 'echo $((1 + 2)', 'echo ${name:-"unfinished}'])
+				a.assert(cmd.parse(source).errors.length > 0, source);
+			a.equalValues(cmd.parse('echo ok').errors, []);
+		});
+
+		it.should('retain literal operand quoting in structured IR', a => {
+			const operands: [string, IrWordPart[]][] = [
+				['a b', [[IrKind.Literal, 'a b']]],
+				['"a b"', [[IrKind.Quoted, '"', [[IrKind.Literal, 'a b']]]]],
+			];
+			for (const [operand, parts] of operands) {
+				const source = '${name:-' + operand + '}';
+				a.equalValues(program().ir(program().parse(source).root), [2, [IrKind.List, [], [IrKind.Command,
+					[IrKind.Word, source, IrWordFlags.ParameterExpansion, [[IrKind.ParameterExpansion, 'name', ':-',
+						[IrKind.Word, 'a b', 0, parts],
+					]]],
+				]]]);
+			}
+		});
+
+		it.should('parse pattern-removal operands independently of outer double quotes', (a: TestApi) => {
+			for (const operator of ['#', '##', '%', '%%']) {
+				for (const [operand, kind] of [['*', 'pattern'], ["'*'", 'quoted'], ['"*"', 'quoted']]) {
+					const source = '"${name' + operator + operand + '}"';
+					const quoted = word(source).children[0];
+					a.assert(quoted?.kind === 'quoted');
+					const expansion = quoted.children[0];
+					a.assert(expansion?.kind === 'parameterExpansion');
+					a.equal(expansion.operand?.children[0]?.kind, kind, source);
+					a.equalValues(program().parse(source).errors, [], source);
+				}
+			}
+		});
 
 		it.should('scan shell words', a => {
 			match(a, `'hello'`, {
@@ -469,7 +649,7 @@ export default spec('cmd', s => {
 			a.equal(cmd.compile(source).output, source.replace("<<'FIRST' <<-SECOND", "<< 'FIRST' <<- SECOND"));
 			a.equal(findNodeAtIndex(parsed.root, source.indexOf('$HOME'))?.kind, 'heredoc');
 			a.equalValues(cmd.ir(parsed.root), [
-				1,
+				2,
 				[
 					IrKind.List,
 					[IrSeparator.Newline],
@@ -572,9 +752,9 @@ export default spec('cmd', s => {
 			a.assert(conditional?.kind === 'if', 'Expected conditional');
 			a.equalValues(conditional.children, [conditional.condition, conditional.body]);
 			a.equalValues({ start: conditional.start, end: conditional.end }, { start: 0, end: 34 });
-			a.equal(findNodeAtIndex(parsed.root, 3)?.kind, 'word');
+			a.equal(findNodeAtIndex(parsed.root, 3)?.kind, 'literal');
 			a.equal(findNodeAtIndex(parsed.root, 19), conditional);
-			a.equalValues(program().ir(parsed.root), [1, [IrKind.List, [], [
+			a.equalValues(program().ir(parsed.root), [2, [IrKind.List, [], [
 				IrKind.If,
 				[IrKind.List, [IrSeparator.Semicolon], [IrKind.Command, [IrKind.Word, 'test'], [IrKind.Word, '-f'], [IrKind.Word, 'file']]],
 				[IrKind.List, [IrSeparator.Semicolon], [IrKind.Command, [IrKind.Word, 'cat'], [IrKind.Word, 'file']]],
@@ -637,9 +817,9 @@ export default spec('cmd', s => {
 				{ start: loop.start, end: loop.end },
 				{ start: 0, end: source.length },
 			);
-			a.equal(findNodeAtIndex(parsed.root, 4), loop.variable);
+			a.equal(findNodeAtIndex(parsed.root, 4), loop.variable.children[0]);
 			a.equal(findNodeAtIndex(parsed.root, 9), loop);
-			a.equal(findNodeAtIndex(parsed.root, 24)?.kind, 'word');
+			a.equal(findNodeAtIndex(parsed.root, 24)?.kind, 'literal');
 			a.equalValues(parsed.errors, []);
 			a.equalValues(
 				program().compile('for outer; do echo; done').output,
@@ -658,7 +838,7 @@ export default spec('cmd', s => {
 				'for item in one two; do echo "$item" ; done',
 			);
 			a.equalValues(cmd.ir(parsed.root), [
-				1,
+				2,
 				[
 					IrKind.List,
 					[],
@@ -672,7 +852,7 @@ export default spec('cmd', s => {
 							[
 								IrKind.Command,
 								[IrKind.Word, 'echo'],
-								[IrKind.Word, '"$item"', IrWordFlags.ParameterExpansion],
+								[IrKind.Word, '"$item"', IrWordFlags.ParameterExpansion, [[IrKind.Quoted, '"', [[IrKind.ParameterExpansion, 'item', '', null]]]]],
 							],
 						],
 					],
@@ -728,10 +908,10 @@ export default spec('cmd', s => {
 			const fn = list.children[0];
 			a.assert(fn?.kind === 'function', 'Expected function definition');
 
-			a.equal(findNodeAtIndex(root, 0), fn.name);
+			a.equal(findNodeAtIndex(root, 0), fn.name.children[0]);
 			a.equal(findNodeAtIndex(root, 7), fn);
 			a.equal(findNodeAtIndex(root, 8), fn.body);
-			a.equal(findNodeAtIndex(root, 10)?.kind, 'word');
+			a.equal(findNodeAtIndex(root, 10)?.kind, 'literal');
 			a.equal(findNodeAtIndex(root, 19), fn.body);
 		});
 
@@ -885,7 +1065,7 @@ export default spec('cmd', s => {
 				},
 			);
 			a.equalValues(cmd.ir(parsed.root), [
-				1,
+				2,
 				[
 					IrKind.List,
 					[IrSeparator.Newline, IrSeparator.Newline],
@@ -953,7 +1133,7 @@ export default spec('cmd', s => {
 			].join('\n'));
 
 			a.equalValues(cmd.ir(parsed.root), [
-				1,
+				2,
 				[
 					IrKind.List,
 					[IrSeparator.Newline, IrSeparator.Newline],
@@ -985,21 +1165,22 @@ export default spec('cmd', s => {
 			const parsed = cmd.parse('echo ${name} $(date) `date` *.ts');
 
 			a.equalValues(cmd.ir(parsed.root), [
-				1,
+				2,
 				[
 					IrKind.List,
 					[],
 					[
 						IrKind.Command,
 						[IrKind.Word, 'echo'],
-						[IrKind.Word, '${name}', IrWordFlags.ParameterExpansion],
-						[IrKind.Word, '$(date)', IrWordFlags.CommandSubstitution],
+						[IrKind.Word, '${name}', IrWordFlags.ParameterExpansion, [[IrKind.ParameterExpansion, 'name', '', null]]],
+						[IrKind.Word, '$(date)', IrWordFlags.CommandSubstitution, [[IrKind.CommandSubstitution, false, [IrKind.List, [], [IrKind.Command, [IrKind.Word, 'date']]]]]],
 						[
 							IrKind.Word,
 							'`date`',
 							IrWordFlags.CommandSubstitution | IrWordFlags.Backticks,
+							[[IrKind.CommandSubstitution, true, [IrKind.List, [], [IrKind.Command, [IrKind.Word, 'date']]]]],
 						],
-						[IrKind.Word, '*.ts', IrWordFlags.Other],
+						[IrKind.Word, '*.ts', IrWordFlags.Other, [[IrKind.Pattern, '*'], [IrKind.Literal, '.ts']]],
 					],
 				],
 			]);
@@ -1063,7 +1244,7 @@ export default spec('cmd', s => {
 			a.equal(parameter.literal, false);
 			const substitution = word("'left'\\''right'\"$(pwd)\"");
 			a.equal(substitution.hasCommandSubstitution, true);
-			a.equalValues(substitution.commandSubstitutions?.map(root => compiler(root)), ['pwd']);
+			a.equalValues(parts(substitution).filter(part => part.kind === 'commandSubstitution').map(part => compiler(part.body)), ['pwd']);
 			for (const source of ["$(printf %s '\\')", "$(printf %s $'left\\'right')"]) {
 				a.equalValues(program().parse(source).errors, [], source);
 				a.equal(word(source).hasCommandSubstitution, true);
@@ -1224,22 +1405,26 @@ export default spec('cmd', s => {
 					const source = `${operator}(echo "$(pwd)")`;
 					const substitution = word(source);
 					a.equal(substitution.hasCommandSubstitution, false);
-					a.equalValues(substitution.commandSubstitutions, []);
+					a.equalValues(parts(substitution).filter(part => part.kind === 'commandSubstitution'), []);
 					a.equalValues(
-						substitution.processSubstitutions?.map(process => [
+						parts(substitution).filter(part => part.kind === 'processSubstitution').map(process => [
 							process.operator,
 							compiler(process.body),
 						]),
 						[[operator, 'echo "$(pwd)"']],
 					);
 					a.equalValues(program().ir(program().parse(source).root), [
-						1,
+						2,
 						[
 							IrKind.List,
 							[],
 							[
 								IrKind.Command,
-								[IrKind.Word, source, IrWordFlags.Other],
+								[IrKind.Word, source, IrWordFlags.Other, [[IrKind.ProcessSubstitution, operator,
+									[IrKind.List, [], [IrKind.Command, [IrKind.Word, 'echo'],
+										[IrKind.Word, '"$(pwd)"', IrWordFlags.CommandSubstitution,
+											[[IrKind.Quoted, '"', [[IrKind.CommandSubstitution, false,
+												[IrKind.List, [], [IrKind.Command, [IrKind.Word, 'pwd']]]]]]]]]]]]],
 							],
 						],
 					]);
@@ -1253,14 +1438,14 @@ export default spec('cmd', s => {
 					]),
 					[['Expected command', 12, 12]],
 				);
-				a.equalValues(word('"<(pwd)"').processSubstitutions, undefined);
-				a.equalValues(word('"$(cat <(pwd))"').processSubstitutions, undefined);
+				a.equalValues(parts(word('"<(pwd)"')).filter(part => part.kind === 'processSubstitution'), []);
+				a.equalValues(parts(word('"$(cat <(pwd))"')).filter(part => part.kind === 'processSubstitution'), []);
 			},
 		);
 
 		it.should('parse command substitutions in shell words', (a: TestApi) => {
 			const commands = (source: string) =>
-				(word(source).commandSubstitutions ?? []).map(root => compiler(root));
+				parts(word(source)).filter(part => part.kind === 'commandSubstitution').map(part => compiler(part.body));
 
 			a.equalValues(commands('$(git status --short)'), ['git status --short']);
 			a.equalValues(commands('"$(git status --short)"'), [
@@ -1277,8 +1462,8 @@ export default spec('cmd', s => {
 				'wc -l < input',
 			]);
 
-			const outer = word('"$(printf "%s" "$(git rev-parse HEAD)")"')
-				.commandSubstitutions?.[0];
+			const outer = parts(word('"$(printf "%s" "$(git rev-parse HEAD)")"'))
+				.find(part => part.kind === 'commandSubstitution')?.body;
 			a.assert(outer);
 			const list = outer.children[0];
 			a.assert(list?.kind === 'list');
@@ -1287,7 +1472,7 @@ export default spec('cmd', s => {
 			const nested = command.parts[2];
 			a.assert(nested?.kind === 'word');
 			a.equalValues(
-				(nested.commandSubstitutions ?? []).map(root => compiler(root)),
+				parts(nested).filter(part => part.kind === 'commandSubstitution').map(part => compiler(part.body)),
 				['git rev-parse HEAD'],
 			);
 		});
@@ -1312,7 +1497,7 @@ export default spec('cmd', s => {
 				hasNonliteralConstruct: true,
 			});
 			a.equalValues(cmd.ir(parsed.root), [
-				1,
+				2,
 				[
 					IrKind.List,
 					[],
@@ -1323,11 +1508,13 @@ export default spec('cmd', s => {
 							IrKind.Word,
 							'"$(git status --short)"',
 							IrWordFlags.CommandSubstitution,
+						[[IrKind.Quoted, '"', [[IrKind.CommandSubstitution, false,
+							[IrKind.List, [], [IrKind.Command, [IrKind.Word, 'git'], [IrKind.Word, 'status'], [IrKind.Word, '--short']]]]]]],
 						],
 					],
 				],
 			]);
-			a.equalValues(word('`git status --short`').commandSubstitutions, []);
+			a.equalValues(parts(word('`git status --short`')).filter(part => part.kind === 'commandSubstitution').map(part => compiler(part.body)), ['git status --short']);
 		});
 
 		it.should('report malformed shell syntax with source spans', a => {
@@ -1465,12 +1652,12 @@ export default spec('cmd', s => {
 				'Expected commands',
 			);
 
-			a.equal(findNodeAtIndex(root, 0), left.parts[0]);
+			a.equal(findNodeAtIndex(root, 0), left.parts[0]?.children[0]);
 			a.equal(findNodeAtIndex(root, 4), left);
-			a.equal(findNodeAtIndex(root, 5), left.parts[1]);
+			a.equal(findNodeAtIndex(root, 5), left.parts[1]?.children[0]);
 			a.equal(findNodeAtIndex(root, 8), pipe);
 			a.equal(findNodeAtIndex(root, 9), pipe);
-			a.equal(findNodeAtIndex(root, 10), right.parts[0]);
+			a.equal(findNodeAtIndex(root, 10), right.parts[0]?.children[0]);
 		});
 
 		it.should('find canonical redirect, group, and list children', (a: TestApi) => {
@@ -1485,9 +1672,9 @@ export default spec('cmd', s => {
 
 			a.equalValues(command.children, [command.parts[0], redirect]);
 			a.equalValues(redirect.children, [redirect.io, redirect.target]);
-			a.equal(findNodeAtIndex(redirectRoot, 4), redirect.io);
+			a.equal(findNodeAtIndex(redirectRoot, 4), redirect.io.children[0]);
 			a.equal(findNodeAtIndex(redirectRoot, 5), redirect);
-			a.equal(findNodeAtIndex(redirectRoot, 6), redirect.target);
+			a.equal(findNodeAtIndex(redirectRoot, 6), redirect.target.children[0]);
 
 			const groupRoot = program().parse('(echo)').root;
 			const groupList = groupRoot.children[0];
@@ -1498,14 +1685,14 @@ export default spec('cmd', s => {
 			a.assert(group?.kind === 'group', 'Expected group');
 
 			a.equal(findNodeAtIndex(groupRoot, 0), group);
-			a.equal(findNodeAtIndex(groupRoot, 1)?.kind, 'word');
+			a.equal(findNodeAtIndex(groupRoot, 1)?.kind, 'literal');
 			a.equal(findNodeAtIndex(groupRoot, 5), group);
 
 			const listRoot = program().parse('echo;cat').root;
 			const list = listRoot.children[0];
 			a.assert(list?.kind === 'list', 'Expected list');
 			a.equal(findNodeAtIndex(listRoot, 4), list);
-			a.equal(findNodeAtIndex(listRoot, 5)?.kind, 'word');
+			a.equal(findNodeAtIndex(listRoot, 5)?.kind, 'literal');
 		});
 
 		it.should('handle source boundaries and empty input', a => {
