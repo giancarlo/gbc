@@ -326,6 +326,38 @@ export default spec('cmd', s => {
 			}
 		});
 
+		it.should('parse Bash script directory assignments with static array references', (a: TestApi) => {
+			const source = '#!/usr/bin/env bash\nset -euo pipefail\nscript_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\nrepo_root="$(cd "${script_dir}/../.." && pwd)"';
+			for (const dialect of ['posix', 'ide'] as const) {
+				const cmd = program({ dialect });
+				const parsed = cmd.parse(source);
+				a.equalValues(parsed.errors, []);
+				const list = parsed.root.children[0];
+				a.assert(list?.kind === 'list');
+				a.equal(list.children.length, 3);
+				const name = findNodeAtIndex(parsed.root, source.indexOf('BASH_SOURCE'));
+				a.assert(name?.kind === 'literal');
+				a.equal(name.value, 'BASH_SOURCE[0]');
+				a.equal(source.slice(name.start, name.end), name.value);
+				a.equal(cmd.compile(source).output, source.slice(source.indexOf('\n') + 1));
+				for (const reference of ['array[0]', 'array[12]', 'array[key]', 'array[@]', 'array[*]']) {
+					for (const expansion of ['${' + reference + '}', '${#' + reference + '}', '${' + reference + ':-fallback}']) {
+						a.equalValues(cmd.parse(expansion).errors, []);
+						const node = word(expansion).children[0];
+						a.assert(node?.kind === 'parameterExpansion');
+						a.equal(node.name.value, reference);
+						a.equal(expansion.slice(node.name.start, node.name.end), reference);
+						a.equal(cmd.compile(expansion).output, expansion);
+					}
+				}
+				for (const expansion of ['${array[]}', '${array[0}', '${array[0]]}', '${array[$index]}', '${array[$(pwd)]}', '${1[0]}', '${array[0][1]}']) {
+					const invalid = cmd.parse('echo ok; echo ' + expansion);
+					a.assert(invalid.errors.length > 0, expansion);
+					a.assert(compiler(invalid.root).startsWith('echo ok'), expansion);
+				}
+			}
+		});
+
 		it.should('parse parameter names and every POSIX parameter operator', (a: TestApi) => {
 			for (const name of ['name', '_value2', '10', '@', '*', '#', '?', '$', '!', '-', '0']) {
 				const expansion = word('${' + name + '}').children[0];

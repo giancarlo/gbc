@@ -482,6 +482,11 @@ function readShellWord(token: Token<string>, signature = false, expansions = tru
 		const start = index;
 		if (isNameStart(source.charAt(index))) {
 			while (/\w/.test(source.charAt(index))) index++;
+			if (braced && source[index] === '[') {
+				const subscript = /^(?:\d+|[A-Za-z_]\w*|[@*])\]/.exec(source.slice(index + 1));
+				if (!subscript) fail('Expected static array subscript followed by "]"');
+				index += subscript[0].length + 1;
+			}
 		} else if (/\d/.test(source.charAt(index))) {
 			index++;
 			if (braced) while (/\d/.test(source.charAt(index))) index++;
