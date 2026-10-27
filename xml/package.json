@@ -1,0 +1,27 @@
+{
+	"name": "@cxl/gbc.xml",
+	"version": "0.0.1",
+	"bugs": "https://github.com/giancarlo/gbc/issues",
+	"homepage": "https://github.com/giancarlo/@cxl/gbc.xml",
+	"description": "XML syntax highlighter",
+	"type": "module",
+	"license": "GPL-3.0",
+	"scripts": {
+		"build": "cxl-build",
+		"test": "npm run build -- test"
+	},
+	"dependencies": {},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/giancarlo/gbc",
+		"directory": "xml"
+	},
+	"exports": {
+		".": "./index.js",
+		"./highlight": "./highlight.js",
+		"./*.js": "./*.js"
+	},
+	"build": {
+		"platform": "neutral"
+	}
+}

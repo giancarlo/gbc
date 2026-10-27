@@ -3,8 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { registerHooks } from 'node:module';
 
 registerHooks({ resolve(specifier, context, next) {
-	const packages = { '@cxl/gbc.sdk': 'sdk', '@cxl/gbc.javascript': 'javascript' };
-	return next(packages[specifier] ? new URL(`./dist/${packages[specifier]}/index.js`, import.meta.url).href : specifier, context);
+	const packages = { '@cxl/gbc.sdk': 'sdk/index', '@cxl/gbc.javascript': 'javascript/index', '@cxl/gbc.html/highlight': 'html/highlight' };
+	return next(packages[specifier] ? new URL(`./dist/${packages[specifier]}.js`, import.meta.url).href : specifier, context);
 } });
 const path = new URL('./spec/highlight.json', import.meta.url);
 const describe = tokens => tokens.map(t => [t.kind, t.highlight, t.start, t.end, t.line, t.foldStart, t.foldEnd, t.error ? [t.error.message, t.error.position.start, t.error.position.end, t.error.position.line] : null]);
@@ -68,6 +68,7 @@ const longCases = {
 	typescript: '/*' + 'long\n'.repeat(4000) + '*/\nconst x: number = 1;',
 	compiler: "var x = '" + 'long\n'.repeat(4000) + "${1} tail'\nvar y = 2",
 	html: '<ul><li title="' + 'long\n'.repeat(4000) + '">first<li>second</ul>',
+	xml: '<root><![CDATA[' + 'long\n'.repeat(4000) + '<tag>]]><br></br></root>',
 	markdown: '# One\n```\n' + 'long\n'.repeat(4000) + '```\n# Two\nbody',
 	basic: 'IF x THEN ' + ' '.repeat(20000) + '\nPRINT 1\nEND IF',
 	cmd: 'cat <<EOF\n' + 'long\n'.repeat(4000) + 'EOF\necho done',

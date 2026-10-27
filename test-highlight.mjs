@@ -13,6 +13,7 @@ const cases = {
 	javascript: ['const value = 42;', "'unfinished", ['keyword', 'identifier', 'operator', 'number', 'punctuation']],
 	typescript: ['const value: number = 42;', '/* unfinished', ['keyword', 'identifier', 'punctuation', 'type', 'operator', 'number', 'punctuation']],
 	html: ['<div id="x">hi</div>', '<div id="', ['punctuation', 'tag', 'attribute', 'operator', 'string', 'punctuation', 'text', 'punctuation', 'punctuation', 'tag', 'punctuation']],
+	xml: ['<root id="x">hi</root>', '<![CDATA[unfinished', ['punctuation', 'tag', 'attribute', 'operator', 'string', 'punctuation', 'text', 'punctuation', 'punctuation', 'tag', 'punctuation']],
 	compiler: ['var value = 42', '0xg var value = 1', ['keyword', 'identifier', 'operator', 'number']],
 	basic: ['10 PRINT "hi", 42', '` PRINT 1', ['label', 'keyword', 'string', 'punctuation', 'number']],
 	markdown: ['# Heading\n\n**bold** and `code`\n\n```ts\nconst value = 42;\n```\n', '```ts\nconst value ='],
@@ -25,6 +26,7 @@ const foldSources = {
 	typescript: '{\n}',
 	compiler: '{\n}',
 	html: '<div>\n</div>',
+	xml: '<br>\n</br>',
 	basic: 'DO\nLOOP',
 	cmd: 'if true; then\ntrue; fi',
 	markdown: '# Heading\nbody',
@@ -71,7 +73,7 @@ try {
 			plugins: [{
 				name: 'sdk',
 				setup(api) {
-					api.onResolve({ filter: /^@cxl\/gbc\.sdk$/ }, () => ({ path: join(root, 'dist/sdk/index.js') }));
+					api.onResolve({ filter: /^@cxl\/gbc\.(sdk|html)(\/highlight)?$/ }, ({ path }) => ({ path: join(root, 'dist', path.includes('.html') ? 'html' : 'sdk', path.endsWith('/highlight') ? 'highlight.js' : 'index.js') }));
 				},
 			}],
 		});

@@ -16,6 +16,8 @@
 		"build": "cxl-build"
 	},
 	"importmap": {
+		"@cxl/gbc.html": "/dist/html/index.js",
+		"@cxl/gbc.html/highlight": "/dist/html/highlight.js",
 		"@cxl/gbc.sdk": "/dist/sdk/index.js",
 		"@cxl/gbc.javascript": "/dist/javascript/index.js"
 	},

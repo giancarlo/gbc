@@ -1,0 +1,18 @@
+{
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		"outDir": "../dist/xml"
+	},
+	"files": [
+		"index.ts",
+		"highlight.ts"
+	],
+	"references": [
+		{
+			"path": "../html"
+		},
+		{
+			"path": "../sdk"
+		}
+	]
+}

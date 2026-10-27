@@ -2,6 +2,11 @@ import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, hig
 import { scanner } from './index.js';
 
 export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
+
+export interface HtmlHighlightOptions extends HighlightOptions {
+	xml?: boolean;
+}
+
 const classify = (token: ReturnType<ReturnType<typeof scanner>['next']>): HighlightKind => {
 	switch (token.kind) {
 		case 'attrName':
@@ -13,6 +18,11 @@ const classify = (token: ReturnType<ReturnType<typeof scanner>['next']>): Highli
 			return token.kind;
 		case 'equals':
 			return 'operator';
+		case 'cdata':
+			return 'string';
+		case 'processingInstruction':
+		case 'declaration':
+			return 'directive';
 		case 'openTag':
 		case 'gt':
 		case 'slash':
@@ -77,8 +87,8 @@ function closeElements({ names, counts }: OpenElements, name: string, closing: b
 	return count;
 }
 
-function openElement({ names, counts }: OpenElements, name: string, slash: boolean): number {
-	if (slash || voidTags.has(name)) return 0;
+function openElement({ names, counts }: OpenElements, name: string, slash: boolean, xml: boolean): number {
+	if (slash || (!xml && voidTags.has(name))) return 0;
 	names.push(name);
 	if (optionalEnds.has(name)) counts.set(name, (counts.get(name) ?? 0) + 1);
 	return 1;
@@ -91,7 +101,8 @@ interface HtmlState {
 	quote: string;
 	escape: boolean;
 	prefix: string;
-	comment: boolean;
+	terminator: string;
+	subset: number;
 	tail: string;
 	name: string;
 	closing: boolean;
@@ -101,46 +112,56 @@ interface HtmlState {
 	pending: HighlightToken | undefined;
 }
 
-export const highlight = (_options?: HighlightOptions) => createHighlighter((): HtmlState => ({
+function quotedBoundary(state: HtmlState, ch: string, xml: boolean): boolean {
+	if (state.escape) state.escape = false;
+	else if (!xml && ch === '\\') state.escape = true;
+	else if (ch === state.quote) { state.quote = ''; return !state.inTag; }
+	return false;
+}
+
+function markupPrefix(state: HtmlState, ch: string, xml: boolean): boolean {
+	state.prefix += ch;
+	const terminator = state.prefix === '<!--' ? '-->' : xml && state.prefix === '<![CDATA[' ? ']]>' : xml && state.prefix === '<?' ? '?>' : '';
+	if (terminator) { state.terminator = terminator; state.tail = ''; state.subset = 0; return true; }
+	if (state.prefix.length >= (xml ? 9 : 4)) state.prefix = '';
+	return false;
+}
+
+export const highlight = ({ xml = false }: HtmlHighlightOptions = {}) => createHighlighter((): HtmlState => ({
 	buffer: { start: 0, line: 0, fragment: undefined }, inTag: false, inText: false, quote: '', escape: false,
-	prefix: '', comment: false, tail: '', name: '', closing: false, slash: false, declaration: false,
+	prefix: '', terminator: '', subset: 0, tail: '', name: '', closing: false, slash: false, declaration: false,
 	elements: { names: [], counts: new Map() }, pending: undefined,
 }), function* (window, previous) {
 	const state = { ...previous, elements: { names: [...previous.elements.names], counts: new Map(previous.elements.counts) } };
 	if (state.pending) state.pending = highlightToken(window, state.pending);
 	const segments = highlightSegments(window, state.buffer, ch => {
-		if (state.comment) {
+		if (state.terminator) {
 			state.tail = (state.tail + ch).slice(-3);
-			if (state.tail !== '-->') return false;
-			state.comment = state.inTag = false;
+			if (!state.tail.endsWith(state.terminator)) return false;
+			state.terminator = '';
+			state.inTag = false;
 			state.prefix = '';
 			return true;
 		}
-		if (state.quote) {
-			if (state.escape) state.escape = false;
-			else if (ch === '\\') state.escape = true;
-			else if (ch === state.quote) { state.quote = ''; return !state.inTag; }
-			return false;
-		}
+		if (state.quote) return quotedBoundary(state, ch, xml);
+
 		if (state.inText && ch !== '<') return false;
-		if (ch === '<') { state.inTag = true; state.inText = false; state.prefix = '<'; return false; }
-		if (state.prefix) {
-			state.prefix += ch;
-			if (state.prefix === '<!--') { state.comment = true; state.tail = ''; return false; }
-			if (state.prefix.length >= 4) state.prefix = '';
-		}
-		if (ch === '"' || ch === "'") state.quote = ch;
-		else if (ch === '>') { state.inTag = false; state.prefix = ''; return true; }
+		if (ch === '<' && !state.subset) { state.inTag = true; state.inText = false; state.prefix = '<'; return false; }
+		if (state.prefix && markupPrefix(state, ch, xml)) return false;
+		const tagCharacter = !xml || state.inTag;
+		if ('"\''.includes(ch) && tagCharacter) state.quote = ch;
+		else if (xml && state.inTag && '[]'.includes(ch)) state.subset = Math.max(0, state.subset + (ch === '[' ? 1 : -1));
+		else if (ch === '>' && tagCharacter && !state.subset) { state.inTag = false; state.prefix = ''; return true; }
 		else if (!state.inTag && !' \t\r\n/='.includes(ch)) state.inText = true;
 		return false;
 	});
 	for (;;) {
 		const next = segments.next();
 		if (next.done) { state.buffer = next.value; break; }
-		yield* highlightMarkup(next.value, state);
+		yield* highlightMarkup(next.value, state, xml);
 	}
 	if (window.final && state.pending) {
-		while (optionalEnds.has(state.elements.names.at(-1) ?? '')) {
+		while (!xml && optionalEnds.has(state.elements.names.at(-1) ?? '')) {
 			state.elements.names.pop();
 			state.pending.foldEnd++;
 		}
@@ -153,11 +174,11 @@ export const highlight = (_options?: HighlightOptions) => createHighlighter((): 
 	pending: state.pending ? shift.position(state.pending) : undefined,
 }));
 
-function* highlightMarkup(window: HighlightWindow, state: HtmlState) {
+function* highlightMarkup(window: HighlightWindow, state: HtmlState, xml: boolean) {
 	let { name, closing, slash, declaration, pending } = state;
 	const { elements } = state;
 	const source = window.text;
-	for (const token of highlightTokens(window, tokenize(scanner, window.text), classify, undefined, foldToken)) {
+	for (const token of highlightTokens(window, tokenize(source => scanner(source, xml), window.text), classify, undefined, foldToken)) {
 		switch (token.kind) {
 			case 'openTag':
 				name = '';
@@ -166,8 +187,9 @@ function* highlightMarkup(window: HighlightWindow, state: HtmlState) {
 				break;
 			case 'tagName':
 				if (!declaration) {
-					name = source.slice(token.start - window.start, token.end - window.start).toLowerCase();
-					if (!closing) token.foldEnd += closeElements(elements, name, false);
+					name = source.slice(token.start - window.start, token.end - window.start);
+					if (!xml) name = name.toLowerCase();
+					if (!closing && !xml) token.foldEnd += closeElements(elements, name, false);
 				}
 				break;
 			case 'slash':
@@ -176,7 +198,7 @@ function* highlightMarkup(window: HighlightWindow, state: HtmlState) {
 			case 'gt':
 				if (name) {
 					if (closing) token.foldEnd += closeElements(elements, name, true);
-					else token.foldStart = openElement(elements, name, slash);
+					else token.foldStart = openElement(elements, name, slash, xml);
 				}
 				name = '';
 				break;

@@ -1,6 +1,6 @@
 import { ScannerApi } from '@cxl/gbc.sdk';
 
-export function scanner(src: string) {
+export function scanner(src: string, xml = false) {
 	const {
 		current,
 		tk,
@@ -8,6 +8,8 @@ export function scanner(src: string) {
 		matchWhile,
 		backtrack: apiBacktrack,
 	} = ScannerApi({ source: src });
+	const nameStart = xml ? /[\p{L}_:]/u : /[a-zA-Z]/;
+	const namePart = xml ? /[\p{L}\p{N}\p{M}\-_.:\u00b7]/u : /[a-zA-Z0-9\-_:]/;
 	let inTag = false;
 	let expectTagName = false;
 	const states = new Map<
@@ -30,24 +32,67 @@ export function scanner(src: string) {
 		);
 	}
 
+	function xmlMarkup() {
+		const start = tk('', 0).end;
+		const terminator = src.startsWith('<![CDATA[', start) ? ']]>' : src.startsWith('<?', start) ? '?>' : '';
+		if (terminator) {
+			const end = src.indexOf(terminator, start + (terminator === ']]>' ? 9 : 2));
+			return emit(terminator === ']]>' ? 'cdata' : 'processingInstruction', end < 0 ? src.length - start : end + terminator.length - start);
+		}
+		if (current(1) === '!' && !isCommentStart()) {
+			let quote = '';
+			let depth = 0;
+			let consumed = 2;
+			for (; current(consumed); consumed++) {
+				const ch = current(consumed);
+				if (quote) { if (ch === quote) quote = ''; }
+				else if (ch === '"' || ch === "'") quote = ch;
+				else if (ch === '[') depth++;
+				else if (ch === ']') depth--;
+				else if (ch === '>' && depth === 0) return emit('declaration', consumed + 1);
+			}
+			return emit('declaration', consumed);
+		}
+	}
+
+	function string(quote: string) {
+		let consumed = 1;
+		while (current(consumed)) {
+			if (current(consumed) === quote)
+				return emit('string', consumed + 1);
+			consumed +=
+				!xml && current(consumed) === '\\' && current(consumed + 1)
+					? 2
+					: 1;
+		}
+		return emit('string', consumed);
+	}
+
+	function comment() {
+		const start = tk('', 0).end;
+		const closeIdx = src.indexOf('-->', start + 4);
+		const consume =
+			closeIdx === -1 ? src.length - start : closeIdx + 3 - start;
+		const token = emit('comment', consume);
+		inTag = false;
+		expectTagName = false;
+		return token;
+	}
+
 	function next() {
 		skipWhitespace();
 		const ch = current();
 
 		if (!ch) return emit('eof', 0);
 
-		if (isCommentStart()) {
-			const start = tk('', 0).end;
-			const closeIdx = src.indexOf('-->', start + 4);
-			const consume =
-				closeIdx === -1 ? src.length - start : closeIdx + 3 - start;
-			const token = emit('comment', consume);
-			inTag = false;
-			expectTagName = false;
-			return token;
-		}
+		if (xml && !inTag && ch !== '<') return emit('text', matchWhile(ch => ch !== '<'));
+		if (isCommentStart()) return comment();
 
 		if (ch === '<') {
+			if (xml) {
+				const token = xmlMarkup();
+				if (token) return token;
+			}
 			const token = emit('openTag', 1);
 			inTag = true;
 			expectTagName = true;
@@ -65,39 +110,18 @@ export function scanner(src: string) {
 
 		if (ch === '=') return emit('equals', 1);
 
-		if (ch === '"' || ch === "'") {
-			const quote = ch;
-			let consumed = 1;
-			while (current(consumed)) {
-				if (current(consumed) === quote)
-					return emit('string', consumed + 1);
-				consumed +=
-					current(consumed) === '\\' && current(consumed + 1)
-						? 2
-						: 1;
-			}
-			return emit('string', consumed);
-		}
-
-		if (expectTagName && /[a-zA-Z]/.test(ch)) {
-			const consumed = matchWhile(ch => /[a-zA-Z0-9\-_:]/.test(ch));
-			const token = emit('tagName', consumed);
-			expectTagName = false;
-			return token;
-		}
-
-		if (inTag && ch === '.' && /[a-zA-Z]/.test(current(1))) {
+		if (ch === '"' || ch === "'") return string(ch);
+		if (!xml && inTag && ch === '.' && /[a-zA-Z]/.test(current(1))) {
 			return emit(
 				'attrName',
 				matchWhile(ch => /[a-zA-Z0-9\-_:]/.test(ch), 1),
 			);
 		}
 
-		if (inTag && /[a-zA-Z]/.test(ch)) {
-			return emit(
-				'attrName',
-				matchWhile(ch => /[a-zA-Z0-9\-_:]/.test(ch)),
-			);
+		if (inTag && nameStart.test(ch)) {
+			const token = emit(expectTagName ? 'tagName' : 'attrName', matchWhile(ch => namePart.test(ch)));
+			expectTagName = false;
+			return token;
 		}
 
 		if (!inTag) {
