@@ -1,0 +1,15 @@
+{
+	"extends": "../tsconfig.json",
+	"compilerOptions": {
+		"outDir": "../dist/go"
+	},
+	"files": [
+		"index.ts",
+		"highlight.ts"
+	],
+	"references": [
+		{
+			"path": "../sdk"
+		}
+	]
+}
