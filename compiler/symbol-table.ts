@@ -1,13 +1,14 @@
 import {
 	Flags,
 	ReferenceSymbolTable,
+	type OwnershipMode,
 	type Symbol as SdkSymbol,
 } from '@cxl/gbc.sdk';
 import type { Node } from './node.js';
 
 export { Flags };
 
-export type OwnershipMode = 'borrow' | 'var' | 'own';
+export type { OwnershipMode } from '@cxl/gbc.sdk';
 
 type BaseSymbol = SdkSymbol<Node, Type> & {
 	typeParams?: Type[];

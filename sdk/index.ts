@@ -926,11 +926,14 @@ export function parserTable<
 		parseTableApi(tableFn, api).expression;
 }
 
-type NodeAtIndex<Node extends BaseNode, Seen = never> = Node extends Seen
-	? Node
-	: Node extends { children: readonly (infer Child)[] }
-		? Node | NodeAtIndex<Extract<Child, BaseNode>, Seen | Node>
-		: Node;
+type RequiredChildren<Node> = Node extends { children: readonly (infer Child)[] }
+	? Extract<Child, BaseNode>
+	: never;
+
+type NodeAtIndex<Node extends BaseNode, Seen extends BaseNode = never> =
+	[Node] extends [never]
+		? Seen
+		: NodeAtIndex<Exclude<RequiredChildren<Node>, Seen | Node>, Seen | Node>;
 
 export function findNodeAtIndex<Node extends BaseNode>(
 	node: Node,

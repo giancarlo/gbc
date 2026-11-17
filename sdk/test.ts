@@ -1,5 +1,10 @@
 import { spec, type TestApi } from '@cxl/spec';
 import {
+	astChildNodes,
+	syntheticNext,
+	type AstContext,
+	type AstNode,
+	type AstNodeMap,
 	type BaseNode,
 	type MakeNodeMap,
 	type CallNodeShape,
@@ -572,6 +577,41 @@ export default spec('sdk', s => {
 			Assignable<Omit<NumericOperationFacts<ScalarType>, 'zeroError'>, NumericOperationFacts<ScalarType>>,
 		] = [true, false, false, true, true, true, true, false, false, false, false];
 		a.equalValues(checks, [true, false, false, true, true, true, true, false, false, false, false]);
+	});
+
+	s.test('canonical AST binds semantic facts without replacing node definitions', a => {
+		interface Context extends AstContext {
+			function: { name: string };
+			resolvedType: ScalarType;
+		}
+		type Nodes = AstNodeMap<Context>;
+		const position = { start: 0, end: 1, line: 0, source: '1' };
+		const value: Nodes['number'] = { ...position, kind: 'number', value: 1 };
+		const sum: Nodes['+'] = { ...position, kind: '+', children: [value, value] };
+		const owner = { name: 'sum' };
+		const next: Nodes['next'] = syntheticNext(sum, owner);
+		const fn: Nodes['fn'] = {
+			...position,
+			kind: 'fn',
+			children: [next],
+			symbol: owner,
+			returnOwnership: 'own',
+		};
+		const root: AstNode = { ...position, kind: 'root', children: [fn] };
+		a.equal(astChildNodes(root)[0], fn);
+		a.equal(astChildNodes(fn)[0], next);
+		a.equal(next.children?.[0], sum);
+		a.equal(next.owner, fn.symbol);
+		a.equal(findNodeAtIndex(root, 0), value);
+		type Assignable<From, To> = [From] extends [To] ? true : false;
+		const checks: [
+			Assignable<Nodes['root'], AstNode>,
+			Assignable<{ kind: '+'; children: [Nodes['number']] }, Pick<Nodes['+'], 'kind' | 'children'>>,
+			Assignable<{ owner: { name: number } }, Pick<Nodes['next'], 'owner'>>,
+			Assignable<{ returnOwnership: 'copy' }, Pick<Nodes['fn'], 'returnOwnership'>>,
+			Assignable<{ nominal: string }, Pick<Nodes['data'], 'nominal'>>,
+		] = [true, false, false, false, false];
+		a.equalValues(checks, [true, false, false, false, false]);
 	});
 
 	s.test('shared AST and scanner helpers', a => {

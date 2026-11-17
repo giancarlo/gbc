@@ -5,11 +5,8 @@ import {
 	Flags as SdkFlags,
 	tokenize,
 	type Symbol as SdkSymbol,
-	type DefinitionNodeShape,
-	type FunctionNodeShape,
+	type AstNodeMap,
 	type NumericOperationFacts,
-	type RootNodeShape,
-	type Token,
 } from '@cxl/gbc.sdk';
 import {
 	decodeBundle,
@@ -20,13 +17,12 @@ import { Program, scan } from './index.js';
 import { buildStdlibBundle } from './program.js';
 import { bufferView, instantiateWasm, runWasm } from './host.js';
 import { childNodes } from './node.js';
-import type { Node, NodeMap } from './node.js';
+import type { CompilerAstContext, Node, NodeMap } from './node.js';
 import {
 	BaseTypes,
 	Flags,
 	SymbolTable,
 	type Symbol,
-	type SymbolMap,
 	type Type,
 } from './symbol-table.js';
 import { compileWasm, type LibraryObject } from './target-wasm.js';
@@ -583,18 +579,27 @@ main {
 		a.equal(first.expressionType(definition('called'), firstScope), BaseTypes.Int32);
 		a.equalValues(unchanged(), []);
 	});
-	s.test('SDK shapes describe the same GB AST before and after checking', (a: TestApi) => {
-		const parsed = Program().parse(`add = (a: Int32, b: Int32): Int32 { a + b }; main { add(1, 2) >> out }`);
-		const root: RootNodeShape<{ node: Node }> = parsed.root;
+	s.test('SDK nodes are the same GB AST before and after checking', (a: TestApi) => {
+		const parsed = Program().parse(`add = (a: Int32, b: Int32): Int32 { a + b }; main { result = add(1, 2); result >> out }`);
+		type SdkNodes = AstNodeMap<CompilerAstContext>;
+		const root: SdkNodes['root'] = parsed.root;
 		const definition = parsed.root.children.find(node => node.kind === 'def' && node.symbol.name === 'add');
 		a.assert(definition?.kind === 'def' && definition.value.kind === 'fn');
-		const sharedDefinition: DefinitionNodeShape<{ node: Node; label: NodeMap['label'] }, SymbolMap['variable']> = definition;
-		const fn: Token<'fn'> & FunctionNodeShape<{ node: Node; parameter: NodeMap['parameter'] }, SymbolMap['function']> = definition.value;
+		const sharedDefinition: SdkNodes['def'] = definition;
+		const fn: SdkNodes['fn'] = definition.value;
+		const main = root.children.find(node => node.kind === 'main');
+		const result = main?.statements[0];
+		a.assert(result?.kind === 'def');
 		const children = fn.children;
 		const symbol = fn.symbol;
+		const resultSymbol = result.symbol;
+		a.equal(resultSymbol.type, undefined);
 		checker(parsed).run();
 		a.equalValues(parsed.errors, []);
 		a.equal(parsed.root, root);
+		a.equal(main?.statements[0], result);
+		a.equal(result.symbol, resultSymbol);
+		a.equal(resultSymbol.type, BaseTypes.Int32);
 		a.equal(sharedDefinition.value, fn);
 		a.equal(fn.children, children);
 		a.equal(fn.symbol, symbol);
