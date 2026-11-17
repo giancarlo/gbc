@@ -606,6 +606,53 @@ export default spec('cmd', s => {
 			);
 		});
 
+		it.should('parse linebreaks after logical and pipeline operators', (a: TestApi) => {
+			const cmd = program();
+			const source = 'true && # continue\n\necho ok |\ncat ||\necho failed\necho done';
+			const expected = 'true && echo ok | cat || echo failed\necho done';
+			const parsed = cmd.parse(source);
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list', 'Expected command list');
+			const logical = list.children[0];
+			a.assert(logical?.kind === '||', 'Expected disjunction');
+			const conjunction = logical.children[0];
+			a.assert(conjunction.kind === '&&', 'Expected conjunction');
+			a.equal(conjunction.children[1].kind, '|');
+			a.equalValues(parsed.errors, []);
+			a.equalValues(list.separators, ['newline']);
+			a.equal(cmd.compile(source).output, expected);
+			a.equalValues(cmd.ir(parsed.root), cmd.ir(cmd.parse(expected).root));
+		});
+
+		it.should('preserve here documents across operator linebreaks', (a: TestApi) => {
+			const cmd = program();
+			const source = "cat <<'LEFT' |\n$HOME\nLEFT\ncat <<'RIGHT'\n$USER\nRIGHT\necho done";
+			const expected = "cat << 'LEFT' |\n$HOME\nLEFT\ncat << 'RIGHT'\n$USER\nRIGHT\necho done";
+			const result = cmd.compile(source);
+			a.equalValues(result.errors, []);
+			a.equal(result.output, expected);
+			const list = result.ast.children[0];
+			a.assert(list?.kind === 'list', 'Expected command list');
+			a.equalValues(list.children.map(child => child.kind), ['|', 'command']);
+			const pipeline = list.children[0];
+			a.assert(pipeline?.kind === '|', 'Expected pipeline');
+			a.equalValues(pipeline.children.map(child =>
+				child.kind === 'command' && child.redirects[0]?.body?.value,
+			), ['$HOME\n', '$USER\n']);
+		});
+
+		it.should('diagnose missing commands after operator linebreaks', a => {
+			const cmd = program();
+			for (const operator of ['&&', '||', '|']) {
+				const source = `true ${operator}\n\n`;
+				const parsed = cmd.parse(source);
+				a.equalValues(parsed.errors.map(({ message, position: { start, end } }) =>
+					[message, start, end],
+				), [['Expected command', source.length, source.length]]);
+				a.equal(compiler(parsed.root), 'true');
+			}
+		});
+
 		it.should('compile comments, redirects, and groups', a => {
 			const cmd = program();
 			a.equalValues(cmd.compile(`echo hi # note`).output, `echo hi`);

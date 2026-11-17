@@ -116,9 +116,9 @@ type BaseNodeMap = {
 		closer: ')' | '}';
 		children: [Node];
 	};
-	'|': { children: [Node, Node] };
-	'&&': { children: [Node, Node] };
-	'||': { children: [Node, Node] };
+	'|': BinaryCommand;
+	'&&': BinaryCommand;
+	'||': BinaryCommand;
 	list: {
 		children: Node[];
 		separators: (';' | '&' | 'newline')[];
@@ -126,6 +126,7 @@ type BaseNodeMap = {
 	};
 	root: { children: Node[] };
 };
+type BinaryCommand = { children: [Node, Node]; hereDocuments?: HereDocumentNode[] };
 export type NodeMap = MakeNodeMap<BaseNodeMap>;
 export type ParameterOperator = '' | '#' | ':-' | ':=' | ':?' | ':+' | '-' | '=' | '?' | '+' | '%' | '%%' | '##';
 export type WordPartNode = NodeMap['literal' | 'escape' | 'pattern' | 'quoted' | 'parameterExpansion' | 'commandSubstitution' | 'arithmeticExpansion' | 'processSubstitution'];
@@ -921,13 +922,21 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		return token;
 	}
 
-	function consumeLinebreak() {
+	function consumeLinebreak(hereDocuments?: HereDocumentNode[]) {
 		let newline = false;
 		while (current().kind === 'newline' || current().kind === 'comment') {
 			if (current().kind === 'newline') newline = true;
-			next();
+			const bodies = next();
+			if (bodies.length) hereDocuments?.push(...bodies);
 		}
 		return newline;
+	}
+
+	function consumeOperatorLinebreak() {
+		if (current().kind !== 'newline' && current().kind !== 'comment') return;
+		const hereDocuments: HereDocumentNode[] = [];
+		consumeLinebreak(hereDocuments);
+		return hereDocuments.length ? hereDocuments : undefined;
 	}
 
 	function parseGroup(): GroupNode {
@@ -1331,6 +1340,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 		while (current().kind === '|') {
 			const operator = current();
 			next();
+			const hereDocuments = consumeOperatorLinebreak();
 			const right = catchAndRecover(
 				() => parsePipelineCommand(),
 				() => undefined,
@@ -1342,6 +1352,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 				start: left.start,
 				end: right.end,
 				children: [left, right],
+				...(hereDocuments && { hereDocuments }),
 			};
 		}
 		return left;
@@ -1353,6 +1364,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 			const operator = current();
 			const kind = operator.kind === '&&' ? '&&' : '||';
 			next();
+			const hereDocuments = consumeOperatorLinebreak();
 			const right = catchAndRecover(
 				() => parsePipe(),
 				() => undefined,
@@ -1364,6 +1376,7 @@ function createParser(source: string, options: ProgramOptions = {}) {
 				start: left.start,
 				end: right.end,
 				children: [left, right],
+				...(hereDocuments && { hereDocuments }),
 			};
 		}
 		return left;
@@ -1552,8 +1565,10 @@ function compileNode(node: Node): string {
 			throw new Error('Cannot emit IDE declaration as POSIX shell');
 		case '|':
 		case '&&':
-		case '||':
-			return `${compileNode(node.children[0])} ${node.kind} ${compileNode(node.children[1])}`;
+		case '||': {
+			const linebreak = node.hereDocuments ? '\n' + node.hereDocuments.map(compileNode).join('') : ' ';
+			return `${compileNode(node.children[0])} ${node.kind}${linebreak}${compileNode(node.children[1])}`;
+		}
 	}
 }
 
