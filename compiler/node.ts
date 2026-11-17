@@ -1,4 +1,21 @@
-import type { MakeNodeMap } from '@cxl/gbc.sdk';
+import type {
+	BinaryNodeShape,
+	CallNodeShape,
+	DefinitionNodeShape,
+	ExternalNodeShape,
+	FunctionNodeShape,
+	NextNodeShape,
+	ParameterNodeShape,
+	ScopedBlockNodeShape,
+	ConditionalNodeShape,
+	IdentifierNodeShape,
+	LiteralNodeShape,
+	MakeNodeMap,
+	NumberNodeShape,
+	RootNodeShape,
+	StringNodeShape,
+	UnaryNodeShape,
+} from '@cxl/gbc.sdk';
 
 import type {
 	OwnershipMode,
@@ -9,13 +26,19 @@ import type {
 	TypeSymbol,
 } from './symbol-table.js';
 
-type Infix = { children: [Node, Node] };
+interface NodeTypes {
+	node: Node;
+	label: NodeMap['label'];
+	parameter: NodeMap['parameter'];
+}
+
+type Infix = BinaryNodeShape<NodeTypes>;
 type MakeInfix<T extends string> = { [K in T]: Infix };
 
 export type BaseNodeMap = {
-	root: { children: Node[] };
-	main: { children: Node[]; statements: Node[]; scope: Scope };
-	test: { children: Node[]; statements: Node[]; scope: Scope };
+	root: RootNodeShape<NodeTypes>;
+	main: ScopedBlockNodeShape<NodeTypes, Scope>;
+	test: ScopedBlockNodeShape<NodeTypes, Scope>;
 	type: {
 		children: [Node, Node] | [Node, Node, Node];
 		typeParameters?: NodeMap['parameter'][];
@@ -24,84 +47,43 @@ export type BaseNodeMap = {
 	typeident: { symbol: TypeSymbol };
 	done: object;
 	break: object;
-	ident: { symbol: Symbol };
+	ident: IdentifierNodeShape<Symbol>;
 	label: object;
-	string: { value?: string };
-	number: { value: number | bigint; float?: boolean };
-	literal: { value: unknown; references?: Node[] };
+	string: StringNodeShape;
+	number: NumberNodeShape;
+	literal: LiteralNodeShape<NodeTypes>;
 	interp: { children: Node[]; strings: string[] };
 	extend: { children: [NodeMap['ident'], NodeMap['fn']] };
 	/** A module import statement (destructure or `#importmap` entry) — all
 	 * binding happened at parse time; inert for the checker and codegen. */
 	import: { children: Node[] };
 	loop: object;
-	next: {
-		children?: [Node | undefined];
-		owner: SymbolMap['function'];
-		implicit?: true;
-	};
+	next: NextNodeShape<NodeTypes, SymbolMap['function']>;
 	comment: object;
-	parameter: {
-		children: [NodeMap['label'] | undefined, Node | undefined, Node | undefined];
-		label?: NodeMap['label'];
-		symbol: SymbolMap['variable'];
-		type?: Node;
-		value?: Node;
-	};
-	propdef: {
-		children: [
-			NodeMap['label'] | undefined,
-			Node | undefined,
-			Node | undefined,
-		];
-		label?: NodeMap['label'];
-		symbol: SymbolMap['variable'];
-		type?: Node;
-		value?: Node;
-	};
-	def: {
-		children: [NodeMap['label'], Node | undefined, Node];
-		label: NodeMap['label'];
-		symbol: SymbolMap['variable'];
-		value: Node;
-		type?: Node;
-	};
-	external: {
-		children: [NodeMap['label'], Node];
-		label: NodeMap['label'];
-		symbol: SymbolMap['function'];
-		type: Node;
-	};
+	parameter: ParameterNodeShape<NodeTypes, SymbolMap['variable']>;
+	propdef: ParameterNodeShape<NodeTypes, SymbolMap['variable']>;
+	def: DefinitionNodeShape<NodeTypes, SymbolMap['variable']>;
+	external: ExternalNodeShape<NodeTypes, SymbolMap['function']>;
 	'@': object;
-	'=': { children: [Node, Node] };
-	'??': { children: [Node, Node] };
-	'?': { children: [Node, Node, (Node | undefined)?] };
-	'~': { children: [Node] };
-	'!': { children: [Node] };
-	'+': { children: [Node] };
+	'=': BinaryNodeShape<NodeTypes>;
+	'??': BinaryNodeShape<NodeTypes>;
+	'?': ConditionalNodeShape<NodeTypes>;
+	'~': UnaryNodeShape<NodeTypes>;
+	'!': UnaryNodeShape<NodeTypes>;
+	'+': UnaryNodeShape<NodeTypes>;
 	$: object;
-	negate: { children: [Node] };
-	fn: {
+	negate: UnaryNodeShape<NodeTypes>;
+	fn: FunctionNodeShape<NodeTypes, SymbolMap['function']> & {
 		objectBacked?: true;
-		parameters?: NodeMap['parameter'][];
-		typeParameters?: NodeMap['parameter'][];
-		statements?: Node[];
-		children: Node[];
-		symbol: SymbolMap['function'];
-		returnType?: Node;
-		returnTypes?: Node[];
-		returnRestType?: Node;
-		returnVariants?: Node[][];
 		returnOwnership?: OwnershipMode;
 		returnOwnerships?: OwnershipMode[];
 		returnRestOwnership?: OwnershipMode;
 		returnVariantOwnerships?: OwnershipMode[][];
 	};
-	'[': { children: [Node, Node] };
-	'(': { children: [Node] };
-	':': { children: [Node, Node] };
-	call: {
-		children: [Node, Node | undefined];
+	'[': BinaryNodeShape<NodeTypes>;
+	'(': UnaryNodeShape<NodeTypes>;
+	':': BinaryNodeShape<NodeTypes>;
+	call: CallNodeShape<NodeTypes> & {
 		/** Fn an inlined error-ctor call belongs to (trace attribution). */
 		originFn?: string;
 	};
@@ -113,7 +95,7 @@ export type BaseNodeMap = {
 		/** Fn the construction belongs to (survives template inlining). */
 		originFn?: string;
 	};
-	'.': { children: [Node, Node] };
+	'.': BinaryNodeShape<NodeTypes>;
 	',': { children: Node[] };
 	'>>': { children: Node[] };
 	'->': { children: [Node, ...NodeMap['call'][]] };

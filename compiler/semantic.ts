@@ -1,4 +1,4 @@
-import { text } from '@cxl/gbc.sdk';
+import { text, type NumericOperationFacts } from '@cxl/gbc.sdk';
 
 import { childNodes } from './node.js';
 import type { InfixNode, Node, NodeMap } from './node.js';
@@ -399,7 +399,7 @@ export function numericOperation(
 		valueType: operands.valueType, floatType: operands.floatType, wide: operands.wide, unsigned: operands.unsigned,
 		resultType, errors, zeroError, overflowError,
 		signedMinimum: operands.wide ? -0x8000000000000000n : -0x80000000n,
-	};
+	} satisfies NumericOperationFacts<Type>;
 }
 
 export function numericOperands(left: Type, right: Type) {

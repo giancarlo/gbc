@@ -5,6 +5,11 @@ import {
 	Flags as SdkFlags,
 	tokenize,
 	type Symbol as SdkSymbol,
+	type DefinitionNodeShape,
+	type FunctionNodeShape,
+	type NumericOperationFacts,
+	type RootNodeShape,
+	type Token,
 } from '@cxl/gbc.sdk';
 import {
 	decodeBundle,
@@ -21,6 +26,7 @@ import {
 	Flags,
 	SymbolTable,
 	type Symbol,
+	type SymbolMap,
 	type Type,
 } from './symbol-table.js';
 import { compileWasm, type LibraryObject } from './target-wasm.js';
@@ -577,6 +583,25 @@ main {
 		a.equal(first.expressionType(definition('called'), firstScope), BaseTypes.Int32);
 		a.equalValues(unchanged(), []);
 	});
+	s.test('SDK shapes describe the same GB AST before and after checking', (a: TestApi) => {
+		const parsed = Program().parse(`add = (a: Int32, b: Int32): Int32 { a + b }; main { add(1, 2) >> out }`);
+		const root: RootNodeShape<{ node: Node }> = parsed.root;
+		const definition = parsed.root.children.find(node => node.kind === 'def' && node.symbol.name === 'add');
+		a.assert(definition?.kind === 'def' && definition.value.kind === 'fn');
+		const sharedDefinition: DefinitionNodeShape<{ node: Node; label: NodeMap['label'] }, SymbolMap['variable']> = definition;
+		const fn: Token<'fn'> & FunctionNodeShape<{ node: Node; parameter: NodeMap['parameter'] }, SymbolMap['function']> = definition.value;
+		const children = fn.children;
+		const symbol = fn.symbol;
+		checker(parsed).run();
+		a.equalValues(parsed.errors, []);
+		a.equal(parsed.root, root);
+		a.equal(sharedDefinition.value, fn);
+		a.equal(fn.children, children);
+		a.equal(fn.symbol, symbol);
+		a.equalValues(fn.parameters?.map(parameter => parameter.symbol.name), ['a', 'b']);
+		a.equal(fn.symbol.parameters?.[0]?.type, BaseTypes.Int32);
+		a.equal(fn.statements?.[0]?.kind, 'next');
+	});
 	s.test('shared numeric facts distinguish guards, signedness and conversion bounds', (a: TestApi) => {
 		const program = Program();
 		const parsed = program.parse(`divide = (a: Int64, b: Uint32): Int64 | DivByZero | NumericOverflow { a / b };
@@ -590,7 +615,7 @@ main { divide(Int64(7), Uint32(2)) >> Int64 { $ } | Error { Int64(0) } >> out }`
 		const node = statement.children?.[0];
 		a.assert(node?.kind === '/');
 		const unchanged = snapshotGraph(parsed.root);
-		const dynamic = numericOperation(node, BaseTypes.Int64, BaseTypes.Uint32, { value: undefined });
+		const dynamic: NumericOperationFacts<Type> = numericOperation(node, BaseTypes.Int64, BaseTypes.Uint32, { value: undefined });
 		a.equal(dynamic.valueType, BaseTypes.Int64);
 		a.equal(dynamic.unsigned, true);
 		a.equal(dynamic.wide, true);

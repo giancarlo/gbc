@@ -1,6 +1,19 @@
 import { spec, type TestApi } from '@cxl/spec';
 import {
 	type BaseNode,
+	type MakeNodeMap,
+	type CallNodeShape,
+	type RootNodeShape,
+	type BinaryNodeShape,
+	type ConditionalNodeShape,
+	type IdentifierNodeShape,
+	type NumberNodeShape,
+	type ScalarType,
+	type NumericOperationFacts,
+	type ParameterNodeShape,
+	type DefinitionNodeShape,
+	type FunctionNodeShape,
+	type NextNodeShape,
 	type BinaryNodeBase,
 	childNodes,
 	CompilerError,
@@ -52,6 +65,19 @@ type TestNodeMap = {
 };
 type TestArgumentParent = NodeWithChildren<TestNodeMap, TestArgument[]>;
 
+interface ComposedTypes { node: ComposedNode }
+
+type ComposedShapes = {
+	'root': RootNodeShape<ComposedTypes>;
+	'number': NumberNodeShape;
+	'ident': IdentifierNodeShape<{ id: number }>;
+	'+': BinaryNodeShape<ComposedTypes>;
+	'call': CallNodeShape<ComposedTypes>;
+	'?': ConditionalNodeShape<ComposedTypes>;
+	block: { children: ComposedNode[] };
+};
+type ComposedMap = MakeNodeMap<ComposedShapes>;
+type ComposedNode = ComposedMap[keyof ComposedMap];
 const _ident = /\w/;
 const ident = (ch: string) => ch === '_' || _ident.test(ch);
 const notIdent = (ch: string) => !ident(ch);
@@ -490,6 +516,62 @@ export default spec('sdk', s => {
 				'left\nmiddle\nright',
 			);
 		});
+	});
+
+	s.test('shared GB node shapes compose with language extensions', a => {
+		const position = { start: 0, end: 1, line: 0, source: '1' };
+		const value: ComposedMap['number'] = { ...position, kind: 'number', value: 1 };
+		const reference: ComposedMap['ident'] = { ...position, kind: 'ident', symbol: { id: 1 } };
+		const sum: ComposedMap['+'] = { ...position, kind: '+', children: [reference, value] };
+		const call: ComposedMap['call'] = { ...position, kind: 'call', children: [reference, undefined] };
+		const branch: ComposedMap['?'] = { ...position, kind: '?', children: [value, sum, call] };
+		const block: ComposedMap['block'] = { ...position, kind: 'block', children: [branch] };
+		const root: ComposedMap['root'] = { ...position, kind: 'root', children: [block] };
+		a.equal(childNodes(root)[0], block);
+		a.equal(childNodes(block)[0], branch);
+		a.equal(childNodes(branch)[1], sum);
+		a.equal(childNodes(sum)[0], reference);
+		a.equal(childNodes(call)[1], undefined);
+		a.equal(findNodeAtIndex(root, 0), value);
+		type Assignable<From, To> = [From] extends [To] ? true : false;
+		const checks: [
+			Assignable<ComposedNode, BaseNode>,
+			Assignable<{ children: [ComposedNode] }, ComposedShapes['+']>,
+			Assignable<{ children: [ComposedNode, ComposedNode, ComposedNode] }, ComposedShapes['+']>,
+			Assignable<{ symbol: { name: string } }, ComposedShapes['ident']>,
+			Assignable<{ value: string }, ComposedShapes['number']>,
+			Assignable<{ children: [] }, ComposedShapes['call']>,
+			Assignable<{ kind: 'extension' }, ComposedNode>,
+		] = [true, false, false, false, false, false, false];
+		a.equalValues(checks, [true, false, false, false, false, false, false]);
+	});
+
+	s.test('shared AST contracts preserve language-specific shapes and semantic facts', a => {
+		type Assignable<From, To> = [From] extends [To] ? true : false;
+		type Nodes = { node: ComposedNode; label: Token<'label'>; parameter: Token<'parameter'> };
+		type Variable = { name: string };
+		type Function = { parameters?: Variable[] };
+		const type = { kind: 'type', family: 'int', size: 4 } as const satisfies ScalarType;
+		const facts: NumericOperationFacts<ScalarType> = {
+			valueType: type, floatType: undefined, wide: false, unsigned: false,
+			resultType: type, errors: [], zeroError: undefined, overflowError: undefined,
+			signedMinimum: -0x80000000n,
+		};
+		a.equal(facts.valueType, type);
+		const checks: [
+			Assignable<ScalarType, Type>,
+			Assignable<{ kind: 'type'; family: 'string'; size: 4 }, ScalarType>,
+			Assignable<{ kind: 'type'; family: 'float'; size: 1 }, ScalarType>,
+			Assignable<{ children: [undefined, undefined, undefined]; symbol: Variable }, ParameterNodeShape<Nodes, Variable>>,
+			Assignable<{ children: [Token<'label'>, undefined, ComposedNode]; label: Token<'label'>; value: ComposedNode; symbol: Variable }, DefinitionNodeShape<Nodes, Variable>>,
+			Assignable<{ children: ComposedNode[]; symbol: Function }, FunctionNodeShape<Nodes, Function>>,
+			Assignable<{ children: [ComposedNode]; owner: Function }, NextNodeShape<Nodes, Function>>,
+			Assignable<{ children: [ComposedNode] }, NextNodeShape<Nodes, Function>>,
+			Assignable<{ children: [ComposedNode]; value: ComposedNode; symbol: Variable }, DefinitionNodeShape<Nodes, Variable>>,
+			Assignable<{ children: ComposedNode[] }, FunctionNodeShape<Nodes, Function>>,
+			Assignable<Omit<NumericOperationFacts<ScalarType>, 'zeroError'>, NumericOperationFacts<ScalarType>>,
+		] = [true, false, false, true, true, true, true, false, false, false, false];
+		a.equalValues(checks, [true, false, false, true, true, true, true, false, false, false, false]);
 	});
 
 	s.test('shared AST and scanner helpers', a => {
