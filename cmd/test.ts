@@ -1379,6 +1379,27 @@ export default spec('cmd', s => {
 			});
 		});
 
+		it.should('parse leading braces as one expanded shell argument', (a: TestApi) => {
+			const source = 'cat AGENTS.md; cat {sdk,compiler,cli}/package.json';
+			const parsed = program().parse(source);
+			a.equalValues(parsed.errors.map(error => error.message), []);
+			const list = parsed.root.children[0];
+			a.assert(list?.kind === 'list');
+			const command = list.children[1];
+			a.assert(command?.kind === 'command');
+			a.equalValues(command.parts.map(part => part.kind), ['word', 'word']);
+			const argument = command.parts[1];
+			a.assert(argument?.kind === 'word');
+			a.equalValues([argument.start, argument.end], [source.indexOf('{'), source.length]);
+			a.equal(argument.value, undefined);
+			a.equal(argument.literal, false);
+			a.equal(argument.hasExpansion, true);
+			a.equal(argument.hasNonliteralConstruct, true);
+			a.equal(argument.hasParameterExpansion, false);
+			a.equal(argument.hasCommandSubstitution, false);
+			a.equal(argument.hasBackticks, false);
+		});
+
 		it.should('preserve standalone brace command groups', (a: TestApi) => {
 			const parsed = program().parse('{ echo hello; }');
 			a.equalValues(parsed.errors, []);

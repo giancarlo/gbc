@@ -669,6 +669,7 @@ function createScanner(source: string, context?: ScannerContext) {
 			if (current() === '?') return tk('?', 1);
 		}
 		if (isProcessSubstitution()) return scanWord();
+		if (current() === '{' && !isControl(current(1))) return scanWord();
 		for (const operator of operators) {
 			const consumed = matchString(operator);
 			if (consumed) {
