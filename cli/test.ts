@@ -76,6 +76,38 @@ export dbl = (n: Int32): Int32 { n * 2 };`,
 		try {
 			const fixtures = [
 				{ name: 'answer', source: 'main { 42 >> out }', output: '42' },
+				{
+					name: 'scalar',
+					source: `mark = (n: Int32): Bool { n >> out; next n > 0 };
+choose = (n: Int32, enabled: Bool): Int32 { enabled && mark(n) ? (n == 2 ? n * 20 : -n) : 7 };
+main { x = choose(2, true) + choose(3, false); x >> out; (2147483647 + 1) >> out; (1 <: 33) >> out; (-8 :> -31) >> out }`,
+					output: '247-21474836482-4',
+				},
+				{
+					name: 'int64',
+					source: `add = (value: Int64): Int64 { value + 2 };
+choose = (value: Int64, bound: Int32): Int64 { value < bound ? ~value : value - 1 };
+main {
+	x: Int64 = -1; add(x) >> out; add(2147483648) >> out;
+	choose(-2147483649, -1) >> out;
+	(9223372036854775807 + 1) >> out; (-9223372036854775808 :> 65) >> out
+}`,
+					output: '121474836502147483648-9223372036854775808-4611686018427387904',
+				},
+				{
+					name: 'pipeline',
+					source: `mark = (x: Int32): Int32 { x >> out; next x + 1 };
+twice = (x: Int32): Int32 { x * 2 };
+log = (x: Int32): Void { x >> out };
+main { value = 20 >> mark >> twice; log(value); 2 >> mark >> twice >> log; 3 >> twice >> out }`,
+					output: '2042266',
+				},
+				{
+					name: 'boolean',
+					source: `positive = (n: Int32): Bool { n > 0 };
+main { true >> out; -1 >> positive >> out; !positive(0) >> out }`,
+					output: 'truefalsetrue',
+				},
 				{ name: 'empty', source: 'main {}', output: '' },
 				{ name: 'limits', source: 'main { -2147483648 >> out; 0 >> out; 2147483647 >> out }', output: '-214748364802147483647' },
 			];

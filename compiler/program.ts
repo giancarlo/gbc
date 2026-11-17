@@ -1,5 +1,6 @@
 import {
 	CompilerError,
+	compileLlvm,
 	type FormatOptions,
 	moduleClosureHash,
 	ParserApi,
@@ -17,7 +18,6 @@ import {
 import { parse } from './parser.js';
 import { scan } from './scanner.js';
 import { compileTypes } from './compiler-types.js';
-import { compileLlvm } from './target-llvm.js';
 import { prepareProgram } from './preparation.js';
 import {
 	compileWasm,
@@ -1021,13 +1021,12 @@ export function Program(options?: ProgramOptions) {
 		let ir: string | undefined;
 		if (parsed.errors.length === 0) {
 			try {
-				const prepared = prepareAst(parsed.root, testMode, modeOptions.moduleDefs);
 				if (modeOptions.target === 'llvm') {
 					if (testMode || options?.debug)
 						throw new CompilerError('LLVM target does not support test or debug builds', parsed.root);
-					ir = compileLlvm(prepared);
+					ir = compileLlvm(parsed.root, stdlibEntrySymbols.out);
 				} else bytes = compileWasm({
-					prepared,
+					prepared: prepareAst(parsed.root, testMode, modeOptions.moduleDefs),
 					testMode,
 					debugBuild: !!options?.debug,
 					hostExports,

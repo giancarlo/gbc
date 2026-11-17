@@ -3,6 +3,7 @@ import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
 import {
 	Flags as SdkFlags,
+	compileLlvm,
 	encodeModuleBundle,
 	materializeModuleGraph,
 	resolveModuleInterfaces,
@@ -30,7 +31,6 @@ import {
 } from './symbol-table.js';
 import { compileWasm, type LibraryObject } from './target-wasm.js';
 import { checker } from './checker.js';
-import { compileLlvm } from './target-llvm.js';
 import { dispatchArms, numericConversion, numericOperation } from './semantic.js';
 import lifecycle from './test-lifecycle.js';
 
@@ -425,7 +425,7 @@ main {
 			}
 			a.equalValues(unchanged(), []);
 		}
-		a.throws(() => compileLlvm(prepared));
+		a.throws(() => compileLlvm(parsed.root));
 		a.equal(facts.fnReturnsOwned(identity, firstScope), true);
 		a.equalValues(unchanged(), []);
 	});
@@ -578,7 +578,7 @@ main {
 			}
 			a.equalValues(unchanged(), []);
 		}
-		a.throws(() => compileLlvm(prepared));
+		a.throws(() => compileLlvm(parsed.root));
 		a.equal(first.expressionType(definition('called'), firstScope), BaseTypes.Int32);
 		a.equalValues(unchanged(), []);
 	});
@@ -719,23 +719,25 @@ main { identity(7) -> add() >> out }`);
 			a.equalValues(parsed.errors, []);
 			const prepared = program.prepareAst(parsed.root);
 			const unchanged = snapshotGraph(prepared);
-			const native = compileLlvm(prepared);
+			const sink = program.symbolTable.get('out');
+			const native = compileLlvm(parsed.root, sink);
 			const wasm = compileWasm({ prepared });
 			for (let attempt = 0; attempt < 2; attempt++) {
-				a.equal(compileLlvm(prepared), native);
+				a.equal(compileLlvm(parsed.root, sink), native);
 				independent.compileAst(other.ast);
 				a.equalValues(compileWasm({ prepared }), wasm);
 				a.equalValues(unchanged(), []);
 			}
 		}
-		const parsed = program.parse('main { 1 + 2 >> out }');
+		const source = "main { 'unsupported' >> out }";
+		const parsed = program.parse(source);
 		checker(parsed).run();
 		const unchanged = snapshotGraph(parsed.root);
 		const prepared = program.prepareAst(parsed.root);
-		a.throws(() => compileLlvm(prepared));
+		a.throws(() => compileLlvm(parsed.root, program.symbolTable.get('out')));
 		const output: string[] = [];
 		runWasm(compileWasm({ prepared }), value => output.push(value));
-		a.equalValues(output, ['3']);
+		a.equalValues(output, ['unsupported']);
 		a.equalValues(unchanged(), []);
 	});
 
@@ -802,13 +804,11 @@ main {
 		for (const invalid of [
 			'main {',
 			'main { missing >> out }',
-			'main { true >> out }',
 			'main { 1.5 >> out }',
 			'main { 1.0 >> out }',
 			"main { 'text' >> out }",
-			'main { 2147483648 >> out }',
-			'main { (1 + 2) >> out }',
-			'main { value = 42; value >> out }',
+			'main { 9223372036854775808 >> out }',
+			'neg = (n: Int64): Int64 { -n }; main { neg(2147483648) >> out }',
 			'value = 42; main { 42 >> out }',
 			'export value = (): Int32 { 42 }',
 		]) {
