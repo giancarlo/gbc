@@ -754,8 +754,7 @@ export default spec('sdk', s => {
 		type Root = Parameters<typeof compileLlvm>[0];
 		const position = { start: 0, end: 1, line: 0, source: '1' };
 		const output = { kind: 'function', flags: Flags.External };
-		const number = { ...position, kind: 'number', value: 21n } as const;
-		const root: Root = {
+		const fixture = (value: number | bigint): Root => ({
 			...position,
 			kind: 'root',
 			children: [{
@@ -767,18 +766,29 @@ export default spec('sdk', s => {
 					...position,
 					kind: '>>',
 					children: [
-						{ ...position, kind: '+', children: [number, number] },
+						{
+							...position,
+							kind: '+',
+							children: [
+								{ ...position, kind: 'number', value },
+								{ ...position, kind: 'number', value },
+							],
+						},
 						{ ...position, kind: 'ident', symbol: output },
 					],
 				}],
 			}],
-		};
+		});
+		const root = fixture(21n);
 		const ir = compileLlvm(root, output);
 		a.ok(ir.includes('add i32 21, 21'));
 		a.ok(ir.includes('call i32 (ptr, ...) @printf'));
 		a.throws(() => compileLlvm(root), { message: 'LLVM target does not support ident here' });
 		a.throws(() => compileLlvm({ ...root, children: [] }), {
 			message: 'LLVM target requires a main block',
+		});
+		a.throws(() => compileLlvm(fixture(1.5), output), {
+			message: 'LLVM target does not support number here',
 		});
 		a.equal(compileLlvm(root, output), ir);
 	});

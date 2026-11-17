@@ -34,7 +34,8 @@ export function buildNative(ir: string, output: string): void {
 		const object = join(directory, 'program.o');
 		run('llc', [`-mtriple=${target}`, '-O2', '-filetype=obj', '-relocation-model=pic', '-o', object, '-'], bitcode);
 		const executable = join(directory, 'program');
-		run(command, [...args, object, '-o', executable]);
+		const math = process.platform === 'linux' ? ['-Wl,--as-needed', '-lm'] : ['-lm'];
+		run(command, [...args, object, ...math, '-o', executable]);
 		renameSync(executable, output);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });

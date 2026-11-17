@@ -98,6 +98,33 @@ export interface AstContext {
 	resolvedType: unknown;
 }
 
+export interface CheckedAstType {
+	readonly kind: string;
+	readonly family?: string;
+	readonly name?: string;
+	readonly members?: readonly CheckedAstType[] | Readonly<Record<string, unknown>>;
+	readonly size?: number;
+	readonly rest?: unknown;
+	readonly elements?: readonly CheckedAstType[];
+}
+
+type CheckedComparison = Pick<NumericOperationFacts<CheckedAstType>, 'floatType' | 'wide' | 'unsigned'>;
+
+export interface NumericConversionRange {
+	minimum: number;
+	maximum: number;
+	checked: boolean;
+}
+
+interface CheckedNumericCall {
+	conversion?: { target: CheckedAstType; range: NumericConversionRange | undefined };
+	intrinsic?: {
+		readonly name?: string;
+		readonly parameters?: readonly { readonly type?: CheckedAstType }[];
+		readonly returnType?: CheckedAstType;
+	};
+}
+
 interface AstReferences<Context extends AstContext> {
 	node: AstNode<Context>;
 	label: AstNodeMap<Context>['label'];
@@ -120,7 +147,7 @@ export type AstShapeMap<Context extends AstContext> = {
 	typeident: { symbol: Context['typeSymbol'] };
 	done: object;
 	break: object;
-	ident: IdentifierNodeShape<Context['symbol']>;
+	ident: IdentifierNodeShape<Context['symbol']> & { standardOutput?: true };
 	label: object;
 	string: StringNodeShape;
 	number: NumberNodeShape;
@@ -155,7 +182,7 @@ export type AstShapeMap<Context extends AstContext> = {
 	'[': BinaryNodeShape<AstReferences<Context>>;
 	'(': UnaryNodeShape<AstReferences<Context>>;
 	':': BinaryNodeShape<AstReferences<Context>>;
-	call: CallNodeShape<AstReferences<Context>> & {
+	call: CallNodeShape<AstReferences<Context>> & CheckedNumericCall & {
 		/** Fn an inlined error-ctor call belongs to (trace attribution). */
 		originFn?: string;
 	};
@@ -174,23 +201,18 @@ export type AstShapeMap<Context extends AstContext> = {
 } & Record<
 	| '||'
 	| '&&'
-	| '+'
-	| '-'
-	| '*'
-	| '/'
-	| '%'
 	| '|'
 	| '&'
-	| '=='
-	| '!='
-	| '<'
-	| '>'
-	| '<='
-	| '>='
 	| '<:'
 	| ':>'
 	| '^',
 	BinaryNodeShape<AstReferences<Context>>
+> & Record<
+	'+' | '-' | '*' | '/' | '%',
+	BinaryNodeShape<AstReferences<Context>> & { numeric?: NumericOperationFacts<CheckedAstType> }
+> & Record<
+	'==' | '!=' | '<' | '>' | '<=' | '>=',
+	BinaryNodeShape<AstReferences<Context>> & { comparison?: CheckedComparison }
 >;
 
 export type AstNodeMap<Context extends AstContext = AstContext> =
@@ -220,6 +242,21 @@ export function astChildNodes<Context extends AstContext>(
 		default:
 			return node.children;
 	}
+}
+
+export function astDispatchArms<Context extends AstContext>(
+	node: AstNode<Context>,
+	isNamedArm?: (node: AstNodeMap<Context>['ident']) => boolean,
+): AstNode<Context>[] | undefined {
+	if (node.kind !== '|') return;
+	const arms: AstNode<Context>[] = [];
+	function collect(arm: AstNode<Context>): boolean {
+		if (arm.kind === '|') return collect(arm.children[0]) && collect(arm.children[1]);
+		if (arm.kind !== 'fn' && !(arm.kind === 'ident' && isNamedArm?.(arm))) return false;
+		arms.push(arm);
+		return true;
+	}
+	return collect(node) ? arms : undefined;
 }
 
 export function syntheticNext<Node extends Token<string>, Function>(

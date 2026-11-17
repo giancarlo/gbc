@@ -1003,7 +1003,8 @@ export function Program(options?: ProgramOptions) {
 		const requireMain = modeOptions.requireMain ?? true;
 		const parsed = parser(src, { loader: modeOptions.loader });
 		rejectGlobalRedefinitions(symbolTable, parsed.scope, parsed.errors);
-		checker(parsed).run();
+		const checked = checker(parsed);
+		checked.run();
 		const hasMain = parsed.root.children.some(c => c.kind === 'main');
 		if (!testMode && requireMain && !hasMain && parsed.errors.length === 0)
 			parsed.errors.push(
@@ -1024,7 +1025,8 @@ export function Program(options?: ProgramOptions) {
 				if (modeOptions.target === 'llvm') {
 					if (testMode || options?.debug)
 						throw new CompilerError('LLVM target does not support test or debug builds', parsed.root);
-					ir = compileLlvm(parsed.root, stdlibEntrySymbols.out);
+					checked.resolveNumericNodes(stdlibEntrySymbols.out);
+					ir = compileLlvm(parsed.root);
 				} else bytes = compileWasm({
 					prepared: prepareAst(parsed.root, testMode, modeOptions.moduleDefs),
 					testMode,

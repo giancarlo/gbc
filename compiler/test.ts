@@ -804,11 +804,8 @@ main {
 		for (const invalid of [
 			'main {',
 			'main { missing >> out }',
-			'main { 1.5 >> out }',
-			'main { 1.0 >> out }',
 			"main { 'text' >> out }",
-			'main { 9223372036854775808 >> out }',
-			'neg = (n: Int64): Int64 { -n }; main { neg(2147483648) >> out }',
+			'main { 18446744073709551616 >> out }',
 			'value = 42; main { 42 >> out }',
 			'export value = (): Int32 { 42 }',
 		]) {
@@ -839,6 +836,48 @@ main {
 		const test = files.compileFile('/main.gb', { target: 'llvm', testMode: true });
 		a.equal(test.errors[0]?.message, 'LLVM target does not support test or debug builds');
 		a.equal(test.ir, undefined);
+	});
+	s.test('integer division preserves its error origin and overflow payload', (a: TestApi) => {
+		const source = `divide = (n: Int32, d: Int32): Int32 | DivByZero | NumericOverflow { n / d };
+main {
+	divide(1, 0) >> Int32 { String($) } | DivByZero { String($) } | NumericOverflow { $.operation } >> out;
+	divide(-2147483648, -1) >> Int32 { String($) } | DivByZero { String($) } | NumericOverflow { $.operation } >> out
+}`;
+		for (const debug of [false, true]) {
+			const { bytes, errors } = Program({ debug }).compile(source);
+			a.equalValues(errors, []);
+			a.assert(bytes);
+			const output: string[] = [];
+			runWasm(bytes, chunk => output.push(chunk));
+			a.equalValues(output, ['DivByZero at main:1', 'Int32 division']);
+		}
+	});
+	s.test('LLVM numeric diagnostics and file builds use the checked source', (a: TestApi) => {
+		let source = 'main { 6 / 0 >> out }';
+		const program = Program({ sys: {
+			readFile: () => source,
+			readBytes: () => new Uint8Array(),
+		} });
+		const wasm = program.compile(source);
+		const native = program.compileFile('/main.gb', { target: 'llvm' });
+		a.equal(wasm.errors[0]?.message, 'division by zero');
+		a.equal(native.errors[0]?.message, wasm.errors[0]?.message);
+		a.equal(native.errors[0]?.position.start, 11);
+		a.equal(native.errors[0]?.position.end, 12);
+		a.equal(native.ir, undefined);
+
+		source = `divide = (a: Int32, b: Int32): Int32 | DivByZero | NumericOverflow { a / b };
+main {
+	(6 / 2) >> out; sqrt(Float32(9.0)) >> out;
+	divide(1, 0) >> Int32 { $ } | Error { 7 } >> out
+}`;
+		const compile = program.compile(source, { target: 'llvm' });
+		a.equal(compile.errors.length, 0);
+		a.ok(compile.ir?.includes('sdiv i32 6, 2'));
+		const unchanged = snapshotGraph(compile.ast);
+		a.equal(compileLlvm(compile.ast), compile.ir);
+		a.equalValues(unchanged(), []);
+		a.equal(program.compileFile('/main.gb', { target: 'llvm' }).ir, compile.ir);
 	});
 	s.test('shared semantic infrastructure compatibility', a => {
 		const definition: NodeMap['label'] = {

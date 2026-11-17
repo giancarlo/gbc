@@ -1,7 +1,7 @@
-import { text, type NumericOperationFacts } from '@cxl/gbc.sdk';
+import { astDispatchArms, text, type NumericOperationFacts } from '@cxl/gbc.sdk';
 
 import { childNodes } from './node.js';
-import type { InfixNode, Node, NodeMap } from './node.js';
+import type { CompilerAstContext, InfixNode, Node, NodeMap } from './node.js';
 import {
 	BaseTypes as BT,
 	BufferSymbol,
@@ -630,29 +630,9 @@ function setFnForwarding(node: NodeMap['fn']): void {
 }
 
 export function dispatchArms(node: Node): Node[] | undefined {
-	if (node.kind !== '|') return undefined;
-	const arms: Node[] = [];
-	const walk = (n: Node): boolean => {
-		if (n.kind === '|') return walk(n.children[0]) && walk(n.children[1]);
-		// An arm is an inline fn value, or an ident naming a function (e.g. an
-		// external like `out_i32`) — `out = out_i32 | out_str | …`.
-		if (n.kind === 'fn') {
-			arms.push(n);
-			return true;
-		}
-		if (n.kind === 'ident') {
-			const s = n.symbol;
-			if (
-				s.kind === 'function' ||
-				(s.definition?.kind === 'def' && s.definition.value.kind === 'fn')
-			) {
-				arms.push(n);
-				return true;
-			}
-		}
-		return false;
-	};
-	return walk(node) ? arms : undefined;
+	return astDispatchArms<CompilerAstContext>(node, ({ symbol }) =>
+		symbol.kind === 'function' ||
+		(symbol.definition?.kind === 'def' && symbol.definition.value.kind === 'fn'));
 }
 
 function isConstValue(node: Node): boolean {

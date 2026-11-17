@@ -21,7 +21,7 @@ import type {
 	Type,
 } from './symbol-table.js';
 
-import { argumentNodes, bindCallArguments, createSemanticContext, type BorrowOrigin } from './semantic.js';
+import { argumentNodes, bindCallArguments, createSemanticContext, numericConversion, numericOperands, numericOperation, type BorrowOrigin } from './semantic.js';
 export { setDivByZero, reduceType, isKnownNonZeroNumber } from './semantic.js';
 
 /**
@@ -2223,6 +2223,46 @@ export function checker({
 				finalizeFnSemantics(statement, seen);
 	}
 
+	function resolveNumericNodes(output: Symbol | undefined): void {
+		const visited = new Set<Node>();
+		function visit(node: Node): void {
+			if (visited.has(node)) return;
+			visited.add(node);
+			for (const child of childNodes(node)) if (child) visit(child);
+			switch (node.kind) {
+				case 'fn':
+				case 'main':
+					for (const statement of node.statements ?? []) visit(statement);
+					break;
+				case '+': case '-': case '*': case '/': case '%':
+					node.numeric = numericOperation(node, resolver(node.children[0]), resolver(node.children[1]));
+					break;
+				case '==': case '!=': case '<': case '>': case '<=': case '>=':
+					node.comparison = numericOperands(resolver(node.children[0]), resolver(node.children[1]));
+					break;
+				case 'call': {
+					const [callee, argument] = node.children;
+					if (callee.kind === 'typeident' && argument && argument.kind !== ',') {
+						const target = callee.symbol.type;
+						if (target.kind === 'type')
+							node.conversion = { target, range: numericConversion(target, argument, resolver(argument)) };
+					} else {
+						const target = effectiveCallFunction(node);
+						if (target && target.flags & Flags.Intrinsic) node.intrinsic = target;
+					}
+					break;
+				}
+				case '>>':
+					for (const stage of node.children.slice(1))
+						if (stage.kind === 'ident' && stage.symbol === output) stage.standardOutput = true;
+					break;
+				default:
+					break;
+			}
+		}
+		visit(root);
+	}
+
 	return {
 		run: () => {
 			walkPipes(root);
@@ -2232,5 +2272,6 @@ export function checker({
 			for (const block of ownershipBlocks) checkMoves(block);
 		},
 		resolver,
+		resolveNumericNodes,
 	};
 }

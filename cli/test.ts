@@ -108,6 +108,57 @@ main { value = 20 >> mark >> twice; log(value); 2 >> mark >> twice >> log; 3 >> 
 main { true >> out; -1 >> positive >> out; !positive(0) >> out }`,
 					output: 'truefalsetrue',
 				},
+				{
+					name: 'numeric-widths',
+					source: `main {
+	Uint32(-1) >> out; 18446744073709551615 >> out;
+	(Int64(20) + Uint32(-1)) >> out; (Uint32(-1) > 1) >> out;
+	Int8(255) >> out; Uint16(-1) >> out; Int32(4294967297) >> out
+}`,
+					output: '4294967295184467440737095516154294967315true-1655351',
+				},
+				{
+					name: 'floating-point',
+					source: `ratio = (a: Float64, b: Float64): Float64 { a / b };
+main {
+	(Float32(0.1) + Float32(0.2)) >> out; (0.1 + 0.2) >> out;
+	Float64(Uint32(-1)) >> out; (-0.0) >> out; ratio(1.0, -0.0) >> out;
+	ratio(0.0, 0.0) >> out; (nan != nan) >> out; (nan < 1.0) >> out;
+	0.000001 >> out; 0.0000001 >> out; 1000000000000000000000.0 >> out; 1000000000000000100.0 >> out
+}`,
+					output: '0.300000011920928960.30000000000000004-10-InfinityNaNtruefalse0.0000011e-71e+211000000000000000100',
+				},
+				{
+					name: 'numeric-intrinsics',
+					source: `ratio = (a: Float64, b: Float64): Float64 { a / b };
+main {
+	sqrt(Float32(9.0)) >> out; abs(-2.5) >> out; floor(2.75) >> out;
+	ceil(2.25) >> out; trunc(-2.75) >> out; nearest(2.5) >> out; nearest(3.5) >> out;
+	ratio(1.0, min(0.0, -0.0)) >> out; ratio(1.0, max(0.0, -0.0)) >> out;
+	ratio(1.0, copysign(0.0, -1.0)) >> out; min(nan, 2.0) >> out;
+	max(Uint32(-1), Uint32(1)) >> out; min(-9, 3) >> out;
+	bits(Float32(-0.0)) >> out; bits(-0.0) >> out
+}`,
+					output: '32.523-224-InfinityInfinity-InfinityNaN4294967295-921474836489223372036854775808',
+				},
+				{
+					name: 'checked-numerics',
+					source: `divide = (a: Int32, b: Int32): Int32 | DivByZero | NumericOverflow { a / b };
+wide = (a: Int64, b: Int64): Int64 | DivByZero | NumericOverflow { a / b };
+rem = (a: Int32, b: Int32): Int32 | DivByZero { a % b };
+convert = (n: Float64): Int8 | NumericOverflow | OutOfMemory { Int8(n) };
+main {
+	divide(6, 2) >> Int32 { $ } | DivByZero { 10 } | NumericOverflow { 20 } >> out;
+	divide(6, 0) >> Int32 { $ } | DivByZero { 10 } | NumericOverflow { 20 } >> out;
+	divide(-2147483648, -1) >> Int32 { $ } | DivByZero { 10 } | NumericOverflow { 20 } >> out;
+	wide(-9223372036854775808, -1) >> Int64 { $ } | Error { Int64(21) } >> out;
+	rem(-2147483648, -1) >> Int32 { $ } | DivByZero { 99 } >> out;
+	convert(127.9) >> Int8 { Int32($) } | NumericOverflow { 90 } | OutOfMemory { 93 } >> out;
+	convert(nan) >> Int8 { Int32($) } | Error { 91 } >> out;
+	convert(128.0) >> Int8 { Int32($) } | Error { 92 } >> out
+}`,
+					output: '310202101279192',
+				},
 				{ name: 'empty', source: 'main {}', output: '' },
 				{ name: 'limits', source: 'main { -2147483648 >> out; 0 >> out; 2147483647 >> out }', output: '-214748364802147483647' },
 			];
@@ -129,6 +180,43 @@ main { true >> out; -1 >> positive >> out; !positive(0) >> out }`,
 			const run = await execute(process.execPath, [executable, 'run', join(directory, 'answer.wasm')]);
 			a.equal(run.stdout, '42');
 			a.ok(!readdirSync(directory).some(name => name.startsWith('.gbc-native-')));
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	s.test('native unary and comparison instructions use the operand width', async a => {
+		const directory = mkdtempSync(join(process.cwd(), '.gbc-native-test-'));
+		try {
+			const path = join(directory, 'negate.gb');
+			writeFileSync(path, `neg64 = (n: Int64): Int64 { -n };
+neg32 = (n: Float32): Float32 { -n };
+less = (x: Float32, y: Float64): Bool { x < y };
+main {
+	neg64(2147483648) >> out; neg64(-9223372036854775808) >> out;
+	neg32(Float32(1.5)) >> out; (1.0 / Float64(neg32(Float32(0.0)))) >> out;
+	less(Float32(1.5), 2.0) >> out; less(Float32(nan), 2.0) >> out
+}`);
+			await execute(process.execPath, [executable, 'build', '--native', '--outdir', directory, path]);
+			a.equal((await execute(join(directory, 'negate'))).stdout, '-2147483648-9223372036854775808-1.5-Infinitytruefalse');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	s.test('native unchecked float truncation traps on rounded overflow', async (a: TestApi) => {
+		const directory = mkdtempSync(join(process.cwd(), '.gbc-native-test-'));
+		const source = 'main { Int32(Float32(2147483647.0)) >> out }';
+		try {
+			const { bytes } = Program().compile(source);
+			a.assert(bytes);
+			a.throws(() => runWasm(bytes, () => {}));
+			const path = join(directory, 'rounded.gb');
+			writeFileSync(path, source);
+			await execute(process.execPath, [executable, 'build', '--native', '--outdir', directory, path]);
+			const result = spawnSync('bash', ['-c', 'ulimit -c 0; exec "$1"', 'gbc', join(directory, 'rounded')], { encoding: 'utf8' });
+			a.ok(result.signal || result.status);
+			a.equal(result.stdout, '');
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
