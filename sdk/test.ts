@@ -1,6 +1,16 @@
 import { spec, type TestApi } from '@cxl/spec';
 import {
 	astChildNodes,
+	createModuleGraph,
+	decodeModuleBundle,
+	encodeModuleBundle,
+	initializeModuleBundle,
+	materializeModuleGraph,
+	ModuleTag,
+	moduleClosureHash,
+	resolveModuleInterfaces,
+	type ModuleGraph,
+	type SerialObject,
 	syntheticNext,
 	type AstContext,
 	type AstNode,
@@ -123,7 +133,167 @@ function tokenHighlighter<Node extends Token<string>>(
 	});
 }
 
+const modulePosition = { source: '', start: 0, end: 0, line: 0 };
+const moduleScalar = { kind: 'type', family: 'int', size: 4 } satisfies ScalarType;
+
+function moduleFixture(hash: string, dependencies: string[] = [], visible = true) {
+	const references = new Map(dependencies.map(dependency => [{}, dependency] as const));
+	const fn = {
+		kind: 'function',
+		parameters: [{ type: moduleScalar, ownership: 'borrow' }],
+		returnTypes: [moduleScalar],
+		returnOwnership: 'own',
+	};
+	const label = { ...modulePosition, kind: 'label' } as const;
+	const value: AstNodeMap['fn'] = { ...modulePosition, kind: 'fn', symbol: fn, children: [] };
+	const declaration: AstNodeMap['def'] = {
+		...modulePosition,
+		kind: 'def',
+		label,
+		value,
+		symbol: { kind: 'variable', name: 'identity', flags: visible ? Flags.Export : 0, type: fn },
+		children: [label, undefined, value],
+	};
+	const root: AstNodeMap['root'] = {
+		...modulePosition,
+		kind: 'root',
+		children: [
+			declaration,
+			...Array.from(references.keys(), symbol => ({ ...modulePosition, kind: 'ident', symbol } as const)),
+		],
+	};
+	return createModuleGraph({ path: hash, hash, root }, {
+		reference(value) {
+			const h = references.get(value);
+			if (h) return { t: ModuleTag.Mod, h, s: 'identity' };
+		},
+	});
+}
+
+function moduleBytes(graphs: ModuleGraph[], objects: SerialObject[] = []) {
+	return encodeModuleBundle({
+		entry: graphs[0]?.path ?? '',
+		modules: new Map(graphs.map(graph => [graph.path, graph])),
+		objects,
+	});
+}
+
 export default spec('sdk', s => {
+	s.test('GBM closure hashes retain source and dependency order', (a: TestApi) => {
+		const first = moduleClosureHash('fixture', ['a', 'b']);
+		a.equal(first, moduleClosureHash('fixture', ['a', 'b']));
+		a.assert(first !== moduleClosureHash('fixture', ['b', 'a']));
+		a.assert(first !== moduleClosureHash('other', ['a', 'b']));
+	});
+
+	s.test('GBM round trips canonical nodes, shared identity and named graph references', (a: TestApi) => {
+		const graph = moduleFixture('app', ['library']);
+		const bytes = moduleBytes([graph, moduleFixture('library')]);
+		const bundle = decodeModuleBundle(bytes);
+		a.equalValues([...encodeModuleBundle(bundle)], [...bytes]);
+		const saved = bundle.modules.get('app');
+		a.assert(saved);
+		a.throws(() => materializeModuleGraph(saved, 'app'));
+		const librarySymbol = { name: 'identity' };
+		const { root } = materializeModuleGraph(saved, 'app', () => librarySymbol);
+		a.equal(root.kind, 'root');
+		const [definition, imported] = root.children;
+		a.assert(definition?.kind === 'def' && imported?.kind === 'ident');
+		a.equal(definition.children[0], definition.label);
+		a.equal(definition.children[2], definition.value);
+		a.equal(imported.symbol, librarySymbol);
+	});
+
+	s.test('GBM codec rejects missing entries, truncation, invalid magic and trailing bytes', a => {
+		const bytes = moduleBytes([moduleFixture('app')]);
+		for (let i = 0; i < bytes.length; i++) a.throws(() => decodeModuleBundle(bytes.subarray(0, i)));
+		const incompatible = bytes.slice();
+		incompatible[0] = 0;
+		a.throws(() => decodeModuleBundle(incompatible));
+		a.throws(() => decodeModuleBundle(Uint8Array.from([...bytes, 0])));
+		a.throws(() => moduleBytes([]));
+		a.throws(() => moduleBytes([{ ...moduleFixture('app'), root: -1 }]));
+		a.equal(decodeModuleBundle(bytes).entry, 'app');
+	});
+
+	s.test('GBM interfaces read public scalar signatures and verify artifact ABI', a => {
+		const library = moduleFixture('library');
+		const object = {
+			hash: 'library', name: 'identity', params: [0x7f], results: [0x7f],
+			locals: [], code: [], relocs: [],
+		} satisfies SerialObject;
+		const [view] = resolveModuleInterfaces(moduleBytes([library], [object]));
+		const callable = view?.exports.get('identity');
+		a.equalValues(callable?.signature, {
+			parameters: [{ type: moduleScalar, ownership: 'borrow' }],
+			result: { type: moduleScalar, ownership: 'own' },
+		});
+		a.equal(callable?.artifact?.target, 'wasm');
+		a.throws(() => resolveModuleInterfaces(moduleBytes([library], [{ ...object, params: [0x7e] }])));
+		a.throws(() => moduleBytes([library], [{ ...object, code: [256] }]));
+		a.throws(() => resolveModuleInterfaces(moduleBytes([library], [object, object])));
+		const [privateView] = resolveModuleInterfaces(moduleBytes([moduleFixture('private', [], false)]));
+		a.equal(privateView?.exports.has('identity'), false);
+	});
+
+	s.test('GBM resolves a dependency diamond and rejects stale, private, duplicate and cyclic references', (a: TestApi) => {
+		const app = moduleFixture('app', ['left', 'right']);
+		const left = moduleFixture('left', ['base']);
+		const right = moduleFixture('right', ['base']);
+		const base = moduleFixture('base');
+		const hashes = (graphs: ModuleGraph[]) => resolveModuleInterfaces(moduleBytes(graphs)).map(module => module.hash);
+		a.equalValues(hashes([app, right, base, left]), ['base', 'left', 'right', 'app']);
+		a.throws(() => hashes([app, left, right, moduleFixture('base-new')]));
+		a.throws(() => hashes([app, left, right, moduleFixture('base', [], false)]));
+		a.throws(() => hashes([app, left, right, base, { ...base, path: 'duplicate' }]));
+		a.throws(() => hashes([app, left, right, moduleFixture('base', ['app'])]));
+		const { root } = materializeModuleGraph(base, 'base');
+		const duplicate = createModuleGraph({
+			path: 'base',
+			hash: 'base',
+			root: { ...root, children: [...root.children, ...root.children] },
+		});
+		a.throws(() => hashes([duplicate]));
+	});
+
+	s.test('GBM initialization validates first, rolls back in reverse, and keeps retries independent', (a: TestApi) => {
+		const app = moduleFixture('app', ['library']);
+		const bytes = moduleBytes([app, moduleFixture('library')]);
+		const events: string[] = [];
+		const failure = new Error('init');
+		const cleanup = new Error('cleanup');
+		const binder = (attempt: string, fail = false) => ({ hash }: { hash: string }) => ({
+			initialize() {
+				events.push(`${attempt}:${hash}:init`);
+				if (fail && hash === 'app') throw failure;
+			},
+			dispose() {
+				events.push(`${attempt}:${hash}:dispose`);
+				if (fail && hash === 'app') throw cleanup;
+			},
+		});
+		a.throws(() => initializeModuleBundle(moduleBytes([app]), binder('invalid')));
+		a.equalValues(events, []);
+		try {
+			initializeModuleBundle(bytes, binder('failed', true));
+			a.assert(false);
+		} catch (error) {
+			a.assert(error instanceof AggregateError);
+			a.equal(error.cause, failure);
+			a.equalValues(error.errors, [failure, cleanup]);
+		}
+		const first = initializeModuleBundle(bytes, binder('first'));
+		const second = initializeModuleBundle(bytes, binder('second'));
+		first();
+		first();
+		second();
+		a.equalValues(events, [
+			'failed:library:init', 'failed:app:init', 'failed:app:dispose', 'failed:library:dispose',
+			'first:library:init', 'first:app:init', 'second:library:init', 'second:app:init',
+			'first:app:dispose', 'first:library:dispose', 'second:app:dispose', 'second:library:dispose',
+		]);
+	});
+
 	s.test('native checkpoints expose state convergence and relocation', (a: TestApi) => {
 		const native = resumable();
 		a.equal(typeof native.equivalent === 'function', true);

@@ -1,6 +1,8 @@
 import type { HighlightCheckpoint, HighlightInput, HighlightSource } from './highlight.js';
 
 export * from './ast.js';
+export * from './module-bundle.js';
+export * from './modules.js';
 export * from './format.js';
 export * from './runtime.js';
 export * from './highlight.js';

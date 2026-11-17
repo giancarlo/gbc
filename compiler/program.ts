@@ -1,6 +1,7 @@
 import {
 	CompilerError,
 	type FormatOptions,
+	moduleClosureHash,
 	ParserApi,
 } from '@cxl/gbc.sdk';
 import {
@@ -78,16 +79,6 @@ export function resolvePath(baseDir: string, rel: string): string {
 function dirName(path: string): string {
 	const i = path.lastIndexOf('/');
 	return i < 0 ? '' : path.slice(0, i);
-}
-
-/** Content hash for module-closure identity (dedup key, not security). */
-function fnv1a(s: string): string {
-	let h = 0x811c9dc5;
-	for (let i = 0; i < s.length; i++) {
-		h ^= s.charCodeAt(i);
-		h = Math.imul(h, 0x01000193);
-	}
-	return (h >>> 0).toString(16).padStart(8, '0');
 }
 
 type Bundle = DecodedBundle;
@@ -507,7 +498,7 @@ function createModuleLoader(
 				);
 			const hash =
 				manifestHash ??
-				fnv1a(`${src}\0${childCtx.childHashes.join(',')}`);
+				moduleClosureHash(src, childCtx.childHashes);
 			const dedup = hashCache.get(hash);
 			if (dedup) {
 				cache.set(key, dedup);

@@ -3,6 +3,9 @@ import { spec } from './test-api.js';
 import type { SpecApi as TestApi } from './test-api.js';
 import {
 	Flags as SdkFlags,
+	encodeModuleBundle,
+	materializeModuleGraph,
+	resolveModuleInterfaces,
 	tokenize,
 	type Symbol as SdkSymbol,
 	type AstNodeMap,
@@ -1043,28 +1046,29 @@ main {
 		a.equal(built.errors.length, 0);
 		const bundle = built.bundle;
 		a.assert(bundle, 'Bundle build failed');
-		const positionFields = new Set(['source', 'start', 'end', 'line']);
 		const decoded = decodeBundle(bundle);
+		a.equalValues([...encodeModuleBundle(decoded)], [...bundle]);
+		const [module] = resolveModuleInterfaces(bundle);
+		const identity = module?.exports.get('identity');
+		a.assert(identity?.signature);
+		a.equal(identity.signature.parameters[0]?.type.family, 'int');
+		a.equal(identity.signature.result?.type.size, 4);
+		a.equal(identity.artifact?.target, 'wasm');
 		a.equal(
 			decoded.objects.some(object => object.name === 'identity'),
 			true,
 		);
-		const containsPositionFields = [...decoded.modules.values()].some(module =>
-			module.objs.some((record, index) =>
-				module.nodes[index]
-					? record.some(([name]) => positionFields.has(name))
-					: false,
-			),
-		);
-		a.equal(containsPositionFields, false);
-		const containsCheckerFields = [...decoded.modules.values()].some(module =>
-			module.objs.some(record =>
-				record.some(([name]) =>
-					['definition', 'owner', 'implicit'].includes(name),
-				),
-			),
-		);
-		a.equal(containsCheckerFields, false);
+		for (const graph of decoded.modules.values()) {
+			const { nodes } = materializeModuleGraph(graph, graph.path, ref => ({ name: ref.s }));
+			for (const node of nodes) {
+				a.equal(node.source, graph.path);
+				a.equalValues([node.start, node.end, node.line], [0, 0, 0]);
+				if (node.kind === 'def' || node.kind === 'fn') {
+					const symbol = node.symbol;
+					a.equal(!!symbol && typeof symbol === 'object' && Object.hasOwn(symbol, 'definition'), false);
+				}
+			}
+		}
 		const sourceBytes = [...source].map(ch => ch.charCodeAt(0));
 		const includesSource = bundle.some((_, start) =>
 			sourceBytes.every((byte, offset) => bundle[start + offset] === byte),
