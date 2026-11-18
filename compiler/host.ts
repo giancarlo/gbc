@@ -36,7 +36,11 @@ export interface TypedBufferViewConstructor<View extends ArrayBufferView> {
 	): View;
 }
 declare const WebAssembly: {
-	Module: new (bytes: Uint8Array) => WasmModule;
+	Module: {
+		new (bytes: Uint8Array): WasmModule;
+		imports(module: WasmModule): { module: string; name: string; kind: string }[];
+		exports(module: WasmModule): { name: string; kind: string }[];
+	};
 	Instance: new (
 		module: WasmModule,
 		imports: Record<string, Record<string, unknown>>,
@@ -81,33 +85,50 @@ class ExitSignal {
 	constructor(readonly code: number) {}
 }
 
+function hostEnvironment(bound: { memory?: WasmMemory }, write: (chunk: string) => void) {
+	return {
+		monotonicMilliseconds() {
+			return performance.now();
+		},
+		out_buffer(ptr: number, len: number) {
+			if (!bound.memory) throw new Error('memory not bound');
+			const buf = new Uint8Array(bound.memory.buffer);
+			write(new TextDecoder().decode(buf.subarray(ptr, ptr + len)));
+		},
+		exitHost(code: number) {
+			throw new ExitSignal(code | 0);
+		},
+		ftoa(f: number, ptr: number, max: number): number {
+			if (!bound.memory) throw new Error('memory not bound');
+			const s = String(f);
+			const n = Math.min(s.length, max);
+			const buf = new Uint8Array(bound.memory.buffer);
+			for (let i = 0; i < n; i++) buf[ptr + i] = s.charCodeAt(i) & 0xff;
+			return n;
+		},
+	};
+}
+
+export function validateWasmProgram(bytes: Uint8Array): void {
+	const module = new WebAssembly.Module(bytes);
+	const env = hostEnvironment({}, () => {});
+	for (const entry of WebAssembly.Module.imports(module)) {
+		if (entry.module !== 'env' || entry.kind !== 'function' || !Object.hasOwn(env, entry.name))
+			throw new Error(`Unsupported WebAssembly import: ${entry.module}.${entry.name}`);
+	}
+	const exports = WebAssembly.Module.exports(module);
+	if (!exports.some(entry => entry.name === 'main' && entry.kind === 'function') ||
+		!exports.some(entry => entry.name === 'memory' && entry.kind === 'memory'))
+		throw new Error('Linked WebAssembly program must export main and memory');
+}
+
 export function instantiateWasm(
 	bytes: Uint8Array,
 	write: (chunk: string) => void = () => {},
 ): WasmInstance {
 	const bound: { memory?: WasmMemory } = {};
 	const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), {
-		env: {
-			monotonicMilliseconds() {
-				return performance.now();
-			},
-			out_buffer(ptr: number, len: number) {
-				if (!bound.memory) throw new Error('memory not bound');
-				const buf = new Uint8Array(bound.memory.buffer);
-				write(new TextDecoder().decode(buf.subarray(ptr, ptr + len)));
-			},
-			exitHost(code: number) {
-				throw new ExitSignal(code | 0);
-			},
-			ftoa(f: number, ptr: number, max: number): number {
-				if (!bound.memory) throw new Error('memory not bound');
-				const s = String(f);
-				const n = Math.min(s.length, max);
-				const buf = new Uint8Array(bound.memory.buffer);
-				for (let i = 0; i < n; i++) buf[ptr + i] = s.charCodeAt(i) & 0xff;
-				return n;
-			},
-		},
+		env: hostEnvironment(bound, write),
 	});
 	const memory = instance.exports.memory;
 	bound.memory = memory;

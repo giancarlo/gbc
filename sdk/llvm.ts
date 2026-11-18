@@ -258,12 +258,15 @@ function checkedFunction<Context extends LlvmAstContext>(
 export function compileLlvm<Context extends LlvmAstContext>(
 	root: Readonly<AstNodeMap<Context>['root']>,
 	output?: CheckedSymbol,
+	target: 'native' | 'wasm32' = 'native',
 ): string {
 	type Node = AstNode<Context>;
 	type Nodes = AstNodeMap<Context>;
 	const functions = new Map<CheckedSymbol, Function<Context>>();
 	const runtime = new Set<string>();
 	const entry = root.checked?.entry;
+	if (target === 'wasm32' && (entry?.testMode || entry?.exports))
+		throw new CompilerError('LLVM Wasm requires a runnable main program', root);
 	const globals = new Map<CheckedSymbol, { name: string; type: Shape }>();
 	for (const { definition } of entry?.globals ?? []) {
 		const type = shape(root.checked?.main.types.get(definition.symbol) ?? definition.symbol.type, definition);
@@ -651,6 +654,10 @@ export function compileLlvm<Context extends LlvmAstContext>(
 		}
 
 		function formatFloat(input: Value, output: string, node: Node): string {
+			if (target === 'wasm32') {
+				runtime.add('declare i32 @ftoa(double, ptr, i32) "wasm-import-module"="env" "wasm-import-name"="ftoa"');
+				return register(`call i32 @ftoa(double ${coerce(input, 'double', node)}, ptr ${output}, i32 32)`);
+			}
 			runtime.add('declare i32 @snprintf(ptr, i64, ptr, ...)');
 			runtime.add(floatOutput);
 			return register(`call i32 @gb.format.float(double ${coerce(input, 'double', node)}, ptr ${output})`);
@@ -684,9 +691,13 @@ export function compileLlvm<Context extends LlvmAstContext>(
 		}
 
 		function characterString(input: Value): Value {
-			const bits = input.operand;
 			const result = allocate(undefined, 4, 0, 1);
-			const data = payload(result.operand);
+			encodeCharacter(input.operand, payload(result.operand),
+				bytes => instruction(`store i32 ${bytes}, ptr ${header(result.operand)}`));
+			return result;
+		}
+
+		function encodeCharacter(bits: string, data: string, finish: (bytes: number) => void): void {
 			const bound = [0, 0x80, 0x800, 0x10000];
 			function write(index: number, shift: number, prefix: number): void {
 				const shifted = shift ? register(`lshr i32 ${bits}, ${shift}`) : bits;
@@ -699,7 +710,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 				const prefix = [0, 0, 0xc0, 0xe0, 0xf0][bytes] ?? 0;
 				for (let index = 0; index < bytes; index++)
 					write(index, (bytes - index - 1) * 6, index ? 0x80 : prefix);
-				instruction(`store i32 ${bytes}, ptr ${header(result.operand)}`);
+				finish(bytes);
 			}
 			function width(bytes: number): void {
 				if (bytes === 4) encode(bytes);
@@ -707,7 +718,6 @@ export function compileLlvm<Context extends LlvmAstContext>(
 					() => encode(bytes), () => width(bytes + 1));
 			}
 			width(1);
-			return result;
 		}
 
 		function stringLiteral(node: Nodes['string'] | Nodes['interp']): Value {
@@ -1187,8 +1197,10 @@ ${members.join('\n')}
 			instruction(`br i1 ${test}, label %${trap}, label %${resume}`);
 			label(trap);
 			cleanup();
-			runtime.add('declare i32 @fflush(ptr)');
-			instruction('call i32 @fflush(ptr null)');
+			if (target === 'native') {
+				runtime.add('declare i32 @fflush(ptr)');
+				instruction('call i32 @fflush(ptr null)');
+			}
 			instruction('call void @llvm.trap()');
 			instruction('unreachable');
 			label(resume);
@@ -1387,9 +1399,12 @@ ${members.join('\n')}
 				return;
 			}
 			if (bound.exit) {
-				runtime.add('declare void @exit(i32) noreturn');
+				const exit = target === 'wasm32' ? 'exitHost' : 'exit';
+				runtime.add(target === 'wasm32'
+					? 'declare void @exitHost(i32) noreturn "wasm-import-module"="env" "wasm-import-name"="exitHost"'
+					: 'declare void @exit(i32) noreturn');
 				cleanup();
-				instruction(`call void @exit(i32 ${scalarArgument(args[0] ?? unsupported(node), 'i32', node)})`);
+				instruction(`call void @${exit}(i32 ${scalarArgument(args[0] ?? unsupported(node), 'i32', node)})`);
 				instruction('unreachable');
 				label(`after.exit${nextBlock++}`);
 				return;
@@ -1470,7 +1485,33 @@ ${members.join('\n')}
 				runtime.add('declare i32 @putchar(i32)');
 				runtime.add('declare i32 @fflush(ptr)');
 				instruction(`call void @gb.test.output(ptr ${text.operand}, i32 ${length(text)})`);
-			} else print(input, node);
+			} else if (target === 'wasm32') printWasm(input, node);
+			else print(input, node);
+		}
+
+		function printWasm(input: Value, node: Node): void {
+			const { type, operand } = input;
+			if (input.tag !== undefined || type === float32x4 || type === 'i128') return unsupported(node);
+			runtime.add(wasmOutput);
+
+			function write(data: string, size: string | number): void {
+				instruction(`call void @out_buffer(ptr ${data}, i32 ${size})`);
+			}
+
+			if (input.character) {
+				const output = storage('[4 x i8]');
+				encodeCharacter(operand, output, bytes => write(output, bytes));
+			} else if (type === 'i1' || type === 'ptr') {
+				const text = asString(input, node);
+				write(payload(text.operand), length(text));
+			} else if (isFloat(type)) {
+				const output = storage('[32 x i8]');
+				write(output, formatFloat(input, output, node));
+			} else {
+				const bits = coerce(input, 'i64', node);
+				runtime.add(wasmIntegerOutput);
+				instruction(`call void @gb.out.integer(i64 ${bits}, i1 ${!isUnsigned(type)})`);
+			}
 		}
 
 		function integerFormat(type: Representation): string {
@@ -2201,8 +2242,48 @@ ${members.join('\n')}
 	for (const fn of streamEffects) bodies.push(emitBody(fn));
 	if (entry?.exports) bodies.push(...entry.exports.map(hostWrapper));
 	const heapPrelude = runtime.delete(referenceRuntime) ? [referenceRuntime] : [];
-	return [...heapPrelude, ...runtime, ...bodies, ''].join('\n');
+	const layout = target === 'wasm32'
+		? ['target datalayout = "e-m:e-p:32:32-p10:8:8-p20:8:8-i64:64-n32:64-S128-ni:1:10:20"']
+		: [];
+	return [...layout, ...heapPrelude, ...runtime, ...bodies, ''].join('\n');
 }
+const wasmOutput = 'declare void @out_buffer(ptr, i32) "wasm-import-module"="env" "wasm-import-name"="out_buffer"';
+
+const wasmIntegerOutput = `define internal void @gb.out.integer(i64 %value, i1 %signed) {
+entry:
+  %buffer = alloca [21 x i8]
+  %negative = icmp slt i64 %value, 0
+  %minus = and i1 %signed, %negative
+  %absolute = sub i64 0, %value
+  %magnitude = select i1 %minus, i64 %absolute, i64 %value
+  br label %digit
+digit:
+  %number = phi i64 [ %magnitude, %entry ], [ %quotient, %digit ]
+  %end = phi i32 [ 21, %entry ], [ %index, %digit ]
+  %quotient = udiv i64 %number, 10
+  %remainder = urem i64 %number, 10
+  %ascii = add i64 %remainder, 48
+  %byte = trunc i64 %ascii to i8
+  %index = sub i32 %end, 1
+  %slot = getelementptr i8, ptr %buffer, i32 %index
+  store i8 %byte, ptr %slot
+  %done = icmp eq i64 %quotient, 0
+  br i1 %done, label %sign, label %digit
+sign:
+  br i1 %minus, label %prefix, label %write
+prefix:
+  %start = sub i32 %index, 1
+  %first = getelementptr i8, ptr %buffer, i32 %start
+  store i8 45, ptr %first
+  br label %write
+write:
+  %data = phi ptr [ %first, %prefix ], [ %slot, %sign ]
+  %offset = phi i32 [ %start, %prefix ], [ %index, %sign ]
+  %size = sub i32 21, %offset
+  call void @out_buffer(ptr %data, i32 %size)
+  ret void
+}`;
+
 const floatOutput = String.raw`declare double @strtod(ptr, ptr)
 declare i32 @atoi(ptr)
 declare i64 @strtoull(ptr, ptr, i32)

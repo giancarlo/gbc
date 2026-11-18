@@ -1,11 +1,11 @@
 import { spec, type TestApi } from '@cxl/spec';
 import { execFile, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import cli from './index.js';
-import { nativeToolchain } from './native.js';
+import { nativeToolchain } from './llvm.js';
 import { Program } from '../compiler/program.js';
 import { runWasm } from '../compiler/host.js';
 
@@ -553,6 +553,141 @@ main { b = Buffer<Int32>(1); 1 >> out; set(b, 2, mark(3)); 4 >> out }`, output: 
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
+
+	s.test('rejects invalid LLVM Wasm build options and inputs', a => {
+		const directory = mkdtempSync(join(process.cwd(), '.gbc-llvm-wasm-test-'));
+		const source = join(directory, 'input.gb');
+		const output = join(directory, 'input.wasm');
+		const run = (...args: string[]) => spawnSync(process.execPath, [executable, ...args], { encoding: 'utf8' });
+		try {
+			writeFileSync(source, 'export value = (): Int32 { 42 };');
+			writeFileSync(output, 'previous Wasm');
+			for (const args of [
+				['run', source], ['test', source], ['library', source], ['fmt', source], [source],
+				['build'], ['build', '--wasm', source], ['build', '--native', source],
+			]) {
+				const result = run('--llvm-wasm', ...args);
+				a.equal(result.status, 1);
+				a.ok(result.stderr.includes('--llvm-wasm requires build'));
+			}
+			const build = ['build', '--llvm-wasm', '--outdir', directory];
+			const missingMain = run(...build, source);
+			a.equal(missingMain.status, 1);
+			a.ok(missingMain.stderr.includes('requires a `main` block'));
+			a.equal(readFileSync(output, 'utf8'), 'previous Wasm');
+			writeFileSync(output, 'main { 42 >> out }');
+			const collision = run(...build, output);
+			a.equal(collision.status, 1);
+			a.ok(collision.stderr.includes('overwrite source'));
+			a.equal(readFileSync(output, 'utf8'), 'main { 42 >> out }');
+			const alias = join(directory, 'alias');
+			symlinkSync(directory, alias, 'junction');
+			const aliasedCollision = run('build', '--llvm-wasm', '--outdir', alias, output);
+			a.equal(aliasedCollision.status, 1);
+			a.ok(aliasedCollision.stderr.includes('overwrite source'), aliasedCollision.stderr);
+			a.equal(readFileSync(output, 'utf8'), 'main { 42 >> out }');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	s.test('preserves LLVM Wasm output across tool failures, rejects invalid artifacts, and retries', a => {
+		const directory = mkdtempSync(join(process.cwd(), '.gbc-llvm-wasm-test-'));
+		const tools = join(directory, 'tools');
+		const source = join(directory, 'input.gb');
+		const output = join(directory, 'input.wasm');
+		const args = [executable, 'build', '--llvm-wasm', '--outdir', directory, source];
+		const writeTool = (name: string, script: string) =>
+			writeFileSync(join(tools, name), `#!${process.execPath}\n${script}\n`, { mode: 0o755 });
+		const linkArtifact = (hex: string) =>
+			writeTool('wasm-ld', `import('node:fs').then(fs => fs.writeFileSync(process.argv.at(-1), Buffer.from('${hex}', 'hex')))`);
+		const run = () => spawnSync(process.execPath, args, { encoding: 'utf8', env: { ...process.env, PATH: tools } });
+		const checkFailure = (message: string) => {
+			const result = run();
+			a.equal(result.status, 1);
+			a.ok(result.stderr.includes(message), result.stderr);
+			a.equal(readFileSync(output, 'utf8'), 'previous Wasm');
+			a.ok(!readdirSync(directory).some(name => name.startsWith('.gbc-llvm-wasm-')));
+		};
+		try {
+			mkdirSync(tools);
+			writeFileSync(source, 'main { 42 >> out }');
+			const direct = spawnSync(process.execPath, [executable, 'build', '--outdir', directory, source], { encoding: 'utf8' });
+			a.equal(direct.status, 0, direct.stderr);
+			const validWasm = readFileSync(output).toString('hex');
+			writeFileSync(output, 'previous Wasm');
+
+			for (const tool of ['opt', 'llc', 'wasm-ld']) {
+				checkFailure(`${tool}:`);
+				writeTool(tool, "process.stderr.write('forced failure'); process.exit(23)");
+				checkFailure(`${tool}: forced failure`);
+				writeTool(tool, '');
+			}
+			for (const [hex, error] of [
+				['00', 'WebAssembly.Module'],
+				['0061736d01000000', 'must export main and memory'],
+				['0061736d0100000001040160000002090103656e7601780000', 'Unsupported WebAssembly import: env.x'],
+			] as const) {
+				linkArtifact(hex);
+				checkFailure(error);
+			}
+			linkArtifact(validWasm);
+			const retry = run();
+			a.equal(retry.status, 0, retry.stderr);
+			a.equal(readFileSync(output).toString('hex'), validWasm);
+			a.ok(!readdirSync(directory).some(name => name.startsWith('.gbc-llvm-wasm-')));
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	const { error: linkerError } = spawnSync('wasm-ld', ['--version']);
+	if (!(linkerError && 'code' in linkerError && linkerError.code === 'ENOENT')) {
+		s.test('links runnable GB WebAssembly with real LLVM and supports concurrent replacement', async a => {
+			const directory = mkdtempSync(join(process.cwd(), '.gbc-llvm-wasm-test-'));
+			const source = join(directory, 'input.gb');
+			const output = join(directory, 'input.wasm');
+			const args = [executable, 'build', '--llvm-wasm', '--outdir', directory, source];
+			const run = (path: string) => spawnSync(process.execPath, [executable, 'run', path], { encoding: 'utf8' });
+			try {
+				writeFileSync(join(directory, 'seed.gb'), `initialize = (): Int32 { 'init:' >> out; next 2 };
+seed = initialize();
+export base = (): Int32 { seed };`);
+				const program = `seed = @.seed;
+sum = (n: Int32, total: Int32): Int32 { n == 0 ? total : sum(n - 1, total + n) };
+main {
+		sum(3, seed.base()) >> out; 'héllo' >> out; Char(128578) >> out;
+		true >> out; false >> out; 0 >> out;
+		-2147483648 >> out; -9223372036854775808 >> out;
+		18446744073709551615 >> out; Uint32(-1) >> out; 1.25 >> out;
+		runtime.exit(9); 'unreachable' >> out
+}`;
+				writeFileSync(source, program);
+				const direct = run(source);
+				a.equal(direct.status, 9, direct.stderr);
+				const results = await Promise.all([execute(process.execPath, args), execute(process.execPath, args)]);
+				for (const result of results) a.equal(result.stdout.trim(), output);
+				const linked = run(output);
+				a.equal(linked.status, 9, linked.stderr);
+				a.equal(linked.stdout, direct.stdout);
+				const previous = readFileSync(output);
+
+				writeFileSync(source, "pack = (value: Int32): String { 'value: ${value}' }; main { pack(42) >> out }");
+				const unsupported = spawnSync(process.execPath, args, { encoding: 'utf8' });
+				a.equal(unsupported.status, 1);
+				a.ok(unsupported.stderr.includes('wasm-ld:'), unsupported.stderr);
+				a.ok(readFileSync(output).equals(previous));
+
+				writeFileSync(source, "main { 'replacement' >> out }");
+				await execute(process.execPath, args);
+				a.equal(run(output).stdout, 'replacement');
+				a.ok(!readFileSync(output).equals(previous));
+				a.ok(!readdirSync(directory).some(name => name.startsWith('.gbc-llvm-wasm-')));
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		});
+	}
 
 	s.test('formats a file through the CLI', a => {
 		const directory = mkdtempSync(join(tmpdir(), 'gbc-fmt-'));

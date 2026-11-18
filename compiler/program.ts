@@ -111,8 +111,10 @@ export interface CompileResult {
 	hasMain: boolean;
 }
 
+const llvmTargets = { wasm: undefined, llvm: 'native', 'llvm-wasm': 'wasm32' } as const;
+
 export interface CompileOptions {
-	target?: 'wasm' | 'llvm';
+	target?: keyof typeof llvmTargets;
 }
 
 export interface FormatResult {
@@ -1000,6 +1002,7 @@ export function Program(options?: ProgramOptions) {
 			splice?: () => SpliceInput | undefined;
 		} = {},
 	): CompileResult {
+		const llvmTarget = llvmTargets[modeOptions.target ?? 'wasm'];
 		const requireMain = modeOptions.requireMain ?? true;
 		const debugBuild = !!options?.debug;
 		const parsed = parser(src, { loader: modeOptions.loader });
@@ -1023,13 +1026,13 @@ export function Program(options?: ProgramOptions) {
 		let ir: string | undefined;
 		if (parsed.errors.length === 0) {
 			try {
-				if (modeOptions.target === 'llvm') {
+				if (llvmTarget) {
 					parsed.root.checked = prepareCheckedProgram(
 						parsed.root, stdlibEntrySymbols.out, checked.semantic,
 						[...(modeOptions.moduleDefs ?? []), ...(testMode ? testDefs : [])], stdlibDefs,
 						{ testMode, debug: debugBuild, hostExports, sourcePaths: modeOptions.sourcePaths },
 					);
-					ir = compileLlvm(parsed.root);
+					ir = compileLlvm(parsed.root, undefined, llvmTarget);
 				} else bytes = compileWasm({
 					prepared: prepareAst(parsed.root, testMode, modeOptions.moduleDefs),
 					testMode,
@@ -1186,7 +1189,7 @@ export function Program(options?: ProgramOptions) {
 			createModuleLoader(sys, dirName(path));
 		return compileMode(src, fileOptions.testMode ?? false, {
 			target: fileOptions.target,
-			requireMain: fileOptions.requireMain ?? false,
+			requireMain: fileOptions.target === 'llvm-wasm' || !!fileOptions.requireMain,
 			loader,
 			moduleDefs,
 			sourcePaths,

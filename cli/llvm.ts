@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { validateWasmProgram } from '../compiler/host.js';
 
 function run(tool: string, args: string[], input?: string | Buffer): Buffer {
 	const result = spawnSync(tool, args, { input, maxBuffer: 16 * 1024 * 1024 });
@@ -26,21 +27,41 @@ export function nativeToolchain(platform: NodeJS.Platform, arch: string) {
 	return { command, args, target };
 }
 
-export function buildNative(ir: string, output: string): void {
-	const { command, args, target } = nativeToolchain(process.platform, process.arch);
+function buildWithLlvm(
+	ir: string,
+	output: string,
+	target: string,
+	prefix: string,
+	objectOptions: string[],
+	link: (object: string, artifact: string) => void,
+): void {
 	mkdirSync(dirname(output), { recursive: true });
-	const directory = mkdtempSync(join(dirname(output), '.gbc-native-'));
+	const directory = mkdtempSync(join(dirname(output), prefix));
 	try {
 		const bitcode = run('opt', [`-mtriple=${target}`, '-passes=default<O2>', '-o', '-', '-'], ir);
 		const object = join(directory, 'program.o');
-		run('llc', [`-mtriple=${target}`, '-O2', '-filetype=obj', '-relocation-model=pic', '-o', object, '-'], bitcode);
-		const executable = join(directory, 'program');
-		const math = process.platform === 'linux' ? ['-Wl,--as-needed', '-lm'] : ['-lm'];
-		run(command, [...args, object, ...math, '-o', executable]);
-		renameSync(executable, output);
+		run('llc', [`-mtriple=${target}`, '-O2', '-filetype=obj', ...objectOptions, '-o', object, '-'], bitcode);
+		const artifact = join(directory, 'program');
+		link(object, artifact);
+		renameSync(artifact, output);
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}
+}
+
+export function buildNative(ir: string, output: string): void {
+	const { command, args, target } = nativeToolchain(process.platform, process.arch);
+	const math = process.platform === 'linux' ? ['-Wl,--as-needed', '-lm'] : ['-lm'];
+	buildWithLlvm(ir, output, target, '.gbc-native-', ['-relocation-model=pic'], (object, artifact) => {
+		run(command, [...args, object, ...math, '-o', artifact]);
+	});
+}
+
+export function buildLlvmWasm(ir: string, output: string): void {
+	buildWithLlvm(ir, output, 'wasm32-unknown-unknown', '.gbc-llvm-wasm-', ['-mattr=+simd128,+tail-call'], (object, artifact) => {
+		run('wasm-ld', ['--no-entry', '--export=main', '--fatal-warnings', object, '-o', artifact]);
+		validateWasmProgram(readFileSync(artifact));
+	});
 }
 
 export function runNativeTests(ir: string, write: (chunk: string) => void): void {

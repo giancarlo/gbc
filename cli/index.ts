@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, statSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { basename, extname, join, resolve } from 'path';
 
 import { parseParameters, program } from '@cxl/program';
-import { loadCompiler } from '../compiler/program.js';
+import { loadCompiler, type CompileOptions } from '../compiler/program.js';
 import { runWasm } from '../compiler/host.js';
 import { ast } from '../compiler/debug.js';
 import { formatError } from '../sdk/index.js';
-import { buildNative, runNativeTests } from './native.js';
+import { buildLlvmWasm, buildNative, runNativeTests } from './llvm.js';
 
 const { Program } = await loadCompiler(async () =>
 	new Uint8Array(await readFile(new URL('./stdlib.gbm', import.meta.url))),
@@ -54,27 +54,37 @@ function runCommand(files: string[], debug = false): number {
 	return 0;
 }
 
+function sameFile(source: string, output: string): boolean {
+	const destination = statSync(output, { bigint: true, throwIfNoEntry: false });
+	if (!destination) return false;
+	const input = statSync(source, { bigint: true });
+	return input.dev === destination.dev && input.ino === destination.ino;
+}
+
 /** `gbc build entry.gb` — fuse the entry and its imports into one wasm.
  * With `main` the artifact is runnable; without, it exports the entry's
  * exported fns for host embedding (inits run in the start section). */
-function buildCommand(files: string[], outdir: string | undefined, debug = false, native = false): number {
+function buildCommand(
+	files: string[], outdir: string | undefined, debug: boolean, target: NonNullable<CompileOptions['target']>,
+): number {
 	for (const srcFile of files) {
 		const resolved = resolve(srcFile);
 		const out = Program({ debug, sys: fileSys }).compileFile(resolved, {
-			requireMain: native,
-			target: native ? 'llvm' : 'wasm',
+			requireMain: target !== 'wasm',
+			target,
 		});
-		if (out.errors.length || (native ? out.ir === undefined : !out.bytes)) {
+		if (out.errors.length || (target === 'wasm' ? !out.bytes : out.ir === undefined)) {
 			for (const e of out.errors) console.error(formatError(e));
 			return 1;
 		}
 		const dir = outdir ? resolve(outdir) : process.cwd();
-		if (native && out.ir !== undefined) {
-			const output = join(dir, basename(resolved, extname(resolved)));
+		if (out.ir !== undefined) {
+			const native = target === 'llvm';
+			const output = join(dir, basename(resolved, extname(resolved)) + (native ? '' : '.wasm'));
 			try {
-				if (output === resolved)
-					throw new Error('Native output would overwrite source; choose a different --outdir');
-				buildNative(out.ir, output);
+				if (output === resolved || (!native && sameFile(resolved, output)))
+					throw new Error(`${native ? 'Native' : 'LLVM Wasm'} output would overwrite source; choose a different --outdir`);
+				(native ? buildNative : buildLlvmWasm)(out.ir, output);
 				process.stdout.write(`${output}\n`);
 			} catch (error) {
 				console.error(`${srcFile}: ${error instanceof Error ? error.message : error}`);
@@ -170,8 +180,17 @@ function formatCommand(files: string[], check: boolean): number {
 	return failed ? 1 : 0;
 }
 
-function supportsNativeBuild(command: string | undefined, files: string[], wasm: boolean): boolean {
-	return (command === 'build' || command === 'test') && files.length > 0 && !wasm;
+function buildTarget(
+	command: string | undefined, files: string[],
+	{ native, wasm, _llvm_wasm: llvmWasm }: { native?: boolean; wasm?: boolean; _llvm_wasm?: boolean },
+): CompileOptions['target'] {
+	if (llvmWasm) {
+		if (command === 'build' && files.length && !native && !wasm) return 'llvm-wasm';
+		console.error('gbc: --llvm-wasm requires build with source files and cannot be combined with --native or --wasm');
+	} else if (native) {
+		if ((command === 'build' || command === 'test') && files.length && !wasm) return 'llvm';
+		console.error('gbc: --native requires build or test with source files and cannot be combined with --wasm');
+	} else return 'wasm';
 }
 
 const start = program('gbc', () => {
@@ -193,6 +212,10 @@ const start = program('gbc', () => {
 				help: 'Build a native Linux or macOS executable using LLVM (ARM64/x86-64)',
 				type: 'boolean',
 			},
+			_llvm_wasm: {
+				help: 'Build a runnable WebAssembly program using LLVM and wasm-ld',
+				type: 'boolean',
+			},
 			debug: {
 				help: 'Debug build: errors capture full call chains',
 				type: 'boolean',
@@ -202,12 +225,12 @@ const start = program('gbc', () => {
 				type: 'boolean',
 			},
 		},
-		process.argv.slice(2).join(' '),
+		process.argv.slice(2).map(arg => arg === '--llvm-wasm' ? '--_llvm_wasm' : arg).join(' '),
 	);
 
 	const [cmd, ...rest] = options.$;
-	if (options.native && !supportsNativeBuild(cmd, rest, !!options.wasm)) {
-		console.error('gbc: --native requires build or test with source files and cannot be combined with --wasm');
+	const target = buildTarget(cmd, rest, options);
+	if (!target) {
 		process.exitCode = 1;
 		return;
 	}
@@ -216,7 +239,7 @@ const start = program('gbc', () => {
 		return;
 	}
 	if (cmd === 'build' && rest.length) {
-		process.exitCode = buildCommand(rest, options.outdir, !!options.debug, !!options.native);
+		process.exitCode = buildCommand(rest, options.outdir, !!options.debug, target);
 		return;
 	}
 	if (cmd === 'library' && rest.length) {
