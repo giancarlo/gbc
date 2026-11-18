@@ -1,12 +1,13 @@
 import { astDispatchArms, CompilerError, createSpecializations, text } from '@cxl/gbc.sdk';
 import type { CheckedCall, CheckedProgram, CheckedStage, NumericOperationFacts } from '@cxl/gbc.sdk';
+import { decodeEscapes } from './literals.js';
 import { createOwnershipAnalysis } from './ownership.js';
 import { childNodes } from './node.js';
 import type { CompilerAstContext, Node, NodeMap } from './node.js';
-import { argumentNodes, bindCallArguments, numericConversion, numericOperands, numericOperation, createSemanticContext, dataItems, dispatchArgType, itemValue, literalType, mergeValueTypes } from './semantic.js';
+import { argumentNodes, bindCallArguments, numericConversion, numericOperands, numericOperation, createSemanticContext, dataItems, dataMemberValue, dispatchArgType, itemValue, literalType, mergeValueTypes, staticLength } from './semantic.js';
 import { createSpecializationEnvironment, createSpecializationKey, specializeType } from './specialization.js';
 import type { SpecializationEnvironment } from './specialization.js';
-import { BaseTypes, Flags, classifyEmission, fixedEmissionType, isFloatType, isInt64Type, isNumericType } from './symbol-table.js';
+import { BaseTypes, Flags, classifyEmission, fixedEmissionType, isFloatType, isHeapType, isInt64Type, isNumericType } from './symbol-table.js';
 import type { ResolvedType, Symbol, SymbolMap, Type } from './symbol-table.js';
 
 export type BackendNodeMap = {
@@ -19,7 +20,7 @@ type ResolutionContext = Pick<ReturnType<typeof createSemanticContext>,
 	| 'scalarCtorType' | 'bufferCtorType' | 'resolveMemberType'
 	| 'numericValueType' | 'resolveCallReturn' | 'callArgumentTypes'
 	| 'pipeArgumentTypes' | 'threadCall' | 'fallbackResultType'
-	| 'callTypeBindings' | 'functionTypeParameters' | 'resolver' | 'selectCallFunction' | 'returnedArguments' | 'borrowOrigins' | 'borrowLastUses'
+	| 'callTypeBindings' | 'functionTypeParameters' | 'resolver' | 'selectCallFunction' | 'returnedArguments' | 'borrowOrigins' | 'borrowBindingOrigins' | 'borrowLastUses'
 >;
 
 export interface ExpressionContext {
@@ -497,6 +498,7 @@ export function prepareCheckedProgram(
 	output: Symbol | undefined,
 	checkedSemantic: ResolutionContext,
 	definitions: readonly Node[] = [],
+	standardDefinitions: readonly Node[] = [],
 ): CheckedProgram<CompilerAstContext> {
 	type Program = CheckedProgram<CompilerAstContext>;
 	type Signature = Program['instances'][number]['signature'];
@@ -510,6 +512,12 @@ export function prepareCheckedProgram(
 	const noTypeArguments = new Map<string, Type>();
 	const noFunctionArguments = new Map<Symbol, SymbolMap['function']>();
 	const specializationKey = createSpecializationKey();
+	const mainEnvironment = preparation.createEnvironment();
+	let analysis: ReturnType<typeof preparation.createOwnership> | undefined;
+	const ownership = () => analysis ??= preparation.createOwnership(
+		prepareProgram(root, [...standardDefinitions, ...definitions]).linkedRoot,
+	);
+	let ownershipInitialized = false;
 	const defaultsByInstance = new Map<string, Defaults>();
 	const pendingDefaults: { scope: Defaults; expression: Node }[] = [];
 	const main = root.children.find(node => node.kind === 'main');
@@ -540,6 +548,10 @@ export function prepareCheckedProgram(
 		defaults?: Defaults,
 		inputType?: Type,
 	): Body {
+		let interpolation: Map<Node, CheckedCall<Node>> | undefined;
+		let literals: Map<Node, readonly string[]> | undefined;
+		let projections: Map<Node, Node> | undefined;
+		let lastUses: Map<Node, object[]> | undefined;
 		const calls = new Map<Node, CheckedCall<Node>>();
 		const stages = new Map<Node, CheckedStage<Node>[]>();
 		const emissions = new Map<Node, readonly Type[]>();
@@ -550,10 +562,27 @@ export function prepareCheckedProgram(
 		const conversions = new Map<Node, { target: Type; range: ReturnType<typeof numericConversion> }>();
 		let context: ExpressionContext = { environment, templates, inputType };
 
+		function visitStatements(body: readonly Node[]): void {
+			for (const statement of body) resolve(statement);
+			if (!body.some(statement => statement.kind === 'def' && isHeapType(types.get(statement.symbol))))
+				return;
+			const uses = preparation.borrowLastUses(body, context);
+			body.forEach((statement, index) => {
+				if (statement.kind !== 'def' || !isHeapType(types.get(statement.symbol))) return;
+				const origins = semantic.borrowBindingOrigins(statement.symbol, call => preparation.threadResolution(call, context)?.target);
+				const end = origins.reduce((last, origin) => Math.max(last, uses.get(origin) ?? -1), index);
+				const last = body[end];
+				if (!last) return;
+				const entries = (lastUses ??= new Map<Node, object[]>()).get(last);
+				if (entries) entries.push(statement.symbol);
+				else lastUses.set(last, [statement.symbol]);
+			});
+		}
+
 		function visitBlock(fn: NodeMap['fn'], inputType?: Type): void {
 			const previous = context;
 			context = { ...context, inputType };
-			for (const statement of fn.statements ?? []) resolve(statement);
+			visitStatements(fn.statements ?? []);
 			context = previous;
 		}
 
@@ -600,12 +629,13 @@ export function prepareCheckedProgram(
 			raw: readonly Node[],
 			position: Node,
 			carrier?: Type,
+			spread?: readonly Type[],
 		): { call: CheckedCall<Node>; result: Type; emitted: readonly Type[] } {
 			const parameters = target.parameters ?? [];
 			const { errors, ...bound } = bindCallArguments(parameters, raw);
 			const error = errors[0];
 			if (error) throw new CompilerError(error.message, error.position ?? position);
-			const argTypes = carrier ? [carrier] : bound.arguments.map((arg, index) => {
+			const argTypes = spread ? [...spread] : carrier ? [carrier] : bound.arguments.map((arg, index) => {
 				const type = parameters[index]?.type;
 				if (!arg || bound.defaulted.includes(index)) return type ?? BaseTypes.Unknown;
 				if (type?.kind === 'function' && arg.kind === 'fn') return arg.symbol;
@@ -617,7 +647,7 @@ export function prepareCheckedProgram(
 			const result = preparation.functionResult(target, typeArguments);
 			const emitted = emissionTypes(result);
 			if (target.flags & Flags.Intrinsic)
-				return { call: { ...bound, intrinsic: target }, result: result.type, emitted };
+				return { call: { ...bound, intrinsic: target, inputs: argTypes }, result: result.type, emitted };
 			const node = templates.get(target) ?? (target.definition?.kind === 'fn' ? target.definition : undefined);
 			if (!node) return { call: bound, result: result.type, emitted };
 			const input = implicitInput(node, raw, carrier);
@@ -626,7 +656,7 @@ export function prepareCheckedProgram(
 			const defaultScope = defaultsByInstance.get(key) ?? { requested: new Set<Node>() };
 			defaultsByInstance.set(key, defaultScope);
 			const id = specializations.instantiate(key, () => {
-				const scope = preparation.createEnvironment(undefined, typeArguments);
+				const scope = preparation.createEnvironment(mainEnvironment, typeArguments);
 				const concrete = (node.parameters ?? []).map((parameter, index) => {
 					const type = preparation.concreteType(parameter.symbol.type ?? BaseTypes.Unknown, typeArguments);
 					const resolved = type === BaseTypes.Unknown ? argTypes[index] ?? type : type;
@@ -637,7 +667,14 @@ export function prepareCheckedProgram(
 					return resolved;
 				});
 				const classification = classifyEmission(result.emission ?? result.type);
-				const signature: Signature = { node, parameters: concrete, result: resultType, input, ...classification };
+				if (!ownershipInitialized && concrete.some(type => isHeapType(type))) {
+					ownership().initialize({ environment: mainEnvironment, templates });
+					ownershipInitialized = true;
+				}
+				const inferred = analysis?.ownedParameters(target, mainEnvironment);
+				const ownedParameters = node.parameters?.map((parameter, index) =>
+					parameter.symbol.ownership === 'own' || !!inferred?.[index]);
+				const signature: Signature = { node, parameters: concrete, ownedParameters, result: resultType, input, ...classification };
 				return { signature, body: prepareBody(node.statements ?? [], scope, defaultScope, input) };
 			});
 			requestDefaults(bound, defaultScope);
@@ -647,14 +684,21 @@ export function prepareCheckedProgram(
 				: { call, result: resultType, emitted };
 		}
 
+		function constructorType(node: NodeMap['call'], callee: NodeMap['typeident'], args: Node | undefined): Type {
+			const target = preparation.typeOf(callee.symbol, environment);
+			if (target.kind === 'type' && args && args.kind !== ',') {
+				const argument = resolve(args);
+				if (target.family === 'string') {
+					const arm = ownership().findCtorArm('String', argument, context);
+					if (arm) calls.set(node, bind(arm.symbol, [args], node).call);
+				} else conversions.set(node, { target, range: numericConversion(target, args, argument) });
+			}
+			return preparation.concreteType(preparation.expressionType(node, context), environment.typeArguments);
+		}
+
 		function callType(node: NodeMap['call']): Type {
 			const [callee, args] = node.children;
-			if (callee.kind === 'typeident') {
-				const target = preparation.typeOf(callee.symbol, environment);
-				if (target.kind === 'type' && args && args.kind !== ',')
-					conversions.set(node, { target, range: numericConversion(target, args, resolve(args)) });
-				return preparation.expressionType(node, context);
-			}
+			if (callee.kind === 'typeident') return constructorType(node, callee, args);
 			if (callee.kind === 'ident' && callee.symbol === output) {
 				const argumentsList = argumentNodes(args);
 				for (const arg of argumentsList) resolve(arg);
@@ -668,6 +712,13 @@ export function prepareCheckedProgram(
 			if (!declared) return BaseTypes.Unknown;
 			const chosen = semantic.selectCallFunction(declared, args, resolve, select);
 			if (!chosen) throw new CompilerError('No matching overload for this call', node);
+			if (chosen.flags & Flags.Intrinsic && chosen.name === 'length' && args && args.kind !== ',') {
+				const count = staticLength(preparation.expressionType(args, context));
+				if (count !== undefined) {
+					calls.set(node, { arguments: [], evaluationOrder: [], defaulted: [], constant: count });
+					return BaseTypes.Int32;
+				}
+			}
 			const { call, result, emitted } = bind(chosen, argumentNodes(args), node);
 			calls.set(node, call);
 			emissions.set(node, emitted);
@@ -696,6 +747,26 @@ export function prepareCheckedProgram(
 			}
 		}
 
+		function bindStage(
+			declared: SymbolMap['function'],
+			packTarget: SymbolMap['function'] | undefined,
+			input: Type,
+			stage: Node,
+			source: Node | undefined,
+		): { call: CheckedStage<Node>; emitted: readonly Type[] } {
+			if (source && packTarget && (packTarget.parameters?.length ?? 0) > 1) {
+				const { call, emitted } = bind(packTarget, [source], stage);
+				return { call: { ...call, input, packed: true }, emitted };
+			}
+			const record = input.kind === 'type' && input.family === 'data';
+			const target = declared.overloads ? preparation.resolveOverload([declared, ...declared.overloads], [input], templates,
+				record ? fn => semantic.pipeArgumentTypes(input, fn) : undefined) : declared;
+			if (!target) throw new CompilerError('No matching overload for this pipeline stage', stage);
+			const spread = record && (target.parameters?.length ?? 0) > 1 ? semantic.pipeArgumentTypes(input, target) : undefined;
+			const { call, emitted } = bind(target, spread ? spread.map(() => stage) : [stage], stage, input, spread);
+			return { call: { ...call, input, spread: spread ? true : undefined }, emitted };
+		}
+
 		function namedStage(stage: Node, source: Node | undefined, inputs: readonly Type[]): readonly Type[] {
 			const declared = boundFunction(stage);
 			if (!declared) return [BaseTypes.Unknown];
@@ -706,13 +777,8 @@ export function prepareCheckedProgram(
 			const candidates = inputs.flatMap(input => input.kind === 'type' && input.family === 'union' &&
 				input.members.every(member => member === BaseTypes.Bool || isNumericType(member)) ? input.members : [input]);
 			for (const input of new Set(candidates)) {
-				const packed = packTarget && (packTarget.parameters?.length ?? 0) > 1;
-				const target = packed ? packTarget : declared.overloads
-						? preparation.resolveOverload([declared, ...declared.overloads], [input], templates)
-						: declared;
-				if (!target) throw new CompilerError('No matching overload for this pipeline stage', stage);
-				const { call, emitted } = packed && source ? bind(target, [source], stage) : bind(target, [stage], stage, input);
-				alternatives.push({ ...call, input, packed: packed ? true : undefined });
+				const { call, emitted } = bindStage(declared, packTarget, input, stage, source);
+				alternatives.push(call);
 				results.push(...emitted);
 			}
 			stages.set(stage, alternatives);
@@ -750,8 +816,38 @@ export function prepareCheckedProgram(
 			return type;
 		}
 
+		function literalFacts(node: NodeMap['string' | 'interp']): Type {
+			const chunks = node.kind === 'string' ? [(node.value ?? text(node)).slice(1, -1)] : node.strings;
+			try {
+				(literals ??= new Map<Node, readonly string[]>()).set(node, chunks.map(decodeEscapes));
+			} catch (error) {
+				if (error instanceof Error) throw new CompilerError(error.message, node);
+				throw error;
+			}
+			if (node.kind === 'interp') for (const child of node.children) {
+				const type = resolve(child);
+				if (type.kind === 'type' && (type.family === 'string' || (type.family === 'literal' && typeof type.value === 'string'))) continue;
+				const arm = ownership().findCtorArm('String', type, context);
+				if (arm) (interpolation ??= new Map<Node, CheckedCall<Node>>()).set(child, bind(arm.symbol, [child], child).call);
+			}
+			return literalType(node) ?? BaseTypes.String;
+		}
+
+		function memberType(node: NodeMap['.']): Type {
+			const [receiver, field] = node.children;
+			const selected = receiver.kind === 'data' ? dataMemberValue(receiver, field) : undefined;
+			if (selected) {
+				(projections ??= new Map<Node, Node>()).set(node, selected);
+				return resolve(selected);
+			}
+			resolve(receiver);
+			return preparation.expressionType(node, context);
+		}
+
 		function infer(node: Node): Type {
 			switch (node.kind) {
+				case 'string': case 'interp': return literalFacts(node);
+				case '.': return memberType(node);
 				case 'call': return callType(node);
 				case '>>': return pipelineType(node);
 				case '->': {
@@ -804,11 +900,11 @@ export function prepareCheckedProgram(
 		}
 
 		if (defaults) defaults.visit = resolve;
-		for (const statement of statements) resolve(statement);
-		return { calls, stages, threads, types, numeric, comparisons, conversions };
+		visitStatements(statements);
+		return { interpolation, literals, projections, lastUses, calls, stages, threads, types, numeric, comparisons, conversions };
 	}
 
-	const body = prepareBody(main?.statements ?? [], preparation.createEnvironment());
+	const body = prepareBody(main?.statements ?? [], mainEnvironment);
 	for (const { scope, expression } of pendingDefaults) scope.visit?.(expression);
 	return { main: body, output, instances: specializations.finish() };
 }

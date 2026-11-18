@@ -56,6 +56,14 @@ export function dataItems(node: Node): Node[] {
 	return node.kind === 'data' ? argumentNodes(node.children[0]) : [];
 }
 
+export function dataMemberValue(receiver: NodeMap['data'], field: Node): Node | undefined {
+	const items = dataItems(receiver);
+	const item = field.kind === 'number' ? items[Number(field.value)]
+		: field.kind === 'ident' ? items.find(candidate =>
+			candidate.kind === 'propdef' && candidate.symbol.name === field.symbol.name) : undefined;
+	return item && itemValue(item);
+}
+
 function isVoidLiteralNode(node: Node | undefined): boolean {
 	return node?.kind === 'ident' && node.symbol.kind === 'literal' &&
 		node.symbol.type?.kind === 'type' && node.symbol.type.family === 'void';
@@ -250,6 +258,13 @@ function bufferCtorType(node: NodeMap['call']): Type | undefined {
 	const sym = callee.symbol;
 	if (sym === BufferSymbol) return bufferTypeOf(BT.Unknown);
 	return isCollection(sym.type) ? sym.type : undefined;
+}
+
+export function staticLength(type: Type): number | undefined {
+	if (type.kind !== 'type' || type.family === 'buffer' || type.family === 'string' ||
+		(type.family === 'literal' && typeof type.value === 'string')) return;
+	if (type.family === 'void') return 0;
+	return type.family === 'data' ? Object.keys(type.members).length : 1;
 }
 
 export function constantNumericValue(node: Node): number | undefined {
@@ -1105,8 +1120,7 @@ export function createSemanticContext(readOnly = false) {
 		return [...new Set(indices.flatMap(index => expand(index)))];
 	}
 
-	function borrowIdentOrigins(node: NodeMap['ident'], resolveCall: BorrowCallResolver, seen: Set<Symbol>): BorrowOrigin[] {
-		const symbol = node.symbol;
+	function borrowBindingOrigins(symbol: Symbol, resolveCall: BorrowCallResolver = effectiveCallFunction, seen = new Set<Symbol>()): BorrowOrigin[] {
 		if (symbol.kind !== 'variable') return [staticBorrowOrigin];
 		if (seen.has(symbol)) return [];
 		seen.add(symbol);
@@ -1158,7 +1172,7 @@ export function createSemanticContext(readOnly = false) {
 			return items.length === 1 && items[0]?.kind !== 'propdef' && !node.nominal
 				? merge(items) : [node];
 		}
-		if (node.kind === 'ident') return borrowIdentOrigins(node, resolveCall, seen);
+		if (node.kind === 'ident') return borrowBindingOrigins(node.symbol, resolveCall, seen);
 		if (node.kind === 'call') return borrowCallOrigins(node, resolveCall, seen);
 		if (node.kind === '>>' || node.kind === '->') return borrowThreadOrigins(node, resolveCall, seen);
 		return [staticBorrowOrigin];
@@ -2079,6 +2093,7 @@ export function createSemanticContext(readOnly = false) {
 		numericValueType,
 		returnedArguments,
 		borrowOrigins,
+		borrowBindingOrigins,
 		borrowLastUses,
 		callArgumentTypes,
 		selectCallFunction,

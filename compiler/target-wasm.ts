@@ -1,3 +1,4 @@
+import { decodeEscapes } from './literals.js';
 import { CompilerError, sleb128, sleb128big, text, uleb128 } from '@cxl/gbc.sdk';
 
 import {
@@ -10,6 +11,8 @@ import {
 	numericConversion,
 	setDivByZero,
 	dataItems,
+	dataMemberValue,
+	staticLength,
 	itemValue,
 	resolveArgNodes,
 	bindCallArguments,
@@ -2651,26 +2654,10 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 
 	function compileLength(args: Node | undefined, fn: FuncBuilder): Type {
 		if (!args) throw new Error('length() requires an argument');
-		const argType = inferType(args, fn);
-		if (argType.kind === 'type' && argType.family === 'buffer')
-			return emitHeaderLength(args, fn);
-		const isStringLike =
-			argType.kind === 'type' &&
-			(argType.family === 'string' ||
-				(argType.family === 'literal' &&
-					typeof argType.value === 'string'));
-		if (argType.kind === 'type' && !isStringLike) {
-			const n =
-				argType.family === 'void'
-					? 0
-					: argType.family === 'data'
-						? Object.keys(argType.members).length
-						: 1;
-			fn.body.push(OP_I32_CONST);
-			sleb128(n, fn.body);
-			return BaseTypes.Int32;
-		}
-		return emitHeaderLength(args, fn);
+		const size = staticLength(inferType(args, fn));
+		if (size === undefined) return emitHeaderLength(args, fn);
+		emitConst(size, fn);
+		return BaseTypes.Int32;
 	}
 
 	function compileTraceIntrinsic(
@@ -4863,26 +4850,9 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		field: Node,
 		fn: FuncBuilder,
 	): Type {
-		const items = dataItems(recv).flatMap(flattenDataItem);
-		let idx: number | undefined;
-		if (field.kind === 'number') idx = Number(field.value);
-		else if (field.kind === 'ident') {
-			for (let i = 0; i < items.length; i++) {
-				const item = items[i];
-				if (
-					item?.kind === 'propdef' &&
-					item.symbol.name === field.symbol.name
-				) {
-					idx = i;
-					break;
-				}
-			}
-		}
-		if (idx === undefined || idx >= items.length)
-			throw new Error('Member access target not found');
-		const target = items[idx];
+		const target = dataMemberValue(recv, field);
 		if (!target) throw new Error('Member access target not found');
-		return compileExpr(itemValue(target), fn);
+		return compileExpr(target, fn);
 	}
 
 	function emitElemLoad(size: number, off: number, fn: FuncBuilder) {
@@ -8399,56 +8369,4 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 	};
 
 	return emitModule(m);
-}
-
-function isHexDigit(ch: string | undefined): boolean {
-	if (ch === undefined) return false;
-	return (
-		(ch >= '0' && ch <= '9') ||
-		(ch >= 'a' && ch <= 'f') ||
-		(ch >= 'A' && ch <= 'F')
-	);
-}
-
-// Decode the WASM string-escape set: `\t \n \r \" \' \\`, `\u{N}` (codepoint),
-// and `\HH` (exactly two hex digits = one byte). Any other escape is an error.
-function decodeEscapes(s: string): string {
-	// Line breaks normalize to `\n` before escapes decode (LF, CRLF, and lone
-	// CR alike), so string content is independent of the source file's
-	// line-ending style; an explicit `\r` escape survives.
-	s = s.replace(/\r\n?/g, '\n');
-	let out = '';
-	let i = 0;
-	while (i < s.length) {
-		const ch = s[i];
-		if (ch !== '\\') {
-			out += ch;
-			i++;
-			continue;
-		}
-		const next = s[i + 1];
-		const simple = new Map([
-			['n', '\n'],
-			['r', '\r'],
-			['t', '\t'],
-			['\\', '\\'],
-			["'", "'"],
-			['"', '"'],
-			['$', '$'],
-		]);
-		const escaped = next === undefined ? undefined : simple.get(next);
-		if (escaped !== undefined) {
-			out += escaped;
-			i += 2;
-		} else if (next === 'u' && s[i + 2] === '{') {
-			const end = s.indexOf('}', i + 3);
-			if (end < 0) throw new Error('Invalid `\\u{...}` escape');
-			out += String.fromCodePoint(parseInt(s.slice(i + 3, end), 16));
-			i = end + 1;
-		} else if (isHexDigit(next) && isHexDigit(s[i + 2])) {
-			out += String.fromCharCode(parseInt(s.slice(i + 1, i + 3), 16));
-			i += 3;
-		} else throw new Error(`Invalid string escape "\\${next ?? ''}"`);
-	}
-	return out;
 }

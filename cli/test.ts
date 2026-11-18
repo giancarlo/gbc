@@ -214,6 +214,53 @@ main {
 }`,
 					output: '68676863',
 				},
+				{
+					name: 'heap-values',
+					source: `type Item = [text: String, values: Buffer<Int32>];
+make = (n: Int32): own String { 'value\${n}' };
+identity = <T>(value: T): T { value };
+field = (item: Item): String { item.text };
+consume = (value: own String): Int32 { length(value) };
+main {
+	item = [text = make(12), values = Buffer<Int32>(2)];
+	get(item.values, 0) >> out;
+	set(item.values, 0, 7);
+	get(item.values, 0) >> out;
+	item >> field >> out;
+	make(3) -> identity() -> length() >> out;
+	consume(make(4)) >> out;
+	('a\\00b' == 'a\\00b') >> out;
+	'é\\00z' >> out
+}`,
+					output: '07value1266trueé\0z',
+				},
+				{
+					name: 'heap-lifetimes',
+					source: `type Item = [n: Int32];
+extend String (item: Item): own String { 'item:\${item.n}' };
+make = (n: Int32): own String { 'value\${n}' };
+pick = (a: String, b: String, k: Int32): String { k > 0 ? a : b };
+step = (n: Int32): Int32 { length(pick(make(n), make(n + 1), 0)) };
+choose = (n: Int32, v: Int32): own String | Int32 | DivByZero | NumericOverflow {
+	text = make(n); next v < 0 ? text : 40 / v
+};
+read = (n: Int32, text: String): own String { '\${n}:\${text}' };
+mark = (n: Int32): Int32 { n >> out; next n };
+main {
+	Array<String>(1) -> push('left') -> reserveCapacity(8) -> push('right') >> (buffer: Array<String>) {
+		get(buffer, 0) >> out; get(buffer, 1) >> out; length(buffer) >> out; capacity(buffer) >> out
+	};
+	choose(1, -1) >> String { $ } | Int32 { String($) } | Error { 'error' } >> out;
+	choose(2, 0) >> String { $ } | Int32 { String($) } | Error { 'error' } >> out;
+	choose(3, 2) >> String { $ } | Int32 { String($) } | Error { 'error' } >> out;
+	record: var = [n = 4, text = 'record']; record >> read >> out;
+	record >> (n: Int32, text: String) { '\${n}:\${text}' } >> out;
+	'\${Item([n = 43])} \${0.125} \${Char(128578)}' >> out;
+	length([mark(1), mark(2)]) >> out; length(void) >> out; [mark(3), mark(4)].1 >> out;
+	loop >> (i: Int32) { i >= 20000 ? break; step(i) > 100 ? break }; 'done' >> out
+}`,
+					output: 'leftright28value1error204:record4:recorditem:43 0.125 🙂2044done',
+				},
 				{ name: 'empty', source: 'main {}', output: '' },
 				{ name: 'limits', source: 'main { -2147483648 >> out; 0 >> out; 2147483647 >> out }', output: '-214748364802147483647' },
 			];
@@ -229,6 +276,10 @@ main {
 				runWasm(wasm.bytes, chunk => { expected += chunk; });
 				a.equal(native.stdout, expected);
 			}));
+			const heapPath = join(directory, 'heap-values.gb');
+			const nativeArgs = [executable, 'build', '--native', '--outdir', directory, heapPath];
+			await Promise.all([execute(process.execPath, nativeArgs), execute(process.execPath, nativeArgs)]);
+			a.equal((await execute(join(directory, 'heap-values'))).stdout, '07value1266trueé\0z');
 			const path = join(directory, 'answer.gb');
 			const wasm = await execute(process.execPath, [executable, 'build', '--outdir', directory, path]);
 			a.equal(wasm.stdout.trim(), join(directory, 'answer.wasm'));
@@ -277,13 +328,34 @@ main {
 		}
 	});
 
+	s.test('native buffers trap before evaluating an out-of-bounds value', async (a: TestApi) => {
+		const directory = mkdtempSync(join(process.cwd(), '.gbc-native-test-'));
+		const source = `mark = (n: Int32): Int32 { n >> out; next n };
+main { b = Buffer<Int32>(1); 1 >> out; set(b, 2, mark(3)); 4 >> out }`;
+		try {
+			const { bytes } = Program().compile(source);
+			a.assert(bytes);
+			let expected = '';
+			a.throws(() => runWasm(bytes, chunk => { expected += chunk; }));
+			a.equal(expected, '1');
+			const path = join(directory, 'bounds.gb');
+			writeFileSync(path, source);
+			await execute(process.execPath, [executable, 'build', '--native', '--outdir', directory, path]);
+			const result = spawnSync('bash', ['-c', 'ulimit -c 0; exec "$1"', 'gbc', join(directory, 'bounds')], { encoding: 'utf8' });
+			a.ok(result.signal || result.status);
+			a.equal(result.stdout, expected);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	s.test('rejects unsupported native builds without replacing an executable', a => {
 		const directory = mkdtempSync(join(process.cwd(), '.gbc-native-test-'));
 		const path = join(directory, 'input.gb');
 		const output = join(directory, 'input');
 		try {
 			writeFileSync(output, 'previous executable');
-			for (const source of ['main {', 'main { missing >> out }', "main { 'hello' >> out }", 'value = 42']) {
+			for (const source of ['main {', 'main { missing >> out }', 'value = 42']) {
 				writeFileSync(path, source);
 				const result = spawnSync(process.execPath, [executable, 'build', '--native', '--outdir', directory, path], { encoding: 'utf8' });
 				a.equal(result.status, 1);
@@ -317,7 +389,7 @@ main {
 		const args = [executable, 'build', '--native', '--outdir', directory, path];
 		try {
 			mkdirSync(tools);
-			writeFileSync(path, 'main { 42 >> out }');
+			writeFileSync(path, "main { 'heap${42}' >> out }");
 			writeFileSync(output, 'previous executable');
 			const missing = spawnSync(process.execPath, args, { encoding: 'utf8', env: { ...process.env, PATH: tools } });
 			a.equal(missing.status, 1);
@@ -345,7 +417,7 @@ main {
 			}
 			const retry = spawnSync(process.execPath, args, { encoding: 'utf8' });
 			a.equal(retry.status, 0);
-			a.equal(spawnSync(output, [], { encoding: 'utf8' }).stdout, '42');
+			a.equal(spawnSync(output, [], { encoding: 'utf8' }).stdout, 'heap42');
 			a.ok(!readdirSync(directory).some(name => name.startsWith('.gbc-native-')));
 		} finally {
 			rmSync(directory, { recursive: true, force: true });

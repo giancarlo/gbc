@@ -103,8 +103,10 @@ export interface CheckedAstType {
 	readonly family?: string;
 	readonly name?: string;
 	readonly value?: unknown;
-	readonly members?: readonly CheckedAstType[] | Readonly<Record<string, unknown>>;
+	readonly members?: readonly CheckedAstType[] | Readonly<Record<string, { readonly type?: CheckedAstType }>>;
 	readonly size?: number;
+	readonly elem?: CheckedAstType;
+	readonly components?: readonly unknown[];
 	readonly rest?: unknown;
 	readonly elements?: readonly CheckedAstType[];
 }
@@ -131,6 +133,9 @@ export interface CheckedCall<Node> {
 	readonly evaluationOrder: readonly number[];
 	readonly defaulted: readonly number[];
 	readonly target?: number;
+	readonly constant?: number;
+	readonly spread?: true;
+	readonly inputs?: readonly CheckedAstType[];
 	readonly intrinsic?: NonNullable<CheckedNumericCall['intrinsic']>;
 	readonly output?: true;
 }
@@ -149,6 +154,10 @@ export interface CheckedStage<Node> extends CheckedCall<Node> {
 }
 
 export interface CheckedBody<Node> {
+	readonly interpolation?: ReadonlyMap<object, CheckedCall<Node>>;
+	readonly projections?: ReadonlyMap<object, Node>;
+	readonly literals?: ReadonlyMap<object, readonly string[]>;
+	readonly lastUses?: ReadonlyMap<object, readonly object[]>;
 	readonly calls: ReadonlyMap<object, CheckedCall<Node>>;
 	readonly stages: ReadonlyMap<object, readonly CheckedStage<Node>[]>;
 	readonly threads: ReadonlyMap<object, CheckedThread<Node>>;
@@ -165,6 +174,7 @@ export interface CheckedProgram<Context extends AstContext> {
 		readonly signature: {
 			readonly node: AstNodeMap<Context>['fn'];
 			readonly parameters: readonly CheckedAstType[];
+			readonly ownedParameters?: readonly boolean[];
 			readonly result: CheckedAstType;
 			readonly input?: CheckedAstType;
 			readonly cardinality: 'zero' | 'one' | 'many';

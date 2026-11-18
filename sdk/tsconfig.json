@@ -3,5 +3,5 @@
 	"compilerOptions": {
 		"outDir": "../dist/sdk"
 	},
-	"files": ["ast.ts", "specialization.ts", "format.ts", "highlight.ts", "module-bundle.ts", "modules.ts", "index.ts", "llvm.ts", "runtime.ts"]
+	"files": ["ast.ts", "specialization.ts", "format.ts", "highlight.ts", "module-bundle.ts", "modules.ts", "index.ts", "llvm.ts", "llvm-heap.ts", "runtime.ts"]
 }

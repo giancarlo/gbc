@@ -1025,7 +1025,7 @@ export function Program(options?: ProgramOptions) {
 				if (modeOptions.target === 'llvm') {
 					if (testMode || options?.debug)
 						throw new CompilerError('LLVM target does not support test or debug builds', parsed.root);
-					parsed.root.checked = prepareCheckedProgram(parsed.root, stdlibEntrySymbols.out, checked.semantic, modeOptions.moduleDefs);
+					parsed.root.checked = prepareCheckedProgram(parsed.root, stdlibEntrySymbols.out, checked.semantic, modeOptions.moduleDefs, stdlibDefs);
 					ir = compileLlvm(parsed.root);
 				} else bytes = compileWasm({
 					prepared: prepareAst(parsed.root, testMode, modeOptions.moduleDefs),

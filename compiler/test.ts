@@ -804,7 +804,6 @@ main {
 		for (const invalid of [
 			'main {',
 			'main { missing >> out }',
-			"main { 'text' >> out }",
 			'main { 18446744073709551616 >> out }',
 			'value = 42; main { 42 >> out }',
 			'export value = (): Int32 { 42 }',
@@ -882,7 +881,7 @@ main {
 	s.test('LLVM specialization retries are deterministic after a source-spanned failure', (a: TestApi) => {
 		const definitions = 'twice = <T>(n: T): T { n + n }; wrap = <T>(n: T): T { result = twice(n); twice(result) };';
 		const valid = `${definitions} main { wrap(7) >> out; wrap(0.5) >> out }`;
-		const invalid = `${definitions} main { wrap(7) >> out; 'unsupported' >> out }`;
+		const invalid = `${definitions} main { wrap(7) >> out; missing >> out }`;
 		let source = valid;
 		const program = Program({ sys: { readFile: () => source, readBytes: () => new Uint8Array() } });
 		const first = program.compileFile('/main.gb', { target: 'llvm' });
@@ -893,7 +892,7 @@ main {
 		a.equal(failed.ir, undefined);
 		const error = failed.errors[0];
 		a.assert(error);
-		a.equal(error.position.source.slice(error.position.start, error.position.end), "'unsupported'");
+		a.equal(error.position.source.slice(error.position.start, error.position.end), "missing");
 		source = valid;
 		a.equal(program.compileFile('/main.gb', { target: 'llvm' }).ir, first.ir);
 		const wasm = program.compile(valid);
@@ -904,6 +903,32 @@ main {
 		const unchanged = snapshotGraph(first.ast);
 		a.equal(compileLlvm(first.ast), first.ir);
 		a.equalValues(unchanged(), []);
+	});
+	s.test('LLVM preserves heap diagnostics and re-emits checked file inputs after an edit', (a: TestApi) => {
+		const definitions = `eat = (value: own String): Int32 { length(value) };`;
+		const valid = `${definitions} main { value = 'n\${3}'; eat(value) >> out }`;
+		let source = valid;
+		const program = Program({ sys: {
+			readFile: () => source,
+			readBytes: () => new Uint8Array(),
+		} });
+		const { ir, ast, errors } = program.compileFile('/main.gb', { target: 'llvm' });
+		a.equalValues(errors, []);
+		a.assert(ir);
+		source = `${definitions} main { value = 'n\${3}'; alias = value; eat(value) >> out; length(alias) >> out }`;
+		const expected = program.compile(source).errors[0];
+		a.assert(expected);
+		const failed = program.compileFile('/main.gb', { target: 'llvm' });
+		const actual = failed.errors[0];
+		a.assert(actual);
+		a.equal(failed.ir, undefined);
+		a.equal(actual.message, expected.message);
+		a.equal(actual.position.start, expected.position.start);
+		a.equal(actual.position.end, expected.position.end);
+		a.equal(source.slice(actual.position.start, actual.position.end), 'alias');
+		source = valid;
+		a.equal(program.compileFile('/main.gb', { target: 'llvm' }).ir, ir);
+		a.equal(compileLlvm(ast), ir);
 	});
 	s.test('shared semantic infrastructure compatibility', a => {
 		const definition: NodeMap['label'] = {
