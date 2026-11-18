@@ -1,3 +1,4 @@
+import { createSpecializationKey as createKey } from '@cxl/gbc.sdk';
 import type { Node, NodeMap } from './node.js';
 import { BaseTypes, unifyTypeParam } from './symbol-table.js';
 import type { ResolvedType, Symbol as GbcSymbol, SymbolMap, Type } from './symbol-table.js';
@@ -27,16 +28,6 @@ export function createSpecializationEnvironment(
 }
 
 export function createSpecializationKey() {
-	const ids = new Map<GbcSymbol, number>();
-	function idOf(sym: GbcSymbol): number {
-		let id = ids.get(sym);
-		if (id === undefined) {
-			id = ids.size;
-			ids.set(sym, id);
-		}
-		return id;
-	}
-
 	function typeKey(t: Type): string {
 		if (t.kind !== 'type') return 'fn';
 		if (t.family === 'data')
@@ -54,20 +45,9 @@ export function createSpecializationKey() {
 		return t.name;
 	}
 
-	function key(
-		template: NodeMap['fn'],
-		argTypes: Type[],
-		bindings: Map<GbcSymbol, SymbolMap['function']>,
-	): string {
-		const bk = [...bindings.entries()]
-			.map(([p, f]) => `${idOf(p)}:${idOf(f)}`)
-			.join(',');
-		return `${idOf(template.symbol)}|${argTypes
-			.map(typeKey)
-			.join(',')}|${bk}`;
-	}
-
-	return key;
+	const key = createKey<GbcSymbol, Type>(typeKey);
+	return (template: NodeMap['fn'], argTypes: Type[], bindings: Map<GbcSymbol, SymbolMap['function']>) =>
+		key(template.symbol, argTypes, bindings);
 }
 
 export function bindTypeArguments(

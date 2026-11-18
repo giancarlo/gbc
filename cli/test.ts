@@ -159,6 +159,61 @@ main {
 }`,
 					output: '310202101279192',
 				},
+				{
+					name: 'call-binding',
+					source: `mark = (n: Int32): Int32 { n >> out; next n };
+sub = (a: Int32, b: Int32 = a + 1): Int32 { a - b };
+main {
+	sub(b = mark(2), a = mark(1)) >> out;
+	sub(mark(3), void) >> out;
+	[mark(4), mark(5)] >> sub >> out;
+	max(y = mark(6), x = mark(7)) >> out
+}`,
+					output: '21-13-145-1677',
+				},
+				{
+					name: 'specialized-recursion',
+					source: `twice = <T>(n: T): T { n + n };
+repeat = <T>(n: Int32, value: T): T { n == 0 ? value : repeat(n - 1, twice(value)) };
+apply = <T>(f: (T): T, n: T): T { f(n) };
+sum = (n: Int32): Int32 { n == 0 ? 0 : n + sum(n - 1) };
+tail = (n: Int32, total: Int32): Int32 { n == 0 ? total : tail(n - 1, total + 1) };
+main {
+	repeat(2, 3) >> out; repeat(2, 0.375) >> out; sum(5) >> out;
+	apply((x: Int32): Int32 { x * 2 }, 4) >> out;
+	apply((x: Int32): Int32 { x + 2 }, 4) >> out;
+	6 >> twice >> out; tail(100000, 0) >> out
+}`,
+					output: '121.5158612100000',
+				},
+				{
+					name: 'streams-and-threads',
+					source: `mark = (n: Int32): Int32 { n >> out; next n };
+touch = (n: Int32, extra: Int32): Void { (n + extra) >> out };
+maybe = (flag: Bool): Int32 | Void { flag ? 23 : 22 };
+echo = { $ };
+pair = (n: Int32): { Int32, Int32 } { next n; next n + 1 };
+count = (n: Int32): { ...Int32 } { n <= 0 ? done; (n + 4) >> out; next n; next count(n - 1); next n + 10; done };
+main {
+	mark(3) -> touch(mark(4)) >> out; false -> maybe() >> out;
+	pair(8) >> mark >> out; (1, 2) >> { $, $ + 10 } >> out;
+	loop >> { $ >= 3 ? break : $ } >> out; count(3) >> out; 2 >> echo >> out
+}`,
+					output: '34732288991112120127365132',
+				},
+				{
+					name: 'overloaded-dispatch',
+					source: `choose = (n: Int32): Int32 { n * 2 } | (b: Bool): Int32 { b ? 7 : 8 };
+pair = (n: Int32): { Int32, Bool } { next n; next true };
+branch = (b: Bool): Int32 | Bool { b ? 5 : false };
+main {
+	choose(3) >> out; false -> choose() >> out; pair(3) >> choose >> out;
+	branch(true) >> Int32 { $ + 1 } | Bool { $ ? 7 : 8 } >> out;
+	branch(false) >> Int32 { $ + 1 } | Bool { $ ? 7 : 8 } >> out;
+	3 >> :3 { 6 } | Int32 { $ } >> out
+}`,
+					output: '68676863',
+				},
 				{ name: 'empty', source: 'main {}', output: '' },
 				{ name: 'limits', source: 'main { -2147483648 >> out; 0 >> out; 2147483647 >> out }', output: '-214748364802147483647' },
 			];

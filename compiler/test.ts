@@ -879,6 +879,32 @@ main {
 		a.equalValues(unchanged(), []);
 		a.equal(program.compileFile('/main.gb', { target: 'llvm' }).ir, compile.ir);
 	});
+	s.test('LLVM specialization retries are deterministic after a source-spanned failure', (a: TestApi) => {
+		const definitions = 'twice = <T>(n: T): T { n + n }; wrap = <T>(n: T): T { result = twice(n); twice(result) };';
+		const valid = `${definitions} main { wrap(7) >> out; wrap(0.5) >> out }`;
+		const invalid = `${definitions} main { wrap(7) >> out; 'unsupported' >> out }`;
+		let source = valid;
+		const program = Program({ sys: { readFile: () => source, readBytes: () => new Uint8Array() } });
+		const first = program.compileFile('/main.gb', { target: 'llvm' });
+		a.equalValues(first.errors, []);
+		a.assert(first.ir);
+		source = invalid;
+		const failed = program.compileFile('/main.gb', { target: 'llvm' });
+		a.equal(failed.ir, undefined);
+		const error = failed.errors[0];
+		a.assert(error);
+		a.equal(error.position.source.slice(error.position.start, error.position.end), "'unsupported'");
+		source = valid;
+		a.equal(program.compileFile('/main.gb', { target: 'llvm' }).ir, first.ir);
+		const wasm = program.compile(valid);
+		a.assert(wasm.bytes);
+		const output: string[] = [];
+		runWasm(wasm.bytes, chunk => output.push(chunk));
+		a.equalValues(output, ['28', '2']);
+		const unchanged = snapshotGraph(first.ast);
+		a.equal(compileLlvm(first.ast), first.ir);
+		a.equalValues(unchanged(), []);
+	});
 	s.test('shared semantic infrastructure compatibility', a => {
 		const definition: NodeMap['label'] = {
 			kind: 'label',

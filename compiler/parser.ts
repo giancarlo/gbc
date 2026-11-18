@@ -9,7 +9,7 @@ import type { ScannerToken } from './scanner.js';
 import type { Node, NodeMap } from './node.js';
 import type { Symbol, SymbolMap, Type, TypeSymbol } from './symbol-table.js';
 
-export type RootNode = ReturnType<typeof parse>;
+export type RootNode = NodeMap['root'];
 
 /** A parsed `@` module reference: `@name` (library, via the import map) or
 	* `@.seg.seg` (local file, relative to the importing file). */
@@ -44,7 +44,7 @@ export function parse(
 	symbolTable: SymbolTable,
 	typesTable: TypesSymbolTable,
 	options: ParseOptions = {},
-) {
+): RootNode {
 	const {
 		current,
 		consume,

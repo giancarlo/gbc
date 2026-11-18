@@ -18,7 +18,7 @@ import {
 import { parse } from './parser.js';
 import { scan } from './scanner.js';
 import { compileTypes } from './compiler-types.js';
-import { prepareProgram } from './preparation.js';
+import { prepareCheckedProgram, prepareProgram } from './preparation.js';
 import {
 	compileWasm,
 	setDivByZeroType,
@@ -46,7 +46,7 @@ import type {
 	Type,
 	TypeSymbol,
 } from './symbol-table.js';
-import type { ModuleLoader, ModuleRef, ParseOptions } from './parser.js';
+import type { ModuleLoader, ModuleRef, ParseOptions, RootNode } from './parser.js';
 
 // Compiler debugging: attach the compiler's own JS stack to a CompilerError.
 // Unrelated to gb-code debug builds (see ProgramOptions.debug).
@@ -975,7 +975,7 @@ export function Program(options?: ProgramOptions) {
 	symbolTable.setSymbols(stdlibEntrySymbols);
 	typesTable.setSymbols(stdlibEntryTypes);
 
-	function parser(src: string, parseOptions?: ParseOptions) {
+	function parser(src: string, parseOptions?: ParseOptions): { root: RootNode; scope: Scope; errors: CompilerError[] } {
 		api.start(src);
 		const scope = symbolTable.push();
 		const typeScope = typesTable.push();
@@ -1025,7 +1025,7 @@ export function Program(options?: ProgramOptions) {
 				if (modeOptions.target === 'llvm') {
 					if (testMode || options?.debug)
 						throw new CompilerError('LLVM target does not support test or debug builds', parsed.root);
-					checked.resolveNumericNodes(stdlibEntrySymbols.out);
+					parsed.root.checked = prepareCheckedProgram(parsed.root, stdlibEntrySymbols.out, checked.semantic, modeOptions.moduleDefs);
 					ir = compileLlvm(parsed.root);
 				} else bytes = compileWasm({
 					prepared: prepareAst(parsed.root, testMode, modeOptions.moduleDefs),

@@ -5,6 +5,9 @@ import {
 	type AstNode,
 	type AstNodeMap,
 	type CheckedAstType,
+	type CheckedBody,
+	type CheckedCall,
+	type CheckedProgram,
 	type NumericConversionRange,
 	type NumericOperationFacts,
 } from './ast.js';
@@ -31,13 +34,16 @@ type CheckedNode = AstNode<LlvmAstContext>;
 type Integer = 'i8' | 'u8' | 'i16' | 'u16' | 'i32' | 'u32' | 'i64' | 'u64';
 type Float = 'float' | 'double';
 type Scalar = Integer | Float | 'i1';
-type Value = { type: Scalar; operand: string; tag?: string; errors?: readonly number[] };
-type Shape = { type: Scalar; errors?: readonly number[] };
+type Shape = { type: Scalar; errors?: readonly number[]; variants?: readonly Scalar[] };
+type Value = Shape & { operand: string; tag?: string };
 type Function<Context extends LlvmAstContext> = {
 	name: string;
 	result: Shape | 'void';
-	parameters: readonly (readonly [CheckedSymbol, Shape])[];
-	body: NonNullable<AstNodeMap<Context>['fn']['statements']>;
+	parameters: readonly (readonly [CheckedSymbol | undefined, Shape | undefined])[];
+	body: readonly AstNode<Context>[];
+	facts?: CheckedBody<AstNode<Context>>;
+	stream?: 'many' | 'optional';
+	input?: true;
 };
 
 const arithmetic = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '%': 'rem' } as const;
@@ -47,6 +53,12 @@ const divByZero = 1, numericOverflow = 2, outOfMemory = 3;
 const numericErrorTags = new Map([
 	['DivByZero', divByZero], ['NumericOverflow', numericOverflow], ['OutOfMemory', outOfMemory],
 ]);
+const scalarVariants: readonly Scalar[] = ['i1', 'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'i64', 'u64', 'float', 'double'];
+
+function variantTag(type: Scalar): number {
+	return scalarVariants.indexOf(type) + 16;
+}
+
 const floatIntrinsics = new Map([
 	['sqrt', 'sqrt'], ['abs', 'fabs'], ['floor', 'floor'], ['ceil', 'ceil'], ['trunc', 'trunc'],
 	['nearest', 'nearbyint'], ['copysign', 'copysign'],
@@ -73,16 +85,28 @@ function scalar(type: CheckedAstType | undefined): Scalar | undefined {
 	}
 }
 
-function shape(type: CheckedAstType | undefined, node: CheckedNode): Shape {
+function abiShape(type: CheckedAstType | undefined): Shape | undefined {
 	const plain = scalar(type);
 	if (plain) return { type: plain };
-	if (type?.family === 'union' && Array.isArray(type.members)) {
-		const members: readonly CheckedAstType[] = type.members;
-		const values = members.filter(member => !numericErrorTags.has(member.name ?? ''));
-		const payload = values.length === 1 && scalar(values[0]);
-		if (payload) return { type: payload, errors: members.flatMap(member => numericErrorTags.get(member.name ?? '') ?? []) };
+	if (type?.family !== 'union' || !Array.isArray(type.members)) return;
+	const members: readonly CheckedAstType[] = type.members;
+	const variants = new Set<Scalar>();
+	const errors: number[] = [];
+	for (const member of members) {
+		if (member.family === 'void') continue;
+		const value = scalar(member);
+		const error = numericErrorTags.get(member.name ?? '');
+		if (value) variants.add(value);
+		else if (error !== undefined) errors.push(error);
+		else return;
 	}
-	return unsupported(node);
+	if (variants.size > 1) return { type: 'u64', variants: [...variants], errors };
+	const [value] = variants;
+	if (value) return { type: value, errors: errors.length ? errors : undefined };
+}
+
+function shape(type: CheckedAstType | undefined, node: CheckedNode): Shape {
+	return abiShape(type) ?? unsupported(node);
 }
 
 function isFloat(type: Scalar): type is Float {
@@ -106,7 +130,7 @@ function irType(type: Scalar): 'i1' | 'i32' | 'i64' | Float {
 
 function abiType(shape: Shape): string {
 	const type = irType(shape.type);
-	return shape.errors ? `{ ${type}, i8 }` : type;
+	return shape.errors || shape.variants ? `{ ${type}, i8 }` : type;
 }
 
 function floatConstant(number: number): string {
@@ -128,25 +152,46 @@ function numberLiteral(node: AstNodeMap<LlvmAstContext>['number']): Value {
 	return unsupported(node);
 }
 
-function checkedFunction<Context extends LlvmAstContext>(node: AstNodeMap<Context>['fn'], name: string): Function<Context> {
-	const { symbol, statements, parameters, typeParameters, objectBacked } = node;
+function legacyFunctionResult(node: AstNodeMap<LlvmAstContext>['fn']): Shape | 'void' {
+	const { symbol, typeParameters } = node;
 	const emission = symbol.emissionType;
-	if (!statements || objectBacked || typeParameters?.length || symbol.typeParams?.length ||
-		(emission && (!emission.elements || emission.elements.length > 1 || emission.rest))) unsupported(node);
+	if (typeParameters?.length || symbol.typeParams?.length ||
+		(emission && (!emission.elements || emission.elements.length > 1 || emission.rest)))
+		return unsupported(node);
 	const type = emission?.elements?.[0] ?? symbol.returnType;
+	return type?.family === 'void' || emission?.elements?.length === 0 ? 'void' : shape(type, node);
+}
+
+function checkedFunction<Context extends LlvmAstContext>(
+	node: AstNodeMap<Context>['fn'],
+	name: string,
+	instance?: CheckedProgram<Context>['instances'][number],
+): Function<Context> {
+	const { statements, parameters, objectBacked } = node;
+	const signature = instance?.signature;
+	if (!statements || objectBacked) return unsupported(node);
+	const stream = signature?.cardinality === 'many' ? 'many'
+		: signature?.cardinality === 'one' && signature.mayEmitVoid ? 'optional' : undefined;
+	const result = signature
+		? signature.cardinality === 'zero' || stream === 'many' ? 'void' : shape(signature.result, node)
+		: legacyFunctionResult(node);
 	return {
 		name,
-		result: type?.family === 'void' || emission?.elements?.length === 0 ? 'void' : shape(type, node),
-		parameters: (parameters ?? []).map(parameter => {
-			if (parameter.value || parameter.symbol.ownership === 'var') unsupported(parameter);
-			return [parameter.symbol, shape(parameter.symbol.type, parameter)];
+		result,
+		parameters: signature?.input ? [[undefined, shape(signature.input, node)]] : (parameters ?? []).map((parameter, index) => {
+			if (parameter.symbol.ownership === 'var' || (!signature && parameter.value)) return unsupported(parameter);
+			const type = signature?.parameters[index] ?? parameter.symbol.type;
+			return [parameter.symbol, signature && type?.kind === 'function' ? undefined : shape(type, parameter)];
 		}),
 		body: statements,
+		facts: instance?.body,
+		stream,
+		input: signature?.input ? true : undefined,
 	};
 }
 
 export function compileLlvm<Context extends LlvmAstContext>(
-	root: AstNodeMap<Context>['root'],
+	root: Readonly<AstNodeMap<Context>['root']>,
 	output?: CheckedSymbol,
 ): string {
 	type Node = AstNode<Context>;
@@ -155,6 +200,11 @@ export function compileLlvm<Context extends LlvmAstContext>(
 	const definitions: Function<Context>[] = [];
 	let main: Nodes['main'] | undefined;
 	const runtime = new Set<string>();
+	const streamEffects = new Set<Function<Context>>();
+	const standardOutput = root.checked?.output ?? output;
+
+	const prepared = root.checked?.instances.map((instance, index) =>
+		checkedFunction<Context>(instance.signature.node, `fn${index}`, instance));
 
 	for (const node of root.children) {
 		if (node.kind === 'comment') continue;
@@ -162,25 +212,38 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			main = node;
 			continue;
 		}
+		if (prepared && (node.kind === 'type' || node.kind === 'extend' || node.kind === 'import' ||
+			(node.kind === 'def' && (node.value.kind === 'fn' || astDispatchArms<Context>(node.value)))))
+			continue;
 		if (node.kind !== 'def' || node.value.kind !== 'fn') unsupported(node);
 		const fn = checkedFunction<Context>(node.value, `fn${definitions.length}`);
 		definitions.push(fn);
 		functions.set(node.symbol, fn);
 		functions.set(node.value.symbol, fn);
 	}
+
 	if (!main) throw new CompilerError('LLVM target requires a main block', root);
 
 	function emitBody(fn: Function<Context>, isMain = false): string {
-		const locals = new Map<CheckedSymbol, Value>();
-		const args = fn.parameters.map(([, type], index) => `${abiType(type)} %arg${index}`);
+		let locals = new Map<CheckedSymbol, Value>();
+		let facts = fn.facts;
+		const activeStreams = new Set<Function<Context>>();
+		const args = fn.parameters.flatMap(([, type], index) => type ? [`${abiType(type)} %arg${index}`] : []);
 		const resultType = fn.result === 'void' ? 'void' : abiType(fn.result);
+		const allocations: string[] = [];
 		const lines = [`define ${isMain ? '' : 'internal '}${resultType} @${fn.name}(${args.join(', ')}) {`, 'entry:'];
 		let block = 'entry';
 		let nextBlock = 0;
 		let nextValue = 0;
 		let dollar: Value | undefined;
-		fn.parameters.forEach(([symbol, type], index) =>
-			locals.set(symbol, unpack(type, `%arg${index}`)));
+		let breakLabel: string | undefined;
+		let completion: { label?: string } | undefined;
+		fn.parameters.forEach(([symbol, type], index) => {
+			if (!type) return;
+			const argument = unpack(type, `%arg${index}`);
+			if (symbol) locals.set(symbol, argument);
+			if (fn.input && index === 0) dollar = argument;
+		});
 		function instruction(text: string) {
 			lines.push(`  ${text}`);
 		}
@@ -189,6 +252,12 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			const operand = `%v${nextValue++}`;
 			instruction(`${operand} = ${text}`);
 			return operand;
+		}
+
+		function storage(type: string): string {
+			const pointer = `%v${nextValue++}`;
+			allocations.push(`  ${pointer} = alloca ${type}`);
+			return pointer;
 		}
 
 		function value(type: Scalar, text: string): Value {
@@ -218,20 +287,44 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			throw new CompilerError('LLVM target does not support this scalar conversion', node);
 		}
 
+		function encodeVariant(input: Value): string {
+			const ir = irType(input.type);
+			const bits = isFloat(input.type)
+				? register(`bitcast ${ir} ${input.operand} to ${ir === 'float' ? 'i32' : 'i64'}`) : input.operand;
+			const width = ir === 'float' ? 'i32' : ir === 'double' ? 'i64' : ir;
+			return width === 'i64' ? bits : register(`zext ${width} ${bits} to i64`);
+		}
+
+		function decodeVariant(input: Value, type: Scalar): Value {
+			const ir = irType(type);
+			const width = ir === 'float' ? 'i32' : ir === 'double' ? 'i64' : ir;
+			const bits = width === 'i64' ? input.operand : register(`trunc i64 ${input.operand} to ${width}`);
+			return { type, operand: isFloat(type) ? register(`bitcast ${width} ${bits} to ${ir}`) : bits };
+		}
+
 		function pack(input: Value, target: Shape, node: Node): string {
-			if (!target.errors && input.tag !== undefined) return unsupported(node);
-			const payload = coerce(input, target.type, node);
-			if (!target.errors) return payload;
+			if (input.variants && !target.variants) return unsupported(node);
+			if (!target.errors && !target.variants && input.tag !== undefined) return unsupported(node);
+			let payload = input.operand;
+			let tag = input.tag ?? '0';
+			if (!target.variants) payload = coerce(input, target.type, node);
+			else if (!input.variants) {
+				if (!target.variants.includes(input.type)) return unsupported(node);
+				payload = encodeVariant(input);
+				const scalarTag = variantTag(input.type);
+				tag = input.tag === undefined ? String(scalarTag)
+					: register(`select i1 ${register(`icmp eq i8 ${tag}, 0`)}, i8 ${scalarTag}, i8 ${tag}`);
+			}
+			if (!target.errors && !target.variants) return payload;
 			const type = abiType(target);
 			const packed = register(`insertvalue ${type} poison, ${irType(target.type)} ${payload}, 0`);
-			return register(`insertvalue ${type} ${packed}, i8 ${input.tag ?? 0}, 1`);
+			return register(`insertvalue ${type} ${packed}, i8 ${tag}, 1`);
 		}
 
 		function unpack(target: Shape, input: string): Value {
-			const { errors, type } = target;
-			if (!errors) return { type, operand: input };
+			if (!target.errors && !target.variants) return { ...target, operand: input };
 			const abi = abiType(target);
-			return { type, operand: register(`extractvalue ${abi} ${input}, 0`), errors, tag: register(`extractvalue ${abi} ${input}, 1`) };
+			return { ...target, operand: register(`extractvalue ${abi} ${input}, 0`), tag: register(`extractvalue ${abi} ${input}, 1`) };
 		}
 
 		function integer(input: Value, node: Node): Integer {
@@ -250,7 +343,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			const lhs = expr(left), rhs = expr(right);
 			if (lhs.tag !== undefined || rhs.tag !== undefined) return unsupported(node);
 			const division = node.kind === '/' || node.kind === '%';
-			const numeric = node.numeric;
+			const numeric = facts?.numeric.get(node) ?? node.numeric;
 			const type = scalar(numeric?.valueType) ?? integerType(lhs, rhs, node);
 			const ir = irType(type);
 			const first = coerce(lhs, type, left), second = coerce(rhs, type, right);
@@ -314,7 +407,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			if (lhs.tag !== undefined || rhs.tag !== undefined) return unsupported(node);
 			if (lhs.type === 'i1' && (opcode === 'eq' || opcode === 'ne'))
 				return value('i1', `icmp ${opcode} i1 ${lhs.operand}, ${operand(rhs, 'i1', right)}`);
-			const numeric = node.comparison;
+			const numeric = facts?.comparisons.get(node) ?? node.comparison;
 			const useFloat = numeric?.floatType || isFloat(lhs.type) || isFloat(rhs.type);
 			const type = useFloat ? 'double' : numeric?.wide ? 'i64' : integerType(lhs, rhs, node);
 			const first = coerce(lhs, type, left), second = coerce(rhs, type, right);
@@ -380,7 +473,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			label(resume);
 		}
 
-		function branch(test: string, yes: () => Value, no: () => Value, node: Node): Value {
+		function branches<T>(test: string, yes: () => T, no: () => T): readonly [T, string, T, string] {
 			const id = nextBlock++;
 			const onTrue = `then${id}`, onFalse = `else${id}`, join = `join${id}`;
 			instruction(`br i1 ${test}, label %${onTrue}, label %${onFalse}`);
@@ -390,11 +483,30 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			instruction(`br label %${join}`);
 			label(onFalse);
 			const rhs = no();
-			const right = coerce(rhs, lhs.type, node);
 			const rightBlock = block;
 			instruction(`br label %${join}`);
 			label(join);
-			const result = value(lhs.type, `phi ${irType(lhs.type)} [ ${lhs.operand}, %${leftBlock} ], [ ${right}, %${rightBlock} ]`);
+			return [lhs, leftBlock, rhs, rightBlock];
+		}
+
+		function branch(test: string, yes: () => Value, no: () => Value, node: Node): Value {
+			const checked = abiShape(facts?.types.get(node));
+			if (checked?.variants) {
+				const [left, leftBlock, right, rightBlock] = branches(test,
+					() => pack(yes(), checked, node), () => pack(no(), checked, node));
+				const joined = register(`phi ${abiType(checked)} [ ${left}, %${leftBlock} ], [ ${right}, %${rightBlock} ]`);
+				return unpack(checked, joined);
+			}
+			let type: Scalar;
+			const [lhs, leftBlock, rhs, rightBlock] = branches(test, () => {
+				const lhs = yes();
+				type = lhs.type;
+				return lhs;
+			}, () => {
+				const rhs = no();
+				return { ...rhs, operand: coerce(rhs, type, node) };
+			});
+			const result = value(lhs.type, `phi ${irType(lhs.type)} [ ${lhs.operand}, %${leftBlock} ], [ ${rhs.operand}, %${rightBlock} ]`);
 			if (lhs.tag !== undefined || rhs.tag !== undefined) {
 				result.errors = [...new Set([...(lhs.errors ?? []), ...(rhs.errors ?? [])])];
 				result.tag = register(`phi i8 [ ${lhs.tag ?? 0}, %${leftBlock} ], [ ${rhs.tag ?? 0}, %${rightBlock} ]`);
@@ -403,12 +515,12 @@ export function compileLlvm<Context extends LlvmAstContext>(
 		}
 
 		function call(target: Function<Context>, args: readonly Value[], node: Node): Value | undefined {
-			if (args.length !== target.parameters.length) return unsupported(node);
-			const values = args.map((argument, index) => {
-				const parameter = target.parameters[index];
-				if (!parameter) return unsupported(node);
-				const [, type] = parameter;
-				return `${abiType(type)} ${pack(argument, type, node)}`;
+			if (args.length > target.parameters.length) return unsupported(node);
+			const values = target.parameters.flatMap(([, type], index) => {
+				if (!type) return [];
+				const argument = args[index];
+				if (!argument) return unsupported(node);
+				return [`${abiType(type)} ${pack(argument, type, node)}`];
 			});
 			const result = target.result === 'void' ? 'void' : abiType(target.result);
 			const invocation = `call ${result} @${target.name}(${values.join(', ')})`;
@@ -416,8 +528,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			instruction(invocation);
 		}
 
-		function scalarArgument(node: Node, type: Scalar): string {
-			const operand = expr(node);
+		function scalarArgument(operand: Value, type: Scalar, node: Node): string {
 			if (operand.tag !== undefined) return unsupported(node);
 			return coerce(operand, type, node);
 		}
@@ -436,8 +547,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			return value(type, `select i1 ${unordered}, ${type} ${floatConstant(NaN)}, ${type} ${ordered}`);
 		}
 
-		function intrinsic(node: Nodes['call'], args: readonly Node[]): Value | undefined {
-			const target = node.intrinsic;
+		function intrinsic(node: Node, args: readonly Value[], target: Nodes['call']['intrinsic']): Value | undefined {
 			const parameter = target?.parameters?.[0]?.type;
 			const input = scalar(parameter);
 			const result = scalar(target?.returnType);
@@ -447,8 +557,8 @@ export function compileLlvm<Context extends LlvmAstContext>(
 		}
 
 		function emitIntrinsic(
-			node: Nodes['call'],
-			args: readonly Node[],
+			node: Node,
+			args: readonly Value[],
 			operation: string,
 			input: Scalar,
 			result: Scalar,
@@ -457,7 +567,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			const extremum = isFloat(input) && (operation === 'min' || operation === 'max');
 			if (!opcode && !extremum && operation !== 'bits') return;
 			const ir = irType(input);
-			const operands = args.map(arg => scalarArgument(arg, input));
+			const operands = args.map(arg => scalarArgument(arg, input, node));
 			if (extremum) {
 				const [left, right] = operands;
 				if (left === undefined || right === undefined) return unsupported(node);
@@ -470,17 +580,72 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			return value(result, `call ${ir} ${intrinsic}(${operands.map(operand => `${ir} ${operand}`).join(', ')})`);
 		}
 
+		function inScope<T>(scope: Function<Context>, values: readonly (Value | undefined)[], run: () => T): T {
+			const previousLocals = locals;
+			const previousFacts = facts;
+			const previousDollar = dollar;
+			locals = new Map();
+			facts = scope.facts;
+			dollar = scope.input ? values[0] : undefined;
+			for (const [index, input] of values.entries()) {
+				const symbol = scope.parameters[index]?.[0];
+				if (symbol && input) locals.set(symbol, input);
+			}
+			try {
+				return run();
+			} finally {
+				locals = previousLocals;
+				facts = previousFacts;
+				dollar = previousDollar;
+			}
+		}
+
+		function argumentsFor(bound: CheckedCall<Node>, target: Function<Context> | undefined, node: Node): Value[] {
+			const values: Value[] = [];
+			for (const index of bound.evaluationOrder) {
+				if (target && !target.parameters[index]?.[1]) continue;
+				const expression = bound.arguments[index];
+				if (!expression) return unsupported(node);
+				values[index] = target && bound.defaulted.includes(index)
+					? inScope(target, values, () => expr(expression)) : expr(expression);
+			}
+			return values;
+		}
+
+		function emitBound(
+			bound: CheckedCall<Node>,
+			node: Node,
+			carrier?: Value,
+			yieldValue?: (input: Value) => void,
+		): Value | undefined {
+			const target = bound.target === undefined ? undefined : prepared?.[bound.target];
+			const args = carrier ? [carrier] : argumentsFor(bound, target, node);
+			if (bound.output && args[0]) {
+				print(args[0], node);
+				return;
+			}
+			if (target?.stream) {
+				if (!yieldValue) return unsupported(node);
+				emitStream(target, args, yieldValue, node);
+				return;
+			}
+			if (target) return call(target, args, node);
+			return intrinsic(node, args, bound.intrinsic) ?? unsupported(node);
+		}
+
 		function directCall(node: Nodes['call']): Value | undefined {
+			const bound = facts?.calls.get(node);
+			if (bound) return emitBound(bound, node);
 			const [callee, arg] = node.children;
 			if (callee.kind === 'typeident' && arg && arg.kind !== ',') {
-				const conversion = node.conversion;
+				const conversion = facts?.conversions.get(node) ?? node.conversion;
 				if (!conversion) return unsupported(node);
 				return convert(node, arg, conversion.target, conversion.range);
 			}
 			const args = arg?.kind === ',' ? arg.children : arg ? [arg] : [];
 			const target = callee.kind === 'ident' && functions.get(callee.symbol);
 			if (target) return call(target, args.map(expr), node);
-			return intrinsic(node, args) ?? unsupported(node);
+			return intrinsic(node, args.map(expr), node.intrinsic) ?? unsupported(node);
 		}
 
 		function print(input: Value, node: Node): void {
@@ -522,19 +687,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			}
 
 			function emitArm(arm: Nodes['fn'], accepted: readonly number[]): Value {
-				const parameter = arm.parameters?.[0];
-				const body = arm.statements?.filter(statement => statement.kind !== 'comment');
-				const tail = body?.at(-1);
-				const result = tail?.kind === 'next' && tail.children?.[0];
-				if (!result || !body || !parameter) return unsupported(arm);
-				const previous = dollar;
-				dollar = accepted.includes(0) ? payload : undefined;
-				if (dollar) locals.set(parameter.symbol, dollar);
-				for (const statement of body.slice(0, -1)) emitStatement(statement);
-				const returned = expr(result);
-				locals.delete(parameter.symbol);
-				dollar = previous;
-				return returned;
+				return stageBlock(arm, accepted.includes(0) ? payload : undefined) ?? unsupported(arm);
 			}
 
 			function selectArm(remaining: readonly number[]): Value {
@@ -553,24 +706,368 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			return selectArm(tags);
 		}
 
-		function pipe(node: Nodes['>>']): Value | undefined {
+		function stageBlock(
+			stage: Nodes['fn'],
+			carrier: Value | undefined,
+			yieldValue?: (input: Value) => void,
+		): Value | undefined {
+			const outer = { locals, dollar, completion };
+			locals = new Map(locals);
+			dollar = carrier;
+			const parameter = stage.parameters?.[0]?.symbol;
+			if (parameter && carrier) locals.set(parameter, carrier);
+			try {
+				const body = stage.statements ?? [];
+				if (yieldValue) {
+					streamBody(body, input => {
+						const inner = { locals, dollar, completion };
+						({ locals, dollar, completion } = outer);
+						try {
+							yieldValue(input);
+						} finally {
+							({ locals, dollar, completion } = inner);
+						}
+					});
+					return;
+				}
+				const statements = body.filter(node => node.kind !== 'comment');
+				const tail = statements.pop();
+				for (const statement of statements) emitStatement(statement);
+				if (tail) return evaluate(tail.kind === 'next' ? tail.children?.[0] ?? tail : tail);
+			} finally {
+				({ locals, dollar, completion } = outer);
+			}
+		}
+
+		function armType(arm: Node): CheckedAstType | undefined {
+			if (arm.kind === 'fn' && arm.parameters?.length === 1)
+				return arm.parameters[0]?.symbol.type;
+		}
+
+		function literalTest(input: Value, literal: number | boolean): string {
+			const ir = irType(input.type);
+			const compare = isFloat(input.type) ? 'fcmp oeq' : 'icmp eq';
+			const constant = isFloat(input.type) ? floatConstant(Number(literal))
+				: ir === 'i1' ? String(Boolean(literal)) : String(Number(literal));
+			return register(`${compare} ${ir} ${input.operand}, ${constant}`);
+		}
+
+		function dispatchStream(
+			arms: readonly Node[],
+			rest: readonly Node[],
+			input: Value,
+			yieldValue: (input: Value) => void,
+		): void {
+			for (const arm of arms) {
+				if (arm.kind !== 'fn') return unsupported(arm);
+				const type = armType(arm);
+				const run = (carrier?: Value) => {
+					stageBlock(arm, carrier, value => { drive(rest, value, yieldValue); });
+				};
+				if (type?.family === 'literal') {
+					const literal = type.value;
+					if (typeof literal !== 'number' && typeof literal !== 'boolean') return unsupported(arm);
+					branches(literalTest(input, literal), () => run(input), () => {});
+				} else if (input.tag === undefined) {
+					if (scalar(type) === input.type) run(input);
+				} else tagArm(input, input.tag, type, run);
+			}
+		}
+
+		function tagArm(input: Value, tag: string, type: CheckedAstType | undefined, run: (carrier?: Value) => void): void {
+			const concrete = scalar(type);
+			const normal = concrete !== undefined && (input.variants ? input.variants.includes(concrete) : concrete === input.type);
+			if (normal) {
+				const test = register(`icmp eq i8 ${tag}, ${input.variants ? variantTag(concrete) : 0}`);
+				branches(test, () => run(input.variants ? decodeVariant(input, concrete)
+					: { type: input.type, operand: input.operand }), () => {});
+			} else {
+				const error = numericErrorTags.get(type?.name ?? '');
+				const compare = type?.name === 'Error' ? input.variants ? 'ult' : 'ne' : 'eq';
+				const operand = type?.name === 'Error' ? input.variants ? 16 : 0 : error;
+				if (operand !== undefined)
+					branches(register(`icmp ${compare} i8 ${tag}, ${operand}`), () => run(), () => {});
+			}
+		}
+
+		function drive(
+			stages: readonly Node[],
+			carrier: Value,
+			yieldValue?: (input: Value) => void,
+			index = 0,
+		): Value | undefined {
+			const stage = stages[index];
+			const nextIndex = index + 1;
+			if (!stage) {
+				if (yieldValue) yieldValue(carrier);
+				else return carrier;
+				return;
+			}
+			if (yieldValue && stage.kind === '|') {
+				const arms = astDispatchArms<Context>(stage);
+				if (!arms) return unsupported(stage);
+				dispatchStream(arms, stages.slice(nextIndex), carrier, yieldValue);
+				return;
+			}
+			const type = armType(stage);
+			if (yieldValue && type && (carrier.tag !== undefined || type.family === 'literal')) {
+				let end = nextIndex;
+				while (end < stages.length && armType(stages[end] ?? stage)) end++;
+				dispatchStream(stages.slice(index, end), stages.slice(end), carrier, yieldValue);
+				return;
+			}
+			if (carrier.variants && carrier.tag !== undefined) {
+				if (!yieldValue) return unsupported(stage);
+				for (const type of carrier.variants) {
+					const test = register(`icmp eq i8 ${carrier.tag}, ${variantTag(type)}`);
+					branches(test, () => { drive(stages, decodeVariant(carrier, type), yieldValue, index); }, () => {});
+				}
+				return;
+			}
+
+			const next = yieldValue ? (input: Value) => { drive(stages, input, yieldValue, nextIndex); } : undefined;
+			const result = driveStage(stage, carrier, next);
+			if (result) return drive(stages, result, yieldValue, nextIndex);
+		}
+
+		function driveStage(stage: Node, carrier: Value, yieldValue?: (input: Value) => void): Value | undefined {
+			const alternatives = facts?.stages.get(stage);
+			if (alternatives) {
+				const bound = alternatives.find(alternative => scalar(alternative.input) === carrier.type)
+					?? (alternatives.length === 1 ? alternatives[0] : undefined);
+				if (!bound) return unsupported(stage);
+				return emitBound(bound, stage, carrier, yieldValue);
+			}
+			switch (stage.kind) {
+				case 'ident': {
+					if (stage.standardOutput || stage.symbol === standardOutput) {
+						print(carrier, stage);
+						return;
+					}
+					const target = functions.get(stage.symbol);
+					if (target) return call(target, [carrier], stage);
+					break;
+				}
+				case '|':
+					if (carrier.tag !== undefined) return dispatch(stage, carrier);
+					break;
+				case 'fn':
+					if (carrier.tag === undefined) return stageBlock(stage, carrier, yieldValue);
+					break;
+				default:
+					break;
+			}
+			return unsupported(stage);
+		}
+
+		function pipe(node: Nodes['>>'], yieldValue?: (input: Value) => void): Value | undefined {
 			const [input, ...stages] = node.children;
 			if (!input || !stages.length) return unsupported(node);
-			let carrier: Value | undefined = expr(input);
-			for (const stage of stages) {
-				if (!carrier) return unsupported(stage);
-				if (stage.kind === 'ident' && (stage.standardOutput || stage.symbol === output)) {
-					print(carrier, stage);
-					carrier = undefined;
-				} else if (stage.kind === '|' && carrier.tag !== undefined)
-					carrier = dispatch(stage, carrier);
-				else {
-					const target = stage.kind === 'ident' && functions.get(stage.symbol);
-					if (!target) return unsupported(stage);
-					carrier = call(target, [carrier], stage);
+			const [first, ...rest] = stages;
+			const packed = first && facts?.stages.get(first)?.find(alternative => alternative.packed);
+			if (first && packed) {
+				const result = emitBound(packed, first, undefined, yieldValue
+					? carrier => { drive(rest, carrier, yieldValue); } : undefined);
+				if (result) return drive(rest, result, yieldValue);
+				return;
+			}
+			if (yieldValue) {
+				if (input.kind === 'loop') loop(stages, yieldValue);
+				else emitValues(input, carrier => { drive(stages, carrier, yieldValue); });
+			}
+			else {
+				const value = expr(input);
+				if (!value.variants) return drive(stages, value);
+				const type = shape(facts?.types.get(node), node);
+				const abi = abiType(type);
+				const slot = storage(abi);
+				instruction(`store ${abi} zeroinitializer, ptr ${slot}`);
+				drive(stages, value, input => { instruction(`store ${abi} ${pack(input, type, node)}, ptr ${slot}`); });
+				return unpack(type, register(`load ${abi}, ptr ${slot}`));
+			}
+		}
+
+		function jump(target: string): void {
+			instruction(`br label %${target}`);
+		}
+
+		function exit(target: string | undefined, node: Node): void {
+			if (!target) return unsupported(node);
+			jump(target);
+			label(`dead${nextBlock++}`);
+		}
+
+		function loop(stages: readonly Node[], yieldValue: (input: Value) => void): void {
+			const id = nextBlock++;
+			const head = `loop${id}`, increment = `increment${id}`, end = `end${id}`;
+			const entry = block;
+			const previous = breakLabel;
+			jump(head);
+			label(head);
+			const index = value('i32', `phi i32 [ 0, %${entry} ], [ %index${id}, %${increment} ]`);
+			breakLabel = end;
+			drive(stages, index, yieldValue);
+			breakLabel = previous;
+			jump(increment);
+			label(increment);
+			instruction(`%index${id} = add i32 ${index.operand}, 1`);
+			jump(head);
+			label(end);
+		}
+
+		function finishCompletion(): void {
+			const end = completion?.label;
+			if (end) {
+				jump(end);
+				label(end);
+			}
+		}
+
+		function streamBody(statements: readonly Node[], yieldValue: (input: Value) => void): void {
+			const previous = completion;
+			completion = {};
+			try {
+				for (const statement of statements) {
+					emitValues(statement, yieldValue);
+					if (statement.kind === 'done') break;
+				}
+				finishCompletion();
+			} finally {
+				completion = previous;
+			}
+		}
+
+		function emitStream(
+			target: Function<Context>,
+			args: readonly Value[],
+			yieldValue: (input: Value) => void,
+			node: Node,
+		): void {
+			if (activeStreams.has(target)) {
+				if (target.stream !== 'many') return unsupported(node);
+				streamEffects.add(target);
+				call(target, args, node);
+				return;
+			}
+			const caller = { locals, facts, dollar, completion };
+			const concrete: Value[] = [];
+			for (const [index, [, shape]] of target.parameters.entries()) {
+				if (!shape) continue;
+				const arg = args[index];
+				if (!arg) return unsupported(node);
+				concrete[index] = unpack(shape, pack(arg, shape, node));
+			}
+			activeStreams.add(target);
+			try {
+				inScope(target, concrete, () => streamBody(target.body, input => {
+					const callee = { locals, facts, dollar, completion };
+					({ locals, facts, dollar, completion } = caller);
+					try {
+						yieldValue(input);
+					} finally {
+						({ locals, facts, dollar, completion } = callee);
+					}
+				}));
+			} finally {
+				activeStreams.delete(target);
+			}
+		}
+
+		function emitValues(node: Node, yieldValue: (input: Value) => void): void {
+			switch (node.kind) {
+				case 'fn':
+					streamBody(node.statements ?? [], yieldValue);
+					return;
+				case ',':
+					for (const child of node.children) emitValues(child, yieldValue);
+					return;
+				case '(':
+					emitValues(node.children[0], yieldValue);
+					return;
+				case 'next':
+					if (node.children?.[0]) emitValues(node.children[0], yieldValue);
+					return;
+				case '?': {
+					const [condition, yes, no] = node.children;
+					branches(operand(expr(condition), 'i1', condition), () => emitValues(yes, yieldValue), () => {
+						if (no) emitValues(no, yieldValue);
+					});
+					return;
+				}
+				case '>>':
+					pipe(node, yieldValue);
+					return;
+				case 'def':
+					emitStatement(node);
+					return;
+				case 'call': {
+					const bound = facts?.calls.get(node);
+					const input = bound ? emitBound(bound, node, undefined, yieldValue) : directCall(node);
+					if (input) yieldValue(input);
+					return;
+				}
+				case '->': {
+					const input = thread(node, yieldValue);
+					if (input) yieldValue(input);
+					return;
+				}
+				case '??': {
+					const [left, right] = node.children;
+					const { present, read } = optionalValue(left);
+					branches(present, () => yieldValue(read()), () => emitValues(right, yieldValue));
+					return;
+				}
+				case 'break': return exit(breakLabel, node);
+				case 'done':
+					if (!completion) return unsupported(node);
+					return exit(completion.label ??= `done${nextBlock++}`, node);
+				case 'comment': return;
+				default: {
+					const input = evaluate(node);
+					if (input) yieldValue(input);
 				}
 			}
-			return carrier;
+		}
+
+		function thread(node: Nodes['->'], yieldValue?: (input: Value) => void): Value | undefined {
+			const plan = facts?.threads.get(node);
+			if (!plan) return unsupported(node);
+			for (const operation of plan.operations) {
+				if (operation.kind === 'bind') {
+					if (operation.reference.kind !== 'ident') return unsupported(operation.reference);
+					locals.set(operation.reference.symbol, expr(operation.expression));
+				} else evaluate(operation.call);
+			}
+			if (yieldValue) emitValues(plan.result, yieldValue);
+			else return evaluate(plan.result);
+		}
+
+		function optionalValue(left: Node) {
+			if (left.kind !== 'call') return unsupported(left);
+			const bound = facts?.calls.get(left);
+			const target = bound?.target === undefined ? undefined : prepared?.[bound.target];
+			if (!bound || target?.stream !== 'optional' || target.result === 'void') return unsupported(left);
+			const type = target.result;
+			const abi = abiType(type);
+			const slot = storage(abi);
+			const present = storage('i1');
+			instruction(`store i1 false, ptr ${present}`);
+			emitBound(bound, left, undefined, input => {
+				instruction(`store ${abi} ${pack(input, type, left)}, ptr ${slot}`);
+				instruction(`store i1 true, ptr ${present}`);
+			});
+			return { present: register(`load i1, ptr ${present}`), read: () => unpack(type, register(`load ${abi}, ptr ${slot}`)) };
+		}
+
+		function evaluate(node: Node): Value | undefined {
+			switch (node.kind) {
+				case 'call': return directCall(node);
+				case '>>': return pipe(node);
+				case '->': return thread(node);
+				case 'ident':
+					return node.symbol.type?.family === 'void' ? undefined : expr(node);
+				default: return expr(node);
+			}
 		}
 
 		function expr(node: Node): Value {
@@ -631,6 +1128,13 @@ export function compileLlvm<Context extends LlvmAstContext>(
 					return directCall(node) ?? unsupported(node);
 				case '>>':
 					return pipe(node) ?? unsupported(node);
+				case '->':
+					return thread(node) ?? unsupported(node);
+				case '??':
+					{
+						const { present, read } = optionalValue(node.children[0]);
+						return branch(present, read, () => expr(node.children[1]), node);
+					}
 				default:
 					return unsupported(node);
 			}
@@ -640,48 +1144,68 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			switch (node.kind) {
 				case 'def': {
 					if (node.symbol.flags & Flags.Variable) return unsupported(node);
-					const target = shape(node.symbol.type, node);
+					const target = shape(facts?.types.get(node.symbol) ?? node.symbol.type, node);
 					const input = expr(node.value);
-					if (!target.errors && input.tag !== undefined) return unsupported(node);
-					locals.set(node.symbol, {
-						type: target.type,
-						operand: coerce(input, target.type, node),
-						tag: target.errors ? input.tag ?? '0' : undefined,
-						errors: target.errors,
-					});
+					locals.set(node.symbol, unpack(target, pack(input, target, node)));
 					return;
 				}
-				case 'call':
-					if (directCall(node)) unsupported(node);
-					return;
-				case '>>':
-					if (pipe(node)) unsupported(node);
+				case 'call': case '>>': case '->': case ',': case '?':
+					emitValues(node, () => { unsupported(node); });
 					return;
 				default:
 					return unsupported(node);
 			}
 		}
 
-		const body = fn.body.filter(node => node.kind !== 'comment');
-		const tail = body.at(-1);
-		if (tail?.kind === 'next' && !isMain) body.pop();
-		for (const statement of body) emitStatement(statement);
-		if (isMain) instruction('ret i32 0');
-		else if (fn.result === 'void') {
-			if (tail?.kind === 'next' && tail.children?.[0])
-				emitStatement(tail.children[0]);
-			instruction('ret void');
-		} else {
-			const result = tail?.kind === 'next' && tail.children?.[0];
-			if (!result) return unsupported(tail ?? root);
-			instruction(`ret ${abiType(fn.result)} ${pack(expr(result), fn.result, result)}`);
+		function emitReturn(node: Node, result: Shape): void {
+			if (node.kind === '?' && node.children[2]) {
+				const [condition, yes, no] = node.children;
+				const id = nextBlock++;
+				const truthy = `return.true${id}`, falsy = `return.false${id}`;
+				const test = operand(expr(condition), 'i1', condition);
+				instruction(`br i1 ${test}, label %${truthy}, label %${falsy}`);
+				label(truthy);
+				emitReturn(yes, result);
+				label(falsy);
+				emitReturn(no, result);
+			} else instruction(`ret ${abiType(result)} ${pack(expr(node), result, node)}`);
 		}
+
+		const body = fn.body.filter(node => node.kind !== 'comment');
+		if (fn.stream) {
+			activeStreams.add(fn);
+			streamBody(body, () => {});
+			instruction('ret void');
+		} else if (isMain || fn.result === 'void') {
+			completion = isMain ? undefined : {};
+			for (const statement of body) {
+				if (statement.kind === 'next' || statement.kind === 'done')
+					emitValues(statement, () => {});
+				else emitStatement(statement);
+				if (statement.kind === 'done') break;
+			}
+			if (isMain) instruction('ret i32 0');
+			else {
+				finishCompletion();
+				instruction('ret void');
+			}
+		} else {
+			const tail = body.findIndex(node => node.kind === 'next');
+			const end = tail < 0 ? body.length - 1 : tail;
+			for (const statement of body.slice(0, end)) emitStatement(statement);
+			const statement = body[end];
+			const result = statement?.kind === 'next' ? statement.children?.[0] : statement;
+			if (!result) return unsupported(statement ?? root);
+			emitReturn(result, fn.result);
+		}
+		lines.splice(2, 0, ...allocations);
 		lines.push('}');
 		return lines.join('\n');
 	}
 
-	const bodies = definitions.map(fn => emitBody(fn));
-	bodies.push(emitBody({ name: 'main', result: { type: 'i32' }, parameters: [], body: main.statements }, true));
+	const bodies = [...definitions, ...(prepared ?? [])].filter(fn => !fn.stream).map(fn => emitBody(fn));
+	bodies.push(emitBody({ name: 'main', result: { type: 'i32' }, parameters: [], body: main.statements, facts: root.checked?.main }, true));
+	for (const fn of streamEffects) bodies.push(emitBody(fn));
 	return [...runtime, ...bodies, ''].join('\n');
 }
 const floatOutput = String.raw`declare i32 @snprintf(ptr, i64, ptr, ...)

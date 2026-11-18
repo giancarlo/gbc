@@ -2,6 +2,7 @@ import { spec, type TestApi } from '@cxl/spec';
 import {
 	astChildNodes,
 	compileLlvm,
+	createSpecializations,
 	createModuleGraph,
 	decodeModuleBundle,
 	encodeModuleBundle,
@@ -180,6 +181,20 @@ function moduleBytes(graphs: ModuleGraph[], objects: SerialObject[] = []) {
 }
 
 export default spec('sdk', s => {
+	s.test('specialization reserves recursive identities and rolls back failed instances', a => {
+		const instances = createSpecializations<string, number>();
+		a.equal(instances.instantiate('root', () => ({
+			signature: 'root',
+			body: instances.instantiate('root', () => ({ signature: 'unreachable', body: -1 })),
+		})), 0);
+		a.throws(() => instances.instantiate('invalid', () => {
+			instances.instantiate('nested', () => ({ signature: 'nested', body: 9 }));
+			throw new Error('failed specialization');
+		}));
+		a.equal(instances.instantiate('nested', () => ({ signature: 'retry', body: 2 })), 1);
+		a.equalValues(instances.finish(), [{ signature: 'root', body: 0 }, { signature: 'retry', body: 2 }]);
+	});
+
 	s.test('GBM closure hashes retain source and dependency order', (a: TestApi) => {
 		const first = moduleClosureHash('fixture', ['a', 'b']);
 		a.equal(first, moduleClosureHash('fixture', ['a', 'b']));

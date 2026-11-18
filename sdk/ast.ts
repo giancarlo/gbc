@@ -102,6 +102,7 @@ export interface CheckedAstType {
 	readonly kind: string;
 	readonly family?: string;
 	readonly name?: string;
+	readonly value?: unknown;
 	readonly members?: readonly CheckedAstType[] | Readonly<Record<string, unknown>>;
 	readonly size?: number;
 	readonly rest?: unknown;
@@ -125,6 +126,54 @@ interface CheckedNumericCall {
 	};
 }
 
+export interface CheckedCall<Node> {
+	readonly arguments: readonly (Node | undefined)[];
+	readonly evaluationOrder: readonly number[];
+	readonly defaulted: readonly number[];
+	readonly target?: number;
+	readonly intrinsic?: NonNullable<CheckedNumericCall['intrinsic']>;
+	readonly output?: true;
+}
+
+export interface CheckedThread<Node> {
+	readonly operations: readonly (
+		| { readonly kind: 'bind'; readonly expression: Node; readonly reference: Node; readonly type: CheckedAstType }
+		| { readonly kind: 'call'; readonly call: Node }
+	)[];
+	readonly result: Node;
+}
+
+export interface CheckedStage<Node> extends CheckedCall<Node> {
+	readonly input?: CheckedAstType;
+	readonly packed?: true;
+}
+
+export interface CheckedBody<Node> {
+	readonly calls: ReadonlyMap<object, CheckedCall<Node>>;
+	readonly stages: ReadonlyMap<object, readonly CheckedStage<Node>[]>;
+	readonly threads: ReadonlyMap<object, CheckedThread<Node>>;
+	readonly types: ReadonlyMap<object, CheckedAstType>;
+	readonly numeric: ReadonlyMap<object, NumericOperationFacts<CheckedAstType>>;
+	readonly comparisons: ReadonlyMap<object, CheckedComparison>;
+	readonly conversions: ReadonlyMap<object, NonNullable<CheckedNumericCall['conversion']>>;
+}
+
+export interface CheckedProgram<Context extends AstContext> {
+	readonly output?: Context['symbol'];
+	readonly main: CheckedBody<AstNode<Context>>;
+	readonly instances: readonly {
+		readonly signature: {
+			readonly node: AstNodeMap<Context>['fn'];
+			readonly parameters: readonly CheckedAstType[];
+			readonly result: CheckedAstType;
+			readonly input?: CheckedAstType;
+			readonly cardinality: 'zero' | 'one' | 'many';
+			readonly mayEmitVoid: boolean;
+		};
+		readonly body: CheckedBody<AstNode<Context>>;
+	}[];
+}
+
 interface AstReferences<Context extends AstContext> {
 	node: AstNode<Context>;
 	label: AstNodeMap<Context>['label'];
@@ -134,7 +183,7 @@ interface AstReferences<Context extends AstContext> {
 export type OwnershipMode = 'borrow' | 'var' | 'own';
 
 export type AstShapeMap<Context extends AstContext> = {
-	root: RootNodeShape<AstReferences<Context>>;
+	root: RootNodeShape<AstReferences<Context>> & { checked?: CheckedProgram<Context> };
 	main: ScopedBlockNodeShape<AstReferences<Context>, Context['scope']>;
 	test: ScopedBlockNodeShape<AstReferences<Context>, Context['scope']>;
 	type: {

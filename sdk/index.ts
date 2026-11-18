@@ -1,6 +1,7 @@
 import type { HighlightCheckpoint, HighlightInput, HighlightSource } from './highlight.js';
 
 export * from './ast.js';
+export { createSpecializationKey, createSpecializations } from './specialization.js';
 export { compileLlvm } from './llvm.js';
 export * from './module-bundle.js';
 export * from './modules.js';
