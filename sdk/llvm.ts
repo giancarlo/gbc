@@ -1,4 +1,4 @@
-import { allocator, dropBuffer, printString, references as referenceRuntime } from './llvm-heap.js';
+import { allocator, debugTrace, dropBuffer, printString, references as referenceRuntime, testOutput } from './llvm-heap.js';
 import { CompilerError, Flags, text } from './index.js';
 import {
 	astDispatchArms,
@@ -43,10 +43,11 @@ type Scalar = Integer | Float | 'i1' | 'ptr';
 const float32x4 = '<4 x float>';
 type Representation = Scalar | typeof float32x4 | 'i128';
 type Variant = { type: Representation; character?: true; heap?: CheckedAstType };
-type Shape = Variant & { errors?: readonly number[]; variants?: readonly Variant[] };
+type Shape = Variant & { variants?: readonly Variant[] };
 type Value = Shape & { operand: string; tag?: string };
 type Function<Context extends LlvmAstContext> = {
 	name: string;
+	frame?: { name: string; line: number };
 	result: Shape | 'void';
 	parameters: readonly (readonly [CheckedSymbol | undefined, Shape | undefined])[];
 	body: readonly AstNode<Context>[];
@@ -59,10 +60,6 @@ type Function<Context extends LlvmAstContext> = {
 const arithmetic = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '%': 'rem' } as const;
 const bitwise = { '&': 'and', '|': 'or', '^': 'xor', '<:': 'shl', ':>': 'ashr' } as const;
 const comparisons = { '==': 'eq', '!=': 'ne', '<': 'lt', '>': 'gt', '<=': 'le', '>=': 'ge' } as const;
-const divByZero = 1, numericOverflow = 2, outOfMemory = 3;
-const numericErrorTags = new Map([
-	['DivByZero', divByZero], ['NumericOverflow', numericOverflow], ['OutOfMemory', outOfMemory],
-]);
 const scalarVariants: readonly Representation[] = ['i1', 'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'i64', 'u64', 'float', 'double'];
 
 function variantKey(variant: Variant): string {
@@ -98,7 +95,7 @@ function scalar(type: CheckedAstType | undefined): Scalar | undefined {
 	const { family, size } = type;
 	if (family === 'bool') return 'i1';
 	if (family === 'char') return 'u32';
-	if (family === 'data') return recordScalar(type.name);
+	if (family === 'data') return 'ptr';
 	if (family === 'string' || family === 'buffer' || (family === 'literal' && typeof type.value === 'string')) return 'ptr';
 	if (family === 'float') return size === 4 ? 'float' : size === 8 ? 'double' : undefined;
 	if (family === 'int' || family === 'uint') {
@@ -113,10 +110,6 @@ function scalar(type: CheckedAstType | undefined): Scalar | undefined {
 	}
 }
 
-function recordScalar(name?: string): 'ptr' | undefined {
-	if (name !== 'Error' && !numericErrorTags.has(name ?? '')) return 'ptr';
-}
-
 function plainVariant(type: CheckedAstType | undefined): Variant | undefined {
 	const plain = type?.family === 'vector' && type.elem?.family === 'float' && type.elem.size === 4
 		? float32x4 : scalar(type);
@@ -129,20 +122,16 @@ function abiShape(type: CheckedAstType | undefined): Shape | undefined {
 	if (type?.family !== 'union' || !Array.isArray(type.members)) return;
 	const members: readonly CheckedAstType[] = type.members;
 	const variants = new Map<string, Variant>();
-	const errors: number[] = [];
 	for (const member of members) {
 		if (member.family === 'void') continue;
 		const value = plainVariant(member);
-		const error = numericErrorTags.get(member.name ?? '');
-		if (value) variants.set(variantKey(value), value);
-		else if (error !== undefined) errors.push(error);
-		else return;
+		if (!value) return;
+		variants.set(variantKey(value), value);
 	}
 	if (variants.size > 1) return {
-		type: variants.has(float32x4) ? 'i128' : 'u64', variants: [...variants.values()], errors,
+		type: variants.has(float32x4) ? 'i128' : 'u64', variants: [...variants.values()],
 	};
-	const [value] = variants.values();
-	if (value) return { ...value, errors: errors.length ? errors : undefined };
+	return variants.values().next().value;
 }
 
 function shape(type: CheckedAstType | undefined, node: CheckedNode): Shape {
@@ -174,7 +163,7 @@ function variantBits(type: Exclude<ReturnType<typeof irType>, 'ptr'>) {
 
 function abiType(shape: Shape): string {
 	const type = irType(shape.type);
-	return shape.errors || shape.variants ? `{ ${type}, i8 }` : type;
+	return shape.variants ? `{ ${type}, i8 }` : type;
 }
 
 type RecordFields = Readonly<Record<string, { readonly type?: CheckedAstType }>>;
@@ -188,7 +177,7 @@ function recordFields(type: CheckedAstType | undefined): RecordFields {
 }
 
 function memoryType(shape: Shape): string {
-	if (shape.errors || shape.variants) return abiType(shape);
+	if (shape.variants) return abiType(shape);
 	const { type } = shape;
 	if (type === 'i8' || type === 'u8') return 'i8';
 	if (type === 'i16' || type === 'u16') return 'i16';
@@ -201,6 +190,10 @@ function memberAlignment(type: Shape): string {
 
 function sizeOf(type: string): string {
 	return `ptrtoint (ptr getelementptr (${type}, ptr null, i32 1) to i64)`;
+}
+
+function staticHeap(length: number): string {
+	return `%gb.heap { i64 -1, ptr null, i32 ${length}, i32 1 }`;
 }
 
 function floatConstant(number: number): string {
@@ -247,6 +240,7 @@ function checkedFunction<Context extends LlvmAstContext>(
 		: legacyFunctionResult(node);
 	return {
 		name,
+		frame: { name: signature?.name ?? node.symbol.name ?? '?', line: node.line + 1 },
 		result,
 		parameters: signature?.input ? [[undefined, shape(signature.input, node)]] : (parameters ?? []).map((parameter, index) => {
 			if (!signature && (parameter.symbol.ownership === 'var' || parameter.value)) return unsupported(parameter);
@@ -268,13 +262,20 @@ export function compileLlvm<Context extends LlvmAstContext>(
 	type Node = AstNode<Context>;
 	type Nodes = AstNodeMap<Context>;
 	const functions = new Map<CheckedSymbol, Function<Context>>();
-	const definitions: Function<Context>[] = [];
-	let main: Nodes['main'] | undefined;
 	const runtime = new Set<string>();
+	const entry = root.checked?.entry;
+	const globals = new Map<CheckedSymbol, { name: string; type: Shape }>();
+	for (const { definition } of entry?.globals ?? []) {
+		const type = shape(root.checked?.main.types.get(definition.symbol) ?? definition.symbol.type, definition);
+		const name = `@gb.global.${globals.size}`;
+		globals.set(definition.symbol, { name, type });
+		runtime.add(`${name} = internal global ${memoryType(type)} zeroinitializer`);
+	}
 	const streamEffects = new Set<Function<Context>>();
 	let strings: Map<string, string> | undefined;
 	let drops: Map<string, string> | undefined;
 	let encoder: TextEncoder | undefined;
+	let traceFrames: Map<string, string> | undefined;
 	let variantTags: Map<string, number> | undefined;
 
 	function variantTag(variant: Variant, node: Node): number {
@@ -292,29 +293,38 @@ export function compileLlvm<Context extends LlvmAstContext>(
 	const standardOutput = root.checked?.output ?? output;
 
 	const prepared = root.checked?.instances.map((instance, index) =>
-		checkedFunction<Context>(instance.signature.node, `fn${index}`, instance));
+		checkedFunction<Context>(instance.signature.node, `gb.fn.${index}`, instance));
 
-	for (const node of root.children) {
-		if (node.kind === 'comment') continue;
-		if (node.kind === 'main' && !main) {
-			main = node;
-			continue;
+	function legacyDefinitions() {
+		const definitions: Function<Context>[] = [];
+		let main: Nodes['main'] | undefined;
+		if (entry) return { definitions, main };
+		for (const node of root.children) {
+			if (node.kind === 'comment') continue;
+			if (node.kind === 'main' && !main) {
+				main = node;
+				continue;
+			}
+			if (prepared && (node.kind === 'type' || node.kind === 'extend' || node.kind === 'import' ||
+				(node.kind === 'def' && (node.value.kind === 'fn' || astDispatchArms<Context>(node.value)))))
+				continue;
+			if (node.kind !== 'def' || node.value.kind !== 'fn') unsupported(node);
+			const fn = checkedFunction<Context>(node.value, `gb.fn.${definitions.length}`);
+			definitions.push(fn);
+			functions.set(node.symbol, fn);
+			functions.set(node.value.symbol, fn);
 		}
-		if (prepared && (node.kind === 'type' || node.kind === 'extend' || node.kind === 'import' ||
-			(node.kind === 'def' && (node.value.kind === 'fn' || astDispatchArms<Context>(node.value)))))
-			continue;
-		if (node.kind !== 'def' || node.value.kind !== 'fn') unsupported(node);
-		const fn = checkedFunction<Context>(node.value, `fn${definitions.length}`);
-		definitions.push(fn);
-		functions.set(node.symbol, fn);
-		functions.set(node.value.symbol, fn);
+		if (!main) throw new CompilerError('LLVM target requires a main block', root);
+		return { definitions, main };
 	}
 
-	if (!main) throw new CompilerError('LLVM target requires a main block', root);
+	type EntryPhase = 'initial' | 'main' | 'library' | 'dispose';
 
-	function emitBody(fn: Function<Context>, isMain = false): string {
+	function emitBody(fn: Function<Context>, phase?: EntryPhase): string {
+		const isMain = phase === 'main';
 		let locals = new Map<CheckedSymbol, Value>();
 		let facts = fn.facts;
+		let frame = fn.frame;
 		const activeStreams = new Set<Function<Context>>();
 		const args = fn.parameters.flatMap(([, type], index) => type ? [`${abiType(type)} %arg${index}`] : []);
 		const resultType = fn.result === 'void' ? 'void' : abiType(fn.result);
@@ -357,8 +367,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 		}
 
 		function heapPointer(input: Value): string | undefined {
-			if (input.type === 'ptr') return input.tag === undefined ? input.operand
-				: register(`select i1 ${register(`icmp eq i8 ${input.tag}, 0`)}, ptr ${input.operand}, ptr null`);
+			if (input.type === 'ptr') return input.operand;
 			const tags = heapTags(input, root);
 			if (tags.length) {
 				const pointer = register(`inttoptr ${irType(input.type)} ${input.operand} to ptr`);
@@ -495,7 +504,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			input = normalizeShape(input, target, node);
 			if (owned && hasHeap(target)) retain(input);
 			if (input.variants && !target.variants) return unsupported(node);
-			if (!target.errors && !target.variants && input.tag !== undefined) return unsupported(node);
+			if (!target.variants && input.tag !== undefined) return unsupported(node);
 			let payload = input.operand;
 			let tag = input.tag ?? '0';
 			if (!target.variants) payload = coerce(input, target.type, node);
@@ -504,17 +513,16 @@ export function compileLlvm<Context extends LlvmAstContext>(
 				if (!chosen) return unsupported(node);
 				payload = encodeVariant(input, target.type === 'i128' ? 'i128' : 'i64');
 				const scalarTag = variantTag(chosen, node);
-				tag = input.tag === undefined ? String(scalarTag)
-					: register(`select i1 ${register(`icmp eq i8 ${tag}, 0`)}, i8 ${scalarTag}, i8 ${tag}`);
+				tag = String(scalarTag);
 			} else payload = resizePayload(payload, irType(input.type), irType(target.type));
-			if (!target.errors && !target.variants) return payload;
+			if (!target.variants) return payload;
 			const type = abiType(target);
 			const packed = register(`insertvalue ${type} poison, ${irType(target.type)} ${payload}, 0`);
 			return register(`insertvalue ${type} ${packed}, i8 ${tag}, 1`);
 		}
 
 		function unpack(target: Shape, input: string): Value {
-			if (!target.errors && !target.variants) return { ...target, operand: input };
+			if (!target.variants) return { ...target, operand: input };
 			const abi = abiType(target);
 			return { ...target, operand: register(`extractvalue ${abi} ${input}, 0`), tag: register(`extractvalue ${abi} ${input}, 1`) };
 		}
@@ -549,40 +557,41 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			if (!division)
 				return value(type, `${opcode} ${ir} ${first}, ${second}`);
 			if (!numeric || type === 'i1' || type === 'ptr') return unsupported(node);
-			return divide(node.kind, type, first, second, numeric);
+			return divide(node, type, first, second, numeric);
 		}
 
 		function divide(
-			operation: '/' | '%',
-			type: Integer,
-			first: string,
-			second: string,
+			node: Nodes['/' | '%'], type: Integer, first: string, second: string,
 			numeric: NumericOperationFacts<CheckedAstType>,
 		): Value {
 			const ir = irType(type);
 			const zero = register(`icmp eq ${ir} ${second}, 0`);
-			if (!numeric.zeroError) trapIf(zero);
-			const checkedZero = numeric.zeroError && zero;
-			let overflow: string | undefined;
+			const { zeroError, overflowError } = numeric;
+			if (!zeroError) trapIf(zero);
 			const signed = !numeric.unsigned;
-			if (numeric.overflowError || (signed && operation === '/')) {
+			const operation = node.kind;
+			const success = () => {
+				let divisor = second;
+				if (signed && operation === '%') {
+					const negativeOne = register(`icmp eq ${ir} ${second}, -1`);
+					divisor = register(`select i1 ${negativeOne}, ${ir} 1, ${ir} ${second}`);
+				}
+				return value(type, `${signed ? 's' : 'u'}${arithmetic[operation]} ${ir} ${first}, ${divisor}`);
+			};
+			const checked = shape(numeric.resultType, node);
+			const nonzero = () => {
+				if (!signed || operation !== '/') return success();
 				const minimum = register(`icmp eq ${ir} ${first}, ${numeric.signedMinimum}`);
 				const negativeOne = register(`icmp eq ${ir} ${second}, -1`);
-				const belowMinimum = register(`and i1 ${minimum}, ${negativeOne}`);
-				if (numeric.overflowError) overflow = belowMinimum;
-				else trapIf(belowMinimum);
-			}
-			const error = checkedZero && overflow ? register(`or i1 ${checkedZero}, ${overflow}`) : checkedZero ?? overflow;
-			let divisor = error ? register(`select i1 ${error}, ${ir} 1, ${ir} ${second}`) : second;
-			if (signed && operation === '%') {
-				const negativeOne = register(`icmp eq ${ir} ${divisor}, -1`);
-				divisor = register(`select i1 ${negativeOne}, ${ir} 1, ${ir} ${divisor}`);
-			}
-			const result = value(type, `${signed ? 's' : 'u'}${arithmetic[operation]} ${ir} ${first}, ${divisor}`);
-			if (error) result.errors = numeric.errors.flatMap(type => numericErrorTags.get(type.name ?? '') ?? []);
-			if (overflow) result.tag = register(`select i1 ${overflow}, i8 ${numericOverflow}, i8 0`);
-			if (checkedZero) result.tag = register(`select i1 ${checkedZero}, i8 ${divByZero}, i8 ${result.tag ?? 0}`);
-			return result;
+				const overflow = register(`and i1 ${minimum}, ${negativeOne}`);
+				if (overflowError) return branch(overflow, () => errorRecord(overflowError, node,
+					fn.frame?.name ?? 'main', `${numeric.valueType.name} division`), success, node, checked);
+				trapIf(overflow);
+				return success();
+			};
+			return zeroError
+				? branch(zero, () => errorRecord(zeroError, node, fn.frame?.name ?? 'main'), nonzero, node, checked)
+				: nonzero();
 		}
 
 		function bitwiseValue(node: Nodes[keyof typeof bitwise]): Value {
@@ -630,7 +639,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 				literals.set(text, name);
 				const bytes = (encoder ??= new TextEncoder()).encode(text);
 				const data = Array.from(bytes, byte => `\\${byte.toString(16).padStart(2, '0')}`).join('');
-				runtime.add(`${name} = private unnamed_addr constant { %gb.heap, [${bytes.length} x i8] } { %gb.heap { i64 -1, ptr null, i32 ${bytes.length}, i32 1 }, [${bytes.length} x i8] c"${data}" }`);
+				runtime.add(`${name} = private unnamed_addr constant { %gb.heap, [${bytes.length} x i8] } { ${staticHeap(bytes.length)}, [${bytes.length} x i8] c"${data}" }`);
 				runtime.add(referenceRuntime);
 			}
 			return { type: 'ptr', operand: name };
@@ -642,6 +651,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 		}
 
 		function formatFloat(input: Value, output: string, node: Node): string {
+			runtime.add('declare i32 @snprintf(ptr, i64, ptr, ...)');
 			runtime.add(floatOutput);
 			return register(`call i32 @gb.format.float(double ${coerce(input, 'double', node)}, ptr ${output})`);
 		}
@@ -657,10 +667,18 @@ export function compileLlvm<Context extends LlvmAstContext>(
 				const no = constantString('false');
 				return value('ptr', `select i1 ${input.operand}, ptr ${yes.operand}, ptr ${no.operand}`);
 			}
-			if (type?.family === 'char') return characterString(input);
-			if (!isFloat(input.type)) return unsupported(node);
+			if (type?.family === 'char' || input.character) return characterString(input);
+			if (input.type === float32x4 || input.type === 'i128') return unsupported(node);
 			const result = allocate(undefined, 32, 0, 1);
-			const count = formatFloat(input, payload(result.operand), node);
+			const data = payload(result.operand);
+			let count: string;
+			if (isFloat(input.type)) count = formatFloat(input, data, node);
+			else {
+				const ir = irType(input.type);
+				const format = integerFormat(input.type);
+				runtime.add('declare i32 @snprintf(ptr, i64, ptr, ...)');
+				count = register(`call i32 (ptr, i64, ptr, ...) @snprintf(ptr ${data}, i64 32, ptr ${format}, ${ir} ${input.operand})`);
+			}
 			instruction(`store i32 ${count}, ptr ${header(result.operand)}`);
 			return result;
 		}
@@ -708,7 +726,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			});
 			const sizes = parts.map(part => register(`zext i32 ${length(part)} to i64`));
 			const bytes = sizes.reduce((sum, size) => register(`add i64 ${sum}, ${size}`), '0');
-			trapIf(register(`icmp ugt i64 ${bytes}, 2147483647`), true);
+			trapIf(register(`icmp ugt i64 ${bytes}, 2147483647`));
 			const result = allocate(facts?.types.get(node), bytes, register(`trunc i64 ${bytes} to i32`), 1);
 			let destination = payload(result.operand);
 			parts.forEach((part, index) => {
@@ -746,14 +764,14 @@ export function compileLlvm<Context extends LlvmAstContext>(
 		function dropMember(type: Shape, slot: string, node: Node, address: string): string {
 			const ir = memoryType(type);
 			const load = `  ${slot}.value = load ${ir}, ptr ${slot}${memberAlignment(type)}`;
-			if (!type.variants && !type.errors)
+			if (!type.variants)
 				return `${address}\n${load}\n  call void @gb.release(ptr ${slot}.value)`;
 			const lines = [
 				address, load,
 				`  ${slot}.payload = extractvalue ${ir} ${slot}.value, 0`,
 				`  ${slot}.tag = extractvalue ${ir} ${slot}.value, 1`,
 			];
-			const tags = type.variants ? heapTags(type, node) : [0];
+			const tags = heapTags(type, node);
 			const tests = tags.map(tag => {
 				const test = `${slot}.test${tag}`;
 				lines.push(`  ${test} = icmp eq i8 ${slot}.tag, ${tag}`);
@@ -764,14 +782,15 @@ export function compileLlvm<Context extends LlvmAstContext>(
 				lines.push(`  ${combined} = or i1 ${left}, ${right}`);
 				return combined;
 			}, 'false');
-			const pointer = type.variants ? `${slot}.pointer` : `${slot}.payload`;
-			if (type.variants) lines.push(`  ${pointer} = inttoptr ${irType(type.type)} ${slot}.payload to ptr`);
+			const pointer = `${slot}.pointer`;
+			lines.push(`  ${pointer} = inttoptr ${irType(type.type)} ${slot}.payload to ptr`);
 			lines.push(`  ${slot}.owned = select i1 ${test}, ptr ${pointer}, ptr null`, `  call void @gb.release(ptr ${slot}.owned)`);
 			return lines.join('\n');
 		}
 
 		function recordLayout(type: CheckedAstType | undefined, node: Node) {
-			const fields = Object.entries(recordFields(type)).map(([key, member]) => [key, shape(member.type, node)] as const);
+			const fields = Object.entries(recordFields(type)).map(([key, member]) =>
+				[key, shape(key === '__trace' ? entry?.traceType : member.type, node)] as const);
 			const layout = `{ ${fields.map(([, type]) => memoryType(type)).join(', ')} }`;
 			return { fields, layout };
 		}
@@ -812,7 +831,9 @@ ${members.join('\n')}
 			const items = node.children[0]?.kind === ',' ? node.children[0].children : node.children;
 			const first = items[0];
 			if (items.length === 1 && first && first.kind !== 'propdef') return expr(first);
-			const { result, data, fields, layout } = allocateRecord(type, node);
+			const record = allocateRecord(type, node);
+			const { result, data, fields, layout } = record;
+			storeTrace(record, type, node);
 			let positional = 0;
 			for (const item of items) {
 				const key = item.kind === 'propdef' && item.label ? text(item.label) : String(positional++);
@@ -826,15 +847,94 @@ ${members.join('\n')}
 			return result;
 		}
 
+		function staticFrame(name: string, owner: string, line: number, file = ''): string {
+			const key = JSON.stringify([name, owner, line, file]);
+			const frames = traceFrames ??= new Map<string, string>();
+			const existing = frames.get(key);
+			if (existing) return existing;
+			const symbol = `@gb.frame.${frames.size}`;
+			frames.set(key, symbol);
+			const header = staticHeap(4);
+			const layout = '{ ptr, ptr, ptr, i32 }';
+			const fields = [name, owner, file].map(text => `ptr ${constantString(text).operand}`);
+			runtime.add(`${symbol} = private constant { %gb.heap, ${layout} } { ${header}, ${layout} { ${fields.join(', ')}, i32 ${line} } }`);
+			return symbol;
+		}
+
+		function logicalOrigin(node: Node): string {
+			return (node.kind === 'data' || node.kind === 'call' ? node.originFn : undefined) ?? frame?.name ?? 'main';
+		}
+
+		function storeTrace(
+			{ fields, data, layout }: ReturnType<typeof allocateRecord>,
+			type: CheckedAstType | undefined,
+			node: Node,
+			owner = logicalOrigin(node),
+		): void {
+			const index = fields.findIndex(([name]) => name === '__trace');
+			const traceShape = fields[index]?.[1];
+			if (!traceShape) return;
+			const file = entry?.sourcePaths?.get(node.source);
+			const origin = staticFrame(type?.name ?? '', owner, node.line + 1, file);
+			let trace: Value;
+			if (entry?.debug && type?.name !== 'OutOfMemory') {
+				enableDebugTrace();
+				trace = track({ type: 'ptr', heap: traceShape.heap, operand: register(`call ptr @gb.trace.capture(ptr ${origin})`) });
+			} else {
+				const handle = `${origin}.trace`;
+				runtime.add(`${handle} = private constant { %gb.heap, ptr } { ${staticHeap(1)}, ptr ${origin} }`);
+				trace = { type: 'ptr', heap: traceShape.heap, operand: handle };
+			}
+			storeMember(trace, traceShape, fieldAddress(layout, data, index), node);
+		}
+
+		function errorRecord(type: CheckedAstType, node: Node, owner = logicalOrigin(node), operation?: string): Value {
+			const record = allocateRecord(type, node);
+			const { result, data, fields, layout } = record;
+			storeTrace(record, type, node, owner);
+			if (operation !== undefined) {
+				const index = fields.findIndex(([name]) => name === 'operation');
+				const field = fields[index]?.[1] ?? unsupported(node);
+				storeMember(constantString(operation), field, fieldAddress(layout, data, index), node);
+			}
+			return result;
+		}
+
+		function enableDebugTrace(): void {
+			runtime.add(referenceRuntime);
+			runtime.add(allocator);
+			runtime.add('declare void @llvm.trap()');
+			runtime.add('declare i32 @fflush(ptr)');
+			runtime.add(debugTrace);
+		}
+
+		function updateFrame(target: Function<Context>, operation: 'push' | 'replace'): boolean {
+			if (!entry?.debug || !target.frame) return false;
+			enableDebugTrace();
+			const { name, line } = target.frame;
+			instruction(`call void @gb.trace.${operation}(ptr ${staticFrame(name, name, line)})`);
+			return true;
+		}
+
+		function traceOperation(name: string, args: readonly Value[], node: Node): Value {
+			const error = args[0] ?? unsupported(node);
+			const trace = recordMember(error, '__trace', node);
+			if (name === 'stack') return trace;
+			if (name === 'frames') return { type: 'i32', operand: length(trace) };
+			const index = args[1] ? scalarArgument(args[1], 'i32', node) : '0';
+			if (args[1]) trapIf(register(`icmp uge i32 ${index}, ${length(trace)}`));
+			const type = shape(trace.heap?.elem, node);
+			return loadMember(type, register(`getelementptr ptr, ptr ${payload(trace.operand)}, i32 ${index}`));
+		}
+
 		function sameRecord(left: CheckedAstType | undefined, right: CheckedAstType | undefined, node: Node): boolean {
 			if (left === right) return true;
-			const a = Object.entries(recordFields(left));
-			const b = Object.entries(recordFields(right));
-			return a.length === b.length && a.every(([name, field], index) => {
+			const a = recordLayout(left, node).fields;
+			const b = recordLayout(right, node).fields;
+			return a.length === b.length && a.every(([name, first], index) => {
 				const other = b[index];
 				if (name !== other?.[0]) return false;
-				const first = shape(field.type, node);
-				const second = shape(other[1].type, node);
+				const second = other[1];
 				return storageKey(first, node) === storageKey(second, node) &&
 					(first.heap?.family !== 'data' || second.heap?.family !== 'data' || sameRecord(first.heap, second.heap, node));
 			});
@@ -891,7 +991,7 @@ ${members.join('\n')}
 			const element = shape(type.elem, node);
 			const ir = memoryType(element);
 			const bytes = bufferBytes(ir, cap);
-			trapIf(register(`icmp ugt i64 ${bytes}, 2147483639`), true);
+			trapIf(register(`icmp ugt i64 ${bytes}, 2147483639`));
 			let drop = 'null';
 			if (hasHeap(element)) {
 				const key = `buffer:${storageKey(element, node)}`;
@@ -913,7 +1013,7 @@ ${members.join('\n')}
 			const past = register(`icmp ugt i32 ${index}, ${len}`);
 			const remaining = register(`sub i32 ${len}, ${index}`);
 			const short = register(`icmp ult i32 ${remaining}, 4`);
-			trapIf(register(`or i1 ${past}, ${short}`), true);
+			trapIf(register(`or i1 ${past}, ${short}`));
 			return register(`getelementptr float, ptr ${payload(pointer)}, i32 ${index}`);
 		}
 
@@ -967,7 +1067,7 @@ ${members.join('\n')}
 				const invalid = register(`icmp eq ptr ${pointer}, ${destination}`);
 				const occupied = register(`icmp ne i32 ${length(second)}, 0`);
 				const small = register(`icmp ugt i32 ${len}, ${length(second, true)}`);
-				trapIf(register(`or i1 ${invalid}, ${register(`or i1 ${occupied}, ${small}`)}`), true);
+				trapIf(register(`or i1 ${invalid}, ${register(`or i1 ${occupied}, ${small}`)}`));
 				const bytes = bufferBytes(ir, len);
 				copyBytes(payload(destination), payload(pointer), bytes);
 				instruction(`store i32 ${len}, ptr ${header(destination)}`);
@@ -975,11 +1075,11 @@ ${members.join('\n')}
 				return second;
 			}
 			const index = scalarArgument(second, 'i32', node);
-			if (op === 'get') trapIf(register(`icmp uge i32 ${index}, ${len}`), true);
+			if (op === 'get') trapIf(register(`icmp uge i32 ${index}, ${len}`));
 			else {
 				const past = register(`icmp ugt i32 ${index}, ${len}`);
 				const full = register(`icmp uge i32 ${index}, ${length(first, true)}`);
-				trapIf(register(`or i1 ${past}, ${full}`), true);
+				trapIf(register(`or i1 ${past}, ${full}`));
 			}
 			const slot = register(`getelementptr ${ir}, ptr ${payload(pointer)}, i32 ${index}`);
 			if (op === 'get') {
@@ -1037,7 +1137,7 @@ ${members.join('\n')}
 			return value('i1', `${useFloat ? 'fcmp' : 'icmp'} ${prefix}${opcode} ${type} ${first}, ${second}`);
 		}
 
-		function truncateFloat(node: Nodes['call'], input: Value, type: Integer, conversion: NumericConversionRange): Value {
+		function truncateFloat(node: Nodes['call'], argument: Node, input: Value, type: Integer, conversion: NumericConversionRange, target: CheckedAstType): Value {
 			const { checked, minimum, maximum } = conversion;
 			const number = coerce(input, 'double', node);
 			const wide = irType(type) === 'i64';
@@ -1049,32 +1149,30 @@ ${members.join('\n')}
 			const upper = register(`fcmp olt double ${number}, ${floatConstant(checked ? maximum : magnitude * (unsigned ? 2 : 1))}`);
 			const valid = register(`and i1 ${lower}, ${upper}`);
 			const opcode = unsigned ? 'fptoui' : 'fptosi';
+			const success = () => narrow({ type, operand: cast(input, type, opcode) }, type, target);
 			if (!checked) {
 				trapIf(register(`xor i1 ${valid}, true`));
-				return { type, operand: cast(input, type, opcode) };
+				return success();
 			}
-			const safe = value('double', `select i1 ${valid}, double ${number}, double 0.0`);
-			return {
-				type,
-				operand: cast(safe, type, opcode),
-				tag: register(`select i1 ${valid}, i8 0, i8 ${numericOverflow}`),
-				errors: [numericOverflow, outOfMemory],
-			};
+			const result = shape(facts?.types.get(node), node);
+			const overflow = result.variants?.find(variant => variant.heap?.name === 'NumericOverflow')?.heap ?? unsupported(node);
+			return branch(valid, success, () => errorRecord(overflow, argument, fn.frame?.name ?? 'main', `${target.name} conversion`), node, result);
+		}
+
+		function narrow(input: Value, type: Representation, target: CheckedAstType): Value {
+			if (target.size !== 1 && target.size !== 2) return input;
+			const ir = `i${target.size * 8}`;
+			const bits = register(`trunc i32 ${input.operand} to ${ir}`);
+			return { ...input, operand: register(`${isUnsigned(type) ? 'zext' : 'sext'} ${ir} ${bits} to i32`) };
 		}
 
 		function convert(node: Nodes['call'], argument: Node, target: CheckedAstType, range: NumericConversionRange | undefined): Value {
 			const type = scalar(target);
 			const input = expr(argument);
 			if (!type || type === 'ptr' || type === 'i1' || input.type === 'i1' || input.tag !== undefined) return unsupported(node);
-			const result = isFloat(input.type) && !isFloat(type)
-				? range ? truncateFloat(node, input, type, range) : unsupported(node)
-				: { type, operand: coerce(input, type, argument, true) };
-			if (target.size === 1 || target.size === 2) {
-				const narrow = `i${target.size * 8}`;
-				const truncated = register(`trunc i32 ${result.operand} to ${narrow}`);
-				result.operand = register(`${isUnsigned(type) ? 'zext' : 'sext'} ${narrow} ${truncated} to i32`);
-			}
-			return result;
+			return isFloat(input.type) && !isFloat(type)
+				? range ? truncateFloat(node, argument, input, type, range, target) : unsupported(node)
+				: narrow({ type, operand: coerce(input, type, argument, true) }, type, target);
 		}
 
 		function label(name: string) {
@@ -1082,17 +1180,15 @@ ${members.join('\n')}
 			lines.push(`${name}:`);
 		}
 
-		function trapIf(test: string, heap = false): void {
+		function trapIf(test: string): void {
 			const id = nextBlock++;
 			const trap = `trap${id}`, resume = `resume${id}`;
 			runtime.add('declare void @llvm.trap()');
 			instruction(`br i1 ${test}, label %${trap}, label %${resume}`);
 			label(trap);
-			if (heap) {
-				cleanup();
-				runtime.add('declare i32 @fflush(ptr)');
-				instruction('call i32 @fflush(ptr null)');
-			}
+			cleanup();
+			runtime.add('declare i32 @fflush(ptr)');
+			instruction('call i32 @fflush(ptr null)');
 			instruction('call void @llvm.trap()');
 			instruction('unreachable');
 			label(resume);
@@ -1114,8 +1210,7 @@ ${members.join('\n')}
 			return [lhs, leftBlock, rhs, rightBlock];
 		}
 
-		function branch(test: string, yes: () => Value, no: () => Value, node: Node): Value {
-			const checked = abiShape(facts?.types.get(node));
+		function branch(test: string, yes: () => Value, no: () => Value, node: Node, checked = abiShape(facts?.types.get(node))): Value {
 			if (checked && (checked.variants || hasHeap(checked))) {
 				const [left, leftBlock, right, rightBlock] = branches(test,
 					() => pack(yes(), checked, node), () => pack(no(), checked, node));
@@ -1135,7 +1230,6 @@ ${members.join('\n')}
 			result.heap = checked?.heap ?? lhs.heap;
 			result.character = checked?.character ?? lhs.character;
 			if (lhs.tag !== undefined || rhs.tag !== undefined) {
-				result.errors = [...new Set([...(lhs.errors ?? []), ...(rhs.errors ?? [])])];
 				result.tag = register(`phi i8 [ ${lhs.tag ?? 0}, %${leftBlock} ], [ ${rhs.tag ?? 0}, %${rightBlock} ]`);
 			}
 			return result;
@@ -1153,9 +1247,23 @@ ${members.join('\n')}
 			const invocation = `call ${result} @${target.name}(${values.join(', ')})`;
 			if (tail) {
 				cleanup();
-				instruction(`ret ${result} ${register(`musttail ${invocation}`)}`);
-			} else if (target.result !== 'void') return track(unpack(target.result, register(invocation)));
-			else instruction(invocation);
+				if (target !== fn) updateFrame(target, 'replace');
+				const kind = target === fn || sameParameters(target) ? 'musttail' : 'tail';
+				instruction(`ret ${result} ${register(`${kind} ${invocation}`)}`);
+				return;
+			}
+			const traced = updateFrame(target, 'push');
+			const output = target.result !== 'void' ? register(invocation) : undefined;
+			if (!output) instruction(invocation);
+			if (traced) instruction('call void @gb.trace.pop()');
+			if (output && target.result !== 'void') return track(unpack(target.result, output));
+		}
+
+		function sameParameters(target: Function<Context>): boolean {
+			const types = (fn: Function<Context>) => fn.parameters.flatMap(([, type]) => type ? [abiType(type)] : []);
+			const expected = types(fn);
+			const actual = types(target);
+			return expected.length === actual.length && expected.every((type, index) => type === actual[index]);
 		}
 
 		function scalarArgument(operand: Value, type: Scalar, node: Node): string {
@@ -1214,7 +1322,9 @@ ${members.join('\n')}
 			const previousLocals = locals;
 			const previousFacts = facts;
 			const previousDollar = dollar;
+			const previousFrame = frame;
 			locals = new Map();
+			frame = scope.frame;
 			facts = scope.facts;
 			dollar = scope.input ? values[0] : undefined;
 			for (const [index, input] of values.entries()) {
@@ -1227,6 +1337,7 @@ ${members.join('\n')}
 				locals = previousLocals;
 				facts = previousFacts;
 				dollar = previousDollar;
+				frame = previousFrame;
 			}
 		}
 
@@ -1261,17 +1372,35 @@ ${members.join('\n')}
 			const args = carrier
 				? carriedArguments(bound, node, carrier, target)
 				: argumentsFor(bound, target, node, delayed ? bound.evaluationOrder.slice(0, 2) : bound.evaluationOrder);
-			if (bound.output && args[0]) {
-				print(args[0], node);
-				return;
-			}
-			if (target?.stream) {
+			if (target && (target.stream || (yieldValue && facts?.inlinePipelines?.has(node) && !activeStreams.has(target)))) {
 				if (!yieldValue) return unsupported(node);
 				emitStream(target, args, yieldValue, node);
 				return;
 			}
 			if (target) return call(target, args, node);
+			return emitBuiltin(bound, node, args, delayed);
+		}
+
+		function emitBuiltin(bound: CheckedCall<Node>, node: Node, args: readonly Value[], delayed?: Node): Value | undefined {
+			if (bound.output) {
+				emitOutput(args[0] ?? unsupported(node), node);
+				return;
+			}
+			if (bound.exit) {
+				runtime.add('declare void @exit(i32) noreturn');
+				cleanup();
+				instruction(`call void @exit(i32 ${scalarArgument(args[0] ?? unsupported(node), 'i32', node)})`);
+				instruction('unreachable');
+				label(`after.exit${nextBlock++}`);
+				return;
+			}
+			const name = bound.intrinsic?.name;
 			switch (name) {
+				case 'origin': case 'frames': case 'frameAt': case 'stack':
+					return traceOperation(name, args, node);
+				case 'out_buffer':
+					emitOutput(args[0] ?? unsupported(node), node);
+					return;
 				case 'simd.sum':
 					return args[0] ? vectorSum(args[0], node) : unsupported(node);
 				case 'simd.store':
@@ -1309,11 +1438,46 @@ ${members.join('\n')}
 			const bound = facts?.calls.get(node);
 			if (bound) return emitBound(bound, node);
 			const [callee, arg] = node.children;
-			if (callee.kind === 'typeident' && arg) return construct(node, arg);
+			if (callee.kind === 'typeident') {
+				if (arg) return construct(node, arg);
+				const target = facts?.types.get(node);
+				if (target && recordFields(target)['__trace']) return errorRecord(target, node);
+			}
 			const args = arg?.kind === ',' ? arg.children : arg ? [arg] : [];
 			const target = callee.kind === 'ident' && functions.get(callee.symbol);
 			if (target) return call(target, args.map(expr), node);
 			return intrinsic(node, args.map(expr), node.intrinsic) ?? unsupported(node);
+		}
+
+		function emitOutput(input: Value, node: Node): void {
+			if (input.variants) {
+				for (const variant of input.variants) {
+					const test = register(`icmp eq i8 ${input.tag}, ${variantTag(variant, node)}`);
+					branches(test, () => emitOutput(decodeVariant(input, variant), node), () => {});
+				}
+				return;
+			}
+			if (input.heap?.family === 'data' && recordFields(input.heap)['__trace']) {
+				const formatter = entry?.errorText;
+				const target = formatter === undefined ? undefined : prepared?.[formatter];
+				if (!target) return unsupported(node);
+				input = call(target, [input], node) ?? unsupported(node);
+			}
+			if (entry?.testMode) {
+				const text = asString(input, node);
+				runtime.add(printString);
+				runtime.add(testOutput);
+				runtime.add('declare i32 @putchar(i32)');
+				runtime.add('declare i32 @fflush(ptr)');
+				instruction(`call void @gb.test.output(ptr ${text.operand}, i32 ${length(text)})`);
+			} else print(input, node);
+		}
+
+		function integerFormat(type: Representation): string {
+			const format = `%${irType(type) === 'i64' ? 'll' : ''}${isUnsigned(type) ? 'u' : 'd'}`;
+			const name = `@.format.${type}`;
+			runtime.add(`${name} = private unnamed_addr constant [${format.length + 1} x i8] c"${format}\\00"`);
+			return name;
 		}
 
 		function print(input: Value, node: Node): void {
@@ -1344,45 +1508,28 @@ ${members.join('\n')}
 				instruction(`call i32 (ptr, ...) @printf(ptr @.format.text, i32 ${length}, ptr ${output})`);
 				return;
 			}
-			const format = `%${ir === 'i64' ? 'll' : ''}${isUnsigned(type) ? 'u' : 'd'}`;
-			runtime.add(`@.format.${type} = private unnamed_addr constant [${format.length + 1} x i8] c"${format}\\00"`);
-			instruction(`call i32 (ptr, ...) @printf(ptr @.format.${type}, ${ir} ${operand})`);
+			instruction(`call i32 (ptr, ...) @printf(ptr ${integerFormat(type)}, ${ir} ${operand})`);
+		}
+
+		function matchesVariant(type: CheckedAstType | undefined, variant: Variant): boolean {
+			const expected = plainVariant(type);
+			return (expected !== undefined && variantKey(expected) === variantKey(variant)) ||
+				(type?.name === 'Error' && !!recordFields(variant.heap)['__trace']);
 		}
 
 		function dispatch(node: Nodes['|'], input: Value): Value {
-			const arms = new Map<number, Nodes['fn']>();
-			const tags = [0, ...(input.errors ?? [])];
-			const payload: Value = { type: input.type, character: input.character, heap: input.heap, operand: input.operand };
 			const stages = astDispatchArms<Context>(node);
-			if (!stages) return unsupported(node);
-			for (const arm of stages) {
-				if (arm.kind !== 'fn' || arm.parameters?.length !== 1) return unsupported(arm);
-				const type = arm.parameters[0]?.symbol.type;
-				const matches = plainVariant(type)?.type === input.type ? [0]
-					: type?.name === 'Error' ? tags.slice(1)
-					: [numericErrorTags.get(type?.name ?? '')];
-				for (const tag of matches)
-					if (tag !== undefined && tags.includes(tag) && !arms.has(tag)) arms.set(tag, arm);
+			if (!stages || !input.variants) return unsupported(node);
+			function choose(variants: readonly Variant[]): Value {
+				const [variant, ...rest] = variants;
+				if (!variant) return unsupported(node);
+				const arm = stages?.find(candidate => matchesVariant(armType(candidate), variant));
+				if (arm?.kind !== 'fn') return unsupported(node);
+				const run = () => stageBlock(arm, decodeVariant(input, variant)) ?? unsupported(arm);
+				return rest.length ? branch(register(`icmp eq i8 ${input.tag}, ${variantTag(variant, node)}`),
+					run, () => choose(rest), node) : run();
 			}
-
-			function emitArm(arm: Nodes['fn'], accepted: readonly number[]): Value {
-				return stageBlock(arm, accepted.includes(0) ? payload : undefined) ?? unsupported(arm);
-			}
-
-			function selectArm(remaining: readonly number[]): Value {
-				const first = remaining[0];
-				const arm = first !== undefined && arms.get(first);
-				if (!arm) return unsupported(node);
-				const accepted = remaining.filter(tag => arms.get(tag) === arm);
-				const rest = remaining.filter(tag => arms.get(tag) !== arm);
-				if (!rest.length) return emitArm(arm, accepted);
-				const tests = accepted.map(tag => register(`icmp eq i8 ${input.tag}, ${tag}`));
-				const [firstTest, ...others] = tests;
-				if (!firstTest) return unsupported(node);
-				const test = others.reduce((left, right) => register(`or i1 ${left}, ${right}`), firstTest);
-				return branch(test, () => emitArm(arm, accepted), () => selectArm(rest), node);
-			}
-			return selectArm(tags);
+			return choose(input.variants);
 		}
 
 		function stageBlock(
@@ -1469,26 +1616,16 @@ ${members.join('\n')}
 						if (input.type !== 'ptr') branches(literalTest(input, literal), () => run(input), () => {});
 					}
 				} else if (input.tag === undefined) {
-					const candidate = plainVariant(type);
-					if (candidate && variantKey(candidate) === variantKey(input)) run(input);
+					if (matchesVariant(type, input)) run(input);
 				} else tagArm(input, input.tag, type, run);
 			}
 		}
 
 		function tagArm(input: Value, tag: string, type: CheckedAstType | undefined, run: (carrier?: Value) => void): void {
-			const variant = plainVariant(type);
-			const normal = variant && (input.variants ? input.variants.find(candidate => variantKey(candidate) === variantKey(variant))
-				: variantKey(variant) === variantKey(input) ? variant : undefined);
-			if (normal) {
-				const test = register(`icmp eq i8 ${tag}, ${input.variants ? variantTag(normal, root) : 0}`);
-				branches(test, () => run(input.variants ? decodeVariant(input, normal)
-					: { ...normal, operand: input.operand }), () => {});
-			} else {
-				const error = numericErrorTags.get(type?.name ?? '');
-				const compare = type?.name === 'Error' ? input.variants ? 'ult' : 'ne' : 'eq';
-				const operand = type?.name === 'Error' ? input.variants ? 16 : 0 : error;
-				if (operand !== undefined)
-					branches(register(`icmp ${compare} i8 ${tag}, ${operand}`), () => run(), () => {});
+			for (const variant of input.variants ?? []) {
+				if (!matchesVariant(type, variant)) continue;
+				const test = register(`icmp eq i8 ${tag}, ${variantTag(variant, root)}`);
+				branches(test, () => run(decodeVariant(input, variant)), () => {});
 			}
 		}
 
@@ -1519,7 +1656,10 @@ ${members.join('\n')}
 				return;
 			}
 			if (carrier.variants && carrier.tag !== undefined) {
-				if (!yieldValue) return unsupported(stage);
+				if (!yieldValue) {
+					if (stage.kind !== '|') return unsupported(stage);
+					return drive(stages, dispatch(stage, carrier), undefined, nextIndex);
+				}
 				for (const type of carrier.variants) {
 					const test = register(`icmp eq i8 ${carrier.tag}, ${variantTag(type, stage)}`);
 					branches(test, () => { drive(stages, decodeVariant(carrier, type), yieldValue, index); }, () => {});
@@ -1546,7 +1686,7 @@ ${members.join('\n')}
 			switch (stage.kind) {
 				case 'ident': {
 					if (stage.standardOutput || stage.symbol === standardOutput) {
-						print(carrier, stage);
+						emitOutput(carrier, stage);
 						return;
 					}
 					const target = functions.get(stage.symbol);
@@ -1661,7 +1801,7 @@ ${members.join('\n')}
 				call(target, args, node);
 				return;
 			}
-			const caller = { locals, facts, dollar, completion };
+			const caller = { locals, facts, dollar, completion, frame };
 			const concrete: Value[] = [];
 			for (const [index, [, shape]] of target.parameters.entries()) {
 				if (!shape) continue;
@@ -1672,12 +1812,12 @@ ${members.join('\n')}
 			activeStreams.add(target);
 			try {
 				inScope(target, concrete, () => streamBody(target.body, input => {
-					const callee = { locals, facts, dollar, completion };
-					({ locals, facts, dollar, completion } = caller);
+					const callee = { locals, facts, dollar, completion, frame };
+					({ locals, facts, dollar, completion, frame } = caller);
 					try {
 						yieldValue(input);
 					} finally {
-						({ locals, facts, dollar, completion } = callee);
+						({ locals, facts, dollar, completion, frame } = callee);
 					}
 				}));
 			} finally {
@@ -1798,6 +1938,8 @@ ${members.join('\n')}
 				case 'ident': {
 					const local = locals.get(node.symbol);
 					if (local) return local;
+					const global = globals.get(node.symbol);
+					if (global) return loadMember(global.type, global.name);
 					if (node.symbol.kind === 'literal' && typeof node.symbol.value === 'string')
 						return constantString(node.symbol.value);
 					if (node.symbol.kind === 'literal' && typeof node.symbol.value === 'boolean')
@@ -1863,6 +2005,13 @@ ${members.join('\n')}
 			}
 		}
 
+		function storeGlobal(symbol: CheckedSymbol, input: Value, node: Node): void {
+			const global = globals.get(symbol) ?? unsupported(node);
+			const old = hasHeap(global.type) ? heapPointer(loadMember(global.type, global.name)) : undefined;
+			storeMember(input, global.type, global.name, node);
+			if (old !== undefined) instruction(`call void @gb.release(ptr ${old})`);
+		}
+
 		function emitStatement(node: Node): void {
 			switch (node.kind) {
 				case 'def': {
@@ -1875,12 +2024,52 @@ ${members.join('\n')}
 					});
 					return;
 				}
+				case '=': {
+					const [target, source] = node.children;
+					if (target.kind !== 'ident') return unsupported(target);
+					statementScope(node, () => storeGlobal(target.symbol, expr(source), node));
+					return;
+				}
 				case 'call': case '>>': case '->': case ',': case '?':
-					statementScope(node, () => emitValues(node, () => { unsupported(node); }));
+					statementScope(node, () => emitValues(node, () => {
+						if (!phase) unsupported(node);
+					}));
 					return;
 				default:
+					if (phase && facts) {
+						statementScope(node, () => { evaluate(node); });
+						return;
+					}
 					return unsupported(node);
 			}
+		}
+
+		function safeTailCall(target: Function<Context>, result: Shape, bound: CheckedCall<Node>): boolean {
+			if (target.stream || target.result === 'void') return false;
+			if (target !== fn && (variantKey(target.result) !== variantKey(result) ||
+				target.result.variants?.map(variantKey).join() !== result.variants?.map(variantKey).join())) return false;
+			return target.parameters.every(([, type], index) => !type || !hasHeap(type) ||
+				(!!target.ownedParameters?.[index] && (target === fn || bound.arguments[index]?.kind === 'ident')));
+		}
+
+		function tailPipelineBinding(source: Node | undefined, stage: Node | undefined): CheckedCall<Node> | undefined {
+			if (!source || stage?.kind !== 'ident' || abiShape(facts?.types.get(source))?.variants) return;
+			const alternatives = facts?.stages.get(stage);
+			if (alternatives?.length !== 1) return;
+			const bound = alternatives[0];
+			if (bound && !bound.packed && !bound.spread) return bound;
+		}
+
+		function tailCall(node: Node, result: Shape): boolean {
+			const pipe = node.kind === '>>' && node.children.length === 2 ? node.children : undefined;
+			const bound = node.kind === 'call' ? facts?.calls.get(node) : tailPipelineBinding(pipe?.[0], pipe?.[1]);
+			const target = bound?.target === undefined ? undefined : prepared?.[bound.target];
+			if (!bound || !target || !safeTailCall(target, result, bound)) return false;
+			if (target !== fn && node.kind === 'call' && node.children[0].kind !== 'ident') return false;
+			const source = pipe?.[0];
+			const args = source ? [expr(source)] : argumentsFor(bound, target, node);
+			call(target, args, node, true);
+			return true;
 		}
 
 		function emitReturn(node: Node, result: Shape): void {
@@ -1895,59 +2084,126 @@ ${members.join('\n')}
 				label(falsy);
 				emitReturn(no, result);
 			} else {
-				if (node.kind === 'call') {
-					const bound = facts?.calls.get(node);
-					if (bound?.target !== undefined && prepared?.[bound.target] === fn &&
-						fn.parameters.every(([, shape], index) => !shape || !hasHeap(shape) || fn.ownedParameters?.[index])) {
-						call(fn, argumentsFor(bound, fn, node), node, true);
-						return;
-					}
-				}
+				if (tailCall(node, result)) return;
 				const returned = pack(expr(node), result, node, true);
 				cleanup();
 				instruction(`ret ${abiType(result)} ${returned}`);
 			}
 		}
 
-		const body = fn.body.filter(node => node.kind !== 'comment');
-		if (fn.stream) {
-			activeStreams.add(fn);
-			streamBody(body, () => {});
-			cleanup();
-			instruction('ret void');
-		} else if (isMain || fn.result === 'void') {
-			completion = isMain ? undefined : { scope };
-			for (const statement of body) {
-				if (statement.kind === 'next' || statement.kind === 'done')
-					statementScope(statement, () => emitValues(statement, () => {}));
-				else emitStatement(statement);
-				if (statement.kind === 'done') break;
+		function emitPhase(phase: EntryPhase, plan: NonNullable<typeof entry>): void {
+			if (phase === 'dispose') {
+				for (const { name, type } of globals.values()) {
+					if (!hasHeap(type)) continue;
+					runtime.add(referenceRuntime);
+					const pointer = heapPointer(loadMember(type, name));
+					instruction(`call void @gb.release(ptr ${pointer})`);
+					instruction(`store ${memoryType(type)} zeroinitializer, ptr ${name}${memberAlignment(type)}`);
+				}
+				instruction('ret void');
+			} else {
+				for (const { definition, initial } of plan.globals) {
+					if (initial !== (phase === 'initial')) continue;
+					statementScope(definition, () => storeGlobal(definition.symbol, expr(definition.value), definition));
+				}
+				if (phase !== 'initial') for (const statements of plan.statements) {
+					scoped(() => {
+						for (const statement of statements)
+							if (statement.kind !== 'comment') emitStatement(statement);
+					});
+				}
+				instruction(isMain ? 'ret i32 0' : 'ret void');
 			}
-			finishCompletion();
-			cleanup();
-			instruction(isMain ? 'ret i32 0' : 'ret void');
-		} else {
-			const tail = body.findIndex(node => node.kind === 'next');
-			const end = tail < 0 ? body.length - 1 : tail;
-			for (const statement of body.slice(0, end)) emitStatement(statement);
-			const statement = body[end];
-			const result = statement?.kind === 'next' ? statement.children?.[0] : statement;
-			if (!result) return unsupported(statement ?? root);
-			emitReturn(result, fn.result);
 		}
+
+		function emitFunctionBody(): void {
+			const body = fn.body.filter(node => node.kind !== 'comment');
+			if (fn.stream) {
+				activeStreams.add(fn);
+				streamBody(body, () => {});
+				cleanup();
+				instruction('ret void');
+			} else if (isMain || fn.result === 'void') {
+				completion = isMain ? undefined : { scope };
+				for (const statement of body) {
+					if (statement.kind === 'next' || statement.kind === 'done')
+						statementScope(statement, () => emitValues(statement, () => {}));
+					else emitStatement(statement);
+					if (statement.kind === 'done') break;
+				}
+				finishCompletion();
+				cleanup();
+				instruction(isMain ? 'ret i32 0' : 'ret void');
+			} else {
+				const tail = body.findIndex(node => node.kind === 'next');
+				const end = tail < 0 ? body.length - 1 : tail;
+				for (const statement of body.slice(0, end)) emitStatement(statement);
+				const statement = body[end];
+				const result = statement?.kind === 'next' ? statement.children?.[0] : statement;
+				if (!result) return unsupported(statement ?? root);
+				emitReturn(result, fn.result);
+			}
+		}
+
+		if (phase && entry) emitPhase(phase, entry);
+		else emitFunctionBody();
 		lines.splice(2, 0, ...allocations);
 		lines.push('}');
 		return lines.join('\n');
 	}
 
+	function hostWrapper({ name, target, node }: NonNullable<NonNullable<typeof entry>['exports']>[number]): string {
+		const fn = prepared?.[target] ?? unsupported(node);
+		if (fn.stream || fn.input || fn.parameters.some(([, type]) => !type || hasHeap(type) || type.variants) ||
+			(fn.result !== 'void' && (hasHeap(fn.result) || fn.result.variants)))
+			throw new CompilerError(`"${name}" cannot be exposed through the native host ABI`, node);
+		if ([...runtime].some(part => part.split('\n').some(line => line.startsWith('declare ') && line.includes(` @${name}(`))))
+			throw new CompilerError(`"${name}" conflicts with a native runtime symbol`, node);
+		const symbol = Array.from((encoder ??= new TextEncoder()).encode(name), byte =>
+			byte === 34 || byte === 92 || byte < 32 || byte > 126
+				? `\\${byte.toString(16).padStart(2, '0')}` : String.fromCharCode(byte)).join('');
+		const parameters = fn.parameters.map(([, type], index) => `${abiType(type ?? unsupported(node))} %arg${index}`).join(', ');
+		const result = fn.result === 'void' ? 'void' : abiType(fn.result);
+		const call = `call ${result} @${fn.name}(${parameters})`;
+		return `define ${result} @"${symbol}"(${parameters}) {
+  ${result === 'void'
+			? `${call}
+  ret void` : `%result = ${call}
+  ret ${result} %result`}
+}`;
+	}
+
+	function emitEntries(bodies: string[], main: Nodes['main'] | undefined): void {
+		function emitEntry(name: string, phase: EntryPhase, body: readonly Node[] = []): void {
+			bodies.push(emitBody({ name, result: phase === 'main' ? { type: 'i32' } : 'void',
+				parameters: [], body, facts: root.checked?.main }, phase));
+		}
+		const constructors: string[] = [];
+		if (entry?.globals.some(global => global.initial)) {
+			emitEntry('gb.initial', 'initial');
+			constructors.push('{ i32, ptr, ptr } { i32 65534, ptr @gb.initial, ptr null }');
+		}
+		if (entry?.exports) {
+			emitEntry('gb.library', 'library');
+			constructors.push('{ i32, ptr, ptr } { i32 65535, ptr @gb.library, ptr null }');
+		} else emitEntry('main', 'main', main?.statements);
+		if (constructors.length) runtime.add(
+			`@llvm.global_ctors = appending global [${constructors.length} x { i32, ptr, ptr }] [${constructors.join(', ')}]`);
+		if ([...globals.values()].some(global => hasHeap(global.type))) {
+			emitEntry('gb.dispose', 'dispose');
+			runtime.add('@llvm.global_dtors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @gb.dispose, ptr null }]');
+		}
+	}
+
+	const { definitions, main } = legacyDefinitions();
 	const bodies = [...definitions, ...(prepared ?? [])].filter(fn => !fn.stream).map(fn => emitBody(fn));
-	bodies.push(emitBody({ name: 'main', result: { type: 'i32' }, parameters: [], body: main.statements, facts: root.checked?.main }, true));
+	emitEntries(bodies, main);
 	for (const fn of streamEffects) bodies.push(emitBody(fn));
+	if (entry?.exports) bodies.push(...entry.exports.map(hostWrapper));
 	const heapPrelude = runtime.delete(referenceRuntime) ? [referenceRuntime] : [];
 	return [...heapPrelude, ...runtime, ...bodies, ''].join('\n');
 }
-const floatOutput = String.raw`declare i32 @snprintf(ptr, i64, ptr, ...)
-declare double @strtod(ptr, ptr)
+const floatOutput = String.raw`declare double @strtod(ptr, ptr)
 declare i32 @atoi(ptr)
 declare i64 @strtoull(ptr, ptr, i32)
 @.float.scientific = private unnamed_addr constant [5 x i8] c"%.*e\00"

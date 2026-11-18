@@ -8,7 +8,7 @@ import { loadCompiler } from '../compiler/program.js';
 import { runWasm } from '../compiler/host.js';
 import { ast } from '../compiler/debug.js';
 import { formatError } from '../sdk/index.js';
-import { buildNative } from './native.js';
+import { buildNative, runNativeTests } from './native.js';
 
 const { Program } = await loadCompiler(async () =>
 	new Uint8Array(await readFile(new URL('./stdlib.gbm', import.meta.url))),
@@ -111,7 +111,7 @@ function libraryCommand(files: string[], outdir: string | undefined): number {
 	return 0;
 }
 
-function testCommand(files: string[]): number {
+function testCommand(files: string[], native: boolean): number {
 	let failures = 0;
 	for (const srcFile of files) {
 		if (srcFile.endsWith('.gbm')) {
@@ -123,18 +123,20 @@ function testCommand(files: string[]): number {
 		// Tests run as debug builds: error values carry full call chains.
 		const out = Program({ debug: true, sys: fileSys }).compileFile(
 			resolve(srcFile),
-			{ testMode: true },
+			{ testMode: true, target: native ? 'llvm' : 'wasm' },
 		);
-		if (out.errors.length || !out.bytes) {
+		if (out.errors.length || (native ? out.ir === undefined : !out.bytes)) {
 			for (const e of out.errors) console.error(formatError(e));
 			failures++;
 			continue;
 		}
 		try {
-			runWasm(out.bytes, chunk => {
+			const report = (chunk: string) => {
 				failures++;
 				process.stdout.write(`${srcFile}: ${chunk}\n`);
-			});
+			};
+			if (native && out.ir !== undefined) runNativeTests(out.ir, report);
+			else if (out.bytes) runWasm(out.bytes, report);
 		} catch (e) {
 			failures++;
 			console.error(`${srcFile}: ${e instanceof Error ? e.message : e}`);
@@ -169,7 +171,7 @@ function formatCommand(files: string[], check: boolean): number {
 }
 
 function supportsNativeBuild(command: string | undefined, files: string[], wasm: boolean): boolean {
-	return command === 'build' && files.length > 0 && !wasm;
+	return (command === 'build' || command === 'test') && files.length > 0 && !wasm;
 }
 
 const start = program('gbc', () => {
@@ -205,7 +207,7 @@ const start = program('gbc', () => {
 
 	const [cmd, ...rest] = options.$;
 	if (options.native && !supportsNativeBuild(cmd, rest, !!options.wasm)) {
-		console.error('gbc: --native requires build with source files and cannot be combined with --wasm');
+		console.error('gbc: --native requires build or test with source files and cannot be combined with --wasm');
 		process.exitCode = 1;
 		return;
 	}
@@ -222,7 +224,7 @@ const start = program('gbc', () => {
 		return;
 	}
 	if (cmd === 'test' && rest.length) {
-		process.exitCode = testCommand(rest);
+		process.exitCode = testCommand(rest, !!options.native);
 		return;
 	}
 	if (cmd === 'fmt') {

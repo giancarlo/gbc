@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 function run(tool: string, args: string[], input?: string | Buffer): Buffer {
@@ -37,6 +38,28 @@ export function buildNative(ir: string, output: string): void {
 		const math = process.platform === 'linux' ? ['-Wl,--as-needed', '-lm'] : ['-lm'];
 		run(command, [...args, object, ...math, '-o', executable]);
 		renameSync(executable, output);
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+}
+
+export function runNativeTests(ir: string, write: (chunk: string) => void): void {
+	const directory = mkdtempSync(join(tmpdir(), 'gbc-test-'));
+	try {
+		const executable = join(directory, 'program');
+		buildNative(ir, executable);
+		const result = spawnSync(executable, { maxBuffer: 16 * 1024 * 1024 });
+		if (result.error) throw result.error;
+		const bytes = result.stdout;
+		let offset = 0;
+		while (offset + 4 <= bytes.length) {
+			const end = offset + 4 + bytes.readUInt32LE(offset);
+			if (end > bytes.length) break;
+			write(bytes.toString('utf8', offset + 4, end));
+			offset = end;
+		}
+		if (result.signal) throw new Error('unreachable');
+		if (offset !== bytes.length) throw new Error('Invalid native test output');
 	} finally {
 		rmSync(directory, { recursive: true, force: true });
 	}

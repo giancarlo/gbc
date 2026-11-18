@@ -806,7 +806,6 @@ main {
 			'main {',
 			'main { missing >> out }',
 			'main { 18446744073709551616 >> out }',
-			'value = 42; main { 42 >> out }',
 			'export value = (): Int32 { 42 }',
 		]) {
 			const result = program.compile(invalid, { target: 'llvm' });
@@ -824,8 +823,8 @@ main {
 		a.ok(wasm.bytes);
 		a.equal(wasm.ir, undefined);
 		const debug = Program({ debug: true }).compile('main {}', { target: 'llvm' });
-		a.equal(debug.errors[0]?.message, 'LLVM target does not support test or debug builds');
-		a.equal(debug.ir, undefined);
+		a.equalValues(debug.errors, []);
+		a.ok(debug.ir);
 		const files = Program({ sys: {
 			readFile: () => 'main {}',
 			readBytes: () => new Uint8Array(),
@@ -834,8 +833,35 @@ main {
 		a.equal(file.errors.length, 0);
 		a.equal(file.ir, empty.ir);
 		const test = files.compileFile('/main.gb', { target: 'llvm', testMode: true });
-		a.equal(test.errors[0]?.message, 'LLVM target does not support test or debug builds');
-		a.equal(test.ir, undefined);
+		a.equalValues(test.errors, []);
+		a.ok(test.ir);
+	});
+	s.test('LLVM prepares global initialization and host entries from the checked source', (a: TestApi) => {
+		let source = 'value = 42; export read = (): Int32 { value }';
+		const program = Program({ sys: { readFile: () => source, readBytes: () => new Uint8Array() } });
+		const library = program.compileFile('/entry.gb', { target: 'llvm' });
+		a.equalValues(library.errors, []);
+		a.assert(library.ir);
+		a.ok(library.ir.includes('define i32 @"read"()'));
+		a.ok(!library.ir.includes('define i32 @main'));
+		source = 'export generic = <T>(value: T): T { value }';
+		const generic = program.compileFile('/entry.gb', { target: 'llvm' });
+		a.equal(generic.ir, undefined);
+		a.ok(generic.errors[0]?.message.includes('no single wasm signature'));
+		a.equal(generic.errors[0]?.position.source, source);
+		const tests = program.compileTest('#test { equal(target(), 5) } export target = (): Int32 { 5 }', { target: 'llvm' });
+		a.equalValues(tests.errors, []);
+		a.ok(tests.ir);
+		source = 'main {';
+		const malformed = program.compileFile('/entry.gb', { target: 'llvm' });
+		a.ok(malformed.errors.length);
+		a.equal(malformed.errors[0]?.position.source, source);
+		a.equal(malformed.ir, undefined);
+		source = 'value = 42; main { value >> out }';
+		const executable = program.compileFile('/entry.gb', { target: 'llvm', requireMain: true });
+		a.equalValues(executable.errors, []);
+		a.assert(executable.ir);
+		a.equal(compileLlvm(executable.ast), executable.ir);
 	});
 	s.test('integer division preserves its error origin and overflow payload', (a: TestApi) => {
 		const source = `divide = (n: Int32, d: Int32): Int32 | DivByZero | NumericOverflow { n / d };

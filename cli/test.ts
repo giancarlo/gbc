@@ -166,13 +166,14 @@ main {
 					name: 'call-binding',
 					source: `mark = (n: Int32): Int32 { n >> out; next n };
 sub = (a: Int32, b: Int32 = a + 1): Int32 { a - b };
+packed = (a: Int32, b: Int32): Int32 { [a, b] >> sub };
 main {
 	sub(b = mark(2), a = mark(1)) >> out;
 	sub(mark(3), void) >> out;
 	[mark(4), mark(5)] >> sub >> out;
-	max(y = mark(6), x = mark(7)) >> out
+	max(y = mark(6), x = mark(7)) >> out; packed(10, 1) >> out
 }`,
-					output: '21-13-145-1677',
+					output: '21-13-145-16779',
 				},
 				{
 					name: 'specialized-recursion',
@@ -337,6 +338,80 @@ main {
 		}
 	});
 
+	s.test('matches direct Wasm initialization, exit, debug traces and test reporting', a => {
+		const directory = mkdtempSync(join(process.cwd(), '.gbc-lifecycle-test-'));
+		const path = join(directory, 'entry.gb');
+		const native = join(directory, 'entry');
+		const run = (...args: string[]) => spawnSync(process.execPath, [executable, ...args], { encoding: 'utf8', timeout: 10000 });
+		try {
+			writeFileSync(join(directory, 'seed.gb'), `initialize = (): Int32 { 3 >> out; next 2 };
+seedCount = initialize();
+export readSeed = (): Int32 { seedCount };`);
+			writeFileSync(path, `seed = @.seed;
+initialize = (): Int32 { 4 >> out; next seed.readSeed() + 3 };
+base = initialize();
+main { (base + 2) >> out; runtime.exit(9); 'unreachable' >> out }`);
+			const direct = run('run', path);
+			const build = run('build', '--native', '--outdir', directory, path);
+			a.equal(build.status, 0, build.stderr);
+			const result = spawnSync(native, { encoding: 'utf8', timeout: 10000 });
+			a.equal(direct.status, 9, direct.stderr);
+			a.equal(direct.stdout, '347');
+			a.equal(result.status, direct.status);
+			a.equal(result.stdout, direct.stdout);
+
+			writeFileSync(path, `initialize = (): Int32 { 'before' >> out; runtime.exit(7); next 2 };
+initial = initialize();
+main { initial >> out }`);
+			const failedInit = run('run', path);
+			const failedInitBuild = run('build', '--native', '--outdir', directory, path);
+			a.equal(failedInitBuild.status, 0, failedInitBuild.stderr);
+			const nativeFailure = spawnSync(native, { encoding: 'utf8', timeout: 10000 });
+			a.equal(failedInit.status, 7, failedInit.stderr);
+			a.equal(failedInit.stdout, 'before');
+			a.equal(nativeFailure.status, failedInit.status);
+			a.equal(nativeFailure.stdout, failedInit.stdout);
+			writeFileSync(path, `type Missing = Error & [ resource: String ];
+missing = (r: own String): own Missing { [ resource = r ] };
+inner = (r: own String): own Missing { e = missing(r); next e };
+outer = (r: own String): own Missing { e = inner(r); next e };
+divide = (a: Int32, b: Int32): Int32 | DivByZero | NumericOverflow { a / b };
+main {
+	outer('/x') >> out;
+	String(outer('/y')) >> out;
+	divide(1, 0) >> out;
+	divide(-2147483648, -1) >> Int32 { String($) } | DivByZero { String($) } | NumericOverflow { $.operation } >> out
+}`);
+			for (const flags of [[], ['--debug']]) {
+				const wasm = run('run', ...flags, path);
+				const build = run('build', '--native', ...flags, '--outdir', directory, path);
+				a.equal(build.status, 0, build.stderr);
+				const result = spawnSync(native, { encoding: 'utf8', timeout: 10000 });
+				a.equal(wasm.status, 0, wasm.stderr);
+				a.equal(result.status, wasm.status);
+				a.equal(result.stdout, wasm.stdout);
+			}
+
+			writeFileSync(path, `main { 'not a test' >> out }
+#test { ok(true); equal(1, 2); out('first\\nsecond'); equal(target(), 5) }
+export target = (): Int32 { 5 };
+#test { ok(false) }
+export second = (): Int32 { 6 };`);
+			const wasmTests = run('test', path);
+			const nativeTests = run('test', '--native', path);
+			a.equal(wasmTests.status, 1, wasmTests.stderr);
+			a.ok(wasmTests.stdout.endsWith('3 failed\n'), wasmTests.stdout);
+			a.equal(nativeTests.status, wasmTests.status, nativeTests.stderr);
+			a.equal(nativeTests.stdout, wasmTests.stdout);
+			a.equal(nativeTests.stderr, wasmTests.stderr);
+			writeFileSync(path, '#test { equal(target(), 5) } export target = (): Int32 { 5 }');
+			a.equal(run('test', '--native', path).stdout, 'ok\n');
+			a.ok(!readdirSync(directory).some(name => name.startsWith('.gbc-native-')));
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	s.test('native unary and comparison instructions use the operand width', async a => {
 		const directory = mkdtempSync(join(process.cwd(), '.gbc-native-test-'));
 		try {
@@ -418,7 +493,7 @@ main { b = Buffer<Int32>(1); 1 >> out; set(b, 2, mark(3)); 4 >> out }`, output: 
 				a.equal(readFileSync(output, 'utf8'), 'previous executable');
 			}
 			writeFileSync(path, 'main { 42 >> out }');
-			for (const args of [['run', '--native', path], ['build', '--native', '--wasm', path], ['build', '--native', '--debug', path], ['build', '--native']]) {
+			for (const args of [['run', '--native', path], ['build', '--native', '--wasm', path], ['build', '--native']]) {
 				const result = spawnSync(process.execPath, [executable, ...args], { encoding: 'utf8' });
 				a.equal(result.status, 1);
 				a.ok(result.stderr.length > 0);

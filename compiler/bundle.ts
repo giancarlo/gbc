@@ -8,6 +8,7 @@ export type { ModuleBundle as DecodedBundle, SerialObject, SerialRef } from '@cx
 
 import { childNodes, type CompilerAstContext, type Node, type NodeMap } from './node.js';
 import type { Symbol, SymbolMap, Type } from './symbol-table.js';
+import { streamInlineCandidate } from './semantic.js';
 import type { LibraryObject } from './target-wasm.js';
 
 interface EncodedObjectInfo {
@@ -82,16 +83,6 @@ function hasNonScalarEmission(symbol: SymbolMap['function']): boolean {
 			: (symbol.returnTypes?.length ?? 0) > 1;
 }
 
-function streamInlineCandidate(fn: NodeMap['fn']): boolean {
-	const statements = fn.statements ?? [];
-	const tail = statements[statements.length - 1];
-	if (tail?.kind !== 'next' || !tail.children?.[0]) return false;
-	for (let i = 0; i < statements.length - 1; i++) {
-		const statement = statements[i];
-		if (statement?.kind !== 'def' && statement?.kind !== '=') return false;
-	}
-	return true;
-}
 
 function functionBodyRequired(fn: NodeMap['fn']): boolean {
 	return (
