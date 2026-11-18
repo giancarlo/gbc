@@ -26,7 +26,7 @@ import {
 	type LibraryObject,
 	type SpliceInput,
 } from './target-wasm.js';
-import { checker, setDivByZero } from './checker.js';
+import { checker, checkHostVectorSignature, setDivByZero } from './checker.js';
 import { setRuntimeErrorTypes } from './runtime-errors.js';
 import { formatGb } from './format.js';
 import {
@@ -1001,6 +1001,7 @@ export function Program(options?: ProgramOptions) {
 		} = {},
 	): CompileResult {
 		const requireMain = modeOptions.requireMain ?? true;
+		const debugBuild = !!options?.debug;
 		const parsed = parser(src, { loader: modeOptions.loader });
 		rejectGlobalRedefinitions(symbolTable, parsed.scope, parsed.errors);
 		const checked = checker(parsed);
@@ -1023,14 +1024,15 @@ export function Program(options?: ProgramOptions) {
 		if (parsed.errors.length === 0) {
 			try {
 				if (modeOptions.target === 'llvm') {
-					if (testMode || options?.debug)
+					if (testMode || debugBuild)
 						throw new CompilerError('LLVM target does not support test or debug builds', parsed.root);
+					hostExports?.forEach(checkHostVectorSignature);
 					parsed.root.checked = prepareCheckedProgram(parsed.root, stdlibEntrySymbols.out, checked.semantic, modeOptions.moduleDefs, stdlibDefs);
 					ir = compileLlvm(parsed.root);
 				} else bytes = compileWasm({
 					prepared: prepareAst(parsed.root, testMode, modeOptions.moduleDefs),
 					testMode,
-					debugBuild: !!options?.debug,
+					debugBuild,
 					hostExports,
 					sourcePaths: modeOptions.sourcePaths,
 					splice: withStdlibSplice(modeOptions.splice?.()),

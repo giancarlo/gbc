@@ -40,7 +40,9 @@ type CheckedNode = AstNode<LlvmAstContext>;
 type Integer = 'i8' | 'u8' | 'i16' | 'u16' | 'i32' | 'u32' | 'i64' | 'u64';
 type Float = 'float' | 'double';
 type Scalar = Integer | Float | 'i1' | 'ptr';
-type Variant = { type: Scalar; character?: true; heap?: CheckedAstType };
+const float32x4 = '<4 x float>';
+type Representation = Scalar | typeof float32x4 | 'i128';
+type Variant = { type: Representation; character?: true; heap?: CheckedAstType };
 type Shape = Variant & { errors?: readonly number[]; variants?: readonly Variant[] };
 type Value = Shape & { operand: string; tag?: string };
 type Function<Context extends LlvmAstContext> = {
@@ -61,7 +63,7 @@ const divByZero = 1, numericOverflow = 2, outOfMemory = 3;
 const numericErrorTags = new Map([
 	['DivByZero', divByZero], ['NumericOverflow', numericOverflow], ['OutOfMemory', outOfMemory],
 ]);
-const scalarVariants: readonly Scalar[] = ['i1', 'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'i64', 'u64', 'float', 'double'];
+const scalarVariants: readonly Representation[] = ['i1', 'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'i64', 'u64', 'float', 'double'];
 
 function variantKey(variant: Variant): string {
 	if (variant.character) return 'char';
@@ -116,7 +118,8 @@ function recordScalar(name?: string): 'ptr' | undefined {
 }
 
 function plainVariant(type: CheckedAstType | undefined): Variant | undefined {
-	const plain = scalar(type);
+	const plain = type?.family === 'vector' && type.elem?.family === 'float' && type.elem.size === 4
+		? float32x4 : scalar(type);
 	if (plain) return { type: plain, character: type?.family === 'char' ? true : undefined, heap: plain === 'ptr' ? type : undefined };
 }
 
@@ -135,7 +138,9 @@ function abiShape(type: CheckedAstType | undefined): Shape | undefined {
 		else if (error !== undefined) errors.push(error);
 		else return;
 	}
-	if (variants.size > 1) return { type: 'u64', variants: [...variants.values()], errors };
+	if (variants.size > 1) return {
+		type: variants.has(float32x4) ? 'i128' : 'u64', variants: [...variants.values()], errors,
+	};
 	const [value] = variants.values();
 	if (value) return { ...value, errors: errors.length ? errors : undefined };
 }
@@ -144,7 +149,7 @@ function shape(type: CheckedAstType | undefined, node: CheckedNode): Shape {
 	return abiShape(type) ?? unsupported(node);
 }
 
-function isFloat(type: Scalar): type is Float {
+function isFloat(type: Representation): type is Float {
 	return type === 'float' || type === 'double';
 }
 
@@ -154,13 +159,17 @@ function numericIntrinsic(type: Scalar, operation: string): string | undefined {
 		return `${isUnsigned(type) ? 'u' : 's'}${operation}`;
 }
 
-function isUnsigned(type: Scalar): boolean {
+function isUnsigned(type: Representation): boolean {
 	return type.startsWith('u');
 }
 
-function irType(type: Scalar): 'i1' | 'i32' | 'i64' | 'ptr' | Float {
-	if (type === 'i1' || type === 'ptr' || isFloat(type)) return type;
+function irType(type: Representation) {
+	if (type === 'i1' || type === 'ptr' || type === float32x4 || type === 'i128' || isFloat(type)) return type;
 	return type === 'i64' || type === 'u64' ? 'i64' : 'i32';
+}
+
+function variantBits(type: Exclude<ReturnType<typeof irType>, 'ptr'>) {
+	return type === 'float' ? 'i32' : type === 'double' ? 'i64' : type === float32x4 ? 'i128' : type;
 }
 
 function abiType(shape: Shape): string {
@@ -184,6 +193,10 @@ function memoryType(shape: Shape): string {
 	if (type === 'i8' || type === 'u8') return 'i8';
 	if (type === 'i16' || type === 'u16') return 'i16';
 	return irType(type);
+}
+
+function memberAlignment(type: Shape): string {
+	return type.type === float32x4 || type.type === 'i128' ? ', align 8' : '';
 }
 
 function sizeOf(type: string): string {
@@ -348,7 +361,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 				: register(`select i1 ${register(`icmp eq i8 ${input.tag}, 0`)}, ptr ${input.operand}, ptr null`);
 			const tags = heapTags(input, root);
 			if (tags.length) {
-				const pointer = register(`inttoptr i64 ${input.operand} to ptr`);
+				const pointer = register(`inttoptr ${irType(input.type)} ${input.operand} to ptr`);
 				const test = tags.map(tag => register(`icmp eq i8 ${input.tag}, ${tag}`))
 					.reduce((left, right) => register(`or i1 ${left}, ${right}`), 'false');
 				return register(`select i1 ${test}, ptr ${pointer}, ptr null`);
@@ -417,24 +430,25 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			}
 		}
 
-		function value(type: Scalar, text: string): Value {
+		function value(type: Representation, text: string): Value {
 			return { type, operand: register(text) };
 		}
 
-		function operand(input: Value, type: Scalar, node: Node): string {
+		function operand(input: Value, type: Representation, node: Node): string {
 			if (input.type !== type || input.tag !== undefined) return unsupported(node);
 			return input.operand;
 		}
 
-		function cast(input: Value, type: Scalar, opcode: string): string {
+		function cast(input: Value, type: Representation, opcode: string): string {
 			return register(`${opcode} ${irType(input.type)} ${input.operand} to ${irType(type)}`);
 		}
 
-		function coerce(input: Value, type: Scalar, node: Node, explicit = false): string {
+		function coerce(input: Value, type: Representation, node: Node, explicit = false): string {
 			const from = irType(input.type);
 			const to = irType(type);
 			if (from === to) return input.operand;
-			if (from === 'ptr' || to === 'ptr') return unsupported(node);
+			if (from === 'ptr' || to === 'ptr' || from === float32x4 || to === float32x4 ||
+			from === 'i128' || to === 'i128') return unsupported(node);
 			if (from === 'i32' && to === 'i64')
 				return cast(input, type, (explicit ? isUnsigned(type) : isUnsigned(input.type)) ? 'zext' : 'sext');
 			if (isFloat(type)) {
@@ -445,22 +459,27 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			throw new CompilerError('LLVM target does not support this scalar conversion', node);
 		}
 
-		function encodeVariant(input: Value): string {
-			if (input.type === 'ptr') return register(`ptrtoint ptr ${input.operand} to i64`);
+		function encodeVariant(input: Value, width: 'i64' | 'i128'): string {
 			const ir = irType(input.type);
-			const bits = isFloat(input.type)
-				? register(`bitcast ${ir} ${input.operand} to ${ir === 'float' ? 'i32' : 'i64'}`) : input.operand;
-			const width = ir === 'float' ? 'i32' : ir === 'double' ? 'i64' : ir;
-			return width === 'i64' ? bits : register(`zext ${width} ${bits} to i64`);
+			if (ir === 'ptr') return register(`ptrtoint ptr ${input.operand} to ${width}`);
+			const bits = variantBits(ir);
+			const encoded = bits === ir ? input.operand : register(`bitcast ${ir} ${input.operand} to ${bits}`);
+			return resizePayload(encoded, bits, width);
+		}
+
+		function resizePayload(input: string, from: string, to: string): string {
+			if (from === to) return input;
+			const op = from === 'i128' || (from === 'i64' && to !== 'i128') ? 'trunc' : 'zext';
+			return register(`${op} ${from} ${input} to ${to}`);
 		}
 
 		function decodeVariant(input: Value, variant: Variant): Value {
-			const { type } = variant;
-			if (type === 'ptr') return { ...variant, operand: register(`inttoptr i64 ${input.operand} to ptr`) };
-			const ir = irType(type);
-			const width = ir === 'float' ? 'i32' : ir === 'double' ? 'i64' : ir;
-			const bits = width === 'i64' ? input.operand : register(`trunc i64 ${input.operand} to ${width}`);
-			return { ...variant, operand: isFloat(type) ? register(`bitcast ${width} ${bits} to ${ir}`) : bits };
+			const ir = irType(variant.type);
+			const from = irType(input.type);
+			if (ir === 'ptr') return { ...variant, operand: register(`inttoptr ${from} ${input.operand} to ptr`) };
+			const width = variantBits(ir);
+			const bits = resizePayload(input.operand, from, width);
+			return { ...variant, operand: width === ir ? bits : register(`bitcast ${width} ${bits} to ${ir}`) };
 		}
 
 		function normalizeShape(input: Value, target: Shape, node: Node): Value {
@@ -483,11 +502,11 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			else if (!input.variants) {
 				const chosen = target.variants.find(variant => variantKey(variant) === variantKey(input));
 				if (!chosen) return unsupported(node);
-				payload = encodeVariant(input);
+				payload = encodeVariant(input, target.type === 'i128' ? 'i128' : 'i64');
 				const scalarTag = variantTag(chosen, node);
 				tag = input.tag === undefined ? String(scalarTag)
 					: register(`select i1 ${register(`icmp eq i8 ${tag}, 0`)}, i8 ${scalarTag}, i8 ${tag}`);
-			}
+			} else payload = resizePayload(payload, irType(input.type), irType(target.type));
 			if (!target.errors && !target.variants) return payload;
 			const type = abiType(target);
 			const packed = register(`insertvalue ${type} poison, ${irType(target.type)} ${payload}, 0`);
@@ -501,7 +520,8 @@ export function compileLlvm<Context extends LlvmAstContext>(
 		}
 
 		function integer(input: Value, node: Node): Integer {
-			if (input.type === 'i1' || input.type === 'ptr' || isFloat(input.type) || input.tag !== undefined) return unsupported(node);
+			if (input.type === 'i1' || input.type === 'ptr' || input.type === float32x4 || input.type === 'i128' ||
+				isFloat(input.type) || input.tag !== undefined) return unsupported(node);
 			return input.type;
 		}
 
@@ -515,12 +535,16 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			const [left, right] = node.children;
 			const lhs = expr(left), rhs = expr(right);
 			if (lhs.tag !== undefined || rhs.tag !== undefined) return unsupported(node);
+			const opcode = arithmetic[node.kind];
+			if (lhs.type === float32x4 && rhs.type === float32x4) {
+				const vectorOpcode = node.kind === '%' ? 'div' : opcode;
+				return value(float32x4, `f${vectorOpcode} ${float32x4} ${lhs.operand}, ${rhs.operand}`);
+			}
 			const division = node.kind === '/' || node.kind === '%';
 			const numeric = facts?.numeric.get(node) ?? node.numeric;
 			const type = scalar(numeric?.valueType) ?? integerType(lhs, rhs, node);
 			const ir = irType(type);
 			const first = coerce(lhs, type, left), second = coerce(rhs, type, right);
-			const opcode = arithmetic[node.kind];
 			if (isFloat(type)) return value(type, `f${opcode} ${ir} ${first}, ${second}`);
 			if (!division)
 				return value(type, `${opcode} ${ir} ${first}, ${second}`);
@@ -700,7 +724,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 
 		function loadMember(type: Shape, address: string): Value {
 			const ir = memoryType(type);
-			const loaded = register(`load ${ir}, ptr ${address}`);
+			const loaded = register(`load ${ir}, ptr ${address}${memberAlignment(type)}`);
 			if (ir === 'i8' || ir === 'i16')
 				return { ...type, operand: register(`${isUnsigned(type.type) ? 'zext' : 'sext'} ${ir} ${loaded} to i32`) };
 			return unpack(type, loaded);
@@ -710,7 +734,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 			const ir = memoryType(type);
 			const packed = pack(input, type, node, true);
 			const stored = ir === 'i8' || ir === 'i16' ? register(`trunc i32 ${packed} to ${ir}`) : packed;
-			instruction(`store ${ir} ${stored}, ptr ${address}`);
+			instruction(`store ${ir} ${stored}, ptr ${address}${memberAlignment(type)}`);
 		}
 
 		function storageKey(type: Shape, node: Node): string {
@@ -721,7 +745,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 
 		function dropMember(type: Shape, slot: string, node: Node, address: string): string {
 			const ir = memoryType(type);
-			const load = `  ${slot}.value = load ${ir}, ptr ${slot}`;
+			const load = `  ${slot}.value = load ${ir}, ptr ${slot}${memberAlignment(type)}`;
 			if (!type.variants && !type.errors)
 				return `${address}\n${load}\n  call void @gb.release(ptr ${slot}.value)`;
 			const lines = [
@@ -741,7 +765,7 @@ export function compileLlvm<Context extends LlvmAstContext>(
 				return combined;
 			}, 'false');
 			const pointer = type.variants ? `${slot}.pointer` : `${slot}.payload`;
-			if (type.variants) lines.push(`  ${pointer} = inttoptr i64 ${slot}.payload to ptr`);
+			if (type.variants) lines.push(`  ${pointer} = inttoptr ${irType(type.type)} ${slot}.payload to ptr`);
 			lines.push(`  ${slot}.owned = select i1 ${test}, ptr ${pointer}, ptr null`, `  call void @gb.release(ptr ${slot}.owned)`);
 			return lines.join('\n');
 		}
@@ -880,6 +904,46 @@ ${members.join('\n')}
 				}
 			}
 			return allocate(type, bytes, type.components?.length ? 0 : cap, cap, drop);
+		}
+
+		function vectorAddress(buffer: Value, offset: Value, node: Node): string {
+			const pointer = operand(buffer, 'ptr', node);
+			const index = scalarArgument(offset, 'i32', node);
+			const len = length(buffer);
+			const past = register(`icmp ugt i32 ${index}, ${len}`);
+			const remaining = register(`sub i32 ${len}, ${index}`);
+			const short = register(`icmp ult i32 ${remaining}, 4`);
+			trapIf(register(`or i1 ${past}, ${short}`), true);
+			return register(`getelementptr float, ptr ${payload(pointer)}, i32 ${index}`);
+		}
+
+		function vectorConstructor(arg: Node, node: Node): Value {
+			if (arg.kind === ',') {
+				const [buffer, index] = arg.children;
+				if (!buffer || !index || arg.children.length !== 2) return unsupported(node);
+				const address = vectorAddress(expr(buffer), expr(index), node);
+				return value(float32x4, `load ${float32x4}, ptr ${address}, align 4`);
+			}
+			const lane = scalarArgument(expr(arg), 'float', arg);
+			const first = register(`insertelement ${float32x4} poison, float ${lane}, i32 0`);
+			return value(float32x4, `shufflevector ${float32x4} ${first}, ${float32x4} poison, <4 x i32> zeroinitializer`);
+		}
+
+		function vectorStore(args: readonly Value[], node: Node, assigned?: Node): undefined {
+			const [buffer, index, vector] = args;
+			if (!buffer || !index) return unsupported(node);
+			const address = vectorAddress(buffer, index, node);
+			const input = assigned ? expr(assigned) : vector;
+			if (!input) return unsupported(node);
+			instruction(`store ${float32x4} ${operand(input, float32x4, node)}, ptr ${address}, align 4`);
+		}
+
+		function vectorSum(input: Value, node: Node): Value {
+			const vector = operand(input, float32x4, node);
+			const lane = (index: number) => register(`extractelement ${float32x4} ${vector}, i32 ${index}`);
+			const left = register(`fadd float ${lane(0)}, ${lane(1)}`);
+			const right = register(`fadd float ${lane(2)}, ${lane(3)}`);
+			return value('float', `fadd float ${left}, ${right}`);
 		}
 
 		function bufferOperation(node: Node, bound: CheckedCall<Node>, args: readonly Value[], assigned?: Node): Value | undefined {
@@ -1058,7 +1122,7 @@ ${members.join('\n')}
 				const joined = register(`phi ${abiType(checked)} [ ${left}, %${leftBlock} ], [ ${right}, %${rightBlock} ]`);
 				return unpack(checked, joined);
 			}
-			let type: Scalar;
+			let type: Representation;
 			const [lhs, leftBlock, rhs, rightBlock] = branches(test, () => {
 				const lhs = yes();
 				type = lhs.type;
@@ -1191,7 +1255,8 @@ ${members.join('\n')}
 		): Value | undefined {
 			if (bound.constant !== undefined) return { type: 'i32', operand: String(bound.constant) };
 			const target = bound.target === undefined ? undefined : prepared?.[bound.target];
-			const delayed = !carrier && bound.intrinsic?.name === 'set' && !bound.defaulted.length &&
+			const name = bound.intrinsic?.name;
+			const delayed = !carrier && (name === 'set' || name === 'simd.store') && !bound.defaulted.length &&
 				bound.evaluationOrder.every((slot, index) => slot === index) ? bound.arguments[2] : undefined;
 			const args = carrier
 				? carriedArguments(bound, node, carrier, target)
@@ -1206,7 +1271,11 @@ ${members.join('\n')}
 				return;
 			}
 			if (target) return call(target, args, node);
-			switch (bound.intrinsic?.name) {
+			switch (name) {
+				case 'simd.sum':
+					return args[0] ? vectorSum(args[0], node) : unsupported(node);
+				case 'simd.store':
+					return vectorStore(args, node, delayed);
 				case 'length': case 'capacity': case 'get': case 'set': case 'transfer':
 					return bufferOperation(node, bound, args, delayed);
 				default:
@@ -1216,6 +1285,8 @@ ${members.join('\n')}
 
 		function construct(node: Nodes['call'], arg: Node): Value {
 			const target = facts?.types.get(node);
+			if (target?.family === 'vector') return vectorConstructor(arg, node);
+			if (arg.kind === ',') return unsupported(node);
 			if (target?.family === 'buffer') return buffer(target, expr(arg), node);
 			if (target?.family === 'string') return asString(expr(arg), arg, facts?.types.get(arg));
 			if (target?.family === 'char') {
@@ -1238,7 +1309,7 @@ ${members.join('\n')}
 			const bound = facts?.calls.get(node);
 			if (bound) return emitBound(bound, node);
 			const [callee, arg] = node.children;
-			if (callee.kind === 'typeident' && arg && arg.kind !== ',') return construct(node, arg);
+			if (callee.kind === 'typeident' && arg) return construct(node, arg);
 			const args = arg?.kind === ',' ? arg.children : arg ? [arg] : [];
 			const target = callee.kind === 'ident' && functions.get(callee.symbol);
 			if (target) return call(target, args.map(expr), node);
@@ -1249,6 +1320,7 @@ ${members.join('\n')}
 			if (input.tag !== undefined) return unsupported(node);
 			const { type, operand } = input;
 			if (input.character) return print(characterString(input), node);
+			if (type === float32x4 || type === 'i128') return unsupported(node);
 			if (type === 'ptr') {
 				if (input.heap?.family === 'data' || input.heap?.family === 'buffer') return unsupported(node);
 				runtime.add(printString);
@@ -1286,7 +1358,7 @@ ${members.join('\n')}
 			for (const arm of stages) {
 				if (arm.kind !== 'fn' || arm.parameters?.length !== 1) return unsupported(arm);
 				const type = arm.parameters[0]?.symbol.type;
-				const matches = scalar(type) === input.type ? [0]
+				const matches = plainVariant(type)?.type === input.type ? [0]
 					: type?.name === 'Error' ? tags.slice(1)
 					: [numericErrorTags.get(type?.name ?? '')];
 				for (const tag of matches)

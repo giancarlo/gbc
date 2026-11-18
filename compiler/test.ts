@@ -10,6 +10,7 @@ import {
 	tokenize,
 	type Symbol as SdkSymbol,
 	type AstNodeMap,
+	type CompilerError,
 	type NumericOperationFacts,
 } from '@cxl/gbc.sdk';
 import {
@@ -4744,6 +4745,11 @@ main {
 		const instance = instantiateWasm(compiled.bytes, value => output.push(value));
 		instance.exports.main?.();
 		a.equalValues(output, ['14', '6', '20', '5', '8', '4', '12']);
+		const native = Program().compile(source, { target: 'llvm' });
+		a.equalValues(native.errors, []);
+		a.assert(native.ir);
+		a.equal(compileLlvm(native.ast), native.ir);
+		a.equal(native.bytes, undefined);
 		const includes = (...sequence: number[]) =>
 			compiled.bytes?.some((_, index) =>
 				sequence.every((byte, offset) => compiled.bytes?.[index + offset] === byte),
@@ -4759,8 +4765,8 @@ main {
 
 	s.test('rejects Vector values at the host ABI boundary', (a: TestApi) => {
 		const entry = '/vector-export.gb';
-		const source = `export vector = (): Vector<Float32> { Vector<Float32>(Float32(1)) }`;
-		const compiled = Program({
+		let source = `export vector = (): Vector<Float32> { Vector<Float32>(Float32(1)) }`;
+		const program = Program({
 			sys: {
 				readFile: path => {
 					if (path === entry) return source;
@@ -4770,12 +4776,44 @@ main {
 					throw new Error(`ENOENT: ${path}`);
 				},
 			},
-		}).compileFile(entry, { requireMain: false });
-		a.assert(
-			compiled.errors.some(error =>
-				error.message.includes('cannot expose Vector values through the host ABI'),
-			),
-		);
+		});
+		for (const signature of [
+			source,
+			`export vector = (value: Vector<Float32>): Float32 { simd.sum(value) }`,
+		]) {
+			source = signature;
+			const { errors } = program.compileFile(entry, { requireMain: false });
+			const { errors: native, ir } = program.compileFile(entry, { requireMain: false, target: 'llvm' });
+			a.equal(errors.length, 1);
+			a.equal(errors[0]?.message, '"vector" cannot expose Vector values through the host ABI');
+			const diagnostic = ({ message, position: { start, end } }: CompilerError) => [message, start, end];
+			a.equalValues(native.map(diagnostic), errors.map(diagnostic));
+			a.equal(errors[0]?.position.start, source.indexOf("vector"));
+			a.equal(errors[0]?.position.end, source.length);
+			a.equal(ir, undefined);
+		}
+		source += `; main { Vector<Float32>(2) >> vector >> out }`;
+		const { errors, ir } = program.compileFile(entry, { target: 'llvm' });
+		a.equalValues(errors, []);
+		a.assert(ir);
+	});
+
+	s.test('LLVM and Wasm share vector checker diagnostics', a => {
+		const program = Program();
+		for (const source of [
+			'main { Vector<Int32>(1) }',
+			'main { Vector<Float32>(true) }',
+			'main { Vector<Float32>(1) + Float32(2) }',
+			'main { b = Buffer<Int32>(4); Vector<Float32>(b, 0) }',
+			'main { b = Buffer<Int32>(4); simd.store(b, 0, Vector<Float32>(1)) }',
+		]) {
+			const wasm = program.compile(source);
+			const native = program.compile(source, { target: 'llvm' });
+			a.ok(wasm.errors.length);
+			const diagnostic = ({ message, position: { start, end } }: CompilerError) => [message, start, end];
+			a.equalValues(native.errors.map(diagnostic), wasm.errors.map(diagnostic));
+			a.equal(native.ir, undefined);
+		}
 	});
 
 	s.test('defines pairwise Float32 vector reduction order', (a: TestApi) => {

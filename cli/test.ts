@@ -74,6 +74,9 @@ export dbl = (n: Int32): Int32 { n * 2 };`,
 	s.test('builds native executables with LLVM and preserves Wasm output', async (a: TestApi) => {
 		const directory = mkdtempSync(join(process.cwd(), '.gbc-native-test-'));
 		try {
+			const lanes = [1, 2, 3, 4];
+			const round = Math.fround;
+			const sum = ([a = 0, b = 0, c = 0, d = 0]: number[]) => round(round(a + b) + round(c + d));
 			const fixtures = [
 				{ name: 'answer', source: 'main { 42 >> out }', output: '42' },
 				{
@@ -261,6 +264,36 @@ main {
 }`,
 					output: 'leftright28value1error204:record4:recorditem:43 0.125 🙂2044done',
 				},
+				{
+					name: 'vectors',
+					source: `identity = <T>(x: T): T { x };
+rem = <T>(a: T, b: T): T { a % b };
+choose = (n: Int32): Vector<Float32> | own String { n > 0 ? Vector<Float32>(n) : '\${n}text' };
+main {
+	buffer = Buffer<Float32>(9);
+	set(buffer, 1, Float32(1)); set(buffer, 2, Float32(2));
+	set(buffer, 3, Float32(3)); set(buffer, 4, Float32(4));
+	v = identity(Vector<Float32>(buffer, 1));
+	one = Vector<Float32>(1); half = Vector<Float32>(0.5);
+	simd.store(buffer, 5, v);
+	get(buffer, 5) >> out; get(buffer, 6) >> out; get(buffer, 7) >> out; get(buffer, 8) >> out;
+	simd.sum(v + one) >> out; simd.sum(v - one) >> out; simd.sum(v * half) >> out;
+	simd.sum(v / half) >> out; simd.sum(rem(v, half)) >> out;
+	simd.sum(Vector<Float32>(Uint32(4294967295))) >> out;
+	simd.sum(Vector<Float32>(Int64(2147483648)) / Vector<Float32>(Int64(1073741824))) >> out;
+	simd.sum(Vector<Float32>(Uint64(9223372036854775808)) / Vector<Float32>(Int64(4611686018427387904))) >> out;
+	vectors = Buffer<Vector<Float32> >(2);
+	set(vectors, 1, v); simd.sum(get(vectors, 1)) >> out;
+	set(buffer, 1, Float32(100000000000000000000.0)); set(buffer, 2, Float32(1));
+	set(buffer, 3, Float32(0.0 - 100000000000000000000.0)); set(buffer, 4, Float32(1));
+	simd.sum(Vector<Float32>(buffer, 1)) >> out;
+	choose(2) >> Vector<Float32> { simd.sum($) >> out } | String { $ >> out };
+	choose(0) >> Vector<Float32> { simd.sum($) >> out } | String { $ >> out }
+}`,
+					output: [...lanes, sum(lanes.map(x => x + 1)), sum(lanes.map(x => x - 1)),
+						sum(lanes.map(x => x * 0.5)), sum(lanes.map(x => x / 0.5)), sum(lanes.map(x => x / 0.5)),
+						-4, 8, 8, sum(lanes), sum([round(1e20), 1, round(-1e20), 1]), '8', '0text'].join(''),
+				},
 				{ name: 'empty', source: 'main {}', output: '' },
 				{ name: 'limits', source: 'main { -2147483648 >> out; 0 >> out; 2147483647 >> out }', output: '-214748364802147483647' },
 			];
@@ -280,6 +313,19 @@ main {
 			const nativeArgs = [executable, 'build', '--native', '--outdir', directory, heapPath];
 			await Promise.all([execute(process.execPath, nativeArgs), execute(process.execPath, nativeArgs)]);
 			a.equal((await execute(join(directory, 'heap-values'))).stdout, '07value1266trueé\0z');
+			const vectorPath = join(directory, 'vectors.gb');
+			const vectorArgs = [executable, 'build', '--native', '--outdir', directory, vectorPath];
+			const vectorSource = readFileSync(vectorPath, 'utf8');
+			const vectorOutput = join(directory, 'vectors');
+			const previous = readFileSync(vectorOutput);
+			writeFileSync(vectorPath, 'main { Vector<Int32>(1) }');
+			const rejected = spawnSync(process.execPath, vectorArgs, { encoding: 'utf8' });
+			a.equal(rejected.status, 1);
+			a.ok(rejected.stderr.includes('does not satisfy Vector element constraint'));
+			a.ok(readFileSync(vectorOutput).equals(previous));
+			writeFileSync(vectorPath, vectorSource);
+			await Promise.all([execute(process.execPath, vectorArgs), execute(process.execPath, vectorArgs)]);
+			a.ok(readFileSync(vectorOutput).equals(previous));
 			const path = join(directory, 'answer.gb');
 			const wasm = await execute(process.execPath, [executable, 'build', '--outdir', directory, path]);
 			a.equal(wasm.stdout.trim(), join(directory, 'answer.wasm'));
@@ -330,20 +376,29 @@ main {
 
 	s.test('native buffers trap before evaluating an out-of-bounds value', async (a: TestApi) => {
 		const directory = mkdtempSync(join(process.cwd(), '.gbc-native-test-'));
-		const source = `mark = (n: Int32): Int32 { n >> out; next n };
-main { b = Buffer<Int32>(1); 1 >> out; set(b, 2, mark(3)); 4 >> out }`;
+		const vector = `mark = (): Vector<Float32> { 3 >> out; next Vector<Float32>(2) };`;
+		const cases = [
+			{ source: `mark = (n: Int32): Int32 { n >> out; next n };
+main { b = Buffer<Int32>(1); 1 >> out; set(b, 2, mark(3)); 4 >> out }`, output: '1' },
+			{ source: `${vector} main { b = Buffer<Float32>(4); 1 >> out; simd.store(b, 1, mark()); 4 >> out }`, output: '1' },
+			{ source: `${vector} main { b = Buffer<Float32>(4); 1 >> out; simd.store(value = mark(), buffer = b, index = 1); 4 >> out }`, output: '13' },
+			{ source: `main { b = Buffer<Float32>(4); 1 >> out; simd.sum(Vector<Float32>(b, -1)) >> out; 4 >> out }`, output: '1' },
+			{ source: `main { b = Array<Float32>(4); 1 >> out; simd.sum(Vector<Float32>(b, 0)) >> out; 4 >> out }`, output: '1' },
+		];
 		try {
-			const { bytes } = Program().compile(source);
-			a.assert(bytes);
-			let expected = '';
-			a.throws(() => runWasm(bytes, chunk => { expected += chunk; }));
-			a.equal(expected, '1');
 			const path = join(directory, 'bounds.gb');
-			writeFileSync(path, source);
-			await execute(process.execPath, [executable, 'build', '--native', '--outdir', directory, path]);
-			const result = spawnSync('bash', ['-c', 'ulimit -c 0; exec "$1"', 'gbc', join(directory, 'bounds')], { encoding: 'utf8' });
-			a.ok(result.signal || result.status);
-			a.equal(result.stdout, expected);
+			for (const { source, output } of cases) {
+				const { bytes } = Program().compile(source);
+				a.assert(bytes);
+				let expected = '';
+				a.throws(() => runWasm(bytes, chunk => { expected += chunk; }));
+				a.equal(expected, output);
+				writeFileSync(path, source);
+				await execute(process.execPath, [executable, 'build', '--native', '--outdir', directory, path]);
+				const result = spawnSync('bash', ['-c', 'ulimit -c 0; exec "$1"', 'gbc', join(directory, 'bounds')], { encoding: 'utf8' });
+				a.ok(result.signal || result.status);
+				a.equal(result.stdout, expected);
+			}
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}

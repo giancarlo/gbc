@@ -377,7 +377,7 @@ function numericSafety(
 	right: Type,
 	knownDivisor?: { readonly value: NumericValue },
 ) {
-	if (isFloatType(base) || (node.kind !== '/' && node.kind !== '%')) return uncheckedNumeric;
+	if ((node.kind !== '/' && node.kind !== '%') || isFloatType(base) || isVectorType(base)) return uncheckedNumeric;
 	const errors: Type[] = [];
 	const literal = numericLiteralValue(right);
 	let zeroError: Type | undefined;

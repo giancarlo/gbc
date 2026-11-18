@@ -1,5 +1,6 @@
 import { decodeEscapes } from './literals.js';
-import { CompilerError, sleb128, sleb128big, text, uleb128 } from '@cxl/gbc.sdk';
+import { sleb128, sleb128big, text, uleb128 } from '@cxl/gbc.sdk';
+import { checkHostVectorSignature } from './checker.js';
 
 import {
 	argumentNodes as argListFromCall,
@@ -65,16 +66,6 @@ type ArithmeticNode = NodeMap['+' | '-' | '*' | '/' | '%'];
 export interface SpliceInput {
 	objects: Map<GbcSymbol, SerialObject>;
 	resolveRef: (ref: SerialRef) => GbcSymbol | undefined;
-}
-
-function hasHostVectorSignature(definition: NodeMap['def']): boolean {
-	const value = definition.value;
-	return (
-		value.kind === 'fn' &&
-		((value.parameters ?? []).some(parameter =>
-			isVectorType(parameter.symbol.type),
-		) || isVectorType(value.symbol.returnType))
-	);
 }
 
 type ValueType = ResolvedType & {
@@ -8327,11 +8318,7 @@ export function compileWasm(options: CompileWasmOptions): Uint8Array {
 		for (const def of hostExports) {
 			const name = def.symbol.name;
 			if (!name) continue;
-			if (hasHostVectorSignature(def))
-				throw new CompilerError(
-					`"${name}" cannot expose Vector values through the host ABI`,
-					def,
-				);
+			checkHostVectorSignature(def);
 			const builderIdx = exportedBuilderIdx(def);
 			if (builderIdx === undefined)
 				throw new Error(

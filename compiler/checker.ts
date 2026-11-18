@@ -24,6 +24,16 @@ import type {
 import { argumentNodes, bindCallArguments, createSemanticContext, type BorrowOrigin } from './semantic.js';
 export { setDivByZero, reduceType, isKnownNonZeroNumber } from './semantic.js';
 
+export function checkHostVectorSignature(definition: Readonly<NodeMap['def']>): void {
+	const value = definition.value;
+	if (definition.symbol.name && value.kind === 'fn' && (isVectorType(value.symbol.returnType) ||
+		value.parameters?.some(parameter => isVectorType(parameter.symbol.type))))
+		throw new CompilerError(
+			`"${definition.symbol.name}" cannot expose Vector values through the host ABI`,
+			definition,
+		);
+}
+
 /**
  * Perform semantic analysis
  */

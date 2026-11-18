@@ -7,7 +7,7 @@ import type { CompilerAstContext, Node, NodeMap } from './node.js';
 import { argumentNodes, bindCallArguments, numericConversion, numericOperands, numericOperation, createSemanticContext, dataItems, dataMemberValue, dispatchArgType, itemValue, literalType, mergeValueTypes, staticLength } from './semantic.js';
 import { createSpecializationEnvironment, createSpecializationKey, specializeType } from './specialization.js';
 import type { SpecializationEnvironment } from './specialization.js';
-import { BaseTypes, Flags, classifyEmission, fixedEmissionType, isFloatType, isHeapType, isInt64Type, isNumericType } from './symbol-table.js';
+import { BaseTypes, Flags, classifyEmission, fixedEmissionType, isFloatType, isHeapType, isInt64Type, isNumericType, isVectorType } from './symbol-table.js';
 import type { ResolvedType, Symbol, SymbolMap, Type } from './symbol-table.js';
 
 export type BackendNodeMap = {
@@ -686,7 +686,9 @@ export function prepareCheckedProgram(
 
 		function constructorType(node: NodeMap['call'], callee: NodeMap['typeident'], args: Node | undefined): Type {
 			const target = preparation.typeOf(callee.symbol, environment);
-			if (target.kind === 'type' && args && args.kind !== ',') {
+			if (isVectorType(target)) {
+				for (const argument of argumentNodes(args)) resolve(argument);
+			} else if (target.kind === 'type' && args && args.kind !== ',') {
 				const argument = resolve(args);
 				if (target.family === 'string') {
 					const arm = ownership().findCtorArm('String', argument, context);
