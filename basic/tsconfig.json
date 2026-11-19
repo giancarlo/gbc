@@ -11,6 +11,7 @@
 	"files": [
 		"index.ts",
 		"analyze.ts",
+		"compile.ts",
 		"parser.ts",
 		"scanner.ts",
 		"highlight.ts"

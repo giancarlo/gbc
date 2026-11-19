@@ -4,7 +4,7 @@ import {
 	ReferenceSymbolTable,
 	childNodes,
 	type Symbol,
-} from '@cxl/gbc.sdk';
+} from '@cxl/gbc.sdk/frontend.js';
 import type { Node, NodeMap, TypeAnnotation } from './index.js';
 
 export interface BasicType {

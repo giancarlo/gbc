@@ -2,7 +2,7 @@ import { type ScannerContext,
 	createCaseInsensitiveTrie,
 	matchers,
 	ScannerApi,
-} from '@cxl/gbc.sdk';
+} from '@cxl/gbc.sdk/frontend.js';
 
 export type ScannerToken = ReturnType<ReturnType<typeof scan>['next']>;
 export type Kind = ScannerToken['kind'];

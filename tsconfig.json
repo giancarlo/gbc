@@ -14,6 +14,7 @@
 			"@cxl/gbc.html": ["./html/index.ts"],
 			"@cxl/gbc.html/highlight": ["./html/highlight.ts"],
 			"@cxl/gbc.sdk": ["./sdk/index.ts"],
+			"@cxl/gbc.sdk/*": ["./sdk/*"],
 			"@cxl/gbc.javascript": ["./javascript/index.ts"]
 		},
 		"noUnusedLocals": true,

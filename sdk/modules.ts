@@ -1,4 +1,4 @@
-import { Flags } from './index.js';
+import { Flags } from './frontend.js';
 import type { OwnershipMode, ScalarType } from './ast.js';
 import {
 	decodeModuleBundle,

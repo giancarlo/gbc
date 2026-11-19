@@ -1,4 +1,4 @@
-import { CompilerError, enrichHighlightToken, type HighlightKind, type HighlightToken, type Highlighter, type Position, type Token, type TokenizerError } from './index.js';
+import { CompilerError, enrichHighlightToken, type HighlightKind, type HighlightToken, type Highlighter, type Position, type Token, type TokenizerError } from './frontend.js';
 
 export interface HighlightSource {
 	readonly id: object;

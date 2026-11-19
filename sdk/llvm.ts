@@ -1,5 +1,5 @@
 import { allocator, debugTrace, dropBuffer, printString, references as referenceRuntime, testOutput } from './llvm-heap.js';
-import { CompilerError, Flags, text } from './index.js';
+import { CompilerError, Flags, text } from './frontend.js';
 import {
 	astDispatchArms,
 	type AstContext,

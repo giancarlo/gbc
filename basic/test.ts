@@ -4,12 +4,14 @@ import { TestApi, spec } from '@cxl/spec';
 import {
 	Flags,
 	childNodes,
+	compileLlvm,
 	text,
 	tokenize,
 	type Symbol,
 	type Type,
 } from '@cxl/gbc.sdk';
-import { type NodeMap } from './index.js';
+import type { NodeMap } from './index.js';
+import { compile } from './compile.js';
 import { compatibilityCases, demoNames } from './test-corpus.js';
 import { parseAssignment, parseExpression, parseProgram } from './parser.js';
 import { scan } from './scanner.js';
@@ -50,6 +52,56 @@ export default spec('basic', (a: TestApi) => {
 		a.equalValues(tokens, expected);
 		a.equal(result.checkpoint.committed, value.length);
 		a.equal(result.checkpoint.done, true);
+	});
+
+	a.test('compiles checked BASIC functions through the SDK', (a: TestApi) => {
+		const source = 'FUNCTION Echo(n AS LONG) AS LONG\nLET eCHO = (N)\nEND FUNCTION';
+		const { ast, ir, errors } = compile(source);
+		a.equalValues(errors, []);
+		a.assert(ast && ir);
+		const definition = ast.children[0];
+		a.assert(definition?.kind === 'def' && definition.value.kind === 'fn');
+		const fn = definition.value;
+		const result = fn.statements?.[0];
+		a.assert(result?.kind === 'next');
+		const value = result.children?.[0];
+		a.assert(value?.kind === '(' && value.children[0].kind === 'ident');
+		a.equal(value.children[0].symbol, fn.parameters?.[0]?.symbol);
+		a.equal(value.source, source);
+		a.equal(ast.checked?.instances[0]?.signature.result.size, 4);
+		a.equal(compileLlvm(ast), ir);
+		a.ok(ir.includes('define i32 @"echo"(i32 %arg0)'));
+	});
+
+	a.test('reports BASIC LLVM diagnostics and keeps compilation independent', a => {
+		const literalSource = (value: string) => `FUNCTION Answer() AS LONG\nAnswer = ${value}\nEND FUNCTION`;
+		const valid = compile(literalSource('-2147483648'));
+		a.equalValues(valid.errors, []);
+		a.ok(valid.ir?.includes('ret i32 -2147483648'));
+		a.ok(compile(literalSource('+2147483647&')).ir?.includes('ret i32 2147483647'));
+		const invalid = [
+			'',
+			'FUNCTION',
+			'FUNCTION Answer(n AS LONG, N AS LONG) AS LONG\nAnswer = 1\nEND FUNCTION',
+			'FUNCTION Answer(n AS INTEGER) AS LONG\nAnswer = n\nEND FUNCTION',
+			'FUNCTION Answer(n AS LONG) AS LONG\nn = 1\nEND FUNCTION',
+			'FUNCTION Answer() AS LONG\nPRINT 1\nEND FUNCTION',
+			'DIM x AS LONG\n' + literalSource('1'),
+			literalSource('x'),
+			literalSource('1.5'),
+			literalSource('2147483648'),
+			literalSource('-2147483649'),
+		];
+		for (const source of invalid) {
+			const result = compile(source);
+			a.equal(result.ast, undefined, source);
+			a.equal(result.ir, undefined, source);
+			a.ok(result.errors.length, source);
+			a.equal(result.errors[0]?.position.source, source);
+		}
+		const next = compile(literalSource('-2147483648'));
+		a.equal(next.ir, valid.ir);
+		a.ok(next.ast !== valid.ast);
 	});
 
 	a.addSpec(analysis);

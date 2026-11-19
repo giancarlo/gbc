@@ -5,7 +5,7 @@ import {
 	type CompilerError,
 	type NodeWithChildren,
 	type Token,
-} from '@cxl/gbc.sdk';
+} from '@cxl/gbc.sdk/frontend.js';
 import type { ComparisonOperator, Node, NodeMap, TypeAnnotation } from './index.js';
 import { scan, type ScannerToken } from './scanner.js';
 

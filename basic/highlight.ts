@@ -1,7 +1,7 @@
-import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, type HighlightOptions, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow, type HighlightToken } from '@cxl/gbc.sdk';
+import { tokenize, createHighlighter, shiftHighlightBuffer, highlightTokens, highlightSegments, foldToken, type HighlightOptions, type ScannerContext, type HighlightKind, type HighlightBuffer, type HighlightWindow, type HighlightToken } from '@cxl/gbc.sdk/frontend.js';
 import { keywords, scan, type ScannerToken } from './scanner.js';
 
-export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk';
+export type { HighlightKind, HighlightToken, Highlighter, HighlightOptions, LanguageResolver } from '@cxl/gbc.sdk/frontend.js';
 const keywordKinds: ReadonlySet<string> = new Set(keywords);
 const wordOperators = new Set('and or xor eqv imp not mod'.split(' '));
 const punctuation: ReadonlySet<string> = new Set(['(', ')', ',', ';', ':']);
