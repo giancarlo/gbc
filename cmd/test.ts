@@ -77,6 +77,7 @@ export default spec('cmd', s => {
 				['echo if for do done fi; echo "{ }"; # if\n{ echo x; }', [['{', 1, 0], ['}', 0, 1]]],
 				['if echo x; then\necho "a\nb"', [['if', 1, 0], ['"a\nb"', 1, 1]]],
 				['2>fi if true; then true; fi', [['if', 1, 0], ['fi', 0, 1]]],
+				['2<<<fi if true; then true; fi', [['if', 1, 0], ['fi', 0, 1]]],
 				['demo() {\necho x\n}', [['{', 1, 0], ['}', 0, 1]]],
 				['(\necho first\necho second\n)', [['(', 1, 0], [')', 0, 1]]],
 				['demo() (\n(echo inner)\n)', [['(', 1, 0], ['(', 1, 0], [')', 0, 1], [')', 0, 1]]],
@@ -683,6 +684,37 @@ export default spec('cmd', s => {
 				cmd.compile(`command 2>>errors.log 0<&3 1>&2 <>input`).output,
 				`command 2>> errors.log 0<& 3 1>& 2 <> input`,
 			);
+		});
+
+		it.should('parse, compile, and lower a here-string redirect', (a: TestApi) => {
+			const source = 'cat 3<<<"two words"\necho done';
+			const cmd = program();
+			a.equalValues(kinds(source), ['word', 'word', '<<<', 'word', 'newline', 'word', 'word']);
+			const { root, errors } = cmd.parse(source);
+			a.equalValues(errors, []);
+			const list = root.children[0];
+			a.assert(list?.kind === 'list', 'Expected command list');
+			const command = list.children[0];
+			a.assert(command?.kind === 'command', 'Expected command');
+			const redirect = command.redirects[0];
+			a.equalValues([redirect?.operator, redirect?.io?.value, redirect?.target.value, redirect?.body], [
+				'<<<', '3', 'two words', undefined,
+			]);
+			a.equal(cmd.compile(source).output, 'cat 3<<< "two words"\necho done');
+			a.equalValues(cmd.ir(root), [
+				2,
+				[
+					IrKind.List,
+					[IrSeparator.Newline],
+					[
+						IrKind.Command,
+						[IrKind.Word, 'cat'],
+						[IrKind.Redirect, IrRedirectOperator.HereString, [IrKind.Word, 'two words'], [IrKind.Word, '3']],
+					],
+					[IrKind.Command, [IrKind.Word, 'echo'], [IrKind.Word, 'done']],
+				],
+			]);
+			a.equalValues(cmd.parse('cat <<<').errors.map(error => error.message), ['Expected shell word']);
 		});
 
 		it.should('parse a Python here document as one shell command', (a: TestApi) => {

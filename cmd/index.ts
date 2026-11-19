@@ -139,6 +139,7 @@ type RedirectOperator =
 	| '>|'
 	| '<<'
 	| '<<-'
+	| '<<<'
 	| '<&'
 	| '>&';
 type RedirectNode = NodeMap['redirect'];
@@ -208,6 +209,7 @@ export enum IrRedirectOperator {
 	HereDocumentStrip,
 	DuplicateInput,
 	DuplicateOutput,
+	HereString,
 }
 
 export enum IrSeparator {
@@ -306,6 +308,7 @@ const operators = [
 	'&&',
 	'||',
 	'>>',
+	'<<<',
 	'<<',
 	'<>',
 	'>|',
@@ -805,6 +808,7 @@ function isRedirectKind(kind: Kind): kind is RedirectOperator {
 		kind === '>|' ||
 		kind === '<<' ||
 		kind === '<<-' ||
+		kind === '<<<' ||
 		kind === '<&' ||
 		kind === '>&'
 	);
@@ -1581,6 +1585,7 @@ const irRedirectOperators: Record<RedirectOperator, IrRedirectOperator> = {
 	'>|': IrRedirectOperator.Clobber,
 	'<<': IrRedirectOperator.HereDocument,
 	'<<-': IrRedirectOperator.HereDocumentStrip,
+	'<<<': IrRedirectOperator.HereString,
 	'<&': IrRedirectOperator.DuplicateInput,
 	'>&': IrRedirectOperator.DuplicateOutput,
 };

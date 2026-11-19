@@ -27,7 +27,7 @@ const classify = (token: ReturnType<ReturnType<typeof scanHighlight>['next']>): 
 };
 
 const separators = new Set(['newline', ';', '&', '|', '&&', '||']);
-const redirects = new Set(['>', '>>', '<', '<>', '>|', '<<', '<<-', '<&', '>&']);
+const redirects = new Set(['>', '>>', '<', '<>', '>|', '<<', '<<-', '<<<', '<&', '>&']);
 const commandPrefixes = new Set(['if', 'then', 'elif', 'else', 'do']);
 
 interface ShellFrame {
